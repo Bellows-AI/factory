@@ -28,6 +28,8 @@ import { generate, SYNTHETIC_MEMBERS } from './synthetic.js';
  */
 const DISPOSABLE = /_(seed|synthetic|demo|e2e|test)$/;
 
+const MS_PER_DAY = 86_400_000;
+
 function databaseName(url: string): string {
     return new URL(url).pathname.replace(/^\//, '');
 }
@@ -130,7 +132,7 @@ try {
         await sql`
             insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
             values (${org}, 'claude-code', ${`seed-${org}`}, ${repo}, 'main', null,
-                    ${new Date(now.getTime() - 86_400_000)}, ${now}, 1)
+                    ${new Date(now.getTime() - MS_PER_DAY)}, ${now}, 1)
             on conflict (org_id, agent, session_id, repo, branch) do nothing
         `;
     }

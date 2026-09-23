@@ -22,6 +22,8 @@ import { workflowSettingsRoutes } from './routes/workflow-settings.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
+const HTTP_NOT_FOUND = 404;
+
 export interface AppDeps {
     config: AppConfig;
     /**
@@ -162,7 +164,7 @@ export async function buildApp({
         const { default: fastifyStatic } = await import('@fastify/static');
         await app.register(fastifyStatic, { root: config.webRoot });
         app.setNotFoundHandler(async (request, reply) => {
-            if (request.url.startsWith('/api/')) return reply.code(404).send({ error: 'Not found' });
+            if (request.url.startsWith('/api/')) return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
             return reply.sendFile('index.html');
         });
     }

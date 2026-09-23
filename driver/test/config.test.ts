@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { gateAdvertiseUrlFor, loadDriverConfig } from '../src/config.js';
 
-describe('the driver config', () => {
+describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
         const config = loadDriverConfig({});
 
@@ -63,7 +63,9 @@ describe('the driver config', () => {
     it('reads RUNNER_ENV as a list of names', () => {
         expect(loadDriverConfig({ RUNNER_ENV: 'A, B ,,C' }).passEnv).toEqual(['A', 'B', 'C']);
     });
+});
 
+describe('the driver config: executor and endpoints', () => {
     // The executor choice is a runner selection, not a tuning knob: docker on the host, kubernetes
     // against the API server the driver's own pod talks to. A typo in it must not read as "docker
     // is fine" and silently spawn nothing — hence a fatal, explicit enum.
@@ -128,7 +130,9 @@ describe('the driver config', () => {
                 .credentialsSecret
         ).toBe('claude-credentials');
     });
+});
 
+describe('the driver config: policy, remote control and gates', () => {
     // An explicit enum, like EXECUTOR: the API server would reject a bad policy only at
     // job-create time, which is attempt-burning — this loader exists to move failures to startup.
     it('accepts only a real image pull policy', () => {
@@ -156,10 +160,14 @@ describe('the driver config', () => {
 
     // The gate environment cooldown: how long a container outlives the task that started it, so
     // the task's NEXT turn does not pay startup again. The issue names ten minutes as the default.
+    const DEFAULT_GATE_MS = 600_000;
     it('keeps gate environments alive for a configurable cooldown, ten minutes by default', () => {
-        expect(loadDriverConfig({}).gateCooldownMs).toBe(600_000);
+        const OVERRIDE_GATE_COOLDOWN_MS = 60_000;
+        expect(loadDriverConfig({}).gateCooldownMs).toBe(DEFAULT_GATE_MS);
         expect(loadDriverConfig({ GATE_COOLDOWN_MS: '0' }).gateCooldownMs).toBe(0);
-        expect(loadDriverConfig({ GATE_COOLDOWN_MS: '60000' }).gateCooldownMs).toBe(60_000);
+        expect(loadDriverConfig({ GATE_COOLDOWN_MS: String(OVERRIDE_GATE_COOLDOWN_MS) }).gateCooldownMs).toBe(
+            OVERRIDE_GATE_COOLDOWN_MS
+        );
         expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: '-1' })).toThrow(/GATE_COOLDOWN_MS/);
         expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: 'later' })).toThrow(/GATE_COOLDOWN_MS/);
     });
@@ -178,20 +186,24 @@ describe('the driver config', () => {
     // The listener binds an ephemeral port, so a configured URL without one cannot name it in
     // advance — the bound port is appended. One with a port is the operator's word and stays.
     it('appends the bound port to a portless advertise URL and leaves a ported one verbatim', () => {
-        expect(gateAdvertiseUrlFor(null, 44_685)).toBe('http://host.docker.internal:44685');
-        expect(gateAdvertiseUrlFor('http://driver', 44_685)).toBe('http://driver:44685');
-        expect(gateAdvertiseUrlFor('http://driver:9099', 44_685)).toBe('http://driver:9099');
+        const EPHEMERAL_PORT = 44_685;
+        expect(gateAdvertiseUrlFor(null, EPHEMERAL_PORT)).toBe('http://host.docker.internal:44685');
+        expect(gateAdvertiseUrlFor('http://driver', EPHEMERAL_PORT)).toBe('http://driver:44685');
+        expect(gateAdvertiseUrlFor('http://driver:9099', EPHEMERAL_PORT)).toBe('http://driver:9099');
         // Agents concatenate request paths onto this string, so no trailing slash may survive.
-        expect(gateAdvertiseUrlFor('http://driver/', 44_685)).toBe('http://driver:44685');
+        expect(gateAdvertiseUrlFor('http://driver/', EPHEMERAL_PORT)).toBe('http://driver:44685');
         // An unparseable URL is passed through: the failure stays at the fetch, unchanged.
-        expect(gateAdvertiseUrlFor('not a url', 44_685)).toBe('not a url');
+        expect(gateAdvertiseUrlFor('not a url', EPHEMERAL_PORT)).toBe('not a url');
     });
 
     // The cap on ONE gate: the runner's timeout covers the agent, this covers a gate that hangs.
     // A timed-out gate is a failed gate, not a stalled verdict.
     it('bounds each gate with a configurable timeout, ten minutes by default', () => {
-        expect(loadDriverConfig({}).gateTimeoutMs).toBe(600_000);
-        expect(loadDriverConfig({ GATE_TIMEOUT_MS: '30000' }).gateTimeoutMs).toBe(30_000);
+        const OVERRIDE_GATE_TIMEOUT_MS = 30_000;
+        expect(loadDriverConfig({}).gateTimeoutMs).toBe(DEFAULT_GATE_MS);
+        expect(loadDriverConfig({ GATE_TIMEOUT_MS: String(OVERRIDE_GATE_TIMEOUT_MS) }).gateTimeoutMs).toBe(
+            OVERRIDE_GATE_TIMEOUT_MS
+        );
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: '500' })).toThrow(/GATE_TIMEOUT_MS/);
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: 'whenever' })).toThrow(/GATE_TIMEOUT_MS/);
     });

@@ -25,24 +25,28 @@ const NAMED_COLOR_RE = new RegExp(
 /** Block comments removed, so prose cannot mint phantom tokens, classes or color mentions. */
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 
+/** One block's [start, end) span, by brace counting from its opening `{` at or after `start`.
+ * Split out of `blockSpans` so its own nested loop does not add to that function's cognitive
+ * complexity. */
+const closedBlockSpan = (css: string, start: number): [number, number] | null => {
+    let depth = 0;
+    for (let i = css.indexOf('{', start); i < css.length; i++) {
+        if (css[i] === '{') depth++;
+        if (css[i] === '}') {
+            depth--;
+            if (depth === 0) return [start, i + 1];
+        }
+    }
+    return null;
+};
+
 /** A block's [start, end) spans, by brace counting from each match of `openRe`. */
 const blockSpans = (css: string, openRe: RegExp, missing: string): Array<[number, number]> => {
     const spans: Array<[number, number]> = [];
     for (const open of css.matchAll(openRe)) {
-        const start = open.index!;
-        let depth = 0;
-        let closed = false;
-        for (let i = css.indexOf('{', start); i < css.length && !closed; i++) {
-            if (css[i] === '{') depth++;
-            if (css[i] === '}') {
-                depth--;
-                if (depth === 0) {
-                    spans.push([start, i + 1]);
-                    closed = true;
-                }
-            }
-        }
-        if (!closed) throw new Error(missing);
+        const span = closedBlockSpan(css, open.index!);
+        if (!span) throw new Error(missing);
+        spans.push(span);
     }
     return spans;
 };
@@ -82,6 +86,21 @@ const rules = (css: string): Array<[string, string]> => {
     return parsed;
 };
 
+/** One file's color-literal violations: every match of either color syntax that falls outside
+ * the token spans (`styles.css` only has any; every other file has none, so its spans are
+ * empty and every match is a violation). Split out of the `it` below so its own nested loops do
+ * not add to that callback's cognitive complexity. */
+const colorViolationsIn = (rel: string, text: string, spans: Array<[number, number]>): string[] => {
+    const violations: string[] = [];
+    for (const colorRe of [COLOR_RE, NAMED_COLOR_RE]) {
+        for (const match of text.matchAll(colorRe)) {
+            const at = match.index ?? 0;
+            if (!spans.some(([start, end]) => at >= start && at < end)) violations.push(`${rel}:${lineAt(text, at)}`);
+        }
+    }
+    return violations;
+};
+
 describe('the stylesheet', () => {
     it('keeps every color literal inside the token blocks', () => {
         // Comments are scanned too: prose in styles.css never quotes a raw color value —
@@ -92,13 +111,7 @@ describe('the stylesheet', () => {
             const text = readFileSync(path, 'utf8');
             const rel = path.slice(webSrc.length + 1);
             const spans = rel === 'styles.css' ? tokenSpans(text) : [];
-            for (const colorRe of [COLOR_RE, NAMED_COLOR_RE]) {
-                for (const match of text.matchAll(colorRe)) {
-                    const at = match.index ?? 0;
-                    if (!spans.some(([start, end]) => at >= start && at < end))
-                        violations.push(`${rel}:${lineAt(text, at)}`);
-                }
-            }
+            violations.push(...colorViolationsIn(rel, text, spans));
         }
         expect(violations).toEqual([]);
     });
@@ -182,7 +195,9 @@ describe('the stylesheet', () => {
             readFileSync(join(webSrc, 'styles.css'), 'utf8') + readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
+});
 
+describe('the stylesheet — sizing and motion (#189)', () => {
     it('keeps every font size at or above the 12px floor (#189)', () => {
         // Decision-bearing text never renders under 12px; buttons, inputs and tabs carry 14px
         // through `font: inherit`. The chart tick is the one documented exception: the
@@ -193,9 +208,13 @@ describe('the stylesheet', () => {
             .map(([prelude, body]) => [prelude, body.match(/font-size:\s*(\d+(?:\.\d+)?)px/)?.[1]] as const)
             .filter(([, size]) => size !== undefined)
             .map(([prelude, size]) => [prelude, Number(size)] as const);
-        const under = sizes.filter(([prelude, size]) => (prelude === '.tick' ? size < 11 : size < 12));
+        const MIN_TICK_FONT_PX = 11;
+        const MIN_FONT_PX = 12;
+        const under = sizes.filter(([prelude, size]) =>
+            prelude === '.tick' ? size < MIN_TICK_FONT_PX : size < MIN_FONT_PX
+        );
         expect(under.map(([prelude, size]) => `${prelude}: ${size}px`)).toEqual([]);
-        expect(sizes.find(([prelude]) => prelude === '.tick')?.[1], 'the chart tick exception').toBe(11);
+        expect(sizes.find(([prelude]) => prelude === '.tick')?.[1], 'the chart tick exception').toBe(MIN_TICK_FONT_PX);
     });
 
     it('holds the lamp still under prefers-reduced-motion (#189)', () => {

@@ -327,71 +327,73 @@ describe('deriveReadiness — organization identity', () => {
     });
 });
 
-describe('SettingsOverviewPage (render)', () => {
-    /** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
-    const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
+/** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
+const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
-    const fullSession: Session = {
-        authenticated: true,
-        user: {
-            id: '00000000-0000-4000-8000-000000000001',
-            login: 'octocat',
-            name: 'The Octocat',
-            githubUserId: 1,
-            avatarUrl: null,
-        },
-        role: 'member',
-        membership: { invitedAt: null, claimedAt: null },
-        account: { createdAt: null, lastLoginAt: null },
-        organization: { id: 'bellows', name: 'Bellows AI' },
-        organizations: [{ id: 'bellows', name: 'Bellows AI' }],
-        workspacePath: '/workspaces/octocat',
-        mode: 'none',
-    };
+const fullSession: Session = {
+    authenticated: true,
+    user: {
+        id: '00000000-0000-4000-8000-000000000001',
+        login: 'octocat',
+        name: 'The Octocat',
+        githubUserId: 1,
+        avatarUrl: null,
+    },
+    role: 'member',
+    membership: { invitedAt: null, claimedAt: null },
+    account: { createdAt: null, lastLoginAt: null },
+    organization: { id: 'bellows', name: 'Bellows AI' },
+    organizations: [{ id: 'bellows', name: 'Bellows AI' }],
+    workspacePath: '/workspaces/octocat',
+    mode: 'none',
+};
 
-    const idleWorkspace = {
-        data: null,
-        loading: true,
-        error: null,
-        saving: false,
-        save: async () => null,
-        saveExecutors: async () => null,
-        listExecutorConfigs: async () => null,
-    } as unknown as UseWorkspace;
+const idleWorkspace = {
+    data: null,
+    loading: true,
+    error: null,
+    saving: false,
+    save: async () => null,
+    saveExecutors: async () => null,
+    listExecutorConfigs: async () => null,
+} as unknown as UseWorkspace;
 
-    const idleEnv = {
-        data: null,
-        loading: true,
-        error: null,
-        saving: false,
-        refresh: () => {},
-        saveOrg: async () => null,
-        saveWorkspace: async () => null,
-        saveRepo: async () => null,
-    } as unknown as UseEnv;
+const idleEnv = {
+    data: null,
+    loading: true,
+    error: null,
+    saving: false,
+    refresh: () => {},
+    saveOrg: async () => null,
+    saveWorkspace: async () => null,
+    saveRepo: async () => null,
+} as unknown as UseEnv;
 
-    const render = (
-        overrides: { session?: Session | null; workspace?: Partial<UseWorkspace>; env?: Partial<UseEnv> } = {}
-    ): string =>
-        renderToStaticMarkup(
-            <MemoryRouter initialEntries={['/settings']}>
-                <Routes>
-                    <Route
-                        element={
-                            <Outlet
-                                context={{
-                                    session: overrides.session === undefined ? fullSession : overrides.session,
-                                    workspace: { ...idleWorkspace, ...overrides.workspace },
-                                    env: { ...idleEnv, ...overrides.env },
-                                }}
-                            />
-                        }
-                    >
-                        <Route path="settings" element={<SettingsOverviewPage />} />
-                    </Route>
-                </Routes>
-            </MemoryRouter>
-        );
+const renderOverview = (
+    overrides: { session?: Session | null; workspace?: Partial<UseWorkspace>; env?: Partial<UseEnv> } = {}
+): string =>
+    renderToStaticMarkup(
+        <MemoryRouter initialEntries={['/settings']}>
+            <Routes>
+                <Route
+                    element={
+                        <Outlet
+                            context={{
+                                session: overrides.session === undefined ? fullSession : overrides.session,
+                                workspace: { ...idleWorkspace, ...overrides.workspace },
+                                env: { ...idleEnv, ...overrides.env },
+                            }}
+                        />
+                    }
+                >
+                    <Route path="settings" element={<SettingsOverviewPage />} />
+                </Route>
+            </Routes>
+        </MemoryRouter>
+    );
+
+describe('SettingsOverviewPage (render) — identity and headings', () => {
+    const render = renderOverview;
 
     it('renders one h1 with the eyebrow and description naming the organization', () => {
         const html = render();
@@ -436,6 +438,10 @@ describe('SettingsOverviewPage (render)', () => {
         expect(html).toContain('Checking your session…');
         expect(html).not.toContain('readiness-action');
     });
+});
+
+describe('SettingsOverviewPage (render) — readiness states', () => {
+    const render = renderOverview;
 
     it('links every item to its exact destination once the polls answer', () => {
         const html = render({
@@ -470,7 +476,8 @@ describe('SettingsOverviewPage (render)', () => {
             env: { loading: false, data: emptyEnv },
         });
         expect(html).toContain('Workspace is not configured; tasks cannot run');
-        expect((html.match(/href="\/settings\/workspace"/g) ?? []).length).toBeGreaterThanOrEqual(3);
+        const MIN_WORKSPACE_LINKS = 3;
+        expect((html.match(/href="\/settings\/workspace"/g) ?? []).length).toBeGreaterThanOrEqual(MIN_WORKSPACE_LINKS);
     });
 
     it('renders a later poll failure as a separate status line under the last-good items', () => {

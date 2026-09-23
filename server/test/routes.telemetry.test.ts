@@ -25,7 +25,8 @@ describe('telemetry on /api/stats', () => {
         expect(body.meta.telemetry.status).toBe('ok');
         expect(body.meta.telemetry.source).toBe('fixture');
         expect(body.meta.telemetry.repoFilter).toEqual(['Bellows-AI/bellows.ai']);
-        expect(body.telemetry.totals.sessions).toBe(13);
+        const EXPECTED_SESSIONS = 13;
+        expect(body.telemetry.totals.sessions).toBe(EXPECTED_SESSIONS);
         expect(body.telemetry.totals.tokens.input).toBeGreaterThan(0);
     });
 
@@ -34,10 +35,12 @@ describe('telemetry on /api/stats', () => {
         app = h.app;
         await warm(h);
 
-        h.advance(12_000);
+        const ADVANCE_MS = 12_000;
+        const ADVANCE_SECONDS = 12;
+        h.advance(ADVANCE_MS);
         const body = (await h.app.inject({ method: 'GET', url: '/api/stats' })).json();
-        expect(body.meta.ageSeconds).toBe(12);
-        expect(body.meta.telemetry.ageSeconds).toBe(12);
+        expect(body.meta.ageSeconds).toBe(ADVANCE_SECONDS);
+        expect(body.meta.telemetry.ageSeconds).toBe(ADVANCE_SECONDS);
         expect(body.meta.stale).toBe(false);
         expect(body.meta.telemetry.stale).toBe(false);
     });
@@ -81,7 +84,8 @@ describe('degradation states', () => {
         app = h.app;
 
         const res = await h.app.inject({ method: 'GET', url: '/api/stats' });
-        expect(res.statusCode).toBe(503);
+        const HTTP_SERVICE_UNAVAILABLE = 503;
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(res.json().code).toBe('TELEMETRY_DISABLED');
         expect(telemetry.rollupCalls).toBe(0);
     });
@@ -94,7 +98,8 @@ describe('GET /api/health', () => {
         app = h.app;
 
         const res = await app.inject({ method: 'GET', url: '/api/health' });
-        expect(res.statusCode).toBe(200);
+        const HTTP_OK = 200;
+        expect(res.statusCode).toBe(HTTP_OK);
         expect(telemetry.rollupCalls).toBe(0);
         expect(telemetry.healthCalls).toBe(0);
     });
@@ -138,7 +143,8 @@ describe('loadConfig', () => {
         // default would 404 the ingest route against a collector that is already exporting.
         const config = loadConfig(env());
         expect(config.telemetrySource).toBe('postgres');
-        expect(config.telemetryTtlMs).toBe(30_000);
+        const DEFAULT_TTL_MS = 30_000;
+        expect(config.telemetryTtlMs).toBe(DEFAULT_TTL_MS);
     });
 
     it("configures no organization, which is the sign-in flow's business now (#99)", () => {

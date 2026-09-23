@@ -8,9 +8,12 @@ import { randomBytes } from 'node:crypto';
 export const PERSONAL_TOKEN_PREFIX = 'fat_';
 export const ORG_TOKEN_PREFIX = 'oat_';
 
+/** CSPRNG bytes minted into the token body, before base64url encoding. */
+const TOKEN_BYTES = 32;
+
 export const isAccessToken = (token: string): boolean =>
     token.startsWith(PERSONAL_TOKEN_PREFIX) || token.startsWith(ORG_TOKEN_PREFIX);
 
 /** 32 bytes from the CSPRNG, base64url, prefixed. */
 export const mintAccessToken = (kind: 'personal' | 'org'): string =>
-    `${kind === 'personal' ? PERSONAL_TOKEN_PREFIX : ORG_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
+    `${kind === 'personal' ? PERSONAL_TOKEN_PREFIX : ORG_TOKEN_PREFIX}${randomBytes(TOKEN_BYTES).toString('base64url')}`;

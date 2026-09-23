@@ -73,7 +73,8 @@ describe('the worker token', () => {
         await board.suspend(job);
         await board.complete(job, { status: 'succeeded', exitCode: 0, output: '' });
 
-        expect(calls).toHaveLength(5);
+        const EXPECTED_WRITE_CALLS = 5;
+        expect(calls).toHaveLength(EXPECTED_WRITE_CALLS);
         for (const call of calls) expect(call.headers.authorization).toBe('Bearer fwt_abc');
     });
 

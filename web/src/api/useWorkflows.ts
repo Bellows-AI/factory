@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import type { WorkflowParamChoice } from '../task-composer.js';
 
 /**
@@ -70,7 +70,7 @@ export function useWorkflows(repo: string | null): UseWorkflows {
         (async () => {
             try {
                 const response = await fetch(url, { signal: ack.signal });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return;
                 }

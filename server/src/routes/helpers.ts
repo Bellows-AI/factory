@@ -1,5 +1,7 @@
 import type { FastifyReply } from 'fastify';
 
+const HTTP_UNAVAILABLE = 503;
+
 /**
  * The shapes every route here repeats.
  *
@@ -76,7 +78,7 @@ export async function guard<T>(
         return { ok: true, value: await run() };
     } catch (e) {
         log(e as Error);
-        await reply.code(503).send({ error: (e as Error).message, code: 'UNAVAILABLE' });
+        await reply.code(HTTP_UNAVAILABLE).send({ error: (e as Error).message, code: 'UNAVAILABLE' });
         return { ok: false };
     }
 }

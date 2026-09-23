@@ -27,11 +27,14 @@ describe('totals, recomputed by hand', () => {
     });
 
     it('matches on session count, lines, and active hours', () => {
+        // Restated by hand rather than imported from config.ts — see the file-level comment.
+        const SECONDS_PER_HOUR = 3600;
+        const ASSERTION_PRECISION_DIGITS = 9;
         expect(stats.totals.sessions).toBe(mine.length);
         expect(stats.totals.linesAdded).toBe(mine.reduce((s, x) => s + (x.linesAdded ?? 0), 0));
         expect(stats.totals.linesRemoved).toBe(mine.reduce((s, x) => s + (x.linesRemoved ?? 0), 0));
         const seconds = mine.reduce((s, x) => s + (x.activeSeconds ?? 0), 0);
-        expect(stats.totals.activeHours).toBeCloseTo(seconds / 3600, 9);
+        expect(stats.totals.activeHours).toBeCloseTo(seconds / SECONDS_PER_HOUR, ASSERTION_PRECISION_DIGITS);
     });
 
     it('matches on edit acceptance, recomputed by hand', () => {
@@ -58,16 +61,19 @@ describe('caller scope, recomputed by hand', () => {
     }
 
     it("totals exactly the caller's attributed sessions", () => {
+        // Landmark pinned against the fixture: a silent regeneration should fail here too.
+        const ALICE_SESSION_COUNT = 5;
         expect(mine.totals.sessions).toBe(aliceSessions.length);
         expect(mine.totals.tokens.input).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0));
         expect(mine.totals.tokens.output).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.output ?? 0), 0));
-        expect(mine.totals.sessions).toBe(5);
+        expect(mine.totals.sessions).toBe(ALICE_SESSION_COUNT);
     });
 
     it('still names the unattributed sessions the scope dropped', () => {
+        const UNATTRIBUTED_SESSION_COUNT = 4;
         const unattributed = telemetry.sessions.filter((s) => s.repo === FIXTURE_REPO && s.user === null).length;
         expect(mine.unattributedSessions).toBe(unattributed);
-        expect(unattributed).toBe(4);
+        expect(unattributed).toBe(UNATTRIBUTED_SESSION_COUNT);
     });
 
     it('leaves coverage untouched', () => {
@@ -77,19 +83,24 @@ describe('caller scope, recomputed by hand', () => {
 
 describe('landmarks pinned against the fixture', () => {
     it('pins the fixture shape, so a silent regeneration is caught', () => {
-        expect(telemetry.sessions).toHaveLength(15);
-        expect(mine).toHaveLength(13);
+        const FIXTURE_SESSION_COUNT = 15;
+        const FIXTURE_REPO_SESSION_COUNT = 13;
+        expect(telemetry.sessions).toHaveLength(FIXTURE_SESSION_COUNT);
+        expect(mine).toHaveLength(FIXTURE_REPO_SESSION_COUNT);
         expect(telemetry.coverage.from).toBe('2026-04-15T12:00:00Z');
         expect(telemetry.coverage.to).toBe('2026-08-21T06:45:00Z');
     });
 
     it('emits a contiguous week series over the whole window', () => {
         // No range passed: the coverage span (about four months) picks weekly buckets.
+        const DAYS_PER_WEEK = 7;
+        const DAY_MS = 86_400_000;
+        const MIN_EXPECTED_WEEKS = 15;
         expect(stats.series.granularity).toBe('week');
         const gaps = stats.series.points
             .map((w) => new Date(w.start).getTime())
-            .map((t, i, all) => (i === 0 ? 7 : (t - (all[i - 1] as number)) / 86_400_000));
-        expect(gaps.every((g) => g === 7)).toBe(true);
-        expect(stats.series.points.length).toBeGreaterThan(15);
+            .map((t, i, all) => (i === 0 ? DAYS_PER_WEEK : (t - (all[i - 1] as number)) / DAY_MS));
+        expect(gaps.every((g) => g === DAYS_PER_WEEK)).toBe(true);
+        expect(stats.series.points.length).toBeGreaterThan(MIN_EXPECTED_WEEKS);
     });
 });

@@ -35,6 +35,7 @@ const fs = require('node:fs');
 
 const repo = process.env.REPO;
 const wt = process.env.WORKTREE;
+const ERROR_MESSAGE_MAX_LENGTH = 300;
 
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
 const refused = (r) => ({ ok: false, reason: r });
@@ -76,7 +77,10 @@ try {
 } catch (e) {
     console.log(
         JSON.stringify(
-            refused('worktree reclaim failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, 300))
+            refused(
+                'worktree reclaim failed: ' +
+                    String((e && e.stderr) || (e && e.message) || e).slice(0, ERROR_MESSAGE_MAX_LENGTH)
+            )
         )
     );
 }

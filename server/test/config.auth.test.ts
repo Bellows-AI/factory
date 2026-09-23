@@ -128,7 +128,13 @@ describe('the rest of [auth]', () => {
     });
 
     it('defaults the session to a fortnight', () => {
-        expect((github().auth as { sessionTtlMs: number }).sessionTtlMs).toBe(14 * 24 * 3600 * 1000);
+        const DAYS_PER_FORTNIGHT = 14;
+        const HOURS_PER_DAY = 24;
+        const SECONDS_PER_HOUR = 3600;
+        const MS_PER_SECOND = 1000;
+        expect((github().auth as { sessionTtlMs: number }).sessionTtlMs).toBe(
+            DAYS_PER_FORTNIGHT * HOURS_PER_DAY * SECONDS_PER_HOUR * MS_PER_SECOND
+        );
     });
 
     it('refuses the bootstrap admin and auto-join, whose membership decisions moved to GitHub (#99)', () => {

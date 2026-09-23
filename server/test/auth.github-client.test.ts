@@ -55,7 +55,8 @@ describe('the installations seam (#99)', () => {
 
         const list = await client(fetchFn).installations('t');
 
-        expect(list).toHaveLength(101);
+        const EXPECTED_INSTALLATION_COUNT = 101;
+        expect(list).toHaveLength(EXPECTED_INSTALLATION_COUNT);
         expect(requests.some((r) => r.includes('page=2'))).toBe(true);
         expect(requests.some((r) => r.includes('page=3'))).toBe(false);
     });
@@ -85,7 +86,8 @@ describe('the installations seam (#99)', () => {
 
     it('fails the sign-in loudly when GitHub cannot be asked', async () => {
         // A 403 here is a missing scope or a secondary rate limit, never "no installations".
-        const { fetchFn } = stubInstallations({ message: 'rate limited' }, 403);
+        const HTTP_FORBIDDEN = 403;
+        const { fetchFn } = stubInstallations({ message: 'rate limited' }, HTTP_FORBIDDEN);
         await expect(client(fetchFn).installations('t')).rejects.toBeInstanceOf(GitHubAuthError);
     });
 });

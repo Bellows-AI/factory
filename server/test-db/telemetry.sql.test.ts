@@ -110,19 +110,27 @@ describe.skipIf(!enabled)('migrations', () => {
 
 describe.skipIf(!enabled)('temporality reduction', () => {
     it('sums a delta series', async () => {
-        for (const [i, v] of [10, 20, 30].entries()) {
+        const SECOND_DELTA = 20;
+        const THIRD_DELTA = 30;
+        const DELTA_VALUES = [10, SECOND_DELTA, THIRD_DELTA];
+        for (const [i, v] of DELTA_VALUES.entries()) {
             await point({ session: 's1', field: 'tokens_input', value: v, time: `2026-08-01T10:0${i}:00Z` });
         }
         const [row] = await sql<{ value: number }[]>`
             select value from session_field_total where session_id = 's1' and field = 'tokens_input'
         `;
-        expect(Number(row?.value)).toBe(60);
+        const EXPECTED_TOTAL = 60;
+        expect(Number(row?.value)).toBe(EXPECTED_TOTAL);
     });
 
     it('takes the last value of a cumulative series, not the sum', async () => {
         // The naive sum here is 150 against a real total of 60 — 2.5x wrong, with no error
         // anywhere. This is the assertion that stops a "simplify to SUM" refactor.
-        for (const [i, v] of [10, 20, 40, 50, 60].entries()) {
+        const SECOND_CUMULATIVE = 20;
+        const THIRD_CUMULATIVE = 40;
+        const FOURTH_CUMULATIVE = 50;
+        const CUMULATIVE_VALUES = [10, SECOND_CUMULATIVE, THIRD_CUMULATIVE, FOURTH_CUMULATIVE, 60];
+        for (const [i, v] of CUMULATIVE_VALUES.entries()) {
             await point({
                 session: 's1',
                 field: 'tokens_input',
@@ -135,12 +143,15 @@ describe.skipIf(!enabled)('temporality reduction', () => {
         const [row] = await sql<{ value: number }[]>`
             select value from session_field_total where session_id = 's1' and field = 'tokens_input'
         `;
-        expect(Number(row?.value)).toBe(60);
+        const EXPECTED_TOTAL = 60;
+        expect(Number(row?.value)).toBe(EXPECTED_TOTAL);
     });
 
     it('adds cumulative series across a restart', async () => {
         // A new start_time is a new counter, so the totals add rather than replace.
-        for (const [i, v] of [10, 30].entries()) {
+        const FIRST_WINDOW_SECOND_VALUE = 30;
+        const FIRST_WINDOW_VALUES = [10, FIRST_WINDOW_SECOND_VALUE];
+        for (const [i, v] of FIRST_WINDOW_VALUES.entries()) {
             await point({
                 session: 's1',
                 field: 'tokens_input',
@@ -150,7 +161,10 @@ describe.skipIf(!enabled)('temporality reduction', () => {
                 startTime: '2026-08-01T10:00:00Z',
             });
         }
-        for (const [i, v] of [5, 12].entries()) {
+        const SECOND_WINDOW_FIRST_VALUE = 5;
+        const SECOND_WINDOW_SECOND_VALUE = 12;
+        const SECOND_WINDOW_VALUES = [SECOND_WINDOW_FIRST_VALUE, SECOND_WINDOW_SECOND_VALUE];
+        for (const [i, v] of SECOND_WINDOW_VALUES.entries()) {
             await point({
                 session: 's1',
                 field: 'tokens_input',
@@ -163,7 +177,8 @@ describe.skipIf(!enabled)('temporality reduction', () => {
         const [row] = await sql<{ value: number }[]>`
             select value from session_field_total where session_id = 's1' and field = 'tokens_input'
         `;
-        expect(Number(row?.value)).toBe(42);
+        const EXPECTED_TOTAL = 42;
+        expect(Number(row?.value)).toBe(EXPECTED_TOTAL);
     });
 });
 
@@ -180,7 +195,8 @@ describe.skipIf(!enabled)('branch slicing', () => {
         `;
         expect(rows).toHaveLength(1);
         expect(rows[0]?.branch).toBe('feat/b');
-        expect(Number(rows[0]?.value)).toBe(100);
+        const EXPECTED_VALUE = 100;
+        expect(Number(rows[0]?.value)).toBe(EXPECTED_VALUE);
     });
 
     it('divides a delta session across the branches it held', async () => {
@@ -192,15 +208,17 @@ describe.skipIf(!enabled)('branch slicing', () => {
         const rows = await sql<{ branch: string; value: number }[]>`
             select branch, value from branch_field_total where session_id = 's1' order by branch
         `;
+        const FEAT_B_VALUE = 40;
         expect(rows.map((r) => [r.branch, Number(r.value)])).toEqual([
             ['feat/a', 60],
-            ['feat/b', 40],
+            ['feat/b', FEAT_B_VALUE],
         ]);
         // Conservation: nothing created, nothing lost.
         const [total] = await sql<{ value: number }[]>`
             select value from session_field_total where session_id = 's1' and field = 'tokens_input'
         `;
-        expect(Number(total?.value)).toBe(100);
+        const EXPECTED_TOTAL = 100;
+        expect(Number(total?.value)).toBe(EXPECTED_TOTAL);
     });
 
     it('widens rather than overwrites on a repeated upsert', async () => {
@@ -300,7 +318,8 @@ describe.skipIf(!enabled)('the postgres client', () => {
             select agent, value from session_field_total where session_id = 's10'
         `;
         expect(row?.agent).toBe('opencode');
-        expect(row?.value).toBe(12);
+        const EXPECTED_ACTIVE_SECONDS = 12;
+        expect(row?.value).toBe(EXPECTED_ACTIVE_SECONDS);
     });
 });
 
@@ -313,7 +332,9 @@ describe.skipIf(!enabled)('session attribution', () => {
     /** Unique per run — a shared factory_test database must not let accounts collide with
      * another suite's, or with rows a failed run left behind. */
     let userSeq = 0;
-    const githubUserId = () => (Date.now() % 1_000_000_000) * 1000 + ++userSeq;
+    const TIMESTAMP_MODULUS = 1_000_000_000;
+    const TIMESTAMP_SHIFT = 1000;
+    const githubUserId = () => (Date.now() % TIMESTAMP_MODULUS) * TIMESTAMP_SHIFT + ++userSeq;
     const account = async (login: string): Promise<string> => {
         const [row] = await sql<{ id: string }[]>`
             insert into app_user (github_user_id, github_login)
@@ -444,7 +465,9 @@ describe.skipIf(!enabled)('task attribution', () => {
     // task travels beside the user it was landed with — never through a second lookup.
 
     let userSeq = 0;
-    const githubUserId = () => (Date.now() % 1_000_000_000) * 1000 + ++userSeq;
+    const TIMESTAMP_MODULUS = 1_000_000_000;
+    const TIMESTAMP_SHIFT = 1000;
+    const githubUserId = () => (Date.now() % TIMESTAMP_MODULUS) * TIMESTAMP_SHIFT + ++userSeq;
     const account = async (login: string): Promise<string> => {
         const [row] = await sql<{ id: string }[]>`
             insert into app_user (github_user_id, github_login)

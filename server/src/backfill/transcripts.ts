@@ -75,11 +75,14 @@ function transcriptFiles(root: string): string[] {
  * one yields null, and its sessions surface as `sessionsWithoutHook` rather than being
  * silently mis-attributed.
  */
+/** How far up from `cwd` to look for a `.git` directory before giving up. */
+const MAX_WALK_UP_DEPTH = 8;
+
 function repoSlug(cwd: string, cache: Map<string, string | null>): string | null {
     if (cache.has(cwd)) return cache.get(cwd) ?? null;
     let dir = cwd;
     let slug: string | null = null;
-    for (let i = 0; i < 8 && dir !== '/' && dir !== '.'; i += 1) {
+    for (let i = 0; i < MAX_WALK_UP_DEPTH && dir !== '/' && dir !== '.'; i += 1) {
         if (existsSync(join(dir, '.git'))) {
             try {
                 const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
@@ -107,95 +110,102 @@ interface BranchSpan {
     samples: number;
 }
 
-export async function backfillTranscripts(
-    sql: Sql,
-    options: { orgId: string; root?: string; log?: (message: string) => void }
-): Promise<BackfillSummary> {
-    const { orgId, root = TRANSCRIPTS, log = () => {} } = options;
-    const files = transcriptFiles(root);
+interface DataPoint {
+    session_id: string;
+    field: string;
+    value: number;
+    time: Date;
+    attrs: Record<string, string>;
+}
 
-    const points: {
-        session_id: string;
-        field: string;
-        value: number;
-        time: Date;
-        attrs: Record<string, string>;
-    }[] = [];
+/** The accumulators every transcript line folds into. */
+interface BackfillState {
+    points: DataPoint[];
     // Keyed by session+repo+branch so a session that checks out three branches yields three
     // spans, exactly as the live hook would report them.
-    const spans = new Map<string, BranchSpan>();
-    const sessions = new Set<string>();
-    const slugCache = new Map<string, string | null>();
-    const unresolved = new Set<string>();
+    spans: Map<string, BranchSpan>;
+    sessions: Set<string>;
+    slugCache: Map<string, string | null>;
+    unresolved: Set<string>;
+}
 
-    for (const file of files) {
-        let lines: string[];
-        try {
-            lines = readFileSync(file, 'utf8').split('\n');
-        } catch {
-            continue;
-        }
+/** The branch/repo span a record's `cwd` belongs to — recorded, or its unresolved cwd noted. */
+function recordBranchSpan(record: Record_, sessionId: string, at: string, state: BackfillState): void {
+    if (!record.cwd) return;
+    const repo = repoSlug(record.cwd, state.slugCache);
+    if (repo === null) {
+        state.unresolved.add(record.cwd);
+        return;
+    }
+    // The literal 'HEAD' is not a branch name and would join to nothing while looking like one.
+    const branch = record.gitBranch && record.gitBranch !== 'HEAD' ? record.gitBranch : null;
+    const key = `${sessionId}\u0000${repo}\u0000${branch ?? ''}`;
+    const span = state.spans.get(key);
+    if (!span) {
+        state.spans.set(key, { repo, branch, first: at, last: at, samples: 1 });
+        return;
+    }
+    if (at < span.first) span.first = at;
+    if (at > span.last) span.last = at;
+    span.samples += 1;
+}
 
-        for (const line of lines) {
-            if (!line) continue;
-            let record: Record_;
-            try {
-                record = JSON.parse(line) as Record_;
-            } catch {
-                // A truncated final line is normal in an in-progress transcript.
-                continue;
-            }
+/** The usage datapoints an assistant message's record carries, one per supported field. */
+function collectUsagePoints(record: Record_, sessionId: string, at: string, points: DataPoint[]): void {
+    const usage = record.message?.usage;
+    if (record.type !== 'assistant' || !usage) return;
+    for (const [key, field] of USAGE_FIELDS) {
+        const value = usage[key];
+        if (typeof value !== 'number' || value === 0) continue;
+        points.push({
+            session_id: sessionId,
+            field,
+            value,
+            time: new Date(at),
+            // `type` mirrors the OTEL attribute, so both sources aggregate identically.
+            attrs: { 'session.id': sessionId, type: field.replace('tokens_', '') },
+        });
+    }
+}
 
-            const sessionId = record.sessionId;
-            if (!sessionId) continue;
-
-            const at = record.timestamp;
-            if (!at) continue;
-            sessions.add(sessionId);
-
-            if (record.cwd) {
-                const repo = repoSlug(record.cwd, slugCache);
-                if (repo === null) {
-                    unresolved.add(record.cwd);
-                } else {
-                    // The literal 'HEAD' is not a branch name and would join to nothing while
-                    // looking like one.
-                    const branch = record.gitBranch && record.gitBranch !== 'HEAD' ? record.gitBranch : null;
-                    const key = `${sessionId}\u0000${repo}\u0000${branch ?? ''}`;
-                    const span = spans.get(key);
-                    if (!span) {
-                        spans.set(key, { repo, branch, first: at, last: at, samples: 1 });
-                    } else {
-                        if (at < span.first) span.first = at;
-                        if (at > span.last) span.last = at;
-                        span.samples += 1;
-                    }
-                }
-            }
-
-            const usage = record.message?.usage;
-            if (record.type !== 'assistant' || !usage) continue;
-            for (const [key, field] of USAGE_FIELDS) {
-                const value = usage[key];
-                if (typeof value !== 'number' || value === 0) continue;
-                points.push({
-                    session_id: sessionId,
-                    field,
-                    value,
-                    time: new Date(at),
-                    // `type` mirrors the OTEL attribute, so both sources aggregate identically.
-                    attrs: { 'session.id': sessionId, type: field.replace('tokens_', '') },
-                });
-            }
-        }
+/** One transcript line: a truncated or unparseable one is skipped, not fatal. */
+function processLine(line: string, state: BackfillState): void {
+    if (!line) return;
+    let record: Record_;
+    try {
+        record = JSON.parse(line) as Record_;
+    } catch {
+        // A truncated final line is normal in an in-progress transcript.
+        return;
     }
 
-    log(`${files.length} transcripts, ${sessions.size} sessions, ${points.length} datapoints`);
+    const sessionId = record.sessionId;
+    if (!sessionId) return;
+    const at = record.timestamp;
+    if (!at) return;
 
-    // Chunked because a single insert of ~100k rows exceeds the parameter limit.
-    const CHUNK = 2000;
-    for (let i = 0; i < points.length; i += CHUNK) {
-        const batch = points.slice(i, i + CHUNK).map((p) => ({
+    state.sessions.add(sessionId);
+    recordBranchSpan(record, sessionId, at, state);
+    collectUsagePoints(record, sessionId, at, state.points);
+}
+
+/** One transcript file: an unreadable one is skipped, not fatal. */
+function processFile(file: string, state: BackfillState): void {
+    let lines: string[];
+    try {
+        lines = readFileSync(file, 'utf8').split('\n');
+    } catch {
+        return;
+    }
+    for (const line of lines) processLine(line, state);
+}
+
+/** Chunked because a single insert of ~100k rows exceeds the parameter limit. */
+const INSERT_CHUNK = 2000;
+
+async function insertDatapoints(sql: Sql, points: DataPoint[]): Promise<void> {
+    for (let i = 0; i < points.length; i += INSERT_CHUNK) {
+        const batch = points.slice(i, i + INSERT_CHUNK).map((p) => ({
             agent: 'claude-code',
             metric: 'claude_code.token.usage',
             field: p.field,
@@ -210,7 +220,9 @@ export async function backfillTranscripts(
         }));
         await sql`insert into metric_point ${sql(batch)} on conflict do nothing`;
     }
+}
 
+async function insertBranchSpans(sql: Sql, orgId: string, spans: Map<string, BranchSpan>): Promise<void> {
     for (const [key, span] of spans) {
         const sessionId = key.split('\u0000')[0] as string;
         await sql`
@@ -223,12 +235,35 @@ export async function backfillTranscripts(
                     samples    = greatest(session_branch.samples, excluded.samples)
         `;
     }
+}
+
+export async function backfillTranscripts(
+    sql: Sql,
+    options: { orgId: string; root?: string; log?: (message: string) => void }
+): Promise<BackfillSummary> {
+    const { orgId, root = TRANSCRIPTS, log = () => {} } = options;
+    const files = transcriptFiles(root);
+
+    const state: BackfillState = {
+        points: [],
+        spans: new Map(),
+        sessions: new Set(),
+        slugCache: new Map(),
+        unresolved: new Set(),
+    };
+
+    for (const file of files) processFile(file, state);
+
+    log(`${files.length} transcripts, ${state.sessions.size} sessions, ${state.points.length} datapoints`);
+
+    await insertDatapoints(sql, state.points);
+    await insertBranchSpans(sql, orgId, state.spans);
 
     return {
         files: files.length,
-        sessions: sessions.size,
-        datapoints: points.length,
-        branchSpans: spans.size,
-        unresolvedCwds: [...unresolved].sort(),
+        sessions: state.sessions.size,
+        datapoints: state.points.length,
+        branchSpans: state.spans.size,
+        unresolvedCwds: [...state.unresolved].sort(),
     };
 }

@@ -97,8 +97,10 @@ describe('formatting', () => {
         expect(bytes(0)).toBe('0 B');
         // A decimal below 10 and none above it: "1.5 KB" is a useful distinction and "42.9 MB" is
         // false precision on a number that changes every time anybody runs a build.
-        expect(bytes(1536)).toBe('1.5 KB');
-        expect(bytes(45_000_000)).toBe('43 MB');
+        const BYTES_1_5_KB = 1536;
+        expect(bytes(BYTES_1_5_KB)).toBe('1.5 KB');
+        const BYTES_43_MB = 45_000_000;
+        expect(bytes(BYTES_43_MB)).toBe('43 MB');
     });
 
     it('renders an absent or unparseable commit date as an em dash', () => {
@@ -112,9 +114,15 @@ describe('the poll back-off', () => {
     it('stays at two seconds while somebody is watching, then eases off', () => {
         // Pure, and tested as such: a static list refetched every two seconds forever is a query
         // per member per tick for a value that only changes when they act.
-        expect(pollDelay(0)).toBe(2_000);
-        expect(pollDelay(59_000)).toBe(2_000);
-        expect(pollDelay(61_000)).toBe(5_000);
-        expect(pollDelay(10 * 60_000)).toBe(15_000);
+        const FAST_POLL_MS = 2_000;
+        const MEDIUM_POLL_MS = 5_000;
+        const SLOW_POLL_MS = 15_000;
+        const JUST_UNDER_ONE_MINUTE_MS = 59_000;
+        const JUST_OVER_ONE_MINUTE_MS = 61_000;
+        const TEN_MINUTES_MS = 600_000;
+        expect(pollDelay(0)).toBe(FAST_POLL_MS);
+        expect(pollDelay(JUST_UNDER_ONE_MINUTE_MS)).toBe(FAST_POLL_MS);
+        expect(pollDelay(JUST_OVER_ONE_MINUTE_MS)).toBe(MEDIUM_POLL_MS);
+        expect(pollDelay(TEN_MINUTES_MS)).toBe(SLOW_POLL_MS);
     });
 });

@@ -35,7 +35,8 @@ const INLINE_LIMIT = 50;
 const REVIEWS_LIMIT = 20;
 const THREADS_LIMIT = 100;
 const THREAD_COMMENTS_LIMIT = 10;
-const TOTAL_OUTPUT_BYTES = 256 * 1024;
+const TOTAL_OUTPUT_BYTES = 262144;
+const GH_OUTPUT_MAX_BUFFER_BYTES = 16777216;
 
 const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -74,7 +75,7 @@ function truncated(text, max, counts, key) {
 }
 
 /** Cap + dedupe by GitHub id; a capped section records its name so the answer says so. */
-function section(rows, map, limit, ts, name) {
+function section(rows, { map, limit, ts, name }) {
     const seen = new Set();
     const out = [];
     for (const row of rows) {
@@ -110,73 +111,67 @@ const sortComment = (a, b) => {
     return a.databaseId - b.databaseId || a.id.localeCompare(b.id);
 };
 
-function collect() {
-    const ref = validateRef(process.env.REPO, process.env.PR);
-    if (!ref) return refusal('invalid REPO/PR: expected owner/name and a pull request number', null);
-    if (!(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim()) {
-        return refusal('missing credential: GH_TOKEN or GITHUB_TOKEN must be set', ref);
-    }
+const asComment = (row, counts) => ({
+    id: num(row && row.id),
+    author: login(row),
+    body: truncated(str(row && row.body) ?? '', BODY_MAX, counts, 'bodies'),
+    createdAt: str(row && row.created_at),
+    path: null,
+    line: null,
+    diffHunk: null,
+    inReplyToId: null,
+    reviewId: null,
+});
 
-    const ts = { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: false };
-    const counts = { bodies: 0, diffHunks: 0, threads: 0 };
+const asLine = (row, counts) => ({
+    id: num(row && row.id),
+    author: login(row),
+    body: truncated(str(row && row.body) ?? '', BODY_MAX, counts, 'bodies'),
+    createdAt: str(row && row.created_at),
+    path: str(row && row.path),
+    line: num(row && row.line),
+    diffHunk: truncated(str(row && row.diff_hunk) ?? '', DIFF_HUNK_MAX, counts, 'diffHunks'),
+    inReplyToId: num(row && row.in_reply_to_id),
+    reviewId: num(row && row.pull_request_review_id),
+});
+
+const asReview = (row, counts) => ({
+    id: num(row && row.id),
+    author: login(row),
+    state: str(row && row.state),
+    body: truncated(str(row && row.body) ?? '', BODY_MAX, counts, 'bodies'),
+    createdAt: str(row && row.submitted_at),
+    commitId: str(row && row.commit_id),
+});
+
+/** REST-backed sections: general PR comments, reviews, and inline (diff) comments. */
+function fetchRestSections(ref, ts, counts) {
     const pulls = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const issues = `repos/${ref.owner}/${ref.repo}/issues/${ref.number}`;
 
-    const asComment = (row) => ({
-        id: num(row && row.id),
-        author: login(row),
-        body: truncated(str(row && row.body) ?? '', BODY_MAX, counts, 'bodies'),
-        createdAt: str(row && row.created_at),
-        path: null,
-        line: null,
-        diffHunk: null,
-        inReplyToId: null,
-        reviewId: null,
-    });
-
-    const asLine = (row) => ({
-        id: num(row && row.id),
-        author: login(row),
-        body: truncated(str(row && row.body) ?? '', BODY_MAX, counts, 'bodies'),
-        createdAt: str(row && row.created_at),
-        path: str(row && row.path),
-        line: num(row && row.line),
-        diffHunk: truncated(str(row && row.diff_hunk) ?? '', DIFF_HUNK_MAX, counts, 'diffHunks'),
-        inReplyToId: num(row && row.in_reply_to_id),
-        reviewId: num(row && row.pull_request_review_id),
-    });
-
-    const asReview = (row) => ({
-        id: num(row && row.id),
-        author: login(row),
-        state: str(row && row.state),
-        body: truncated(str(row && row.body) ?? '', BODY_MAX, counts, 'bodies'),
-        createdAt: str(row && row.submitted_at),
-        commitId: str(row && row.commit_id),
-    });
-
-    const general = section(
-        JSON.parse(gh(['api', `${issues}/comments`, '--paginate'])),
-        asComment,
-        GENERAL_LIMIT,
+    const general = section(JSON.parse(gh(['api', `${issues}/comments`, '--paginate'])), {
+        map: (row) => asComment(row, counts),
+        limit: GENERAL_LIMIT,
         ts,
-        'general'
-    );
-    const reviews = section(
-        JSON.parse(gh(['api', `${pulls}/reviews`, '--paginate'])),
-        asReview,
-        REVIEWS_LIMIT,
+        name: 'general',
+    });
+    const reviews = section(JSON.parse(gh(['api', `${pulls}/reviews`, '--paginate'])), {
+        map: (row) => asReview(row, counts),
+        limit: REVIEWS_LIMIT,
         ts,
-        'reviews'
-    );
-    const inline = section(
-        JSON.parse(gh(['api', `${pulls}/comments`, '--paginate'])),
-        asLine,
-        INLINE_LIMIT,
+        name: 'reviews',
+    });
+    const inline = section(JSON.parse(gh(['api', `${pulls}/comments`, '--paginate'])), {
+        map: (row) => asLine(row, counts),
+        limit: INLINE_LIMIT,
         ts,
-        'inline'
-    );
+        name: 'inline',
+    });
+    return { general, reviews, inline };
+}
 
+function fetchRequestedReviewers(ref) {
+    const pulls = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
     const requested = JSON.parse(gh(['api', `${pulls}/requested_reviewers`]));
     const users = (present(requested) && Array.isArray(requested.users) ? requested.users : [])
         .map((u) => str(u && u.login))
@@ -184,8 +179,11 @@ function collect() {
     const teams = (present(requested) && Array.isArray(requested.teams) ? requested.teams : [])
         .map((t) => str(t && t.name))
         .filter((t) => t !== null);
+    return { users, teams };
+}
 
-    const gql = JSON.parse(
+function fetchThreadsGql(ref) {
+    return JSON.parse(
         gh([
             'api',
             'graphql',
@@ -199,41 +197,85 @@ function collect() {
             `number=${ref.number}`,
         ])
     );
-    const pr = gql && gql.data && gql.data.repository && gql.data.repository.pullRequest;
+}
 
-    const threads = [];
-    for (const node of pr && pr.reviewThreads && Array.isArray(pr.reviewThreads.nodes) ? pr.reviewThreads.nodes : []) {
-        if (!node || typeof node.id !== 'string') continue;
-        const comments = (node.comments && Array.isArray(node.comments.nodes) ? node.comments.nodes : [])
-            .filter((c) => c && typeof c.id === 'string')
-            .map((c) => ({
-                id: c.id,
-                databaseId: num(c.databaseId),
-                author: c.author && c.author !== null ? str(c.author.login) : null,
-                body: truncated(str(c.body) ?? '', BODY_MAX, counts, 'bodies'),
-                createdAt: str(c.createdAt),
-            }))
-            .sort(sortComment);
-        const totalComments = num(node.comments && node.comments.totalCount);
-        if (comments.length > THREAD_COMMENTS_LIMIT || (totalComments !== null && totalComments > comments.length)) {
-            if (comments.length > THREAD_COMMENTS_LIMIT) comments.length = THREAD_COMMENTS_LIMIT;
-            counts.threads += 1;
-        }
-        threads.push({
+/** One review thread's comments, capped and recorded in `ts`/`counts` when truncated. */
+function threadComments(node, ts, counts) {
+    const comments = (node.comments && Array.isArray(node.comments.nodes) ? node.comments.nodes : [])
+        .filter((c) => c && typeof c.id === 'string')
+        .map((c) => ({
+            id: c.id,
+            databaseId: num(c.databaseId),
+            author: c.author && c.author !== null ? str(c.author.login) : null,
+            body: truncated(str(c.body) ?? '', BODY_MAX, counts, 'bodies'),
+            createdAt: str(c.createdAt),
+        }))
+        .sort(sortComment);
+    const totalComments = num(node.comments && node.comments.totalCount);
+    if (comments.length > THREAD_COMMENTS_LIMIT || (totalComments !== null && totalComments > comments.length)) {
+        if (comments.length > THREAD_COMMENTS_LIMIT) comments.length = THREAD_COMMENTS_LIMIT;
+        counts.threads += 1;
+    }
+    return comments;
+}
+
+/** Cap the thread list to THREADS_LIMIT, recording the truncation in `ts` when it bites. */
+function capThreads(threads, totalThreads, ts) {
+    if (threads.length > THREADS_LIMIT || (totalThreads !== null && totalThreads > threads.length)) {
+        if (threads.length > THREADS_LIMIT) threads.length = THREADS_LIMIT;
+        ts.sections.push('threads');
+    }
+}
+
+/** Review threads + the PR's review decision, read via GraphQL. */
+function fetchThreads(ref, ts, counts) {
+    const gql = fetchThreadsGql(ref);
+    const pr = gql && gql.data && gql.data.repository && gql.data.repository.pullRequest;
+    const nodes = pr && pr.reviewThreads && Array.isArray(pr.reviewThreads.nodes) ? pr.reviewThreads.nodes : [];
+
+    const threads = nodes
+        .filter((node) => node && typeof node.id === 'string')
+        .map((node) => ({
             id: node.id,
             isResolved: node.isResolved === true,
             isOutdated: node.isOutdated === true,
             path: str(node.path),
             line: num(node.line),
-            comments,
-        });
-    }
+            comments: threadComments(node, ts, counts),
+        }));
+
     const totalThreads = pr && pr.reviewThreads ? num(pr.reviewThreads.totalCount) : null;
-    if (threads.length > THREADS_LIMIT || (totalThreads !== null && totalThreads > threads.length)) {
-        if (threads.length > THREADS_LIMIT) threads.length = THREADS_LIMIT;
-        ts.sections.push('threads');
-    }
+    capThreads(threads, totalThreads, ts);
     if (counts.threads > 0) ts.sections.push('thread-comments');
+    return { threads, decision: pr ? str(pr.reviewDecision) : null };
+}
+
+/** Bound the serialized verdict to TOTAL_OUTPUT_BYTES, collapsing to a `total` truncation. */
+function boundOutput(out, ref) {
+    const serialized = JSON.stringify(out);
+    if (Buffer.byteLength(serialized, 'utf8') <= TOTAL_OUTPUT_BYTES) return serialized;
+    return JSON.stringify({
+        version: VERSION,
+        schema: SCHEMA,
+        ref,
+        truncated: { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: true },
+        error: null,
+    });
+}
+
+function collect() {
+    const ref = validateRef(process.env.REPO, process.env.PR);
+    if (!ref) return refusal('invalid REPO/PR: expected owner/name and a pull request number', null);
+    if (!(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '').trim()) {
+        return refusal('missing credential: GH_TOKEN or GITHUB_TOKEN must be set', ref);
+    }
+
+    const ts = { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: false };
+    const counts = { bodies: 0, diffHunks: 0, threads: 0 };
+
+    const { general, reviews, inline } = fetchRestSections(ref, ts, counts);
+    const { users, teams } = fetchRequestedReviewers(ref);
+    const { threads, decision } = fetchThreads(ref, ts, counts);
     ts.bodies = counts.bodies;
     ts.diffHunks = counts.diffHunks;
     ts.threads = counts.threads;
@@ -254,29 +296,19 @@ function collect() {
         inline,
         threads,
         requestedReviewers: { users, teams },
-        decision: pr ? str(pr.reviewDecision) : null,
+        decision,
         truncated: ts,
         error: null,
     };
 
-    let serialized = JSON.stringify(out);
-    if (Buffer.byteLength(serialized, 'utf8') > TOTAL_OUTPUT_BYTES) {
-        serialized = JSON.stringify({
-            version: VERSION,
-            schema: SCHEMA,
-            ref,
-            truncated: { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: true },
-            error: null,
-        });
-    }
-    return serialized;
+    return boundOutput(out, ref);
 }
 
 function gh(args) {
     return execFileSync('gh', args, {
         env: process.env,
         encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
+        maxBuffer: GH_OUTPUT_MAX_BUFFER_BYTES,
         stdio: ['ignore', 'pipe', 'pipe'],
     });
 }

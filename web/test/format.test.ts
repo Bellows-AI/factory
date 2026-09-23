@@ -7,14 +7,18 @@ const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
 
 describe('int', () => {
     it('renders the exact value, grouped for reading', () => {
-        expect(int(1_234_567)).toBe('1,234,567');
+        const MILLIONS = 1_234_567;
+        expect(int(MILLIONS)).toBe('1,234,567');
         expect(int(0)).toBe('0');
-        expect(int(999)).toBe('999');
-        expect(int(-42_000)).toBe('-42,000');
+        const HUNDREDS = 999;
+        expect(int(HUNDREDS)).toBe('999');
+        const NEGATIVE_THOUSANDS = -42_000;
+        expect(int(NEGATIVE_THOUSANDS)).toBe('-42,000');
     });
 
     it('rounds a fractional figure to the exact integer it names', () => {
-        expect(int(12.6)).toBe('13');
+        const FRACTIONAL = 12.6;
+        expect(int(FRACTIONAL)).toBe('13');
     });
 
     it('renders unmeasured as an em dash', () => {
@@ -23,25 +27,37 @@ describe('int', () => {
     });
 });
 
+const MS_PER_MINUTE = 60_000;
+const MS_PER_HOUR = 3_600_000;
+const MS_PER_DAY = 86_400_000;
+
 describe('relativeTime', () => {
     it('reads seconds and minutes as human recency', () => {
-        expect(relativeTime(ago(30_000), NOW)).toBe('just now');
-        expect(relativeTime(ago(5 * 60_000), NOW)).toBe('5m ago');
-        expect(relativeTime(ago(59 * 60_000), NOW)).toBe('59m ago');
+        const THIRTY_SECONDS_MS = 30_000;
+        expect(relativeTime(ago(THIRTY_SECONDS_MS), NOW)).toBe('just now');
+        const FIVE_MINUTES = 5;
+        expect(relativeTime(ago(FIVE_MINUTES * MS_PER_MINUTE), NOW)).toBe('5m ago');
+        const FIFTY_NINE_MINUTES = 59;
+        expect(relativeTime(ago(FIFTY_NINE_MINUTES * MS_PER_MINUTE), NOW)).toBe('59m ago');
     });
 
     it('climbs through hours and days', () => {
-        expect(relativeTime(ago(3 * 3_600_000), NOW)).toBe('3h ago');
-        expect(relativeTime(ago(2 * 86_400_000), NOW)).toBe('2d ago');
-        expect(relativeTime(ago(29 * 86_400_000), NOW)).toBe('29d ago');
+        const THREE_HOURS = 3;
+        expect(relativeTime(ago(THREE_HOURS * MS_PER_HOUR), NOW)).toBe('3h ago');
+        const TWO_DAYS = 2;
+        expect(relativeTime(ago(TWO_DAYS * MS_PER_DAY), NOW)).toBe('2d ago');
+        const TWENTY_NINE_DAYS = 29;
+        expect(relativeTime(ago(TWENTY_NINE_DAYS * MS_PER_DAY), NOW)).toBe('29d ago');
     });
 
     it('falls back to the date beyond a month, where relative time becomes a guess', () => {
-        expect(relativeTime(ago(40 * 86_400_000), NOW)).toBe('2026-07-12');
+        const FORTY_DAYS = 40;
+        expect(relativeTime(ago(FORTY_DAYS * MS_PER_DAY), NOW)).toBe('2026-07-12');
     });
 
     it('never claims a negative age, however the clocks skew', () => {
-        const future = new Date(NOW.getTime() + 5 * 60_000).toISOString();
+        const FIVE_MINUTES = 5;
+        const future = new Date(NOW.getTime() + FIVE_MINUTES * MS_PER_MINUTE).toISOString();
         expect(relativeTime(future, NOW)).toBe('just now');
     });
 

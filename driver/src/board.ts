@@ -255,6 +255,11 @@ export interface Board {
 
 type Fetch = typeof globalThis.fetch;
 
+const HTTP_NO_CONTENT = 204;
+const HTTP_NOT_FOUND = 404;
+const HTTP_CONFLICT = 409;
+const ERROR_BODY_PREVIEW_LENGTH = 200;
+
 export function createBoard({
     url,
     leaseSeconds,
@@ -290,8 +295,10 @@ export function createBoard({
         // heartbeat against a removed thread, an ack for a row that left the queue); everything
         // else outside 2xx is the board being broken or the driver being wrong, and neither should
         // be swallowed into a silent no-op.
-        if (!response.ok && response.status !== 409 && !(allow404 && response.status === 404)) {
-            throw new Error(`${path} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
+        if (!response.ok && response.status !== HTTP_CONFLICT && !(allow404 && response.status === HTTP_NOT_FOUND)) {
+            throw new Error(
+                `${path} answered ${response.status}: ${(await response.text()).slice(0, ERROR_BODY_PREVIEW_LENGTH)}`
+            );
         }
         return response;
     };
@@ -299,7 +306,7 @@ export function createBoard({
     return {
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
-            if (response.status === 204) return null;
+            if (response.status === HTTP_NO_CONTENT) return null;
             const claimed = (await response.json()) as Partial<BoardJob>;
             return {
                 ...(claimed as BoardJob),
@@ -327,15 +334,15 @@ export function createBoard({
             // verdict to. Read after the 409 check is redundant (they are exclusive statuses);
             // both are verdicts, and a defensive read keeps a future where the board blurs them
             // into a decision this side of the fence.
-            if (response.status === 404) return 'removed';
-            if (response.status === 409) return 'lost';
+            if (response.status === HTTP_NOT_FOUND) return 'removed';
+            if (response.status === HTTP_CONFLICT) return 'lost';
             const body = (await response.json()) as { cancelRequested?: boolean };
             return { result: 'held', cancelRequested: body.cancelRequested === true };
         },
 
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
-            if (response.status === 204) return null;
+            if (response.status === HTTP_NO_CONTENT) return null;
             return (await response.json()) as Reclaim;
         },
 
@@ -343,8 +350,8 @@ export function createBoard({
             const response = await post(`/api/reclaims/${id}/ack`, { worker }, true);
             // 409 means this worker's lease on the row ran out — another worker holds it now.
             // 404 means the row already left the queue (acked elsewhere, or the delete landed).
-            if (response.status === 409) return 'lost';
-            if (response.status === 404) return 'missing';
+            if (response.status === HTTP_CONFLICT) return 'lost';
+            if (response.status === HTTP_NOT_FOUND) return 'missing';
             return 'ok';
         },
 
@@ -354,7 +361,7 @@ export function createBoard({
                 output,
                 ...(runtime ? { runtime } : {}),
             });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
         async gates(job, results) {
@@ -362,7 +369,7 @@ export function createBoard({
                 leaseToken: job.leaseToken,
                 gates: results,
             });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
         async session(job, sessionId, remoteSessionId) {
@@ -371,7 +378,7 @@ export function createBoard({
                 sessionId,
                 remoteSessionId,
             });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
         async rereadGates(job) {
@@ -398,7 +405,7 @@ export function createBoard({
 
         async suspend(job) {
             const response = await post(`/api/jobs/${job.id}/suspend`, { leaseToken: job.leaseToken });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
         async complete(
@@ -422,7 +429,7 @@ export function createBoard({
             });
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — the done answer is false, not unknown.
-            if (response.status === 409) return { state: 'lost', threadDone: false };
+            if (response.status === HTTP_CONFLICT) return { state: 'lost', threadDone: false };
             // Read defensively, like every other board field: anything but a literal true —
             // absent, false, a body that is not the shape we asked for — means "the user may
             // still want this thread's tree", which is the only safe reading of an unclear answer.

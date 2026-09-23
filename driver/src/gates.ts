@@ -11,6 +11,14 @@ import { CONTAINER_GONE } from './exec-codes.js';
 
 const run = promisify(execFile);
 
+const HTTP_OK = 200;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_NOT_FOUND = 404;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
+const HTTP_CONFLICT = 409;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+
 /**
  * The gate environment: one long-lived container per task worktree, a `docker exec` per
  * gate, and a loopback HTTP server the coding agent reaches the gates through.
@@ -70,6 +78,44 @@ export interface GateManager {
     release(key: string): void;
     /** Tears every environment down now — the driver drain. */
     stop(): Promise<void>;
+}
+
+interface DockerExecError {
+    killed?: boolean;
+    code?: number | string;
+    stdout?: string;
+    stderr?: string;
+    message?: string;
+}
+
+/**
+ * Turns a failed `docker exec` into either a gate verdict (timeout, or the command's own exit
+ * code) or a rejection carrying CONTAINER_GONE — the harness-vs-verdict split `runGate` and the
+ * ad-hoc endpoint both key on.
+ */
+function gateRunFromExecError(error: DockerExecError, gateTimeoutMs: number): GateRun {
+    const output = reportTail(`${error.stdout ?? ''}${error.stderr ?? ''}`.trim());
+    // The timeout kill: a genuine gate failure, reported as one — exit 124, the convention
+    // `timeout` itself uses — with the reason in the tail.
+    if (error.killed) {
+        return { exitCode: 124, output: output || `[driver] gate killed after ${gateTimeoutMs}ms` };
+    }
+    // Docker itself failed — the container is not there. A harness state, not a verdict: it
+    // REJECTS with the code, which is what the ad-hoc endpoint's 409 and the loop's failed-gate
+    // path both key on.
+    if (error.code === CONTAINER_GONE) {
+        throw Object.assign(new Error(output || error.message || 'gate environment is gone'), {
+            code: CONTAINER_GONE,
+        });
+    }
+    // Not an exit status — docker never ran (ENOENT, EACCES). A harness state like the branch
+    // above: rejected with the code, never returned as an exit that did not happen.
+    if (typeof error.code !== 'number') {
+        throw Object.assign(new Error(output || error.message || 'docker could not be run'), {
+            code: CONTAINER_GONE,
+        });
+    }
+    return { exitCode: error.code, output: output || error.message || `exit ${error.code}` };
 }
 
 export function createGateManager({
@@ -176,39 +222,7 @@ export function createGateManager({
                     const read = await execDocker(gateExecArgs(entry.name, command), { timeout: gateTimeoutMs });
                     return { exitCode: 0, output: reportTail(read.stdout.trim()) };
                 } catch (e) {
-                    const error = e as {
-                        killed?: boolean;
-                        code?: number | string;
-                        stdout?: string;
-                        stderr?: string;
-                        message?: string;
-                    };
-                    const output = reportTail(`${error.stdout ?? ''}${error.stderr ?? ''}`.trim());
-                    // The timeout kill: a genuine gate failure, reported as one — exit 124, the
-                    // convention `timeout` itself uses — with the reason in the tail.
-                    if (error.killed) {
-                        return {
-                            exitCode: 124,
-                            output: output || `[driver] gate killed after ${gateTimeoutMs}ms`,
-                        };
-                    }
-                    // Docker itself failed — the container is not there. A harness state, not a
-                    // verdict: it REJECTS with the code, which is what the ad-hoc endpoint's 409
-                    // and the loop's failed-gate path both key on.
-                    if (error.code === CONTAINER_GONE) {
-                        throw Object.assign(new Error(output || error.message || 'gate environment is gone'), {
-                            code: CONTAINER_GONE,
-                        });
-                    }
-                    // Not an exit status — docker never ran (ENOENT, EACCES). A harness state
-                    // like the branch above: rejected with the code, never returned as an exit
-                    // that did not happen.
-                    if (typeof error.code !== 'number') {
-                        throw Object.assign(new Error(output || error.message || 'docker could not be run'), {
-                            code: CONTAINER_GONE,
-                        });
-                    }
-                    return { exitCode: error.code, output: output || error.message || `exit ${error.code}` };
+                    return gateRunFromExecError(e as DockerExecError, gateTimeoutMs);
                 } finally {
                     armCooldown(key, entry);
                 }
@@ -262,6 +276,70 @@ export interface GateServer {
     close(): Promise<void>;
 }
 
+/** `{"gate":"<≤64 chars>"}` — a body many times that size is an attack, not a request. */
+const BODY_LIMIT = 4096;
+
+const readBody = async (request: IncomingMessage): Promise<string | null> => {
+    const declared = Number(request.headers['content-length'] ?? '0');
+    if (Number.isFinite(declared) && declared > BODY_LIMIT) return null;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of request) {
+        total += (chunk as Buffer).length;
+        if (total > BODY_LIMIT) return null;
+        chunks.push(chunk as Buffer);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+};
+
+type GateRequest = { ok: true; gate: string } | { ok: false; status: number; error: string };
+
+/** Reads and validates the ad-hoc endpoint's request body: `{"gate": "<declared name>"}`. */
+const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
+    const raw = await readBody(request);
+    if (raw === null) return { ok: false, status: HTTP_PAYLOAD_TOO_LARGE, error: 'body too large' };
+    let parsed: { gate?: unknown };
+    try {
+        parsed = JSON.parse(raw) as { gate?: unknown };
+    } catch {
+        return { ok: false, status: HTTP_BAD_REQUEST, error: 'body must be JSON' };
+    }
+    if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) {
+        return { ok: false, status: HTTP_BAD_REQUEST, error: 'gate must be a name' };
+    }
+    return { ok: true, gate: parsed.gate };
+};
+
+/**
+ * Acquires the checkout's gate environment and runs the declared gate in it, translating the
+ * outcome into the ad-hoc endpoint's response. CONTAINER_GONE means docker itself failed — the
+ * environment was torn down under the caller — and is reported 409 rather than 500 so the
+ * agent's own retry can re-create the container.
+ */
+const runRegisteredGate = async (
+    manager: Pick<GateManager, 'acquire' | 'runGate'>,
+    claim: { key: string; image: string; envBody: string },
+    gate: { name: string; command: string }
+): Promise<{ status: number; body: unknown }> => {
+    try {
+        await manager.acquire(claim.key, claim.image, claim.envBody);
+    } catch (e) {
+        return {
+            status: HTTP_INTERNAL_SERVER_ERROR,
+            body: { error: `gate environment failed to start: ${(e as Error).message}` },
+        };
+    }
+    try {
+        const outcome = await manager.runGate(claim.key, gate.name, gate.command);
+        return { status: HTTP_OK, body: outcome };
+    } catch (e) {
+        if ((e as { code?: number }).code === CONTAINER_GONE) {
+            return { status: HTTP_CONFLICT, body: { error: 'gate environment is gone' } };
+        }
+        return { status: HTTP_INTERNAL_SERVER_ERROR, body: { error: (e as Error).message } };
+    }
+};
+
 export function createGateServer({
     host,
     manager,
@@ -282,64 +360,25 @@ export function createGateServer({
         reply.end(JSON.stringify(body));
     };
 
-    /** `{"gate":"<≤64 chars>"}` — a body many times that size is an attack, not a request. */
-    const BODY_LIMIT = 4096;
-
-    const readBody = async (request: IncomingMessage): Promise<string | null> => {
-        const declared = Number(request.headers['content-length'] ?? '0');
-        if (Number.isFinite(declared) && declared > BODY_LIMIT) return null;
-        const chunks: Buffer[] = [];
-        let total = 0;
-        for await (const chunk of request) {
-            total += (chunk as Buffer).length;
-            if (total > BODY_LIMIT) return null;
-            chunks.push(chunk as Buffer);
-        }
-        return Buffer.concat(chunks).toString('utf8');
-    };
-
     const handle = async (request: IncomingMessage, reply: ServerResponse): Promise<void> => {
         if (request.method !== 'POST' || request.url !== '/run') {
-            return respond(reply, 404, { error: 'not found' });
+            return respond(reply, HTTP_NOT_FOUND, { error: 'not found' });
         }
         const auth = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
         const claim = claims.get(auth);
-        if (!claim) return respond(reply, 401, { error: 'unknown token' });
+        if (!claim) return respond(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
 
-        const raw = await readBody(request);
-        if (raw === null) return respond(reply, 413, { error: 'body too large' });
-        let parsed: { gate?: unknown };
-        try {
-            parsed = JSON.parse(raw) as { gate?: unknown };
-        } catch {
-            return respond(reply, 400, { error: 'body must be JSON' });
-        }
-        if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) {
-            return respond(reply, 400, { error: 'gate must be a name' });
-        }
-        const gate = claim.gates.find((candidate) => candidate.name === parsed.gate);
+        const parsedRequest = await parseGateRequest(request);
+        if (!parsedRequest.ok) return respond(reply, parsedRequest.status, { error: parsedRequest.error });
+
         // Only a DECLARED name runs. An arbitrary command string here would make the runner's
         // agent a shell on the host through a container the driver owns — the one thing the
         // declare-then-run model exists to prevent.
-        if (!gate) return respond(reply, 404, { error: `no declared gate "${parsed.gate}"` });
+        const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
+        if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
 
-        try {
-            await manager.acquire(claim.key, claim.image, claim.envBody);
-        } catch (e) {
-            return respond(reply, 500, { error: `gate environment failed to start: ${(e as Error).message}` });
-        }
-        try {
-            const outcome = await manager.runGate(claim.key, gate.name, gate.command);
-            return respond(reply, 200, outcome);
-        } catch (e) {
-            // CONTAINER_GONE means docker itself failed — the environment was torn down under the
-            // caller. A 409 tells the agent to ask again rather than read a harness state as a
-            // gate verdict; the agent's own retry re-creates the container if it is really gone.
-            if ((e as { code?: number }).code === 125) {
-                return respond(reply, 409, { error: 'gate environment is gone' });
-            }
-            return respond(reply, 500, { error: (e as Error).message });
-        }
+        const result = await runRegisteredGate(manager, claim, gate);
+        return respond(reply, result.status, result.body);
     };
 
     return {
@@ -355,7 +394,9 @@ export function createGateServer({
             // bind clears both, so the next call retries instead of answering port 0 forever.
             if (listening) return listening;
             const created = createServer((request, reply) => {
-                void handle(request, reply).catch(() => respond(reply, 500, { error: 'internal error' }));
+                void handle(request, reply).catch(() =>
+                    respond(reply, HTTP_INTERNAL_SERVER_ERROR, { error: 'internal error' })
+                );
             });
             server = created;
             const pending = new Promise<number>((resolve, reject) => {

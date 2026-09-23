@@ -18,9 +18,12 @@ const variable = (name: string, value: string): EnvVarRow => ({ name, value, isS
 describe('the raw .env editor parser', () => {
     it('mirrors the server rules it duplicates', () => {
         // Copied, not imported, from server/src/routes/env.ts — this pin makes drift loud.
-        expect(MAX_ENV_VARS_PER_SCOPE).toBe(100);
-        expect(VALUE_LIMIT).toBe(32 * 1024);
-        expect(NAME_LIMIT).toBe(255);
+        const EXPECTED_MAX_ENV_VARS_PER_SCOPE = 100;
+        const EXPECTED_VALUE_LIMIT = 32_768;
+        const EXPECTED_NAME_LIMIT = 255;
+        expect(MAX_ENV_VARS_PER_SCOPE).toBe(EXPECTED_MAX_ENV_VARS_PER_SCOPE);
+        expect(VALUE_LIMIT).toBe(EXPECTED_VALUE_LIMIT);
+        expect(NAME_LIMIT).toBe(EXPECTED_NAME_LIMIT);
         expect(RESERVED_ENV_NAMES).toEqual([
             'WORKDIR',
             'TRUST_WORKDIR',
@@ -87,7 +90,9 @@ describe('the raw .env editor parser', () => {
     it('parses empty text to no variables — the delete-everything edit', () => {
         expect(parseEnvRaw('', noSecrets)).toEqual(ok([]));
     });
+});
 
+describe('the raw .env editor parser — refusals', () => {
     it('refuses a line with no = sign, with its line number', () => {
         const result = parseEnvRaw('A=1\nnot-a-pair\nB=2', noSecrets);
         expect(result).toEqual({ ok: false, errors: ['line 2: expected KEY=value'] });

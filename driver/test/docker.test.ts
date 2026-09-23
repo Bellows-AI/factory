@@ -85,10 +85,10 @@ const args = (
     env: NodeJS.ProcessEnv = {},
     session: RunSession | null = { id: SESSION, resume: false },
     servicesNetwork: string | null = null
-) => dockerArgs(loadDriverConfig(env), job, session, servicesNetwork, '/tmp/env-file');
+) => dockerArgs(loadDriverConfig(env), job, session, { servicesNetwork: servicesNetwork, envFile: '/tmp/env-file' });
 
 const resumed = (env: NodeJS.ProcessEnv = {}) =>
-    dockerArgs(loadDriverConfig(env), job, { id: SESSION, resume: true }, null, '/tmp/env-file');
+    dockerArgs(loadDriverConfig(env), job, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' });
 
 describe('the docker run arguments', () => {
     it('runs the command as a prompt, after the image', () => {
@@ -235,7 +235,7 @@ describe('the docker run arguments', () => {
 
     it('gives the opencode runner a session id only when one exists', () => {
         const open = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = null) =>
-            dockerArgs(loadDriverConfig(env), opencodeJob, session, null, '/tmp/env-file');
+            dockerArgs(loadDriverConfig(env), opencodeJob, session, { envFile: '/tmp/env-file' });
         // A fresh opencode run has no id yet — the reporter discovers it from the session
         // database. An unvalidated id must never be interpolated.
         expect(open().some((arg) => arg.includes('BELLOWS_SESSION_ID'))).toBe(false);
@@ -243,8 +243,7 @@ describe('the docker run arguments', () => {
             loadDriverConfig({}),
             { ...opencodeJob, followUp: true },
             { id: SESSION, resume: true },
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         expect(followUp).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
         // BEFORE the image name: docker stops option parsing there, and an `-e` past it is the
@@ -267,7 +266,7 @@ describe('the docker run arguments', () => {
     it('never hands the transcript store to opencode', () => {
         // opencode persists through its own per-member session database; a second store buys
         // nothing (Remote Control's exclusion is pinned in its own describe).
-        expect(dockerArgs(loadDriverConfig({}), opencodeJob, null, null, '/tmp/env-file')).not.toContain(
+        expect(dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' })).not.toContain(
             expect.stringContaining('FACTORY_TRANSCRIPT_DIR')
         );
     });
@@ -323,7 +322,12 @@ describe("the board's environment", () => {
          * the values travel in a --env-file the driver writes and removes, and this process's
          * environment stays exactly the operator's.
          */
-        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            envJob,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
         expect(line).not.toContain('MY_TOKEN');
         expect(line.some((arg) => arg.includes('board-secret'))).toBe(false);
@@ -333,7 +337,7 @@ describe("the board's environment", () => {
         // docker gives `-e` precedence over `--env-file`, so a name the claim also carries must
         // not go out as `-e` — otherwise the driver's own value would silently win.
         const configured = loadDriverConfig({ RUNNER_ENV: 'MY_TOKEN,OTHER' });
-        const line = dockerArgs(configured, envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(configured, envJob, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
         expect(line).toEqual(expect.arrayContaining(['-e', 'OTHER']));
         expect(line).not.toContain('MY_TOKEN');
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
@@ -353,7 +357,12 @@ describe("the board's environment", () => {
         expect(envFileBody(envJob, loadDriverConfig({}))).toBe(
             'MY_TOKEN=board-secret\nRUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n'
         );
-        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            envJob,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
         expect(line.some((arg) => arg.includes('RUNNER_LEASE_TOKEN'))).toBe(false);
     });
@@ -363,7 +372,12 @@ describe("the board's environment", () => {
     // dockerArgs refuses to build that argv.
     it('always needs the env file: the pair rides it even for a claim with no env', () => {
         expect(() => dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false })).toThrow(/no env file/);
-        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            job,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 
@@ -408,7 +422,12 @@ describe("the board's environment", () => {
 
     it('never forwards a name the runner itself claims', () => {
         expect(claimEnv(envJob)).toEqual({ MY_TOKEN: 'board-secret' });
-        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            envJob,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         // The one WORKDIR on the line is the runner's own, with the mount in it; TRUST_WORKDIR
         // belongs to the Remote Control branch, which this is not.
         expect(line.filter((arg) => arg === 'WORKDIR' || arg === 'TRUST_WORKDIR')).toHaveLength(0);
@@ -453,8 +472,7 @@ describe("the board's environment", () => {
                 id: SESSION,
                 resume: false,
             },
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         expect(line).not.toContain('--env-file');
         expect(line).not.toContain('MY_TOKEN');
@@ -466,7 +484,12 @@ describe("the board's environment", () => {
         expect(envFileBody(job, loadDriverConfig({}))).toBe(
             'RUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n'
         );
-        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            job,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 });
@@ -481,7 +504,12 @@ describe('a follow-up run', () => {
      * adjustment would never reach the agent.
      */
     it('delivers the command into the restored session', () => {
-        const line = dockerArgs(loadDriverConfig({}), followUp, { id: SESSION, resume: true }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            followUp,
+            { id: SESSION, resume: true },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line.slice(-5)).toEqual(['claude-executor', '--resume', SESSION, '-p', 'fix the failing build']);
         expect(line).not.toContain('--session-id');
     });
@@ -504,7 +532,7 @@ describe('a follow-up run', () => {
     // the transcript already, and its resume is an ordinary resume. Only the board knows which
     // kind of resume a claim is — hence the flag rather than a local guess.
     it('still omits the command when a parked job is resumed', () => {
-        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: true }, null, '/tmp/env-file');
+        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' });
         expect(line.slice(-3)).toEqual(['claude-executor', '--resume', SESSION]);
         expect(line).not.toContain('fix the failing build');
     });
@@ -696,7 +724,7 @@ describe('a Remote Control runner', () => {
 
 describe('an opencode runner', () => {
     const oc = (env: NodeJS.ProcessEnv = {}) =>
-        dockerArgs(loadDriverConfig(env), opencodeJob, null, null, '/tmp/env-file');
+        dockerArgs(loadDriverConfig(env), opencodeJob, null, { envFile: '/tmp/env-file' });
 
     // opencode's asymmetry, per the repo's own executor spec: `run --session <id>` CONTINUES an
     // existing session, it cannot adopt one minted in advance. So a fresh run is just
@@ -729,8 +757,7 @@ describe('an opencode runner', () => {
                 id: 'ses_f86188c3dffeZGYO4yZq4atba9',
                 resume: true,
             },
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         // The BELLOWS_SESSION_ID env rides before the image (it is a container env, not a CLI
         // flag), naming the SAME conversation the `--session` below restores.
@@ -886,7 +913,7 @@ describe('an opencode runner', () => {
     // command would idle to its deadline.
     it('refuses to restore a session when there is no command to deliver', () => {
         expect(() =>
-            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: true }, null, '/tmp/env-file')
+            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' })
         ).toThrow(/session/);
         expect(() => oc()).not.toThrow();
     });
@@ -1400,7 +1427,12 @@ describe('the runner env for a gated job', () => {
         expect(envFileBody(gateOnly)).toBe(
             'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n'
         );
-        const line = dockerArgs(loadDriverConfig({}), gateOnly, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            gateOnly,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 
@@ -1411,17 +1443,22 @@ describe('the runner env for a gated job', () => {
     });
 
     it('adds the host gateway mapping so the default gate URL resolves on Linux daemons', () => {
-        expect(dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, null, '/tmp/env-file')).toEqual(
-            expect.arrayContaining(['--add-host', 'host.docker.internal:host-gateway'])
-        );
+        expect(
+            dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toEqual(expect.arrayContaining(['--add-host', 'host.docker.internal:host-gateway']));
         // ... and only for a gated job: an ungated runner's argv must stay byte-identical.
         expect(
-            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file')
+            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
         ).not.toContain('host.docker.internal:host-gateway');
     });
 
     it('never puts a gate value on the command line', () => {
-        const line = dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            gated,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line.some((arg) => arg.includes('tok'))).toBe(false);
         expect(line.some((arg) => arg.includes('host.docker.internal:9099'))).toBe(false);
     });
@@ -1429,13 +1466,14 @@ describe('the runner env for a gated job', () => {
     // Regression pin for the feature boundary: a claim without gates builds exactly the argv it
     // always did.
     it('builds byte-identical argv for a job without gates', () => {
-        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file')).toEqual(
+        expect(
+            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toEqual(
             dockerArgs(
                 loadDriverConfig({}),
                 { ...job, gates: undefined },
                 { id: SESSION, resume: false },
-                null,
-                '/tmp/env-file'
+                { envFile: '/tmp/env-file' }
             )
         );
     });
@@ -1448,8 +1486,7 @@ describe('the runner env for a gated job', () => {
             loadDriverConfig({ RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }),
             opencodeJob,
             null,
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         expect(line).toEqual(expect.arrayContaining(['-e', 'OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318']));
     });
@@ -2135,8 +2172,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
                 { id: SESSION, resume: false },
-                networkName(job),
-                envFilePath(job)
+                { servicesNetwork: networkName(job), envFile: envFilePath(job) }
             )
         );
     });
@@ -2155,8 +2191,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
                 { id: SESSION, resume: false },
-                null,
-                envFilePath(job)
+                { envFile: envFilePath(job) }
             )
         );
         const calls = exec.mock.calls.map((call) => call[0]);
@@ -3023,7 +3058,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                     a.some((x) => typeof x === 'string' && x.startsWith('CLAUDE_TRANSCRIPT_DIR='))
             )
         ).toBe(true);
-        expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }, null, envFilePath(job)));
+        expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }, { envFile: envFilePath(job) }));
     });
 });
 
@@ -3145,15 +3180,14 @@ describe('publishing the produced work', () => {
             loadDriverConfig({}),
             repoJob,
             { id: SESSION, resume: false },
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         expect(withRepo).toContain(`WORKDIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
         // A command-only job names no repo: no worktree exists, and the member root is where it
         // always started — the argv stays byte-identical to what it was.
-        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file')).toContain(
-            `WORKDIR=/workspaces/bellows/${USER}`
-        );
+        expect(
+            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toContain(`WORKDIR=/workspaces/bellows/${USER}`);
     });
 
     it('refuses to run a repo job whose worktree path cannot be asserted', () => {

@@ -3,6 +3,122 @@ import type { AccessTokenView, MintResult } from '../api/useAccessTokens.js';
 import { useAccessTokens } from '../api/useAccessTokens.js';
 import { taskTime } from '../format.js';
 
+/** One token row: its label and timestamps, and Revoke — or the fact that it already is one.
+ * Split out of `AccessTokensPanel` so its own conditional cell does not add to the panel's
+ * cognitive complexity. */
+function AccessTokenRow({ token, busy, onRevoke }: { token: AccessTokenView; busy: boolean; onRevoke: () => void }) {
+    return (
+        <tr>
+            <td>{token.label}</td>
+            <td>{taskTime(token.createdAt)}</td>
+            <td>{taskTime(token.lastUsedAt)}</td>
+            <td>
+                {token.revokedAt !== null ? (
+                    <span className="muted">revoked</span>
+                ) : (
+                    <button type="button" disabled={busy} aria-label={`Revoke ${token.label}`} onClick={onRevoke}>
+                        Revoke
+                    </button>
+                )}
+            </td>
+        </tr>
+    );
+}
+
+/** The printed-once moment: the plaintext, Copy, and Done. Split out of `AccessTokensPanel` so
+ * its own markup does not add to the panel's cognitive complexity. */
+function MintedTokenOnce({
+    token,
+    copied,
+    onCopy,
+    onDone,
+}: {
+    token: string;
+    copied: boolean;
+    onCopy: () => void;
+    onDone: () => void;
+}) {
+    return (
+        <div className="token-once">
+            <p>
+                Shown once — copy it now. Only its hash is stored, and it cannot be read again; a lost token is revoked
+                and reissued.
+            </p>
+            <code>{token}</code>{' '}
+            <button type="button" className="primary" onClick={onCopy}>
+                {copied ? 'Copied' : 'Copy'}
+            </button>{' '}
+            <button type="button" onClick={onDone}>
+                Done
+            </button>
+        </div>
+    );
+}
+
+/** The create form and the list. Split out of `AccessTokensPanel` for the same reason as
+ * `MintedTokenOnce`. */
+function TokenCreateAndList({
+    label,
+    busy,
+    onLabelChange,
+    onSubmit,
+    loading,
+    tokens,
+    onRevoke,
+}: {
+    label: string;
+    busy: boolean;
+    onLabelChange: (value: string) => void;
+    onSubmit: () => void;
+    loading: boolean;
+    tokens: readonly AccessTokenView[];
+    onRevoke: (id: string) => void;
+}) {
+    return (
+        <>
+            <p>
+                <input
+                    aria-label="Token label"
+                    placeholder="what this token is for"
+                    value={label}
+                    disabled={busy}
+                    onChange={(e) => onLabelChange(e.target.value)}
+                />{' '}
+                <button type="button" className="primary" disabled={busy || label.trim() === ''} onClick={onSubmit}>
+                    {busy ? 'Creating…' : 'Create token'}
+                </button>
+            </p>
+
+            {loading ? <p className="muted">Loading…</p> : null}
+            {!loading && tokens.length === 0 ? <p className="muted">No tokens.</p> : null}
+            {tokens.length > 0 ? (
+                <table className="access-tokens">
+                    <thead>
+                        <tr>
+                            <th scope="col">Label</th>
+                            <th scope="col">Created</th>
+                            <th scope="col">Last used</th>
+                            <th scope="col">
+                                <span className="visually-hidden">Revoke</span>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {tokens.map((token) => (
+                            <AccessTokenRow
+                                key={token.id}
+                                token={token}
+                                busy={busy}
+                                onRevoke={() => onRevoke(token.id)}
+                            />
+                        ))}
+                    </tbody>
+                </table>
+            ) : null}
+        </>
+    );
+}
+
 export interface AccessTokensPanelProps {
     title: string;
     /** One sentence on what this scope is for; rendered under the heading. */
@@ -72,79 +188,22 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
             {failure ? <p className="status">{failure}</p> : null}
 
             {minted !== null ? (
-                <div className="token-once">
-                    <p>
-                        Shown once — copy it now. Only its hash is stored, and it cannot be read again; a lost token is
-                        revoked and reissued.
-                    </p>
-                    <code>{minted}</code>{' '}
-                    <button type="button" className="primary" onClick={() => void copy()}>
-                        {copied ? 'Copied' : 'Copy'}
-                    </button>{' '}
-                    <button type="button" onClick={() => setMinted(null)}>
-                        Done
-                    </button>
-                </div>
+                <MintedTokenOnce
+                    token={minted}
+                    copied={copied}
+                    onCopy={() => void copy()}
+                    onDone={() => setMinted(null)}
+                />
             ) : (
-                <>
-                    <p>
-                        <input
-                            aria-label="Token label"
-                            placeholder="what this token is for"
-                            value={label}
-                            disabled={busy}
-                            onChange={(e) => setLabel(e.target.value)}
-                        />{' '}
-                        <button
-                            type="button"
-                            className="primary"
-                            disabled={busy || label.trim() === ''}
-                            onClick={() => void submit()}
-                        >
-                            {busy ? 'Creating…' : 'Create token'}
-                        </button>
-                    </p>
-
-                    {loading ? <p className="muted">Loading…</p> : null}
-                    {!loading && tokens.length === 0 ? <p className="muted">No tokens.</p> : null}
-                    {tokens.length > 0 ? (
-                        <table className="access-tokens">
-                            <thead>
-                                <tr>
-                                    <th scope="col">Label</th>
-                                    <th scope="col">Created</th>
-                                    <th scope="col">Last used</th>
-                                    <th scope="col">
-                                        <span className="visually-hidden">Revoke</span>
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {tokens.map((token) => (
-                                    <tr key={token.id}>
-                                        <td>{token.label}</td>
-                                        <td>{taskTime(token.createdAt)}</td>
-                                        <td>{taskTime(token.lastUsedAt)}</td>
-                                        <td>
-                                            {token.revokedAt !== null ? (
-                                                <span className="muted">revoked</span>
-                                            ) : (
-                                                <button
-                                                    type="button"
-                                                    disabled={busy}
-                                                    aria-label={`Revoke ${token.label}`}
-                                                    onClick={() => void revoke(token.id)}
-                                                >
-                                                    Revoke
-                                                </button>
-                                            )}
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    ) : null}
-                </>
+                <TokenCreateAndList
+                    label={label}
+                    busy={busy}
+                    onLabelChange={setLabel}
+                    onSubmit={() => void submit()}
+                    loading={loading}
+                    tokens={tokens}
+                    onRevoke={(id) => void revoke(id)}
+                />
             )}
         </section>
     );

@@ -15,6 +15,9 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const PEM = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
 
 const API = 'https://api.github.test';
+const HOUR_MS = 3600_000;
+const MINUTE_MS = 60_000;
+const MS_PER_SECOND = 1000;
 
 function appConfig(overrides: Partial<Extract<GitHubConfig, { mode: 'app' }>> = {}) {
     return {
@@ -63,7 +66,7 @@ function stubFetch(
             return new Response(
                 JSON.stringify({
                     token: options.token?.() ?? 'ghs_installation_token',
-                    expires_at: options.expiresAt?.() ?? new Date(Date.now() + 3600_000).toISOString(),
+                    expires_at: options.expiresAt?.() ?? new Date(Date.now() + HOUR_MS).toISOString(),
                 }),
                 { status: 201 }
             );
@@ -120,10 +123,12 @@ describe('the App JWT', () => {
         const { calls, fetchFn } = stubFetch();
         await provider({ fetchFn, now: () => now }).get();
 
+        const IAT_BACKDATE_SECONDS = 60;
+        const JWT_LIFETIME_SECONDS = 540;
         const { payload } = jwtFrom(calls);
-        expect(payload.iat).toBe(Math.floor(now / 1000) - 60);
+        expect(payload.iat).toBe(Math.floor(now / MS_PER_SECOND) - IAT_BACKDATE_SECONDS);
         // Under GitHub's 10 minute ceiling, with room for a slow clock at the other end too.
-        expect((payload.exp as number) - (payload.iat as number)).toBe(540);
+        expect((payload.exp as number) - (payload.iat as number)).toBe(JWT_LIFETIME_SECONDS);
     });
 
     it('sends the app id as a string, so a client id of the Iv23li… form still works', async () => {
@@ -150,23 +155,27 @@ describe('the App JWT', () => {
 describe('the installation token', () => {
     it('is cached until the refresh margin, then re-minted', async () => {
         let now = Date.parse('2026-08-21T12:00:00.000Z');
-        const { calls, fetchFn } = stubFetch({ expiresAt: () => new Date(now + 3600_000).toISOString() });
+        const { calls, fetchFn } = stubFetch({ expiresAt: () => new Date(now + HOUR_MS).toISOString() });
         const tokens = provider({ fetchFn, now: () => now });
 
         await tokens.get();
         const mints = () => calls.filter((call) => call.url.includes('/access_tokens')).length;
-        expect(mints()).toBe(1);
+        const SINGLE_MINT = 1;
+        expect(mints()).toBe(SINGLE_MINT);
 
         // Inside the hour but outside the five-minute margin: still the cached token.
-        now += 50 * 60 * 1000;
+        const WITHIN_MARGIN_MINUTES = 50;
+        now += WITHIN_MARGIN_MINUTES * MINUTE_MS;
         await tokens.get();
-        expect(mints()).toBe(1);
+        expect(mints()).toBe(SINGLE_MINT);
 
         // Inside the margin. A full repo walk is minutes of paging, so a token that expires
         // mid-walk fails halfway with a 401 that reads as a rejected credential.
-        now += 7 * 60 * 1000;
+        const INSIDE_MARGIN_MINUTES = 7;
+        const DOUBLE_MINT = 2;
+        now += INSIDE_MARGIN_MINUTES * MINUTE_MS;
         await tokens.get();
-        expect(mints()).toBe(2);
+        expect(mints()).toBe(DOUBLE_MINT);
     });
 
     it('mints once when two callers race a cold cache', async () => {
@@ -213,13 +222,18 @@ describe('the installation token', () => {
     it("trusts GitHub's expires_at rather than assuming an hour", async () => {
         let now = Date.parse('2026-08-21T12:00:00.000Z');
         // A ten-minute token: entirely inside what an assumed hour would consider fresh.
-        const { calls, fetchFn } = stubFetch({ expiresAt: () => new Date(now + 10 * 60 * 1000).toISOString() });
+        const TOKEN_LIFETIME_MINUTES = 10;
+        const { calls, fetchFn } = stubFetch({
+            expiresAt: () => new Date(now + TOKEN_LIFETIME_MINUTES * MINUTE_MS).toISOString(),
+        });
         const tokens = provider({ fetchFn, now: () => now });
 
+        const SECOND_MINT_ADVANCE_MINUTES = 6;
+        const EXPECTED_MINTS = 2;
         await tokens.get();
-        now += 6 * 60 * 1000;
+        now += SECOND_MINT_ADVANCE_MINUTES * MINUTE_MS;
         await tokens.get();
-        expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(2);
+        expect(calls.filter((call) => call.url.includes('/access_tokens'))).toHaveLength(EXPECTED_MINTS);
     });
 
     it('mints fresh on demand, never serving the cache', async () => {
@@ -232,24 +246,27 @@ describe('the installation token', () => {
         let serial = 0;
         const { calls, fetchFn } = stubFetch({
             token: () => `ghs_${++serial}`,
-            expiresAt: () => new Date(now + 3600_000).toISOString(),
+            expiresAt: () => new Date(now + HOUR_MS).toISOString(),
         });
         const tokens = provider({ fetchFn, now: () => now });
         const mints = () => calls.filter((call) => call.url.includes('/access_tokens')).length;
 
+        const SINGLE_MINT = 1;
+        const DOUBLE_MINT = 2;
         const cached = await tokens.get();
         expect(cached).toBe('ghs_1');
-        expect(mints()).toBe(1);
+        expect(mints()).toBe(SINGLE_MINT);
 
         // Minutes into the cached token's hour, a claim still mints, and gets a different token.
-        now += 50 * 60 * 1000;
+        const WITHIN_HOUR_ADVANCE_MINUTES = 50;
+        now += WITHIN_HOUR_ADVANCE_MINUTES * MINUTE_MS;
         const fresh = await tokens.fresh();
         expect(fresh).toBe('ghs_2');
-        expect(mints()).toBe(2);
+        expect(mints()).toBe(DOUBLE_MINT);
 
         // The fresh mint is also what the cache now holds, so ordinary reads ride it.
         await expect(tokens.get()).resolves.toBe('ghs_2');
-        expect(mints()).toBe(2);
+        expect(mints()).toBe(DOUBLE_MINT);
     });
 });
 

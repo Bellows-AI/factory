@@ -13,6 +13,11 @@ import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryCli
  * covered by server/test-db/default-workflow-settings-store.test.ts, which needs a container.
  */
 
+const HTTP_OK = 200;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
@@ -68,7 +73,7 @@ describe('GET /api/workflows/default-settings', () => {
         const store = stubSettings();
         const { instance } = await boot(store);
         const response = await instance.inject({ method: 'GET', url: '/api/workflows/default-settings' });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('answers both switches on, with a null updatedAt, when no row exists — and writes nothing', async () => {
@@ -79,7 +84,7 @@ describe('GET /api/workflows/default-settings', () => {
             url: '/api/workflows/default-settings',
             headers: { cookie: aliceCookie },
         });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual(BOTH_ENABLED);
         expect(store.puts).toEqual([]);
     });
@@ -95,7 +100,7 @@ describe('GET /api/workflows/default-settings', () => {
             url: '/api/workflows/default-settings',
             headers: { cookie: await signedIn(auth, alice) },
         });
-        expect(response.statusCode).toBe(503);
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(response.json().code).toBe('WORKFLOW_SETTINGS_UNAVAILABLE');
     });
 });
@@ -109,7 +114,7 @@ describe('PUT /api/workflows/default-settings', () => {
             url: '/api/workflows/default-settings',
             payload: { reviewReconciliation: true, mergeConflictAutofix: true },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it.each([
@@ -126,7 +131,7 @@ describe('PUT /api/workflows/default-settings', () => {
             payload: { reviewReconciliation: rr, mergeConflictAutofix: mca },
             headers: { cookie: aliceCookie },
         });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({
             reviewReconciliation: rr,
             mergeConflictAutofix: mca,
@@ -158,7 +163,7 @@ describe('PUT /api/workflows/default-settings', () => {
             payload,
             headers: { cookie: aliceCookie },
         });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_DEFAULT_WORKFLOW');
         expect(store.puts).toEqual([]);
     });
@@ -174,7 +179,7 @@ describe('PUT /api/workflows/default-settings', () => {
             payload: { reviewReconciliation: false, mergeConflictAutofix: false, userId: 'not-alice' },
             headers: { cookie: aliceCookie },
         });
-        expect(put.statusCode).toBe(400);
+        expect(put.statusCode).toBe(HTTP_BAD_REQUEST);
 
         const goodPut = await instance.inject({
             method: 'PUT',
@@ -182,7 +187,7 @@ describe('PUT /api/workflows/default-settings', () => {
             payload: { reviewReconciliation: false, mergeConflictAutofix: false },
             headers: { cookie: aliceCookie },
         });
-        expect(goodPut.statusCode).toBe(200);
+        expect(goodPut.statusCode).toBe(HTTP_OK);
         expect(store.puts).toEqual([
             { userId: alice.user.id, value: { reviewReconciliation: false, mergeConflictAutofix: false } },
         ]);
@@ -207,7 +212,7 @@ describe('PUT /api/workflows/default-settings', () => {
             payload: { reviewReconciliation: true, mergeConflictAutofix: true },
             headers: { cookie: await signedIn(auth, alice) },
         });
-        expect(response.statusCode).toBe(503);
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(response.json().code).toBe('WORKFLOW_SETTINGS_UNAVAILABLE');
     });
 });

@@ -97,8 +97,11 @@ describe('the webhook secret', () => {
         // The HMAC decides whose memberships get deleted, so the secret is a credential —
         // timing-safe comparison does not help a key a caller can guess. Same floor, and same
         // failure shape, as SESSION_SECRET's.
+        const MIN_WEBHOOK_SECRET_LENGTH = 32;
         expect(() => loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'short' }))).toThrow(/at least 32 characters/);
-        expect(loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'x'.repeat(32) })).webhookSecret).toBe('x'.repeat(32));
+        expect(loadConfig(app({ GITHUB_WEBHOOK_SECRET: 'x'.repeat(MIN_WEBHOOK_SECRET_LENGTH) })).webhookSecret).toBe(
+            'x'.repeat(MIN_WEBHOOK_SECRET_LENGTH)
+        );
     });
 });
 

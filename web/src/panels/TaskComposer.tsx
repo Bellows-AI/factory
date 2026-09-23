@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
+import type { QueueTaskInput } from '../api/useTasks.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     clampedWorkflow,
@@ -15,6 +16,8 @@ import {
     startBlocker,
     touchAll,
     valuesForWorkflow,
+    type StartBlocker,
+    type WorkflowParamChoice,
 } from '../task-composer.js';
 
 /**
@@ -24,74 +27,49 @@ import {
  */
 const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected tests, and run the relevant checks.';
 
+/** One workflow choice as the composer's props hand it in — the same shape `TaskComposer`'s
+ * `workflows` prop carries, named so `useComposerDraft` can declare it without repeating it. */
+interface ComposerWorkflowOption {
+    id: string;
+    name: string;
+    scope: 'org' | 'user' | 'repo';
+    params?: WorkflowParamChoice[];
+}
+
 /**
- * The guided new-task composer, the default right pane of the tasks area.
- *
- * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`, `useJobs`,
- * `useWorkflows`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
- * effects, the page hands it finished props and the suite asserts markup.
- *
- * The page reads top to bottom the way a member decides: what the agent should do, where it will
- * run, which process will guide it, what is still blocking the launch, and what will actually
- * run — before Start is ever pressed. The repository, executor and workflow are task parameters.
- * Repository and workflow may deliberately be absent; executor may not, because its profile type
- * chooses the runner. The pure layer beneath — the verdicts, preflight sentence and blocker
- * matrix — lives in `task-composer.ts`.
+ * Everything the composer's draft owns: the state, the effects that keep it consistent with the
+ * workspace and workflow lists as they arrive, and the values Start needs — pulled out of
+ * `TaskComposer` so the component itself stays a render layer over this.
  */
-export function TaskComposer({
-    repos,
-    workspaceError,
-    onRetryWorkspace,
-    executors,
-    workflows,
-    actionError,
-    sending,
-    onSend,
-    onRepoChange,
-}: {
-    /**
-     * The member's selected repositories, one option each. Null while the workspace poll has not
-     * answered yet — "not known" is a different sentence from "known empty", and merging them
-     * would blame the member's selection for a request that never landed.
-     */
+interface ComposerDraft {
+    draft: string;
+    setDraft: (value: string) => void;
+    executor: string;
+    setExecutor: (value: string) => void;
+    repo: string;
+    setRepo: (value: string) => void;
+    setRepoTouched: (value: boolean) => void;
+    workflow: string;
+    setWorkflow: (value: string) => void;
+    setStoredParams: (value: { workflowId: string | null; values: Record<string, string> }) => void;
+    paramTouched: Record<string, boolean>;
+    setParamTouched: (value: Record<string, boolean>) => void;
+    declaredParams: WorkflowParamChoice[];
+    chosenWorkflowId: string | null;
+    paramValues: Record<string, string>;
+    paramsReady: boolean;
+    send: () => Promise<void>;
+}
+
+function useComposerDraft(input: {
     repos: readonly { owner: string; name: string }[] | null;
-    /** Why `repos` is null, when it is. */
-    workspaceError: string | null;
-    onRetryWorkspace: () => void;
     executors: readonly { name: string; type: string }[];
-    /**
-     * The workflow choices for the selected repository's context, or null when the list has not
-     * answered (or this board serves no workflows at all). Null HIDES the section: a board
-     * without the feature renders exactly the composer that came before it. Each choice carries
-     * its declared launch parameters — choosing one renders an explicit, labelled input per
-     * param, and Start stays disabled until every one validates. Unchosen, the task runs the
-     * member's words verbatim — no workflow, no parameters.
-     */
-    workflows:
-        | readonly {
-              id: string;
-              name: string;
-              scope: 'org' | 'user' | 'repo';
-              params?: import('../task-composer.js').WorkflowParamChoice[];
-          }[]
-        | null;
-    /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
-    actionError: string | null;
+    workflows: readonly ComposerWorkflowOption[] | null;
+    onRepoChange: ((repo: string | null) => void) | undefined;
     sending: boolean;
-    /** `workflow` is a chosen name, or null for no process — the raw prompt runs. */
-    onSend: (
-        command: string,
-        repo: string | null,
-        executor: string,
-        workflow: string | null,
-        workflowParams: Record<string, string> | null
-    ) => Promise<string | null>;
-    /**
-     * Reports the chosen repository upward, so the page can re-fetch the workflow list for that
-     * repository's context. Optional — the panel is testable without it.
-     */
-    onRepoChange?: (repo: string | null) => void;
-}) {
+    onSend: (queued: QueueTaskInput) => Promise<string | null>;
+}): ComposerDraft {
+    const { repos, executors, workflows, onRepoChange, sending, onSend } = input;
     const [draft, setDraft] = useState('');
     const [executor, setExecutor] = useState(() => executors[0]?.name ?? '');
     const [repo, setRepo] = useState(() => firstRepo(repos));
@@ -213,8 +191,219 @@ export function TaskComposer({
             declaredParams.length > 0
                 ? Object.fromEntries(declaredParams.map((param) => [param.name, values[param.name] ?? '']))
                 : null;
-        if ((await onSend(draft, chosenRepo, executor, chosenWorkflowName, chosenParams)) === null) setDraft('');
+        const queued: QueueTaskInput = {
+            command: draft,
+            repo: chosenRepo,
+            executor,
+            workflow: chosenWorkflowName,
+            workflowParams: chosenParams,
+        };
+        if ((await onSend(queued)) === null) setDraft('');
     };
+
+    return {
+        draft,
+        setDraft,
+        executor,
+        setExecutor,
+        repo,
+        setRepo,
+        setRepoTouched,
+        workflow,
+        setWorkflow,
+        setStoredParams,
+        paramTouched,
+        setParamTouched,
+        declaredParams,
+        chosenWorkflowId,
+        paramValues,
+        paramsReady,
+        send,
+    };
+}
+
+/**
+ * The reusable-workflow section: the process picker and, once one is chosen, its declared launch
+ * parameters. Split out of `TaskComposer` so its two independent visibility checks (no workflow
+ * list at all; a chosen workflow with no declared params) do not add to the parent's own.
+ */
+function ComposerWorkflowSection({
+    workflows,
+    workflow,
+    setWorkflow,
+    setParamTouched,
+    declaredParams,
+    paramValues,
+    paramTouched,
+    chosenWorkflowId,
+    setStoredParams,
+}: {
+    workflows: readonly ComposerWorkflowOption[] | null;
+    workflow: string;
+    setWorkflow: (value: string) => void;
+    setParamTouched: (value: Record<string, boolean>) => void;
+    declaredParams: WorkflowParamChoice[];
+    paramValues: Record<string, string>;
+    paramTouched: Record<string, boolean>;
+    chosenWorkflowId: string | null;
+    setStoredParams: (value: { workflowId: string | null; values: Record<string, string> }) => void;
+}) {
+    return (
+        <>
+            {workflows !== null ? (
+                <div className="composer-field">
+                    <h2>Reusable workflow</h2>
+                    <p className="composer-helper">
+                        A workflow can turn this request into a repeatable multi-step process.
+                    </p>
+                    <Listbox
+                        value={workflow}
+                        onChange={(next) => {
+                            setWorkflow(next);
+                            // The values reset through the identity-keyed read, and this choice's
+                            // touched marks reset with it: fields the member never reached in the
+                            // new process must not arrive pre-failed.
+                            setParamTouched({});
+                            // A repo switch goes further and resets the whole draft — the repo
+                            // effect above.
+                        }}
+                    >
+                        <ListboxButton className="composer-select" aria-label="Reusable workflow">
+                            {workflow === '' ? 'No workflow — run prompt as written' : workflow}
+                        </ListboxButton>
+                        <ListboxOptions anchor="bottom start" className="popover">
+                            <ListboxOption value="" className="popover-option">
+                                No workflow — run prompt as written
+                            </ListboxOption>
+                            {effectiveWorkflows(workflows).map((choice) => (
+                                <ListboxOption key={choice.id} value={choice.name} className="popover-option">
+                                    {choice.name}
+                                </ListboxOption>
+                            ))}
+                        </ListboxOptions>
+                    </Listbox>
+                </div>
+            ) : null}
+
+            {declaredParams.length > 0 ? (
+                <div className="composer-field">
+                    <h2>Workflow details</h2>
+                    <WorkflowParameterFields
+                        params={declaredParams}
+                        values={paramValues}
+                        touched={paramTouched}
+                        onInput={(name, value) =>
+                            setStoredParams({
+                                workflowId: chosenWorkflowId,
+                                values: { ...paramValues, [name]: value },
+                            })
+                        }
+                        onBlur={(name) => setParamTouched(markTouched(paramTouched, name))}
+                    />
+                </div>
+            ) : null}
+        </>
+    );
+}
+
+/** The Start button's status line, the precedence `startBlocker` already picked — this only
+ * spells each reason out in words. */
+function describeBlocker(blocker: StartBlocker | null): string | null {
+    switch (blocker) {
+        case 'in-flight':
+            return 'Starting the task…';
+        case 'missing-executor':
+            return 'Configure an executor in Settings to continue.';
+        case 'empty-prompt':
+            return 'Describe the task to continue.';
+        case 'invalid-params':
+            return 'Complete the required workflow details to continue.';
+        default:
+            return null;
+    }
+}
+
+/**
+ * The guided new-task composer, the default right pane of the tasks area.
+ *
+ * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`, `useJobs`,
+ * `useWorkflows`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
+ * effects, the page hands it finished props and the suite asserts markup.
+ *
+ * The page reads top to bottom the way a member decides: what the agent should do, where it will
+ * run, which process will guide it, what is still blocking the launch, and what will actually
+ * run — before Start is ever pressed. The repository, executor and workflow are task parameters.
+ * Repository and workflow may deliberately be absent; executor may not, because its profile type
+ * chooses the runner. The pure layer beneath — the verdicts, preflight sentence and blocker
+ * matrix — lives in `task-composer.ts`.
+ */
+export function TaskComposer({
+    repos,
+    workspaceError,
+    onRetryWorkspace,
+    executors,
+    workflows,
+    actionError,
+    sending,
+    onSend,
+    onRepoChange,
+}: {
+    /**
+     * The member's selected repositories, one option each. Null while the workspace poll has not
+     * answered yet — "not known" is a different sentence from "known empty", and merging them
+     * would blame the member's selection for a request that never landed.
+     */
+    repos: readonly { owner: string; name: string }[] | null;
+    /** Why `repos` is null, when it is. */
+    workspaceError: string | null;
+    onRetryWorkspace: () => void;
+    executors: readonly { name: string; type: string }[];
+    /**
+     * The workflow choices for the selected repository's context, or null when the list has not
+     * answered (or this board serves no workflows at all). Null HIDES the section: a board
+     * without the feature renders exactly the composer that came before it. Each choice carries
+     * its declared launch parameters — choosing one renders an explicit, labelled input per
+     * param, and Start stays disabled until every one validates. Unchosen, the task runs the
+     * member's words verbatim — no workflow, no parameters.
+     */
+    workflows:
+        | readonly {
+              id: string;
+              name: string;
+              scope: 'org' | 'user' | 'repo';
+              params?: import('../task-composer.js').WorkflowParamChoice[];
+          }[]
+        | null;
+    /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
+    actionError: string | null;
+    sending: boolean;
+    /** `workflow` is a chosen name, or null for no process — the raw prompt runs. */
+    onSend: (input: QueueTaskInput) => Promise<string | null>;
+    /**
+     * Reports the chosen repository upward, so the page can re-fetch the workflow list for that
+     * repository's context. Optional — the panel is testable without it.
+     */
+    onRepoChange?: (repo: string | null) => void;
+}) {
+    const {
+        draft,
+        setDraft,
+        executor,
+        setExecutor,
+        repo,
+        setRepo,
+        setRepoTouched,
+        workflow,
+        setWorkflow,
+        setStoredParams,
+        paramTouched,
+        setParamTouched,
+        declaredParams,
+        chosenWorkflowId,
+        paramValues,
+        paramsReady,
+        send,
+    } = useComposerDraft({ repos, executors, workflows, onRepoChange, sending, onSend });
 
     // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
     // button, never a bypass. An invalid keyboard submission owes the member the same screen a
@@ -237,16 +426,7 @@ export function TaskComposer({
             if (first) document.getElementById(`composer-param-${first.name}`)?.focus();
         }
     };
-    const blockerCopy =
-        blocker === 'in-flight'
-            ? 'Starting the task…'
-            : blocker === 'missing-executor'
-              ? 'Configure an executor in Settings to continue.'
-              : blocker === 'empty-prompt'
-                ? 'Describe the task to continue.'
-                : blocker === 'invalid-params'
-                  ? 'Complete the required workflow details to continue.'
-                  : null;
+    const blockerCopy = describeBlocker(blocker);
     const preflight = preflightSentence({
         repo: repo === '' ? null : repo,
         executor: executor === '' ? null : executor,
@@ -365,58 +545,17 @@ export function TaskComposer({
                         codebase
                     </p>
                 ) : null}
-                {workflows !== null ? (
-                    <div className="composer-field">
-                        <h2>Reusable workflow</h2>
-                        <p className="composer-helper">
-                            A workflow can turn this request into a repeatable multi-step process.
-                        </p>
-                        <Listbox
-                            value={workflow}
-                            onChange={(next) => {
-                                setWorkflow(next);
-                                // The values reset through the identity-keyed read, and this
-                                // choice's touched marks reset with it: fields the member never
-                                // reached in the new process must not arrive pre-failed.
-                                setParamTouched({});
-                                // A repo switch goes further and resets the whole draft — the
-                                // repo effect above.
-                            }}
-                        >
-                            <ListboxButton className="composer-select" aria-label="Reusable workflow">
-                                {workflow === '' ? 'No workflow — run prompt as written' : workflow}
-                            </ListboxButton>
-                            <ListboxOptions anchor="bottom start" className="popover">
-                                <ListboxOption value="" className="popover-option">
-                                    No workflow — run prompt as written
-                                </ListboxOption>
-                                {effectiveWorkflows(workflows).map((choice) => (
-                                    <ListboxOption key={choice.id} value={choice.name} className="popover-option">
-                                        {choice.name}
-                                    </ListboxOption>
-                                ))}
-                            </ListboxOptions>
-                        </Listbox>
-                    </div>
-                ) : null}
-
-                {declaredParams.length > 0 ? (
-                    <div className="composer-field">
-                        <h2>Workflow details</h2>
-                        <WorkflowParameterFields
-                            params={declaredParams}
-                            values={paramValues}
-                            touched={paramTouched}
-                            onInput={(name, value) =>
-                                setStoredParams({
-                                    workflowId: chosenWorkflowId,
-                                    values: { ...paramValues, [name]: value },
-                                })
-                            }
-                            onBlur={(name) => setParamTouched(markTouched(paramTouched, name))}
-                        />
-                    </div>
-                ) : null}
+                <ComposerWorkflowSection
+                    workflows={workflows}
+                    workflow={workflow}
+                    setWorkflow={setWorkflow}
+                    setParamTouched={setParamTouched}
+                    declaredParams={declaredParams}
+                    paramValues={paramValues}
+                    paramTouched={paramTouched}
+                    chosenWorkflowId={chosenWorkflowId}
+                    setStoredParams={setStoredParams}
+                />
 
                 <p className="composer-preflight" aria-live="polite">
                     {preflight}

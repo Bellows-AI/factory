@@ -11,6 +11,8 @@
  * instead of silently doing nothing.
  */
 
+import { isSafePattern } from './workflow-pattern.js';
+
 /** The size cap of a definition, in JSON characters — the same body-limit discipline as commands. */
 export const DEFINITION_LIMIT = 16_384;
 
@@ -52,6 +54,9 @@ export const PARAM_VALUE_LIMIT = 512;
 
 /** A marker is a fixed string the node's block must emit as its final line. Bounded, non-empty. */
 const MARKER_LIMIT = 256;
+
+/** An edge's loop bound: far past any real loop count, and the ceiling `BAD_BOUND` enforces. */
+const MAX_EDGE_BOUND = 1_000;
 
 /** A workflow name: human-chosen, unique per scope; the row check restates this at the boundary. */
 export const WORKFLOW_NAME = /^.{1,100}$/;
@@ -175,6 +180,18 @@ const refuse = (code: DefinitionRefusal['code'], message: string): DefinitionChe
     refusal: { code, message },
 });
 
+/**
+ * The shape every `validateDefinition` section parser answers with: the parsed value, or the
+ * refusal to propagate — split out purely to keep `validateDefinition` itself under the repo's
+ * complexity ceiling. Each section is checked in the same order and refuses with the same codes
+ * and messages the monolithic validator always has.
+ */
+type StepResult<T> = { ok: true; value: T } | { ok: false; refusal: DefinitionRefusal };
+
+function stepRefuse<T>(code: DefinitionRefusal['code'], message: string): StepResult<T> {
+    return { ok: false, refusal: { code, message } };
+}
+
 const KNOWN_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish']);
 const KNOWN_EDGE_KEYS = new Set(['from', 'to', 'when', 'max']);
 const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges', 'params']);
@@ -190,371 +207,321 @@ export function tailMatches(output: string | null, marker: string): boolean {
     return last !== undefined && last === marker.trim();
 }
 
-/**
- * The parameter pattern grammar: a STRICT SUBSET of regular expressions, refused on any doubt.
- * A pattern runs in the board's event loop (the route validates every launch value) and in every
- * member's browser (the composer mirrors the check per keystroke), so an ambiguous pattern must
- * never be stored — catastrophic backtracking on a ≤512-character value would hang the whole
- * board process, not just the request. The subset bounds the work by construction:
- *
- * - literals, `.`, the class shorthands (`\d \D \w \W \s \S \b \B`) and punctuation escapes only
- *   — no backreferences, no `\u`/`\p`/`\c`/`\k`, no anchors (`^`/`$` are implicit in the full
- *   match), no lookarounds;
- * - quantifiers (`* + ? {m} {m,} {m,n}`) apply to a single atom only — never to a group, never
- *   to another quantifier;
- * - the AMBIGUITY BUDGET: quantified atoms chain into a "run" only when nothing mandatory sits
- *   between them (groups are transparent to this — `(a+)(a+)` is a run of two, the classic
- *   blowup shape); a run is capped at MAX_QUANTIFIED_RUN, the whole pattern at
- *   MAX_QUANTIFIED_ATOMS, and bounded repetitions at MAX_PATTERN_BOUND. Alternation carries its
- *   own budget, MAX_ALTERNATIONS branch boundaries: `(a|aa)(a|aa)…` composes 2ⁿ match paths with
- *   no quantifier anywhere, so unbounded alternation would stack 2ⁿ on top of the quantifier
- *   budget — capping the boundaries keeps the worst backtrack a small constant times
- *   C(value-length, MAX_QUANTIFIED_RUN) instead of exponential in the pattern.
- *
- * Everything else is refused at create (`BAD_PARAMS`) — the same loud-refusal doctrine as the
- * rest of the grammar.
- */
-const MAX_QUANTIFIED_ATOMS = 4;
-const MAX_QUANTIFIED_RUN = 3;
-const MAX_PATTERN_BOUND = 64;
-const MAX_ALTERNATIONS = 2;
-const CLASS_SHORTHANDS = 'dDwWsSbB';
+const KNOWN_PARAM_KEYS = new Set(['name', 'pattern', 'description', 'example']);
 
-function isSafePattern(source: string): boolean {
-    let pos = 0;
-    let quantifiedTotal = 0;
-    // Branch boundaries compose alternatives exactly like quantifiers do — `(a|aa)(a|aa)…` is
-    // the blowup shape with no quantifier anywhere — so they carry their own budget.
-    let alternations = 0;
-    // The ambiguity budget: quantified atoms currently chained with nothing mandatory between
-    // them. Shared between the sequence and its groups on purpose — `(a+)(a+)` chains THROUGH
-    // the group boundary, which is exactly the shape the cap exists for.
-    let run = 0;
+/** Resolves and dedupes a declared param's name — the one field every other check depends on. */
+function resolveParamName(param: Record<string, unknown>, i: number, paramNames: Set<string>): StepResult<string> {
+    const name = param.name;
+    if (typeof name !== 'string' || !PARAM_NAME.test(name)) {
+        return stepRefuse('BAD_PARAMS', `params[${i}].name must match ${PARAM_NAME.source}`);
+    }
+    if (paramNames.has(name)) return stepRefuse('BAD_PARAMS', `duplicate param name "${name}"`);
+    paramNames.add(name);
+    return { ok: true, value: name };
+}
 
-    /** Parses `[...]` from `pos` (at '[') past the closing ']'. */
-    const parseClass = (): boolean => {
-        pos += 1; // past '['
-        if (source[pos] === '^') pos += 1;
-        let items = 0;
-        while (pos < source.length && source[pos] !== ']') {
-            if (source[pos] === '\\') {
-                const next = source[pos + 1];
-                if (next === undefined || !/[dDwWsS]/.test(next)) return false;
-                pos += 2;
-            } else {
-                pos += 1;
-            }
-            items += 1;
-        }
-        if (source[pos] !== ']' || items === 0) return false;
-        pos += 1;
-        return true;
-    };
+/** Resolves a declared param's optional pattern: bounded, in the safe subset, and compilable. */
+function resolveParamPattern(param: Record<string, unknown>, i: number): StepResult<string | undefined> {
+    if (param.pattern === undefined) return { ok: true, value: undefined };
+    if (typeof param.pattern !== 'string' || !param.pattern.trim() || param.pattern.length > PATTERN_LIMIT) {
+        return stepRefuse(
+            'BAD_PARAMS',
+            `params[${i}].pattern must be a non-empty regex source of at most ${PATTERN_LIMIT} characters`
+        );
+    }
+    if (!isSafePattern(param.pattern)) {
+        return stepRefuse(
+            'BAD_PARAMS',
+            `params[${i}].pattern is outside the safe subset — see docs/workflows.md "Launch parameters"`
+        );
+    }
+    try {
+        new RegExp(param.pattern);
+    } catch {
+        return stepRefuse('BAD_PARAMS', `params[${i}].pattern does not compile: ${param.pattern}`);
+    }
+    return { ok: true, value: param.pattern };
+}
 
-    /**
-     * Parses a sequence until end-of-source (`eof`) or the closing `)` of its group (`group`).
-     * `prev` is local — quantifier legality only ever looks at the immediately preceding token
-     * — while the counters and the run budget are shared, because ambiguity composes across
-     * group boundaries but not across a mandatory atom, which resets the run.
-     */
-    const parseSequence = (stop: 'eof' | 'group'): boolean => {
-        let prev: 'none' | 'atom' | 'quantified' | 'group' | 'bar' = 'none';
-        // What `run` becomes if the pending atom ends up quantified: a chain continues through
-        // it only when it sits directly after a quantified atom (nothing mandatory between).
-        let chainIfQuantified = run + 1;
-        while (pos < source.length) {
-            const ch = source[pos]!;
-            if (ch === ')') {
-                if (stop !== 'group') return false;
-                if (prev === 'atom') run = 0; // the trailing atom resolved unquantified
-                pos += 1;
-                return true;
-            }
-            if (ch === '|') {
-                alternations += 1;
-                if (alternations > MAX_ALTERNATIONS) return false;
-                run = 0; // a branch boundary breaks any chain
-                prev = 'bar';
-                pos += 1;
-                continue;
-            }
-            if (ch === '*' || ch === '+' || ch === '?') {
-                if (prev !== 'atom') return false;
-                run = chainIfQuantified;
-                quantifiedTotal += 1;
-                if (quantifiedTotal > MAX_QUANTIFIED_ATOMS || run > MAX_QUANTIFIED_RUN) return false;
-                prev = 'quantified';
-                pos += 1;
-                continue;
-            }
-            if (ch === '{') {
-                const bounded = /^\{(\d+)(,(\d+)?)?\}/.exec(source.slice(pos));
-                if (bounded === null) return false; // a literal brace must be escaped
-                if (bounded[2] !== undefined && bounded[3] === undefined) return false; // open-ended {m,}: write {m,64} or +
-                const min = Number(bounded[1]!);
-                const max = bounded[3] === undefined ? min : Number(bounded[3]);
-                if (min > max || max > MAX_PATTERN_BOUND) return false;
-                if (prev !== 'atom') return false;
-                run = chainIfQuantified;
-                quantifiedTotal += 1;
-                if (quantifiedTotal > MAX_QUANTIFIED_ATOMS || run > MAX_QUANTIFIED_RUN) return false;
-                prev = 'quantified';
-                pos += bounded[0].length;
-                continue;
-            }
-            if (ch === '(') {
-                if (prev === 'atom') run = 0; // the pending atom resolved unquantified
-                if (source.startsWith('(?', pos) && !source.startsWith('(?:', pos)) {
-                    return false; // lookarounds and named groups
-                }
-                pos += source.startsWith('(?:', pos) ? 3 : 1;
-                if (!parseSequence('group')) return false;
-                // parseSequence consumed through the ')' and left the group's trailing run
-                prev = 'group';
-                continue;
-            }
-            if (ch === '[') {
-                if (prev === 'atom') run = 0; // the pending atom resolved unquantified
-                if (!parseClass()) return false;
-                chainIfQuantified = run + 1;
-                prev = 'atom';
-                continue;
-            }
-            if (ch === '\\') {
-                const next = source[pos + 1];
-                if (next === undefined) return false;
-                // Class shorthands are atoms; every other alphanumeric escape — backreferences,
-                // \u, \p, \c, \k — is outside the subset. Punctuation escapes are literals.
-                if (/[a-zA-Z0-9]/.test(next) && !CLASS_SHORTHANDS.includes(next)) return false;
-                pos += 2;
-                if (prev === 'atom') run = 0;
-                chainIfQuantified = run + 1;
-                prev = 'atom';
-                continue;
-            }
-            if (ch === '^' || ch === '$' || ch === ']' || ch === '}') return false;
-            pos += 1;
-            if (prev === 'atom') run = 0;
-            chainIfQuantified = run + 1;
-            prev = 'atom';
-        }
-        return stop === 'eof';
-    };
-    return parseSequence('eof');
+/** The parts of `resolveGuidanceField`'s call that stay fixed across both guidance keys. */
+interface GuidanceContext {
+    param: Record<string, unknown>;
+    i: number;
+    pattern: string | undefined;
 }
 
 /**
- * The strict validator. Everything it refuses, it names — the key, the node, the edge, the
- * placeholder — so a bad definition is diagnosable from the API answer alone.
+ * One guidance field (`description` or `example`), in isolation. The one exception that keeps
+ * the guidance honest: an EXAMPLE is served as a pre-fill/hint for an input the launch validates,
+ * so an example the declared pattern would refuse is refused here, with the same full-match
+ * semantics as launch.
  */
-export function validateDefinition(raw: unknown): DefinitionCheck {
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-        return refuse('BAD_DEFINITION', 'definition must be a JSON object');
+function resolveGuidanceField(
+    ctx: GuidanceContext,
+    key: 'description' | 'example',
+    limit: number
+): StepResult<string | undefined> {
+    const raw = ctx.param[key];
+    if (raw === undefined) return { ok: true, value: undefined };
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (!trimmed || trimmed.length > limit) {
+        return stepRefuse(
+            'BAD_PARAMS',
+            `params[${ctx.i}].${key} must be a non-empty string of at most ${limit} characters`
+        );
     }
-    const def = raw as Record<string, unknown>;
-    for (const key of Object.keys(def)) {
-        if (!KNOWN_TOP_KEYS.has(key)) return refuse('UNKNOWN_KEY', `unknown definition key "${key}"`);
+    if (key === 'example' && ctx.pattern !== undefined && !new RegExp(`^(?:${ctx.pattern})$`).test(trimmed)) {
+        return stepRefuse('BAD_PARAMS', `params[${ctx.i}].example must match ${ctx.pattern}`);
     }
+    return { ok: true, value: trimmed };
+}
 
-    // Params: optional at the JSON, every declared one required at launch. Names are the
-    // placeholder identifiers, patterns are bounded regex sources matched fully.
+/**
+ * The guidance pair is presentation metadata for the composer: bounded sentences, validated on
+ * the TRIMMED value (the marker precedent) and retained trimmed on the normalized definition. They
+ * feed nothing else — `checkWorkflowParams` and the interpolator never read them; guidance never
+ * substitutes for the pattern.
+ */
+function resolveParamGuidance(
+    param: Record<string, unknown>,
+    i: number,
+    pattern: string | undefined
+): StepResult<{ description?: string; example?: string }> {
+    const ctx: GuidanceContext = { param, i, pattern };
+    const description = resolveGuidanceField(ctx, 'description', PARAM_DESCRIPTION_LIMIT);
+    if (!description.ok) return description;
+    const example = resolveGuidanceField(ctx, 'example', PARAM_EXAMPLE_LIMIT);
+    if (!example.ok) return example;
+    return {
+        ok: true,
+        value: {
+            ...(description.value !== undefined ? { description: description.value } : {}),
+            ...(example.value !== undefined ? { example: example.value } : {}),
+        },
+    };
+}
+
+/** One declared param of `definition.params`, in isolation — see `validateDefinition`. */
+function parseWorkflowParam(item: unknown, i: number, paramNames: Set<string>): StepResult<WorkflowParam> {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        return stepRefuse('BAD_PARAMS', `definition.params[${i}] must be an object`);
+    }
+    const param = item as Record<string, unknown>;
+    for (const key of Object.keys(param)) {
+        if (!KNOWN_PARAM_KEYS.has(key)) return stepRefuse('UNKNOWN_KEY', `unknown key "${key}" in params[${i}]`);
+    }
+    const resolvedName = resolveParamName(param, i, paramNames);
+    if (!resolvedName.ok) return resolvedName;
+    const resolvedPattern = resolveParamPattern(param, i);
+    if (!resolvedPattern.ok) return resolvedPattern;
+    const resolvedGuidance = resolveParamGuidance(param, i, resolvedPattern.value);
+    if (!resolvedGuidance.ok) return resolvedGuidance;
+    return {
+        ok: true,
+        value: {
+            name: resolvedName.value,
+            ...(resolvedPattern.value !== undefined ? { pattern: resolvedPattern.value } : {}),
+            ...(resolvedGuidance.value.description !== undefined
+                ? { description: resolvedGuidance.value.description }
+                : {}),
+            ...(resolvedGuidance.value.example !== undefined ? { example: resolvedGuidance.value.example } : {}),
+        },
+    };
+}
+
+/** `definition.params`: optional at the JSON, every declared one required at launch. */
+function parseParamsSection(def: Record<string, unknown>): StepResult<WorkflowParam[]> {
+    if (def.params === undefined) return { ok: true, value: [] };
+    if (!Array.isArray(def.params)) {
+        return stepRefuse('BAD_PARAMS', 'definition.params must be an array');
+    }
+    const paramNames = new Set<string>();
     const params: WorkflowParam[] = [];
-    if (def.params !== undefined) {
-        if (!Array.isArray(def.params)) {
-            return refuse('BAD_PARAMS', 'definition.params must be an array');
-        }
-        const paramNames = new Set<string>();
-        for (const [i, item] of def.params.entries()) {
-            if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-                return refuse('BAD_PARAMS', `definition.params[${i}] must be an object`);
-            }
-            const param = item as Record<string, unknown>;
-            for (const key of Object.keys(param)) {
-                if (!['name', 'pattern', 'description', 'example'].includes(key)) {
-                    return refuse('UNKNOWN_KEY', `unknown key "${key}" in params[${i}]`);
-                }
-            }
-            const name = param.name;
-            if (typeof name !== 'string' || !PARAM_NAME.test(name)) {
-                return refuse('BAD_PARAMS', `params[${i}].name must match ${PARAM_NAME.source}`);
-            }
-            if (paramNames.has(name)) return refuse('BAD_PARAMS', `duplicate param name "${name}"`);
-            paramNames.add(name);
-            let pattern: string | undefined;
-            if (param.pattern !== undefined) {
-                if (
-                    typeof param.pattern !== 'string' ||
-                    !param.pattern.trim() ||
-                    param.pattern.length > PATTERN_LIMIT
-                ) {
-                    return refuse(
-                        'BAD_PARAMS',
-                        `params[${i}].pattern must be a non-empty regex source of at most ${PATTERN_LIMIT} characters`
-                    );
-                }
-                if (!isSafePattern(param.pattern)) {
-                    return refuse(
-                        'BAD_PARAMS',
-                        `params[${i}].pattern is outside the safe subset — see docs/workflows.md "Launch parameters"`
-                    );
-                }
-                try {
-                    new RegExp(param.pattern);
-                } catch {
-                    return refuse('BAD_PARAMS', `params[${i}].pattern does not compile: ${param.pattern}`);
-                }
-                pattern = param.pattern;
-            }
-            // The guidance pair is presentation metadata for the composer: bounded sentences,
-            // validated on the TRIMMED value (the marker precedent) and retained trimmed on the
-            // normalized definition. They feed nothing else — `checkWorkflowParams` and the
-            // interpolator never read them; guidance never substitutes for the pattern. The one
-            // exception that keeps the guidance honest: an EXAMPLE is served as a pre-fill/hint
-            // for an input the launch validates, so an example the declared pattern would refuse
-            // is refused here, with the same full-match semantics as launch.
-            let description: string | undefined;
-            let example: string | undefined;
-            for (const [key, limit] of [
-                ['description', PARAM_DESCRIPTION_LIMIT],
-                ['example', PARAM_EXAMPLE_LIMIT],
-            ] as const) {
-                const raw = param[key];
-                if (raw === undefined) continue;
-                const trimmed = typeof raw === 'string' ? raw.trim() : '';
-                if (!trimmed || trimmed.length > limit) {
-                    return refuse(
-                        'BAD_PARAMS',
-                        `params[${i}].${key} must be a non-empty string of at most ${limit} characters`
-                    );
-                }
-                if (key === 'example' && pattern !== undefined && !new RegExp(`^(?:${pattern})$`).test(trimmed)) {
-                    return refuse('BAD_PARAMS', `params[${i}].example must match ${pattern}`);
-                }
-                if (key === 'description') description = trimmed;
-                else example = trimmed;
-            }
-            params.push({
-                name,
-                ...(pattern !== undefined ? { pattern } : {}),
-                ...(description !== undefined ? { description } : {}),
-                ...(example !== undefined ? { example } : {}),
-            });
-        }
+    for (const [i, item] of def.params.entries()) {
+        const parsed = parseWorkflowParam(item, i, paramNames);
+        if (!parsed.ok) return parsed;
+        params.push(parsed.value);
     }
+    return { ok: true, value: params };
+}
 
-    // Nodes: at least one, every one a declared-shape `agent` node with a unique name.
-    if (!Array.isArray(def.nodes) || def.nodes.length === 0) {
-        return refuse('BAD_NODES', 'definition.nodes must be a non-empty array');
+/** Resolves and dedupes a declared node's name — the one field every other check depends on. */
+function resolveNodeIdentity(node: Record<string, unknown>, i: number, names: Set<string>): StepResult<string> {
+    for (const key of Object.keys(node)) {
+        if (!KNOWN_NODE_KEYS.has(key)) return stepRefuse('UNKNOWN_KEY', `unknown key "${key}" in nodes[${i}]`);
     }
-    const nodes: WorkflowNode[] = [];
-    const names = new Set<string>();
-    for (const [i, item] of def.nodes.entries()) {
-        if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-            return refuse('BAD_NODES', `definition.nodes[${i}] must be an object`);
-        }
-        const node = item as Record<string, unknown>;
-        for (const key of Object.keys(node)) {
-            if (!KNOWN_NODE_KEYS.has(key)) return refuse('UNKNOWN_KEY', `unknown key "${key}" in nodes[${i}]`);
-        }
-        const name = node.name;
-        if (typeof name !== 'string' || !NODE_NAME.test(name)) {
-            return refuse('BAD_NODE', `nodes[${i}].name must match ${NODE_NAME.source}`);
-        }
-        if (name === 'param') {
-            // `{{param.NAME}}` is the parameter namespace and wins it — a node literally named
-            // "param" could never have its `{{param.output}}` resolved.
-            return refuse('BAD_NODE', `nodes[${i}].name "param" is reserved`);
-        }
-        if (names.has(name)) return refuse('DUPLICATE_NODE', `duplicate node name "${name}"`);
-        names.add(name);
-        if (node.kind !== 'agent') {
-            return refuse('BAD_NODE', `nodes[${i}].kind must be "agent" — no other node kind exists`);
-        }
-        if (node.session !== 'resume' && node.session !== 'fresh') {
-            return refuse('BAD_NODE', `nodes[${i}].session must be "resume" or "fresh"`);
-        }
-        if (typeof node.prompt !== 'string' || !node.prompt.trim()) {
-            return refuse('BAD_NODE', `nodes[${i}].prompt must be a non-empty string`);
-        }
-        if (node.gates !== undefined && typeof node.gates !== 'boolean') {
-            return refuse('BAD_NODE', `nodes[${i}].gates must be a boolean`);
-        }
-        if (node.publish !== undefined && typeof node.publish !== 'boolean') {
-            return refuse('BAD_NODE', `nodes[${i}].publish must be a boolean`);
-        }
-        nodes.push({
+    const name = node.name;
+    if (typeof name !== 'string' || !NODE_NAME.test(name)) {
+        return stepRefuse('BAD_NODE', `nodes[${i}].name must match ${NODE_NAME.source}`);
+    }
+    if (name === 'param') {
+        // `{{param.NAME}}` is the parameter namespace and wins it — a node literally named
+        // "param" could never have its `{{param.output}}` resolved.
+        return stepRefuse('BAD_NODE', `nodes[${i}].name "param" is reserved`);
+    }
+    if (names.has(name)) return stepRefuse('DUPLICATE_NODE', `duplicate node name "${name}"`);
+    names.add(name);
+    return { ok: true, value: name };
+}
+
+/** One declared node of `definition.nodes`, in isolation — see `validateDefinition`. */
+function parseWorkflowNode(item: unknown, i: number, names: Set<string>): StepResult<WorkflowNode> {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        return stepRefuse('BAD_NODES', `definition.nodes[${i}] must be an object`);
+    }
+    const node = item as Record<string, unknown>;
+    const resolvedName = resolveNodeIdentity(node, i, names);
+    if (!resolvedName.ok) return resolvedName;
+    const name = resolvedName.value;
+    if (node.kind !== 'agent') {
+        return stepRefuse('BAD_NODE', `nodes[${i}].kind must be "agent" — no other node kind exists`);
+    }
+    if (node.session !== 'resume' && node.session !== 'fresh') {
+        return stepRefuse('BAD_NODE', `nodes[${i}].session must be "resume" or "fresh"`);
+    }
+    if (typeof node.prompt !== 'string' || !node.prompt.trim()) {
+        return stepRefuse('BAD_NODE', `nodes[${i}].prompt must be a non-empty string`);
+    }
+    if (node.gates !== undefined && typeof node.gates !== 'boolean') {
+        return stepRefuse('BAD_NODE', `nodes[${i}].gates must be a boolean`);
+    }
+    if (node.publish !== undefined && typeof node.publish !== 'boolean') {
+        return stepRefuse('BAD_NODE', `nodes[${i}].publish must be a boolean`);
+    }
+    return {
+        ok: true,
+        value: {
             name,
             kind: 'agent',
             session: node.session as 'resume' | 'fresh',
             prompt: node.prompt,
-            ...(node.gates !== undefined ? { gates: node.gates } : {}),
-            ...(node.publish !== undefined ? { publish: node.publish } : {}),
-        });
-    }
+            ...(node.gates !== undefined ? { gates: node.gates as boolean } : {}),
+            ...(node.publish !== undefined ? { publish: node.publish as boolean } : {}),
+        },
+    };
+}
 
-    // Edges: every endpoint declared, every rule in the closed vocabulary, bounds positive.
+/** `definition.nodes`: at least one, every one a declared-shape `agent` node with a unique name. */
+function parseNodesSection(def: Record<string, unknown>): StepResult<{ nodes: WorkflowNode[]; names: Set<string> }> {
+    if (!Array.isArray(def.nodes) || def.nodes.length === 0) {
+        return stepRefuse('BAD_NODES', 'definition.nodes must be a non-empty array');
+    }
+    const nodes: WorkflowNode[] = [];
+    const names = new Set<string>();
+    for (const [i, item] of def.nodes.entries()) {
+        const parsed = parseWorkflowNode(item, i, names);
+        if (!parsed.ok) return parsed;
+        nodes.push(parsed.value);
+    }
+    return { ok: true, value: { nodes, names } };
+}
+
+/** Resolves an edge's declared keys and its two node references, in isolation. */
+function resolveEdgeEndpoints(
+    edge: Record<string, unknown>,
+    i: number,
+    names: Set<string>
+): StepResult<{ from: string; to: string }> {
+    for (const key of Object.keys(edge)) {
+        if (!KNOWN_EDGE_KEYS.has(key)) return stepRefuse('UNKNOWN_KEY', `unknown key "${key}" in edges[${i}]`);
+    }
+    const { from, to } = edge;
+    for (const [label, value] of [
+        ['from', from],
+        ['to', to],
+    ] as const) {
+        if (typeof value !== 'string' || !names.has(value)) {
+            return stepRefuse('UNKNOWN_NODE', `edges[${i}].${label} names no declared node`);
+        }
+    }
+    return { ok: true, value: { from: from as string, to: to as string } };
+}
+
+/** Resolves an edge's `when` rule: a terminal verdict, `gate-failed`, or an exact marker match. */
+function resolveEdgeRule(rule: unknown, i: number): StepResult<EdgeRule> {
+    if (
+        rule !== 'succeeded' &&
+        rule !== 'failed' &&
+        rule !== 'gate-failed' &&
+        (typeof rule !== 'object' ||
+            rule === null ||
+            Array.isArray(rule) ||
+            typeof (rule as { marker?: unknown }).marker !== 'string' ||
+            !(rule as { marker: string }).marker.trim() ||
+            (rule as { marker: string }).marker.trim().length > MARKER_LIMIT)
+    ) {
+        return stepRefuse(
+            'BAD_RULE',
+            `edges[${i}].when must be "succeeded", "failed", "gate-failed", or { marker } with a non-empty string of at most ${MARKER_LIMIT} characters`
+        );
+    }
+    return {
+        ok: true,
+        value: typeof rule === 'string' ? rule : { marker: (rule as { marker: string }).marker.trim() },
+    };
+}
+
+/** Resolves an edge's optional loop bound. */
+function resolveEdgeBound(edge: Record<string, unknown>, i: number): StepResult<number | undefined> {
+    if (edge.max === undefined) return { ok: true, value: undefined };
+    if (typeof edge.max !== 'number' || !Number.isInteger(edge.max) || edge.max < 1 || edge.max > MAX_EDGE_BOUND) {
+        return stepRefuse('BAD_BOUND', `edges[${i}].max must be an integer 1..${MAX_EDGE_BOUND}`);
+    }
+    return { ok: true, value: edge.max };
+}
+
+/** One declared edge of `definition.edges`, in isolation — see `validateDefinition`. */
+function parseWorkflowEdge(item: unknown, i: number, names: Set<string>): StepResult<WorkflowEdge> {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        return stepRefuse('BAD_EDGES', `definition.edges[${i}] must be an object`);
+    }
+    const edge = item as Record<string, unknown>;
+    const endpoints = resolveEdgeEndpoints(edge, i, names);
+    if (!endpoints.ok) return endpoints;
+    const rule = resolveEdgeRule(edge.when, i);
+    if (!rule.ok) return rule;
+    const bound = resolveEdgeBound(edge, i);
+    if (!bound.ok) return bound;
+    return {
+        ok: true,
+        value: {
+            from: endpoints.value.from,
+            to: endpoints.value.to,
+            when: rule.value,
+            ...(bound.value !== undefined ? { max: bound.value } : {}),
+        },
+    };
+}
+
+/** `definition.edges`: every endpoint declared, every rule in the closed vocabulary, bounds positive. */
+function parseEdgesSection(def: Record<string, unknown>, names: Set<string>): StepResult<WorkflowEdge[]> {
     if (!Array.isArray(def.edges)) {
-        return refuse('BAD_EDGES', 'definition.edges must be an array');
+        return stepRefuse('BAD_EDGES', 'definition.edges must be an array');
     }
     const edges: WorkflowEdge[] = [];
     for (const [i, item] of def.edges.entries()) {
-        if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-            return refuse('BAD_EDGES', `definition.edges[${i}] must be an object`);
-        }
-        const edge = item as Record<string, unknown>;
-        for (const key of Object.keys(edge)) {
-            if (!KNOWN_EDGE_KEYS.has(key)) return refuse('UNKNOWN_KEY', `unknown key "${key}" in edges[${i}]`);
-        }
-        const { from, to, when } = edge;
-        for (const [label, value] of [
-            ['from', from],
-            ['to', to],
-        ] as const) {
-            if (typeof value !== 'string' || !names.has(value)) {
-                return refuse('UNKNOWN_NODE', `edges[${i}].${label} names no declared node`);
-            }
-        }
-        const rule = when;
-        if (
-            rule !== 'succeeded' &&
-            rule !== 'failed' &&
-            rule !== 'gate-failed' &&
-            (typeof rule !== 'object' ||
-                rule === null ||
-                Array.isArray(rule) ||
-                typeof (rule as { marker?: unknown }).marker !== 'string' ||
-                !(rule as { marker: string }).marker.trim() ||
-                (rule as { marker: string }).marker.trim().length > MARKER_LIMIT)
-        ) {
-            return refuse(
-                'BAD_RULE',
-                `edges[${i}].when must be "succeeded", "failed", "gate-failed", or { marker } with a non-empty string of at most ${MARKER_LIMIT} characters`
-            );
-        }
-        let max: number | undefined;
-        if (edge.max !== undefined) {
-            if (typeof edge.max !== 'number' || !Number.isInteger(edge.max) || edge.max < 1 || edge.max > 1_000) {
-                return refuse('BAD_BOUND', `edges[${i}].max must be an integer 1..1000`);
-            }
-            max = edge.max;
-        }
-        edges.push({
-            from: from as string,
-            to: to as string,
-            when: typeof rule === 'string' ? rule : { marker: (rule as { marker: string }).marker.trim() },
-            ...(max !== undefined ? { max } : {}),
-        });
+        const parsed = parseWorkflowEdge(item, i, names);
+        if (!parsed.ok) return parsed;
+        edges.push(parsed.value);
     }
+    return { ok: true, value: edges };
+}
 
-    // Entry: explicit, or the first declared node. Must name a declared node.
+/** `definition.entry`: explicit, or the first declared node. Must name a declared node. */
+function resolveEntry(def: Record<string, unknown>, nodes: WorkflowNode[], names: Set<string>): StepResult<string> {
     const entry = def.entry ?? nodes[0]!.name;
     if (typeof entry !== 'string' || !names.has(entry)) {
-        return refuse('UNKNOWN_NODE', 'definition.entry names no declared node');
+        return stepRefuse('UNKNOWN_NODE', 'definition.entry names no declared node');
     }
+    return { ok: true, value: entry };
+}
 
-    // Prompt placeholders: the closed vocabulary only — node outputs, the gate pair, declared
-    // params, and `{{command}}` (the thread root's command). A template referencing an unknown
-    // prior node or an undeclared param would interpolate empty forever.
+/**
+ * Prompt placeholders: the closed vocabulary only — node outputs, the gate pair, declared params,
+ * and `{{command}}` (the thread root's command). A template referencing an unknown prior node or
+ * an undeclared param would interpolate empty forever.
+ */
+function validatePlaceholders(nodes: WorkflowNode[], params: WorkflowParam[], names: Set<string>): StepResult<null> {
     for (const node of nodes) {
         for (const match of node.prompt.matchAll(/\{\{([^{}]+)\}\}/g)) {
             const spec = match[1]!.trim();
@@ -570,19 +537,24 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
                 known = spec === 'gate.name' || spec === 'gate.output' || (nodeRef !== null && names.has(nodeRef[1]!));
             }
             if (!known) {
-                return refuse(
+                return stepRefuse(
                     'UNKNOWN_PLACEHOLDER',
                     `nodes named "${node.name}" carry placeholder "{{${spec}}}" — expected {{nodeName.output}}, {{gate.name}}, {{gate.output}}, {{param.NAME}} or {{command}}`
                 );
             }
         }
     }
+    return { ok: true, value: null };
+}
 
-    // A definition with no path to a publish node has no exit: every thread would rest mid-graph.
-    // Reachability is a walk of the declared edges from the entry.
+/**
+ * A definition with no path to a publish node has no exit: every thread would rest mid-graph.
+ * Reachability is a walk of the declared edges from the entry.
+ */
+function checkPublishReachable(nodes: WorkflowNode[], edges: WorkflowEdge[], entry: string): StepResult<null> {
     const publishing = nodes.filter((n) => n.publish === true).map((n) => n.name);
     if (publishing.length === 0) {
-        return refuse('NO_PUBLISH_PATH', 'no node declares publish: true — the graph has no exit');
+        return stepRefuse('NO_PUBLISH_PATH', 'no node declares publish: true — the graph has no exit');
     }
     const reachable = new Set([entry]);
     for (let changed = true; changed; ) {
@@ -595,8 +567,46 @@ export function validateDefinition(raw: unknown): DefinitionCheck {
         }
     }
     if (!publishing.some((name) => reachable.has(name))) {
-        return refuse('NO_PUBLISH_PATH', 'no publish node is reachable from the entry');
+        return stepRefuse('NO_PUBLISH_PATH', 'no publish node is reachable from the entry');
     }
+    return { ok: true, value: null };
+}
+
+/**
+ * The strict validator. Everything it refuses, it names — the key, the node, the edge, the
+ * placeholder — so a bad definition is diagnosable from the API answer alone. Each section below
+ * is checked in the same order, and refuses with the same codes and messages, as always.
+ */
+export function validateDefinition(raw: unknown): DefinitionCheck {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        return refuse('BAD_DEFINITION', 'definition must be a JSON object');
+    }
+    const def = raw as Record<string, unknown>;
+    for (const key of Object.keys(def)) {
+        if (!KNOWN_TOP_KEYS.has(key)) return refuse('UNKNOWN_KEY', `unknown definition key "${key}"`);
+    }
+
+    const parsedParams = parseParamsSection(def);
+    if (!parsedParams.ok) return { ok: false, refusal: parsedParams.refusal };
+    const params = parsedParams.value;
+
+    const parsedNodes = parseNodesSection(def);
+    if (!parsedNodes.ok) return { ok: false, refusal: parsedNodes.refusal };
+    const { nodes, names } = parsedNodes.value;
+
+    const parsedEdges = parseEdgesSection(def, names);
+    if (!parsedEdges.ok) return { ok: false, refusal: parsedEdges.refusal };
+    const edges = parsedEdges.value;
+
+    const resolvedEntry = resolveEntry(def, nodes, names);
+    if (!resolvedEntry.ok) return { ok: false, refusal: resolvedEntry.refusal };
+    const entry = resolvedEntry.value;
+
+    const placeholderCheck = validatePlaceholders(nodes, params, names);
+    if (!placeholderCheck.ok) return { ok: false, refusal: placeholderCheck.refusal };
+
+    const publishCheck = checkPublishReachable(nodes, edges, entry);
+    if (!publishCheck.ok) return { ok: false, refusal: publishCheck.refusal };
 
     const definition: WorkflowDefinition = { entry, nodes, edges, params };
     if (JSON.stringify(definition).length > DEFINITION_LIMIT) {
@@ -671,6 +681,30 @@ const refuseParams = (message: string): ParamValuesCheck => ({
     refusal: { code: 'BAD_WORKFLOW_PARAMS', message },
 });
 
+/** One declared param's value against `checkWorkflowParams`'s rules, in isolation. */
+function checkWorkflowParamValue(
+    declared: WorkflowParam,
+    value: unknown
+): { ok: true; value: string } | { ok: false; message: string } {
+    if (value === undefined) {
+        return { ok: false, message: `missing required workflow parameter "${declared.name}"` };
+    }
+    if (typeof value !== 'string') {
+        return { ok: false, message: `workflow parameter "${declared.name}" must be a string` };
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return { ok: false, message: `workflow parameter "${declared.name}" must be a non-empty string` };
+    }
+    if (trimmed.length > PARAM_VALUE_LIMIT) {
+        return { ok: false, message: `workflow parameter "${declared.name}" exceeds ${PARAM_VALUE_LIMIT} characters` };
+    }
+    if (declared.pattern !== undefined && !new RegExp(`^(?:${declared.pattern})$`).test(trimmed)) {
+        return { ok: false, message: `workflow parameter "${declared.name}" must match ${declared.pattern}` };
+    }
+    return { ok: true, value: trimmed };
+}
+
 /**
  * Validates the `workflowParams` body field against the resolved definition's declarations. Every
  * declared param is required; unknown keys are refused (a typo must never read as "already
@@ -685,24 +719,9 @@ export function checkWorkflowParams(definition: WorkflowDefinition, raw: unknown
     const body = raw as Record<string, unknown>;
     const values: ParamValues = {};
     for (const declared of definition.params) {
-        const value = body[declared.name];
-        if (value === undefined) {
-            return refuseParams(`missing required workflow parameter "${declared.name}"`);
-        }
-        if (typeof value !== 'string') {
-            return refuseParams(`workflow parameter "${declared.name}" must be a string`);
-        }
-        const trimmed = value.trim();
-        if (!trimmed) {
-            return refuseParams(`workflow parameter "${declared.name}" must be a non-empty string`);
-        }
-        if (trimmed.length > PARAM_VALUE_LIMIT) {
-            return refuseParams(`workflow parameter "${declared.name}" exceeds ${PARAM_VALUE_LIMIT} characters`);
-        }
-        if (declared.pattern !== undefined && !new RegExp(`^(?:${declared.pattern})$`).test(trimmed)) {
-            return refuseParams(`workflow parameter "${declared.name}" must match ${declared.pattern}`);
-        }
-        values[declared.name] = trimmed;
+        const checked = checkWorkflowParamValue(declared, body[declared.name]);
+        if (!checked.ok) return refuseParams(checked.message);
+        values[declared.name] = checked.value;
     }
     for (const key of Object.keys(body)) {
         if (!definition.params.some((p) => p.name === key)) {

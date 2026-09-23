@@ -11,6 +11,14 @@ import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryCli
  * server/test-db/workflow-store.test.ts, which needs a container.
  */
 
+const HTTP_OK = 200;
+const HTTP_CREATED = 201;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
+const HTTP_CONFLICT = 409;
+
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
@@ -99,7 +107,7 @@ describe('GET /api/workflows', () => {
     it("needs a session — workflow selection is a person's decision", async () => {
         const workflows = stubWorkflows();
         const { instance } = await boot(workflows);
-        expect((await instance.inject({ method: 'GET', url: '/api/workflows' })).statusCode).toBe(401);
+        expect((await instance.inject({ method: 'GET', url: '/api/workflows' })).statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('refuses a worker-style bearer token at the wall', async () => {
@@ -110,7 +118,7 @@ describe('GET /api/workflows', () => {
             url: '/api/workflows',
             headers: { authorization: 'Bearer fwt_not-a-worker-token' },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('lists the caller-visible workflows with their scopes', async () => {
@@ -121,7 +129,7 @@ describe('GET /api/workflows', () => {
             url: '/api/workflows?repo=acme/web',
             headers: { cookie: memberCookie },
         });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().workflows).toEqual([record]);
     });
 
@@ -133,7 +141,7 @@ describe('GET /api/workflows', () => {
             url: '/api/workflows?repo=not-a-repo',
             headers: { cookie: memberCookie },
         });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_REPO');
     });
 });
@@ -143,7 +151,7 @@ describe('POST /api/workflows', () => {
         const workflows = stubWorkflows();
         const { instance } = await boot(workflows);
         const response = await instance.inject({ method: 'POST', url: '/api/workflows', payload: {} });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('gates org-level creation to an admin', async () => {
@@ -157,7 +165,7 @@ describe('POST /api/workflows', () => {
             payload,
             headers: { cookie: memberCookie },
         });
-        expect(memberPost.statusCode).toBe(403);
+        expect(memberPost.statusCode).toBe(HTTP_FORBIDDEN);
 
         const adminPost = await instance.inject({
             method: 'POST',
@@ -165,7 +173,7 @@ describe('POST /api/workflows', () => {
             payload,
             headers: { cookie: adminCookie },
         });
-        expect(adminPost.statusCode).toBe(201);
+        expect(adminPost.statusCode).toBe(HTTP_CREATED);
         expect(workflows.created[0]).toMatchObject({ name: 'fix-issue', scope: 'org', createdBy: admin.user.id });
     });
 
@@ -178,14 +186,14 @@ describe('POST /api/workflows', () => {
             payload: { name: 'mine', scope: 'user', definition },
             headers: { cookie: memberCookie },
         });
-        expect(userPost.statusCode).toBe(201);
+        expect(userPost.statusCode).toBe(HTTP_CREATED);
         const repoPost = await instance.inject({
             method: 'POST',
             url: '/api/workflows',
             payload: { name: 'repo-process', scope: 'repo', repo: 'acme/web', definition },
             headers: { cookie: memberCookie },
         });
-        expect(repoPost.statusCode).toBe(201);
+        expect(repoPost.statusCode).toBe(HTTP_CREATED);
         expect(workflows.created.map((row) => row.scope)).toEqual(['user', 'repo']);
     });
 
@@ -198,7 +206,7 @@ describe('POST /api/workflows', () => {
             payload: { name: 'x', scope: 'repo', repo: 'no owner', definition },
             headers: { cookie: memberCookie },
         });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_SCOPE');
     });
 
@@ -216,7 +224,7 @@ describe('POST /api/workflows', () => {
             payload: { name: 'x', scope: 'org', definition: { trigger: true } },
             headers: { cookie: adminCookie },
         });
-        expect(badPost.statusCode).toBe(400);
+        expect(badPost.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(badPost.json().code).toBe('UNKNOWN_KEY');
 
         workflows.create = (async () => ({
@@ -230,7 +238,7 @@ describe('POST /api/workflows', () => {
             payload: { name: 'fix-issue', scope: 'org', definition },
             headers: { cookie: adminCookie },
         });
-        expect(takenPost.statusCode).toBe(409);
+        expect(takenPost.statusCode).toBe(HTTP_CONFLICT);
         expect(takenPost.json().code).toBe('NAME_TAKEN');
     });
 });
@@ -244,14 +252,14 @@ describe('DELETE /api/workflows/:id', () => {
             url: `/api/workflows/${WF_ID}`,
             headers: { cookie: memberCookie },
         });
-        expect(memberDelete.statusCode).toBe(403);
+        expect(memberDelete.statusCode).toBe(HTTP_FORBIDDEN);
 
         const adminDelete = await instance.inject({
             method: 'DELETE',
             url: `/api/workflows/${WF_ID}`,
             headers: { cookie: adminCookie },
         });
-        expect(adminDelete.statusCode).toBe(200);
+        expect(adminDelete.statusCode).toBe(HTTP_OK);
         expect(workflows.removed).toEqual([WF_ID]);
     });
 
@@ -263,7 +271,7 @@ describe('DELETE /api/workflows/:id', () => {
             url: `/api/workflows/${WF_ID}`,
             headers: { cookie: adminCookie },
         });
-        expect(response.statusCode).toBe(404);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
         expect(workflows.removed).toEqual([]);
     });
 });

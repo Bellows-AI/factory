@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { StatsPayload } from '../api/useStats.js';
 import { useShell } from '../components/AppShell.js';
 import { useCompletedJobs } from '../api/useCompletedJobs.js';
 import { AnalyticsToolbar } from '../components/AnalyticsToolbar.js';
@@ -17,7 +18,79 @@ import {
     requestedRange,
     selectionMismatch,
     selectionText,
+    type AnalyticsState,
 } from '../dashboardSummary.js';
+import type { RangeSelection, ScopeSelection } from '../components/RangeSelector.js';
+
+/**
+ * The header's freshness stamp: the last successful response's timestamp — not the wall clock,
+ * not the telemetry store's inner timestamp — with the precise stamp revealed on hover and
+ * keyboard focus. Split out of `DashboardPage` so the header's ternary does not add to the
+ * page's own cognitive complexity.
+ */
+function DashboardFreshness({ data, now }: { data: StatsPayload | null; now: Date }) {
+    if (!data) return <span className="muted">Not updated yet</span>;
+    return (
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: this focusable wrapper is the keyboard path to the revealed timestamp — the stamp must reach keyboard focus, and there is no interactive element to host it on
+        <span tabIndex={0} className="updated-at" title={timestamp(data.meta.fetchedAt)}>
+            Updated {relativeTime(data.meta.fetchedAt, now)}
+            <time className="updated-at-full" dateTime={data.meta.fetchedAt}>
+                {timestamp(data.meta.fetchedAt)}
+            </time>
+        </span>
+    );
+}
+
+/**
+ * The rendered-data sentence, speaking for the PAYLOAD. When the requested selection has moved
+ * on from what rendered, the sentence keeps describing the visible figures and appends where the
+ * next read is heading — the request state is never the headline. Split out of `DashboardPage`
+ * for the same reason as `DashboardFreshness`.
+ */
+function dashboardSummary(
+    data: StatsPayload | null,
+    range: RangeSelection,
+    scope: ScopeSelection,
+    now: Date
+): string | null {
+    if (!data) return null;
+    if (!selectionMismatch(range, scope, data.meta)) return renderedSelection(data.meta);
+    return `${renderedSelection(data.meta)} · Updating to ${selectionText(requestedRange(range, now), scope)}`;
+}
+
+/**
+ * The telemetry panels, by the page-level analytics state: the full summary, the one empty
+ * state (with per-task usage kept when the board measured tasks the telemetry window cannot
+ * see), or nothing while telemetry itself is down. Split out of `DashboardPage` for the same
+ * reason as `DashboardFreshness`.
+ */
+function AnalyticsPanels({ data, state }: { data: StatsPayload; state: AnalyticsState }) {
+    if (!data.telemetry) return null;
+    if (state === 'ready') {
+        return (
+            <>
+                <UsageSummaryPanel telemetry={data.telemetry} meta={data.meta} />
+                <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
+                <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+            </>
+        );
+    }
+    // The one analytics empty state, replacing the dash-card chorus — with the rendered
+    // selection named and exactly one next action. Per-task usage stays when the board measured
+    // tasks the telemetry window cannot see.
+    return (
+        <>
+            <section className="usage-empty">
+                <h2>Nothing measured in this selection</h2>
+                <p>{emptyStateCopy(data.telemetry, data.meta)}</p>
+            </section>
+            {state === 'partial' ? <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} /> : null}
+        </>
+    );
+}
+
+const CLOCK_TICK_MS = 60_000;
 
 /**
  * The dashboard. The page header owns the telemetry chrome — exact repo coverage, the freshness
@@ -45,19 +118,11 @@ export function DashboardPage() {
     // this, once a minute. No per-row timers anywhere.
     const [now, setNow] = useState(() => new Date());
     useEffect(() => {
-        const tick = window.setInterval(() => setNow(new Date()), 60_000);
+        const tick = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
         return () => window.clearInterval(tick);
     }, []);
 
-    // The rendered-data sentence speaks for the PAYLOAD. When the requested selection has
-    // moved on from what rendered, the sentence keeps describing the visible figures and
-    // appends where the next read is heading — the request state is never the headline.
-    const summary = data
-        ? selectionMismatch(range, scope, data.meta)
-            ? `${renderedSelection(data.meta)} · Updating to ${selectionText(requestedRange(range, now), scope)}`
-            : renderedSelection(data.meta)
-        : null;
-
+    const summary = dashboardSummary(data, range, scope, now);
     const state = data && data.telemetry ? analyticsState(data.telemetry, data.tasks) : null;
 
     return (
@@ -68,28 +133,7 @@ export function DashboardPage() {
             <PageHeader
                 title="Usage overview"
                 description={data ? `${describeRepos(data.meta.repos)} — AI usage telemetry` : 'AI usage telemetry'}
-                meta={
-                    data ? (
-                        // Freshness reads the LAST SUCCESSFUL response's stamp — not the wall
-                        // clock, not the telemetry store's inner timestamp. The precise stamp is
-                        // real text revealed on hover and keyboard focus (and `dateTime` for
-                        // assistive tech); a native title is only the pointer's convenience,
-                        // never the only copy.
-                        <span
-                            // biome-ignore lint/a11y/noNoninteractiveTabindex: this focusable wrapper is the keyboard path to the revealed timestamp — the stamp must reach keyboard focus, and there is no interactive element to host it on
-                            tabIndex={0}
-                            className="updated-at"
-                            title={timestamp(data.meta.fetchedAt)}
-                        >
-                            Updated {relativeTime(data.meta.fetchedAt, now)}
-                            <time className="updated-at-full" dateTime={data.meta.fetchedAt}>
-                                {timestamp(data.meta.fetchedAt)}
-                            </time>
-                        </span>
-                    ) : (
-                        <span className="muted">Not updated yet</span>
-                    )
-                }
+                meta={<DashboardFreshness data={data} now={now} />}
                 actions={
                     // The only action on the stats read.
                     <button type="button" onClick={refresh} disabled={refreshing}>
@@ -116,27 +160,7 @@ export function DashboardPage() {
                 fetchedAt={data?.meta.fetchedAt ?? null}
                 now={now}
             />
-            {data && data.telemetry ? (
-                state === 'ready' ? (
-                    <>
-                        <UsageSummaryPanel telemetry={data.telemetry} meta={data.meta} />
-                        <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                        <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
-                        <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
-                    </>
-                ) : (
-                    // The one analytics empty state, replacing the dash-card chorus — with the
-                    // rendered selection named and exactly one next action. Per-task usage stays
-                    // when the board measured tasks the telemetry window cannot see.
-                    <>
-                        <section className="usage-empty">
-                            <h2>Nothing measured in this selection</h2>
-                            <p>{emptyStateCopy(data.telemetry, data.meta)}</p>
-                        </section>
-                        {state === 'partial' ? <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} /> : null}
-                    </>
-                )
-            ) : null}
+            {data && state !== null ? <AnalyticsPanels data={data} state={state} /> : null}
             {/* Outside the stats branch on purpose: completed jobs poll their own endpoint,
                     so the recent-tasks view is exactly the degraded-mode surface when the
                     statistics read is cold or failing — hiding it behind `data` would hide it

@@ -14,6 +14,9 @@ import {
 
 const SECRET = 'webhook-secret-for-the-installation-round-trip';
 const ORG = '424242';
+const HTTP_OK = 200;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_NOT_FOUND = 404;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -76,7 +79,7 @@ describe('POST /api/github/webhook', () => {
             'x-hub-signature-256': signature(body),
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({ ok: true });
         // The deletion IS the revocation: every credential joins through this row.
         expect(await store.membershipsOf(caller.user.id)).toEqual([]);
@@ -98,7 +101,7 @@ describe('POST /api/github/webhook', () => {
             'x-hub-signature-256': signature(body),
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({ ok: true });
         expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
     });
@@ -113,7 +116,7 @@ describe('POST /api/github/webhook', () => {
             'x-hub-signature-256': signature(body, 'a-secret-nobody-configured'),
         });
 
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
     });
 
@@ -124,7 +127,7 @@ describe('POST /api/github/webhook', () => {
 
         const response = await deliver(body, { 'x-github-event': 'organization' });
 
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
     });
 
@@ -139,8 +142,8 @@ describe('POST /api/github/webhook', () => {
         });
         const noEvent = await deliver(body, { 'x-hub-signature-256': signature(body) });
 
-        expect(push.statusCode).toBe(200);
-        expect(noEvent.statusCode).toBe(200);
+        expect(push.statusCode).toBe(HTTP_OK);
+        expect(noEvent.statusCode).toBe(HTTP_OK);
         expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
     });
 
@@ -158,7 +161,7 @@ describe('POST /api/github/webhook', () => {
             'x-hub-signature-256': signature(body),
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(await store.membershipsOf(caller.user.id)).toEqual([{ id: ORG, name: ORG }]);
     });
 
@@ -174,7 +177,7 @@ describe('POST /api/github/webhook', () => {
             'x-hub-signature-256': signature(body),
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('does not exist when no secret is configured', async () => {
@@ -189,37 +192,43 @@ describe('POST /api/github/webhook', () => {
             headers: { 'content-type': 'application/json', 'x-github-event': 'organization' },
         });
 
-        expect(response.statusCode).toBe(404);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
     });
 });
 
-describe('POST /api/github/webhook: PR families (036)', () => {
-    const REPO = 'acme/widgets';
-    const PR = 42;
-    /** The shape GitHub sends for PR-family events; `overrides` swap fields for the case at hand. */
-    const pr = (action: string, overrides: Record<string, unknown> = {}) =>
-        JSON.stringify({
-            action,
-            installation: { id: Number(ORG) },
-            repository: { full_name: REPO },
-            pull_request: { number: PR },
-            ...overrides,
-        });
-    const issueComment = (action: string, withPullRequest: boolean) =>
-        JSON.stringify({
-            action,
-            installation: { id: Number(ORG) },
-            repository: { full_name: REPO },
-            issue: {
-                number: PR,
-                ...(withPullRequest ? { pull_request: { url: 'https://github.com/x/1/pull/2' } } : {}),
-            },
-        });
-    const headersFor = (body: string, event: string, deliveryId: string) => ({
-        'x-github-event': event,
-        'x-github-delivery': deliveryId,
-        'x-hub-signature-256': signature(body),
+const PR_FAMILY_REPO = 'acme/widgets';
+const PR_FAMILY_PR = 42;
+const PR_FAMILY_SIBLING_PR = 43;
+/** The shape GitHub sends for PR-family events; `overrides` swap fields for the case at hand. */
+const prFamilyEvent = (action: string, overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+        action,
+        installation: { id: Number(ORG) },
+        repository: { full_name: PR_FAMILY_REPO },
+        pull_request: { number: PR_FAMILY_PR },
+        ...overrides,
     });
+const prFamilyIssueComment = (action: string, withPullRequest: boolean) =>
+    JSON.stringify({
+        action,
+        installation: { id: Number(ORG) },
+        repository: { full_name: PR_FAMILY_REPO },
+        issue: {
+            number: PR_FAMILY_PR,
+            ...(withPullRequest ? { pull_request: { url: 'https://github.com/x/1/pull/2' } } : {}),
+        },
+    });
+const prFamilyHeadersFor = (body: string, event: string, deliveryId: string) => ({
+    'x-github-event': event,
+    'x-github-delivery': deliveryId,
+    'x-hub-signature-256': signature(body),
+});
+
+describe('POST /api/github/webhook: PR families (036) — folding and dedupe', () => {
+    const REPO = PR_FAMILY_REPO;
+    const PR = PR_FAMILY_PR;
+    const pr = prFamilyEvent;
+    const headersFor = prFamilyHeadersFor;
 
     it('folds a pull_request synchronize into the orgs waits on that PR', async () => {
         const { prs } = await build();
@@ -228,7 +237,7 @@ describe('POST /api/github/webhook: PR families (036)', () => {
         const body = pr('synchronize');
         const response = await deliver(body, headersFor(body, 'pull_request', 'd1'));
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({ ok: true });
         expect(prs.deliveries()).toEqual([
             {
@@ -259,23 +268,33 @@ describe('POST /api/github/webhook: PR families (036)', () => {
     });
 
     it('cancels the waits addressed to a closed PR; a sibling PR is untouched', async () => {
+        const SIBLING_PR = PR_FAMILY_SIBLING_PR;
         const { prs } = await build();
         prs.seedWait(REPO, PR);
-        prs.seedWait(REPO, 43);
+        prs.seedWait(REPO, SIBLING_PR);
 
         await deliver(pr('closed'), headersFor(pr('closed'), 'pull_request', 'c1'));
         // The closed PR's wait is gone: a later delivery folds nothing and records unmatched.
         await deliver(pr('synchronize'), headersFor(pr('synchronize'), 'pull_request', 'd3'));
         // The sibling still wakes.
-        const sibling = pr('synchronize', { pull_request: { number: 43 } });
+        const sibling = pr('synchronize', { pull_request: { number: SIBLING_PR } });
         await deliver(sibling, headersFor(sibling, 'pull_request', 'd4'));
 
         expect(prs.cancellations()).toEqual([{ repo: REPO, prNumber: PR, terminalReason: 'pr closed' }]);
         expect(prs.deliveries().map((d) => [d.prNumber, d.outcome])).toEqual([
-            [42, 'unmatched'],
-            [43, 'folded'],
+            [PR, 'unmatched'],
+            [SIBLING_PR, 'folded'],
         ]);
     });
+});
+
+describe('POST /api/github/webhook: PR families (036) — event coverage', () => {
+    const REPO = PR_FAMILY_REPO;
+    const PR = PR_FAMILY_PR;
+    const pr = prFamilyEvent;
+    const issueComment = prFamilyIssueComment;
+    const headersFor = prFamilyHeadersFor;
+    const EXPECTED_PENDING = 3;
 
     it('folds review, review-comment and PR issue-comment events; bare issue chatter does not', async () => {
         const { prs } = await build();
@@ -296,7 +315,7 @@ describe('POST /api/github/webhook: PR families (036)', () => {
             'pull_request_review_comment:created:folded',
             'issue_comment:created:folded',
         ]);
-        expect(prs.waits().find((w) => w.repo === REPO && w.prNumber === PR)?.pending).toBe(3);
+        expect(prs.waits().find((w) => w.repo === REPO && w.prNumber === PR)?.pending).toBe(EXPECTED_PENDING);
     });
 
     it('ignores unsupported actions and a delivery with no delivery GUID', async () => {
@@ -314,10 +333,18 @@ describe('POST /api/github/webhook: PR families (036)', () => {
             'x-hub-signature-256': signature(unsigned),
         });
 
-        expect(noGuid.statusCode).toBe(200);
+        expect(noGuid.statusCode).toBe(HTTP_OK);
         expect(prs.deliveries()).toEqual([]);
         expect(prs.waits().find((w) => w.repo === REPO && w.prNumber === PR)?.pending).toBe(0);
     });
+});
+
+describe('POST /api/github/webhook: PR families (036) — no-op guards', () => {
+    const REPO = PR_FAMILY_REPO;
+    const PR = PR_FAMILY_PR;
+    const pr = prFamilyEvent;
+    const headersFor = prFamilyHeadersFor;
+    const OVER_DELIVERY_ID_LENGTH = 65;
 
     it('acks a delivery with no clean installation, repo or PR number without a store call', async () => {
         const { prs } = await build();
@@ -331,7 +358,7 @@ describe('POST /api/github/webhook: PR families (036)', () => {
         });
         await deliver(noRepo, headersFor(noRepo, 'pull_request', 'n1'));
         // A delivery GUID longer than the column it would land in is refused, not truncated.
-        const longId = 'x'.repeat(65);
+        const longId = 'x'.repeat(OVER_DELIVERY_ID_LENGTH);
         const body = pr('synchronize');
         await deliver(body, headersFor(body, 'pull_request', longId));
 
@@ -352,7 +379,7 @@ describe('POST /api/github/webhook: PR families (036)', () => {
         });
         const response = await deliver(body, headersFor(body, 'pull_request', 'x1'));
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(prs.deliveries()).toEqual([]);
     });
 });

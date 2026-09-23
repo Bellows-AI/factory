@@ -208,6 +208,10 @@ exit "\${STUB_STATUS:-0}"
 const STUB_SETTLE_S = '0.5';
 const EXIT_TIMEOUT_MS = 10_000;
 const STARTED_TIMEOUT_MS = 5_000;
+/** The stub CLI's own chosen exit status, for the "re-raises it" assertion. */
+const STUB_EXIT_CODE = 7;
+/** A signal death's exit status: 128 + the signal number (SIGTERM is 15). */
+const TERM_DEATH_EXIT_CODE = 143;
 
 interface Sandbox {
     bin: string;
@@ -220,6 +224,8 @@ interface Sandbox {
 // entrypoints expect: WORKDIR must exist (they exit 2 otherwise), HOME and CLAUDE_CONFIG_DIR
 // point at the sandbox, and the container-only blocks — /opt/claude-home seeding, the OTEL
 // rewrites, TRUST_WORKDIR — are all skipped because their guards are absent locally.
+const EXECUTABLE_MODE = 0o755;
+
 const makeSandbox = (): Sandbox => {
     const root = mkdtempSync(join(tmpdir(), 'executor-entrypoint-'));
     const bin = join(root, 'bin');
@@ -228,7 +234,7 @@ const makeSandbox = (): Sandbox => {
     mkdirSync(work);
     for (const cli of ['claude', 'opencode']) {
         writeFileSync(join(bin, cli), STUB);
-        chmodSync(join(bin, cli), 0o755);
+        chmodSync(join(bin, cli), EXECUTABLE_MODE);
     }
     return {
         bin,
@@ -264,13 +270,15 @@ const whenExited = (child: ReturnType<typeof spawn>, ms: number): Promise<number
         });
     });
 
+const FILE_POLL_INTERVAL_MS = 25;
+
 const whenFileExists = (path: string, ms: number): Promise<void> =>
     new Promise((resolve, reject) => {
         const deadline = Date.now() + ms;
         const poll = () => {
             if (existsSync(path)) return resolve();
             if (Date.now() > deadline) return reject(new Error(`${path} never appeared`));
-            setTimeout(poll, 25);
+            setTimeout(poll, FILE_POLL_INTERVAL_MS);
         };
         poll();
     });
@@ -282,8 +290,8 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
     ])('%s re-raises the CLI’s own chosen exit status', async (entrypoint) => {
         const sandbox = makeSandbox();
         try {
-            const child = runEntrypoint(entrypoint, sandbox, { STUB_STATUS: '7' });
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(7);
+            const child = runEntrypoint(entrypoint, sandbox, { STUB_STATUS: String(STUB_EXIT_CODE) });
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
         } finally {
             sandbox.cleanup();
         }
@@ -303,7 +311,7 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
             // 143 is the CLI's own signal death (128+TERM), re-raised by the shell — and
             // reaching an exit at all proves the reporter was reaped: the shell would
             // otherwise still sit in wait on it when the timeout SIGKILLs the lot.
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(143);
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(TERM_DEATH_EXIT_CODE);
             // The substance: the marker is written by the STUB's own trap, so it exists only
             // if the signal truly reached the CLI rather than the shell merely dying.
             expect(readFileSync(join(sandbox.bin, 'signaled'), 'utf8')).toMatch(/^\d+$/m);

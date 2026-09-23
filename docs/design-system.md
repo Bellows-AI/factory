@@ -339,6 +339,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 | `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |
+| `env-vars-panel-parts.tsx` | presentational helper `EnvVarsPanel.tsx` imports (tablist, table, banner, tab panels) — no primitives beyond `env` |
 
 Pages:
 

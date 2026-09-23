@@ -234,6 +234,16 @@ export interface SummaryRow {
     active: boolean;
 }
 
+/** One org's summary label: its tracking mode, spelled out — the same three sentences the
+ * disclosure's collapsed summary uses. */
+const orgSummaryLabel = (draft: OrgDraft): string => {
+    if (draft.mode === 'all') return 'All current and future repositories';
+    if (draft.listing.kind === 'ready') {
+        return `${draft.chosen.size} specific ${draft.chosen.size === 1 ? 'repository' : 'repositories'}`;
+    }
+    return 'Specific repositories (not reviewable right now)';
+};
+
 /**
  * The summary's rows: one per selected org, payload order, naming its mode — "All current and
  * future repositories", "N specific repositories", or the not-reviewable mark for a specific
@@ -251,13 +261,12 @@ export const summaryRows = (
         if (!selected.has(installation.id)) continue;
         const draft = drafts.get(installation.id);
         if (!draft) continue;
-        const label =
-            draft.mode === 'all'
-                ? 'All current and future repositories'
-                : draft.listing.kind === 'ready'
-                  ? `${draft.chosen.size} specific ${draft.chosen.size === 1 ? 'repository' : 'repositories'}`
-                  : 'Specific repositories (not reviewable right now)';
-        rows.push({ id: installation.id, account: installation.account, label, active: false });
+        rows.push({
+            id: installation.id,
+            account: installation.account,
+            label: orgSummaryLabel(draft),
+            active: false,
+        });
     }
     const active = rows.find((row) => row.id === requestedOrgId) ?? rows[0];
     if (active) rows[rows.indexOf(active)]!.active = true;

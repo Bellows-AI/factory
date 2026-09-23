@@ -29,23 +29,25 @@ function sum(name: string, points: Record<string, unknown>[], ...temporality: un
 
 describe('the OTLP wire format', () => {
     it('reads asInt, which is a string-encoded int64', () => {
+        const TOKEN_USAGE = 4210;
         const { rows } = flattenMetrics(
             body(
                 sum('claude_code.token.usage', [
-                    { asInt: '4210', timeUnixNano: NANOS, attributes: [attr('type', 'input')] },
+                    { asInt: String(TOKEN_USAGE), timeUnixNano: NANOS, attributes: [attr('type', 'input')] },
                 ])
             )
         );
-        expect(rows[0]?.value).toBe(4210);
+        expect(rows[0]?.value).toBe(TOKEN_USAGE);
         expect(typeof rows[0]?.value).toBe('number');
         expect(Number.isNaN(rows[0]?.value)).toBe(false);
     });
 
     it('reads asDouble and a gauge', () => {
+        const ACTIVE_TIME_SECONDS = 12.5;
         const { rows } = flattenMetrics(
-            body(sum('claude_code.active_time.total', [{ asDouble: 12.5, timeUnixNano: NANOS }]))
+            body(sum('claude_code.active_time.total', [{ asDouble: ACTIVE_TIME_SECONDS, timeUnixNano: NANOS }]))
         );
-        expect(rows[0]?.value).toBe(12.5);
+        expect(rows[0]?.value).toBe(ACTIVE_TIME_SECONDS);
 
         const gauge = flattenMetrics(
             body({ name: 'claude_code.session.count', gauge: { dataPoints: [{ asInt: '1', timeUnixNano: NANOS }] } })

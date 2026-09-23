@@ -10,6 +10,10 @@ export interface WorkflowSettingsRouteDeps {
 
 const FIELDS = ['reviewReconciliation', 'mergeConflictAutofix'] as const;
 
+const HTTP_OK = 200;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_UNAVAILABLE = 503;
+
 /**
  * PUT requires EXACTLY the complete boolean pair — no partial update, no unknown key. One refusal
  * code for every way a body can be wrong, per the issue's contract.
@@ -50,11 +54,11 @@ export const workflowSettingsRoutes =
                     reply,
                     'WORKFLOW_SETTINGS_UNAVAILABLE',
                     'No workflow settings store for this organization',
-                    503
+                    HTTP_UNAVAILABLE
                 );
             }
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
 
             const loaded = await guard(
                 reply,
@@ -63,7 +67,7 @@ export const workflowSettingsRoutes =
             );
             if (!loaded.ok) return reply;
 
-            return reply.code(200).send(loaded.value);
+            return reply.code(HTTP_OK).send(loaded.value);
         });
 
         app.put('/api/workflows/default-settings', { bodyLimit: 4096 }, async (request, reply) => {
@@ -73,11 +77,11 @@ export const workflowSettingsRoutes =
                     reply,
                     'WORKFLOW_SETTINGS_UNAVAILABLE',
                     'No workflow settings store for this organization',
-                    503
+                    HTTP_UNAVAILABLE
                 );
             }
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
 
             const pair = parsePair(request.body);
             if (typeof pair === 'string') return bad(reply, 'BAD_DEFAULT_WORKFLOW', pair);
@@ -89,6 +93,6 @@ export const workflowSettingsRoutes =
             );
             if (!saved.ok) return reply;
 
-            return reply.code(200).send(saved.value);
+            return reply.code(HTTP_OK).send(saved.value);
         });
     };

@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { AuthStore } from '../auth/store.js';
 import type { OrgRegistry } from '../orgs.js';
 
@@ -7,6 +7,9 @@ import type { OrgRegistry } from '../orgs.js';
  * A payload big enough for any member or PR event and far above what a real delivery can reach.
  */
 const BODY_LIMIT = 1_000_000;
+
+const HTTP_OK = 200;
+const HTTP_UNAUTHORIZED = 401;
 
 /**
  * The delivery GUID is the webhook's dedupe key (036) and the column's length bound — a value
@@ -37,6 +40,15 @@ interface WebhookPayload {
     issue?: { number?: unknown; pull_request?: unknown } | null;
 }
 
+/** `'invalid'` rather than throwing: a body GitHub signed that does not parse is a 200, not a fault. */
+function parseWebhookPayload(body: Buffer): WebhookPayload | 'invalid' {
+    try {
+        return JSON.parse(body.toString('utf8')) as WebhookPayload;
+    } catch {
+        return 'invalid';
+    }
+}
+
 /**
  * The PR families whose activity wakes a PR wait (036), each action routing to a fold (more
  * activity) or a cancel (the wait's subject is gone). A rule answers null for an action this
@@ -55,6 +67,111 @@ const PR_FAMILIES: Record<string, (action: unknown) => 'fold' | 'cancel' | null>
     issue_comment: (action) => (action === 'created' || action === 'edited' ? 'fold' : null),
 };
 
+/** Unknown events are ignored loudly enough to find in the log, answered 200. */
+function resolveDeed(event: unknown, action: unknown): 'fold' | 'cancel' | null {
+    const route = typeof event === 'string' ? PR_FAMILIES[event] : undefined;
+    return route === undefined ? null : route(action);
+}
+
+async function handleOrganizationEvent(store: AuthStore, payload: WebhookPayload, reply: FastifyReply): Promise<void> {
+    if (payload.action !== 'member_removed') {
+        reply.code(HTTP_OK).send({ ok: true });
+        return;
+    }
+
+    // installation.id IS the organization id — the orgs are the App's installations (#99) — and
+    // membership.user.id is THE identity: github_login is a label (docs/auth.md).
+    const installation = payload.installation?.id;
+    const githubUserId = payload.membership?.user?.id;
+    if (typeof installation !== 'number' || typeof githubUserId !== 'number') {
+        reply.code(HTTP_OK).send({ ok: true });
+        return;
+    }
+
+    // The deletion is the whole act of revocation: findSession and findPersonalToken inner-join
+    // through org_membership, so the removed account's every credential dies on its next request —
+    // bounded by GitHub's report, not the next sign-in.
+    await store.removeMember(String(installation), githubUserId);
+    reply.code(HTTP_OK).send({ ok: true });
+}
+
+interface PrActivity {
+    installation: number;
+    repo: string;
+    number: number;
+    deliveryId: string;
+}
+
+/** A delivery without a clean installation/repo/number/guid names no wait of ours. */
+function parsePrActivity(event: string, payload: WebhookPayload, deliveryIdHeader: unknown): PrActivity | null {
+    const installation = payload.installation?.id;
+    const repo = payload.repository?.full_name;
+    // A fold reached past the family routing, so `event` named a family — a string.
+    const number = event === 'issue_comment' ? payload.issue?.number : payload.pull_request?.number;
+    const deliveryId = deliveryIdHeader;
+    if (
+        typeof installation !== 'number' ||
+        typeof repo !== 'string' ||
+        repo === '' ||
+        typeof number !== 'number' ||
+        number < 1 ||
+        typeof deliveryId !== 'string' ||
+        deliveryId === '' ||
+        deliveryId.length > DELIVERY_ID_LIMIT
+    ) {
+        return null;
+    }
+    return { installation, repo, number, deliveryId };
+}
+
+interface PrEventInput {
+    event: string;
+    deed: 'fold' | 'cancel';
+    payload: WebhookPayload;
+    deliveryIdHeader: unknown;
+}
+
+async function handlePrEvent(orgs: OrgRegistry, input: PrEventInput, reply: FastifyReply): Promise<void> {
+    const { event, deed, payload, deliveryIdHeader } = input;
+    // An issue comment counts as PR activity only when it sits on a pull request — plain issue
+    // chatter is the same no-op as an unrelated event.
+    if (event === 'issue_comment' && payload.issue?.pull_request === undefined) {
+        reply.code(HTTP_OK).send({ ok: true });
+        return;
+    }
+
+    const activity = parsePrActivity(event, payload, deliveryIdHeader);
+    if (!activity) {
+        // A delivery without a clean installation/repo/number/guid names no wait of ours — a
+        // 200 no-op, never a store call that could touch the wrong rows.
+        reply.code(HTTP_OK).send({ ok: true });
+        return;
+    }
+
+    // The org is the installation the delivery addresses — another org's runtimes are never
+    // consulted, and an org with no PR store (a deployment older than 036) just acks.
+    const runtime = await orgs.for(String(activity.installation));
+    if (runtime?.prs === undefined) {
+        reply.code(HTTP_OK).send({ ok: true });
+        return;
+    }
+
+    if (deed === 'fold') {
+        // The GUID is the dedupe key: a redelivery inserts nothing and folds nothing, so
+        // duplicate and out-of-order deliveries never enqueue duplicate work.
+        await runtime.prs.recordDelivery({
+            deliveryId: activity.deliveryId,
+            event,
+            action: String(payload.action),
+            repo: activity.repo,
+            prNumber: activity.number,
+        });
+    } else {
+        await runtime.prs.cancelForRepoPr(activity.repo, activity.number, 'pr closed');
+    }
+    reply.code(HTTP_OK).send({ ok: true });
+}
+
 export const webhookRoutes =
     ({ store, orgs, secret }: { store: AuthStore; orgs: OrgRegistry; secret: string }): FastifyPluginAsync =>
     async (app) => {
@@ -68,89 +185,31 @@ export const webhookRoutes =
             // (OPEN_ROUTES) precisely so it can do its own authentication.
             const body = request.body as Buffer;
             if (!signatureMatches(secret, request.headers['x-hub-signature-256'], body)) {
-                return reply.code(401).send({ error: 'Invalid signature', code: 'UNAUTHENTICATED' });
+                return reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid signature', code: 'UNAUTHENTICATED' });
             }
 
             // A body GitHub signed that does not parse is not fixed by a redelivery, so it is
             // 200 and a log line — never a 4xx/5xx for GitHub to retry forever.
-            let payload: WebhookPayload;
-            try {
-                payload = JSON.parse(body.toString('utf8')) as WebhookPayload;
-            } catch (e) {
-                request.log.warn({ err: e }, 'webhook body did not parse');
-                return reply.code(200).send({ ok: true });
+            const payload = parseWebhookPayload(body);
+            if (payload === 'invalid') {
+                request.log.warn('webhook body did not parse');
+                return reply.code(HTTP_OK).send({ ok: true });
             }
 
             const event = request.headers['x-github-event'];
 
             if (event === 'organization') {
-                if (payload.action !== 'member_removed') return reply.code(200).send({ ok: true });
-
-                // installation.id IS the organization id — the orgs are the App's installations (#99) —
-                // and membership.user.id is THE identity: github_login is a label (docs/auth.md).
-                const installation = payload.installation?.id;
-                const githubUserId = payload.membership?.user?.id;
-                if (typeof installation !== 'number' || typeof githubUserId !== 'number') {
-                    return reply.code(200).send({ ok: true });
-                }
-
-                // The deletion is the whole act of revocation: findSession and findPersonalToken
-                // inner-join through org_membership, so the removed account's every credential dies
-                // on its next request — bounded by GitHub's report, not the next sign-in.
-                await store.removeMember(String(installation), githubUserId);
-                return reply.code(200).send({ ok: true });
+                return handleOrganizationEvent(store, payload, reply);
             }
 
-            // Unknown events are ignored loudly enough to find in the log, answered 200.
-            const route = typeof event === 'string' ? PR_FAMILIES[event] : undefined;
-            const deed = route === undefined ? null : route(payload.action);
-            if (deed === null) return reply.code(200).send({ ok: true });
+            const deed = resolveDeed(event, payload.action);
+            if (deed === null) return reply.code(HTTP_OK).send({ ok: true });
 
-            // An issue comment counts as PR activity only when it sits on a pull request — plain
-            // issue chatter is the same no-op as an unrelated event.
-            if (event === 'issue_comment' && payload.issue?.pull_request === undefined) {
-                return reply.code(200).send({ ok: true });
-            }
-
-            const installation = payload.installation?.id;
-            const repo = payload.repository?.full_name;
             // A fold reached past the family routing, so `event` named a family — a string.
-            const eventName = event as string;
-            const number = eventName === 'issue_comment' ? payload.issue?.number : payload.pull_request?.number;
-            const deliveryId = request.headers['x-github-delivery'];
-            if (
-                typeof installation !== 'number' ||
-                typeof repo !== 'string' ||
-                repo === '' ||
-                typeof number !== 'number' ||
-                number < 1 ||
-                typeof deliveryId !== 'string' ||
-                deliveryId === '' ||
-                deliveryId.length > DELIVERY_ID_LIMIT
-            ) {
-                // A delivery without a clean installation/repo/number/guid names no wait of ours —
-                // a 200 no-op, never a store call that could touch the wrong rows.
-                return reply.code(200).send({ ok: true });
-            }
-
-            // The org is the installation the delivery addresses — another org's runtimes are never
-            // consulted, and an org with no PR store (a deployment older than 036) just acks.
-            const runtime = await orgs.for(String(installation));
-            if (runtime?.prs === undefined) return reply.code(200).send({ ok: true });
-
-            if (deed === 'fold') {
-                // The GUID is the dedupe key: a redelivery inserts nothing and folds nothing, so
-                // duplicate and out-of-order deliveries never enqueue duplicate work.
-                await runtime.prs.recordDelivery({
-                    deliveryId,
-                    event: eventName,
-                    action: String(payload.action),
-                    repo,
-                    prNumber: number,
-                });
-            } else {
-                await runtime.prs.cancelForRepoPr(repo, number, 'pr closed');
-            }
-            return reply.code(200).send({ ok: true });
+            return handlePrEvent(
+                orgs,
+                { event: event as string, deed, payload, deliveryIdHeader: request.headers['x-github-delivery'] },
+                reply
+            );
         });
     };

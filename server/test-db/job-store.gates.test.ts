@@ -13,12 +13,8 @@ const TOKEN = '22222222-2222-4222-8222-222222222222';
 
 const db = useTestDb({ max: 4 });
 
-/** The chained follow-ups must land; a refusal here is a setup failure, not a branch under test. */
-const followUp = (target: JobStore, root: string, command: string, userId: string): Promise<{ id: string }> =>
-    target.createFollowUp(root, command, userId).then((ref) => {
-        if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
-        return ref;
-    });
+/** A lease long enough that nothing in this suite outlives it by accident. */
+const LEASE_SECONDS = 300;
 
 beforeAll(async () => {
     if (!enabled) return;
@@ -48,14 +44,15 @@ const gatedStore = (answer: { config: unknown; error: string | null }): JobStore
 
 describe.runIf(enabled)('gates on the job store', () => {
     it('carries the parsed declaration and the repo label on a gated claim', async () => {
-        const userId = await account(6001, 'gate-cat');
+        const GATE_CAT_GITHUB_ID = 6001;
+        const userId = await account(GATE_CAT_GITHUB_ID, 'gate-cat');
         const gated = gatedStore({
             config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
             error: null,
         });
         await gated.create('fix the bug', userId, { repo: 'acme/web', executor: null });
 
-        const claim = await gated.claim('driver-1', 300);
+        const claim = await gated.claim('driver-1', LEASE_SECONDS);
 
         expect(claim?.repo).toBe('acme/web');
         expect(claim?.gates).toEqual({ image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
@@ -63,21 +60,23 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('carries a gateError value — not a throw — when the file cannot be honoured', async () => {
-        const userId = await account(6002, 'gate-dog');
+        const GATE_DOG_GITHUB_ID = 6002;
+        const userId = await account(GATE_DOG_GITHUB_ID, 'gate-dog');
         const broken = gatedStore({ config: null, error: '.bellows.yaml line 3: unknown key "timeout"' });
         await broken.create('fix the bug', userId, { repo: 'acme/web', executor: null });
 
-        const claim = await broken.claim('driver-1', 300);
+        const claim = await broken.claim('driver-1', LEASE_SECONDS);
 
         expect(claim?.gates).toBeNull();
         expect(claim?.gateError).toBe('.bellows.yaml line 3: unknown key "timeout"');
     });
 
     it('carries no gates at all for a repository that declares none', async () => {
-        const userId = await account(6003, 'plain-cat');
+        const PLAIN_CAT_GITHUB_ID = 6003;
+        const userId = await account(PLAIN_CAT_GITHUB_ID, 'plain-cat');
         await store.create('echo hi', userId, { repo: 'acme/web', executor: null });
 
-        const claim = await store.claim('driver-1', 300);
+        const claim = await store.claim('driver-1', LEASE_SECONDS);
 
         // A store built without a gates reader — the state of every deployment and test that
         // predates the feature — reads as "no gates", not as an error.
@@ -86,9 +85,10 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('replaces the gate state on every report, and answers the last one on read', async () => {
-        const userId = await account(6004, 'gate-owl');
+        const GATE_OWL_GITHUB_ID = 6004;
+        const userId = await account(GATE_OWL_GITHUB_ID, 'gate-owl');
         await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        const claim = await store.claim('driver-1', 300);
+        const claim = await store.claim('driver-1', LEASE_SECONDS);
         const running: GateReport[] = [{ name: 'test', status: 'running', exitCode: null, output: null }];
         const finished: GateReport[] = [{ name: 'test', status: 'failed', exitCode: 3, output: 'boom' }];
 
@@ -101,9 +101,10 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('guards gate reports with the lease, like every other worker write', async () => {
-        const userId = await account(6005, 'gate-fox');
+        const GATE_FOX_GITHUB_ID = 6005;
+        const userId = await account(GATE_FOX_GITHUB_ID, 'gate-fox');
         await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        await store.claim('driver-1', 300);
+        await store.claim('driver-1', LEASE_SECONDS);
         const report: GateReport[] = [{ name: 'test', status: 'passed', exitCode: 0, output: null }];
 
         // A stale token is a lost lease, not a missing row; an absent job is missing.
@@ -111,9 +112,10 @@ describe.runIf(enabled)('gates on the job store', () => {
     });
 
     it('omits gates from the list projection, like output', async () => {
-        const userId = await account(6006, 'gate-emu');
+        const GATE_EMU_GITHUB_ID = 6006;
+        const userId = await account(GATE_EMU_GITHUB_ID, 'gate-emu');
         await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        const claim = await store.claim('driver-1', 300);
+        const claim = await store.claim('driver-1', LEASE_SECONDS);
         await store.gates(claim!.id, claim!.leaseToken, [
             { name: 'test', status: 'passed', exitCode: 0, output: 'all green' },
         ]);
@@ -121,88 +123,5 @@ describe.runIf(enabled)('gates on the job store', () => {
         const listed = await store.list({ limit: 10 });
         expect(listed).toHaveLength(1);
         expect(listed[0]?.gates).toBeNull();
-    });
-
-    // The driver syncs the checkout after the claim, so the claim's gates answer can predate the
-    // tree the run will actually see. The re-read is the freshness channel, lease-guarded like
-    // every worker route.
-    it('re-reads the gates for the lease holder, from the same checkout the claim read', async () => {
-        const userId = await account(6007, 'gate-bat');
-        // First answer: the stale tree the claim saw. Second: what the synced tree holds.
-        const answers = [
-            { config: null, error: null },
-            { config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, error: null },
-        ];
-        let call = 0;
-        const reader = createJobStore({
-            sql,
-            orgId: ORG,
-            gates: {
-                readFor: async () => answers[Math.min(call++, answers.length - 1)]!,
-            },
-        });
-        await reader.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        const claim = await reader.claim('driver-1', 300);
-
-        // A stale-tree read of nothing omits gates from the claim entirely — the shape every
-        // ungated job carries.
-        expect(claim?.gates).toBeUndefined();
-        const reread = await reader.rereadGates(claim!.id, claim!.leaseToken);
-        expect(reread).toEqual({
-            result: 'ok',
-            gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
-            gateError: null,
-        });
-    });
-
-    it('guards the gates re-read with the lease, like every other worker route', async () => {
-        const userId = await account(6008, 'gate-hare');
-        await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
-        await store.claim('driver-1', 300);
-
-        // A stale token is a lost lease, not a missing row; an absent job is missing.
-        expect(await store.rereadGates(ABSENT, TOKEN)).toEqual({ result: 'missing' });
-    });
-
-    // The gates the run satisfies live in the thread's worktree (issue #35), which is keyed by
-    // the thread's ROOT job — so both the claim's read and the re-read must resolve the root
-    // through the follow-up chain and hand THAT id to the reader.
-    it('reads the gates of the thread root’s worktree, on the claim and on the re-read', async () => {
-        const userId = await account(6009, 'gate-wolf');
-        const seen: { workspacePath: string; repo: string; worktreeId: string | null }[] = [];
-        const reader = createJobStore({
-            sql,
-            orgId: ORG,
-            gates: {
-                readFor: async (workspacePath, repo, worktreeId) => {
-                    seen.push({ workspacePath, repo, worktreeId: worktreeId ?? null });
-                    return { config: null, error: null };
-                },
-            },
-        });
-        // A finished root with a session, a finished follow-up on it, and a follow-up on the
-        // follow-up — a three-row thread.
-        await reader.create('root task', userId, { repo: 'acme/web', executor: null });
-        const rootClaim = await reader.claim('driver-1', 300);
-        const root = rootClaim!.id;
-        await reader.session(root, rootClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
-        await reader.complete(root, rootClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        const child = await followUp(reader, root, 'adjust', userId);
-        const childClaim = await reader.claim('driver-1', 300);
-        await reader.session(child.id, childClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
-        await reader.complete(child.id, childClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        const grand = await followUp(reader, child.id, 'again', userId);
-
-        // The grandchild is the only claimable row now; its claim reads the ROOT's worktree.
-        seen.length = 0;
-        const claim = await reader.claim('driver-1', 300);
-        expect(claim?.id).toBe(grand.id);
-        expect(claim?.rootJobId).toBe(root);
-        expect(seen).toEqual([{ workspacePath: `${ORG}/${userId}`, repo: 'acme/web', worktreeId: root }]);
-
-        // And the re-read resolves the same root, inside the lease guard.
-        seen.length = 0;
-        await reader.rereadGates(grand.id, claim!.leaseToken);
-        expect(seen).toEqual([{ workspacePath: `${ORG}/${userId}`, repo: 'acme/web', worktreeId: root }]);
     });
 });

@@ -39,6 +39,18 @@
                 "noSvgWithoutTitle": "off"
             },
             "complexity": {
+                "noExcessiveCognitiveComplexity": {
+                    "level": "error",
+                    "options": { "maxAllowedComplexity": 15 }
+                },
+                "noExcessiveLinesPerFunction": {
+                    "level": "error",
+                    "options": { "maxLines": 100, "skipBlankLines": true }
+                },
+                "useMaxParams": {
+                    "level": "error",
+                    "options": { "max": 4 }
+                },
                 "noAdjacentSpacesInRegex": "off",
                 "noUselessFragments": "off",
                 "useLiteralKeys": "off",
@@ -54,6 +66,11 @@
                 "useJsxKeyInIterable": "off"
             },
             "style": {
+                "noExcessiveLinesPerFile": {
+                    "level": "error",
+                    "options": { "maxLines": 500, "skipBlankLines": true }
+                },
+                "noMagicNumbers": "error",
                 "noNonNullAssertion": "off",
                 "useImportType": "off",
                 "useTemplate": "off"
@@ -87,5 +104,22 @@
     "css": {
         "formatter": { "enabled": false },
         "linter": { "enabled": false }
-    }
+    },
+    "overrides": [
+        {
+            "includes": ["core/test/**", "server/test/**", "server/test-db/**", "driver/test/**", "web/test/**"],
+            "linter": {
+                "rules": {
+                    "complexity": {
+                        "noExcessiveCognitiveComplexity": "off",
+                        "noExcessiveLinesPerFunction": "off"
+                    },
+                    "style": {
+                        "noExcessiveLinesPerFile": "off",
+                        "noMagicNumbers": "off"
+                    }
+                }
+            }
+        }
+    ]
 }
