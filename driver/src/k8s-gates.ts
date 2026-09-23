@@ -129,7 +129,7 @@ async function readGateJobStatus(deps: K8sDeps, jobName: string, failures: { cou
     try {
         response = await deps.request('GET', jobPath(deps.config.k8sNamespace, jobName));
     } catch (e) {
-        return { kind: retryOrThrow(failures, () => e as Error) };
+        return { kind: retryOrThrow(failures, () => gateHarness((e as Error).message)) };
     }
     if (response.status === HTTP_NOT_FOUND) {
         throw gateHarness(`the gate job ${jobName} no longer exists`);
@@ -355,7 +355,7 @@ async function readGateVerdict(deps: K8sDeps, path: string, what: string): Promi
         try {
             response = await deps.request('GET', path);
         } catch (e) {
-            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) throw e;
+            if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) throw gateHarness((e as Error).message);
             await deps.sleep(POLL_MS);
             continue;
         }
@@ -363,7 +363,7 @@ async function readGateVerdict(deps: K8sDeps, path: string, what: string): Promi
             return response;
         }
         if (++failures > POLL_MAX_CONSECUTIVE_FAILURES) {
-            throw new Error(`${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`);
+            throw gateHarness(`${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`);
         }
         await deps.sleep(POLL_MS);
     }

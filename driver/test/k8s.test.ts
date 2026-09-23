@@ -4860,6 +4860,23 @@ describe('the kubernetes gate manager', () => {
         await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
     });
 
+    // Verified bug (docs/plans/k8s-runner-prune.md Step 0): a transport failure that exhausts the
+    // status-poll retries used to rethrow the raw error with no CONTAINER_GONE code, while the
+    // 429/5xx exhaustion arm already wrapped it — so `gates.ts`'s ad-hoc endpoint (which maps
+    // CONTAINER_GONE to 409) answered 500 for a kubernetes API-server outage where docker answers
+    // 409 for the same harness failure.
+    it('rejects with the harness code when the api server cannot be reached at all', async () => {
+        const request: K8sRequest = (method, path) => {
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) return Promise.resolve({ status: 201, body: '{}' });
+            if (path === jobsPath(namespace)) return Promise.resolve({ status: 201, body: '{}' });
+            if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.reject(new Error('ECONNREFUSED'));
+            return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
+        };
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
+    });
+
     it('names an unpullable gate image instead of burning the deadline', async () => {
         const { request } = gateFake({
             job: { status: 200, body: '{"status":{}}' },
