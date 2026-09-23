@@ -1,4 +1,5 @@
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
+import { useDownwardAnchor } from '../anchor.js';
 import { isTerminal, type Job } from '../api/useJobs.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { wallClock } from '../format.js';
@@ -73,6 +74,9 @@ function TaskHeaderActions({
     onDone: (id: string) => Promise<void>;
     onRemoveRequest: () => void;
 }) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('end');
     return (
         <div className="task-actions">
             {stoppable ? (
@@ -100,12 +104,14 @@ function TaskHeaderActions({
             ) : null}
             {removeAvailable ? (
                 <Menu>
-                    <MenuButton className="chat-resume">More task actions</MenuButton>
+                    <MenuButton ref={setReference} className="chat-resume">
+                        More task actions
+                    </MenuButton>
                     {/* The anchored menu is the destructive overflow: Remove task lives here and
                     nowhere else. Focus lands back on this trigger — the menu restores it on
                     close, and the dialog the item opens restores it to the element focused
                     before it captured the caret. */}
-                    <MenuItems anchor="bottom end" className="popover">
+                    <MenuItems ref={setFloating} style={floatingStyles} portal className="popover">
                         <MenuItem>
                             <button type="button" className="popover-option chat-remove" onClick={onRemoveRequest}>
                                 Remove task

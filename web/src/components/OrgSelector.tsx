@@ -1,5 +1,6 @@
 import type { OrganizationMeta } from '@factory-ai/core';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
+import { useDownwardAnchor } from '../anchor.js';
 
 /**
  * The organization these figures belong to — and, since #99, the one the caller can switch to.
@@ -31,16 +32,24 @@ export function OrgSelector({
         ? 'This deployment reports on one organization. Sign in with GitHub to see the installations you belong to.'
         : 'Switch organization';
 
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
+
     return (
         // The title sits on the wrapper, not on the button: a disabled control receives no
         // mouse events in Chrome or Firefox, so a title on the element itself never shows.
         <div className="org-selector" title={reason}>
             <span className="muted">org</span>
             <Listbox value={organization.current.id} onChange={(id) => onSwitch?.(id)} disabled={locked}>
-                <ListboxButton className="org-select" aria-label={`Organization: ${organization.current.name}`}>
+                <ListboxButton
+                    ref={setReference}
+                    className="select-trigger org-select"
+                    aria-label={`Organization: ${organization.current.name}`}
+                >
                     {organization.current.name}
                 </ListboxButton>
-                <ListboxOptions anchor="bottom start" className="popover">
+                <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
                     {organization.available.map((org) => (
                         <ListboxOption key={org.id} value={org.id} className="popover-option">
                             {org.name}
