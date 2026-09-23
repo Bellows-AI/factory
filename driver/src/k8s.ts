@@ -40,11 +40,15 @@ export {
     secretName,
 } from './k8s-podspec.js';
 
-export type { PublishStepJobSpecInput } from './k8s-auxspec.js';
+export type { HelperJobSpecInput, PublishStepJobSpecInput } from './k8s-auxspec.js';
 export {
     claimName,
     claimPath,
     configmapsPath,
+    HELPER_JOB_DEADLINE_SECONDS,
+    helperEnvSecretName,
+    helperJobName,
+    helperJobSpec,
     jobPath,
     podsByLeasePath,
     podsPath,

@@ -3,6 +3,8 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript } from '../src/docker.js';
 import { CONTAINER_GONE } from '../src/exec-codes.js';
+import { lookupHelper } from '../src/helpers.js';
+import type { HelperPlan } from '../src/helpers.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
 import {
     POLL_MAX_CONSECUTIVE_FAILURES,
@@ -16,6 +18,9 @@ import {
     gateEnvSecretName,
     gateJobName,
     gateJobSpec,
+    helperEnvSecretName,
+    helperJobName,
+    helperJobSpec,
     jobPath,
     jobsPath,
     opencodeReadoutJobName,
@@ -5578,5 +5583,180 @@ describe('the kubernetes runner under opencode', () => {
                     (c.body as { metadata?: { name?: string } })?.metadata?.name?.startsWith('factory-ocread-')
             )
         ).toBe(false);
+    });
+});
+
+describe('the block-helper transport (issue #207)', () => {
+    const NOOP_DESCRIPTOR = lookupHelper('noop')!;
+    const NOOP_VERDICT = JSON.stringify({ schema: 'helper-noop/v1', version: 1, ok: true, output: { echoed: true } });
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory', env: { GITHUB_TOKEN: 'claim-token' } };
+    const WT = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
+    const plan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
+        helperId: 'noop',
+        phase: 'pre',
+        input: { a: 1 },
+        githubWriting: false,
+        ...over,
+    });
+    const secretsPathFor = `/api/v1/namespaces/${namespace}/secrets`;
+
+    const NONCE = '77777777-7777-4777-8777-777777777777';
+
+    it('builds the aux Job spec: content-passed script, literal bounded input, task worktree', () => {
+        const withRepo = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), repoJob, {
+            plan: plan(),
+            descriptor: NOOP_DESCRIPTOR,
+            envSecret: null,
+            nonce: NONCE,
+        });
+        expect(withRepo.metadata.name).toBe(helperJobName(repoJob, plan(), NONCE));
+        expect(withRepo.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
+        const container = withRepo.spec.template.spec.containers[0];
+        expect(container.command).toEqual(['node', '-e', NOOP_DESCRIPTOR.scriptBody]);
+        expect(container.env).toEqual([{ name: 'HELPER_INPUT', value: JSON.stringify({ a: 1 }) }]);
+        expect(container.envFrom).toBeUndefined();
+        expect(container.workingDir).toBe(WT);
+        expect(withRepo.spec.template.spec.automountServiceAccountToken).toBe(false);
+        expect(withRepo.spec.backoffLimit).toBe(0);
+        expect(withRepo.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+
+        // A command-only job (no repo): no working directory, the member root's own mount.
+        const noRepo = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, {
+            plan: plan(),
+            descriptor: NOOP_DESCRIPTOR,
+            envSecret: null,
+            nonce: NONCE,
+        }).spec.template.spec.containers[0];
+        expect(noRepo.workingDir).toBeUndefined();
+    });
+
+    it('references the env Secret by name only, never a credential value, when one is given', () => {
+        const secret = helperEnvSecretName(repoJob, plan({ githubWriting: true }), NONCE);
+        const withSecret = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), repoJob, {
+            plan: plan({ githubWriting: true }),
+            descriptor: NOOP_DESCRIPTOR,
+            envSecret: secret,
+            nonce: NONCE,
+        });
+        expect(withSecret.spec.template.spec.containers[0].envFrom).toEqual([{ secretRef: { name: secret } }]);
+        expect(JSON.stringify(withSecret)).not.toContain('claim-token');
+    });
+
+    it('pre and post plans of the same helper never collide on a Job name, even with the same nonce', () => {
+        expect(helperJobName(job, plan({ phase: 'pre' }), NONCE)).not.toBe(
+            helperJobName(job, plan({ phase: 'post' }), NONCE)
+        );
+    });
+
+    it('two plans of the same phase and helper never collide, because each call mints its own nonce', () => {
+        // The naming collision a bare (job, plan) hash would have: nothing but the nonce tells
+        // two identical-looking plans of one phase apart, so this is the pin that actually
+        // matters — see helperJobName's own comment for the failure this closes.
+        expect(helperJobName(job, plan(), '11111111-1111-4111-8111-000000000001')).not.toBe(
+            helperJobName(job, plan(), '11111111-1111-4111-8111-000000000002')
+        );
+    });
+
+    it('fails an unknown helper id before any Job or Secret is created', async () => {
+        const { request, calls } = fakeRequest();
+        const result = await runner(request).runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
+        expect(result).toEqual({
+            ok: false,
+            reason: 'unknown_helper',
+            message: expect.stringContaining('not-a-real-helper'),
+        });
+        expect(calls.length).toBe(0);
+    });
+
+    it('runs the noop helper end to end as an aux Job, and cleans it up', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: true, output: { echoed: true } });
+        // The name is minted fresh per call (a nonce, not a bare (job, plan) hash — see
+        // helperJobName), so it is read off the actual create rather than precomputed.
+        const jobPost = calls.find((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(jobPost).toBeDefined();
+        const jobName = (jobPost!.body as { metadata: { name: string } }).metadata.name;
+        expect(calls.some((c) => c.method === 'DELETE' && c.path.startsWith(jobPath(namespace, jobName)))).toBe(true);
+        // A read-only helper creates no Secret.
+        expect(calls.some((c) => c.path === secretsPathFor && c.method === 'POST')).toBe(false);
+    });
+
+    it('creates an attempt-scoped Secret only for a github-writing helper, and reaps it', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        await runner(request).runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
+        const secretPost = calls.find((c) => c.method === 'POST' && c.path === secretsPathFor);
+        expect(secretPost).toBeDefined();
+        const body = secretPost!.body as { metadata: { name: string }; stringData?: Record<string, string> };
+        expect(body.stringData?.GITHUB_TOKEN).toBe('fresh-install-token');
+        const secretName = body.metadata.name;
+        expect(calls.some((c) => c.method === 'DELETE' && c.path === `${secretsPathFor}/${secretName}`)).toBe(true);
+    });
+
+    it('mints a fresh Job/Secret name on every call, even for the identical plan run twice in a row', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        await runner(request).runHelper!(job, plan());
+        await runner(request).runHelper!(job, plan());
+        const names = calls
+            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
+            .map((c) => (c.body as { metadata: { name: string } }).metadata.name);
+        expect(names).toHaveLength(2);
+        expect(names[0]).not.toBe(names[1]);
+    });
+
+    it('reports a named timeout failure when the kubelet deadline ends the Job', async () => {
+        const { request } = fakeRequest({ job: FAKE.failed, log: { status: 200, body: 'ran out of time' } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.any(String) });
+    });
+
+    it('reports runner_error for an ordinary non-zero exit, distinct from a timeout', async () => {
+        const { request } = fakeRequest({
+            job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: { containerStatuses: [{ state: { terminated: { exitCode: 1 } } }] },
+                        },
+                    ],
+                }),
+            },
+            log: { status: 200, body: 'boom' },
+        });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('boom') });
+    });
+
+    it('reports runner_error when the API server refuses the Secret create', async () => {
+        const { request } = fakeRequest({ secretCreate: { status: 500, body: 'server error' } });
+        const result = await runner(request).runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-token');
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('500') });
+    });
+
+    it('reports runner_error for a thrown transport failure, never letting it escape as an exception', async () => {
+        const request: K8sRequest = async () => {
+            throw new Error('the api server connection reset');
+        };
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({
+            ok: false,
+            reason: 'runner_error',
+            message: expect.stringContaining('connection reset'),
+        });
+    });
+
+    it('reports malformed_output for stdout that is not the versioned verdict', async () => {
+        const { request } = fakeRequest({ log: { status: 200, body: 'not json at all' } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
+    });
+
+    it('reports runner_error when the API server refuses the Job create', async () => {
+        const { request } = fakeRequest({ create: { status: 500, body: 'server error' } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('500') });
     });
 });

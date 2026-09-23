@@ -25,9 +25,10 @@ truthful, not more strict.
 | Responsibility | Primary suites | What must remain pinned |
 | --- | --- | --- |
 | Board protocol | `board.test.ts`, `routes.jobs.test.ts`, `server/test-db/job-store*` | credential on every worker write, lease conflict distinctions, claim/heartbeat/complete idempotence |
-| Orchestration | `loop.test.ts` | first/periodic heartbeat, setup races, stop/remove, stale lease kill, reclaim barriers, report degradation |
+| Orchestration | `loop.test.ts` | first/periodic heartbeat, setup races, stop/remove, stale lease kill, reclaim barriers, report degradation, block-helper pre/post fencing |
 | Docker runner | `docker.test.ts`, `gates.test.ts`, `scripts.test.ts`, `worktree.test.ts` | argv/env secrecy, attempt labels, kill/fence isolation, bounded output, real Git behavior |
 | Kubernetes runner | `k8s.test.ts`, `k8s-transport.test.ts` | Docker parity plus claim arbitration, attempt Secrets, API retry bounds, token rotation and cleanup ordering |
+| Block-helper transport (issue #207) | `helpers.test.ts`, plus the block-helper cases in `docker.test.ts`, `k8s.test.ts` and `loop.test.ts` | registry lookup closed before any container/Job starts, versioned bounded-JSON parsing, named failure reasons, docker/kubernetes argv-and-spec parity, pre-phase agent-launch gating, post-phase publish gating |
 | Runner images | `executor-images.test.ts`, `branch-reporter.test.ts` | PID 1 signal forwarding, exact shipped scripts, session attribution, agent-specific startup |
 | Analytics | `telemetry-shipping.test.ts`, `routes.ingest.test.ts`, `telemetry*.test.ts`, `telemetry.sql.test.ts` | compatible OTLP/JSON, retry configuration, privacy filters, malformed-payload semantics, deduplication |
 

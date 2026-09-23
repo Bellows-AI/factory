@@ -34,6 +34,7 @@ import {
     tailBytes,
     transcriptDir,
 } from '../src/docker.js';
+import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import {
     CREDENTIAL_HELPER,
@@ -3980,5 +3981,169 @@ describe('publishing the produced work', () => {
         expect(create?.[create.indexOf('--body') + 1]).toBe(
             '## Commits\n\n- Fix the sync re-claim fence\n\nCloses #10.\n\nPublished by the factory board after the declared gates passed.'
         );
+    });
+});
+
+describe('the block-helper transport (issue #207)', () => {
+    const NOOP_SCRIPT = lookupHelper('noop')!.scriptBody;
+    const NOOP_VERDICT = JSON.stringify({ schema: 'helper-noop/v1', version: 1, ok: true, output: { echoed: true } });
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory', env: { GITHUB_TOKEN: 'claim-token' } };
+    const plan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
+        helperId: 'noop',
+        phase: 'pre',
+        input: { a: 1 },
+        githubWriting: false,
+        ...over,
+    });
+
+    const runnerWith = (exec: (args: string[]) => Promise<{ stdout: string }>) =>
+        createDockerRunner(loadDriverConfig({}), (() => fakeChild('', '', 0)) as unknown as typeof spawn, exec);
+
+    it('fails an unknown helper id before any container starts', async () => {
+        const exec = vitest.fn(async () => ({ stdout: NOOP_VERDICT }));
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
+        expect(result).toEqual({
+            ok: false,
+            reason: 'unknown_helper',
+            message: expect.stringContaining('not-a-real-helper'),
+        });
+        expect(exec).not.toHaveBeenCalled();
+    });
+
+    it('runs the noop helper end to end, over a named container with --entrypoint node and the script by content', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(repoJob, plan());
+
+        expect(result).toEqual({ ok: true, output: { echoed: true } });
+        const run = calls[0]!;
+        expect(run[0]).toBe('run');
+        // NOT --rm: the container is named and explicitly removed in the finally, the same
+        // discipline the runner container itself uses, precisely so a killed CLI client (the
+        // timeout path) cannot leave a container --rm never had the chance to reap.
+        expect(run).not.toContain('--rm');
+        const nameIdx = run.indexOf('--name');
+        expect(nameIdx).toBeGreaterThan(-1);
+        expect(run[nameIdx + 1]).toMatch(new RegExp(`^factory-helper-${repoJob.id}-${repoJob.leaseToken}-`));
+        expect(run).toEqual(expect.arrayContaining(['--entrypoint', 'node']));
+        expect(run).toEqual(expect.arrayContaining(['-e', NOOP_SCRIPT]));
+        expect(run).toEqual(expect.arrayContaining(['-e', `HELPER_INPUT=${JSON.stringify({ a: 1 })}`]));
+        // The task worktree, when the job names a repo — the same tree the agent run edits.
+        expect(run).toEqual(expect.arrayContaining(['-w', `/workspaces/bellows/${USER}/.worktrees/${job.id}`]));
+        // Attempt-scoped labels, matching every other container this runner starts.
+        expect(run).toEqual(expect.arrayContaining(['--label', `factory.job=${repoJob.id}`]));
+        expect(run).toEqual(expect.arrayContaining(['--label', `factory.lease=${repoJob.leaseToken}`]));
+        // A read-only helper (githubWriting: false) never gets an env file.
+        expect(run).not.toContain('--env-file');
+        // The container is removed explicitly, by the exact name it was given.
+        const rm = calls.find((a) => a[0] === 'rm');
+        expect(rm).toEqual(['rm', '-f', run[nameIdx + 1]]);
+    });
+
+    it('removes the named container even when the run times out, so a killed client never leaks it', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run') {
+                const err = new Error('command timed out');
+                (err as unknown as { killed: boolean }).killed = true;
+                throw err;
+            }
+            return { stdout: '' };
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
+        const run = calls.find((a) => a[0] === 'run')!;
+        const nameIdx = run.indexOf('--name');
+        const rm = calls.find((a) => a[0] === 'rm');
+        expect(rm).toEqual(['rm', '-f', run[nameIdx + 1]]);
+    });
+
+    it('writes an attempt-scoped env file, carrying a fresh token, only for a github-writing helper', async () => {
+        const calls: string[][] = [];
+        let capturedFile: string | null = null;
+        let capturedBody: string | null = null;
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            const idx = args.indexOf('--env-file');
+            if (idx !== -1) {
+                capturedFile = args[idx + 1]!;
+                // Read the body WHILE it is still on disk — the runner's own finally removes it
+                // the moment this call resolves, the same cleanup every other env file here has.
+                capturedBody = readFileSync(capturedFile, 'utf8');
+            }
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
+
+        expect(result).toEqual({ ok: true, output: { echoed: true } });
+        expect(calls[0]).toContain('--env-file');
+        // The fresh token overlays the claim env (withPublishToken), never the claim's own token.
+        expect(capturedBody).toContain('GITHUB_TOKEN=fresh-install-token');
+        expect(capturedBody).not.toContain('claim-token');
+        // Cleaned up after: no leaked temp file, the same discipline every other env file here has.
+        expect(existsSync(capturedFile!)).toBe(false);
+    });
+
+    it('never puts the token in argv — only ever in the env file', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
+        expect(calls[0]!.some((a) => a.includes('super-secret-token'))).toBe(false);
+    });
+
+    it('maps a malformed helper answer to a named failure, never a thrown context leak', async () => {
+        const exec = vitest.fn(async () => ({ stdout: 'not json at all' }));
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
+    });
+
+    it('maps an execDocker timeout to a named timeout failure', async () => {
+        const exec = vitest.fn(async () => {
+            const err = new Error('command timed out');
+            (err as unknown as { killed: boolean }).killed = true;
+            throw err;
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
+    });
+
+    it('maps any other execDocker failure to runner_error, using the tool own output', async () => {
+        const exec = vitest.fn(async () => {
+            const err = new Error('Command failed: docker run ...') as Error & { stderr: string };
+            err.stderr = 'permission denied while running the helper';
+            throw err;
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({
+            ok: false,
+            reason: 'runner_error',
+            message: expect.stringContaining('permission denied'),
+        });
+    });
+
+    it('runs a command-only job (no repo) at the member root, with no -w flag', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        await runner.runHelper!(job, plan());
+        expect(calls[0]).not.toContain('-w');
     });
 });

@@ -563,6 +563,76 @@ connection and retry, which is what agents are for.
   record-not-liveness rule the verdict and exit code follow. See "The vitals ride the same flush"
   above for the read, the merge and the claim-time clear.
 
+## Block-helper steps (issue #207)
+
+**Read this before touching** `driver/src/helpers.ts`, `driver/src/k8s-helper-runner.ts`,
+`driver/src/loop-helpers.ts`, or the `Runner.runHelper` seam in `driver/src/docker.ts`.
+
+A workflow `block` node (docs/workflows.md) may declare an allowlisted, board-owned helper to run
+before and/or after its agent turn — a runtime plan naming a helper id, its phase (`pre`/`post`),
+validated/bounded JSON input, and whether it writes to GitHub, never arbitrary shell or an image.
+`BoardJob.helperPlans` carries the declared plans on a claim; `runWorkflowHelper`'s seam is
+`Runner.runHelper(job, plan, token?)`, one shared `HelperResult` either side answers.
+
+**This is transport only, and nothing produces a real plan yet.** Issue #204's compiler expands a
+`block` node into ordinary `agent` nodes and carries no helper-plan field on `WorkflowNode` —
+`BoardJob.helperPlans` is read defensively (absent on every claim today) exactly like `job.env` on
+a board that predates it. The one shipped, allowlisted helper is `noop` — a fixture that echoes its
+bounded input back, proving the transport end to end — the same "ships the helpers only, nothing
+wired yet" honesty `driver/src/review.ts` states about its own scripts. A later issue (#122/#133,
+which own the block-specific content) threads a real plan through the compiler and the claim; this
+one owns only the generic seam, both transports, and the loop's fencing.
+
+- **The loop owns WHEN a helper runs.** A PRE helper runs as the last step of `runSetup`
+  (`driver/src/loop-helpers.ts`'s `preHelperStep`), fenced by the exact same lease/stop race
+  (`raceStep`, `down(state)`) every other setup step uses: a Stop or lost lease observed mid-helper
+  stands the attempt down without ever launching the agent, releasing the kubernetes checkout fence
+  the same way a failed gates-reread does. A required pre-helper that answers `{ ok: false }`
+  reports a NAMED failure (`reason`, `message`) and the agent never spawns — `state.launched` never
+  turns true. A POST helper runs in `runPostHelperPhase`, in the same window `runDeclaredGates`
+  runs in — after the agent and its gates have resolved, heartbeat still live, `settle()` not yet
+  called — and runs UNCONDITIONALLY once reached (deciding otherwise on the run's own outcome would
+  be block-specific policy this generic transport must not encode, per the issue's ownership
+  boundary); a failed post-helper fails the verdict and skips publish, the same way a failed gate
+  does. A job with no declared plans, or a runner with no `runHelper`, pays no extra branch at all.
+- **A github-writing helper gets a fresh installation token, minted immediately before it runs** —
+  the loop asks `board.publishToken(job)` (the same re-mint the publish flow itself uses;
+  docs/jobs.md's "The publish asks for its own credential" above) and lays it over the claim env
+  through the existing `withPublishToken`. A read-only helper (`plan.githubWriting: false`) runs
+  with the claim env untouched, asking the board for nothing. Either way the token never enters
+  argv, a pod spec, or stored output — it rides the same env-file (docker) / per-attempt Secret
+  (kubernetes) every credential here already does.
+- **Unknown/unavailable helper ids fail before any container or Job starts.** `lookupHelper` closes
+  over real files under `driver/src/scripts/` (never a path, never inline TS — the same
+  content-passed convention every script here follows); a plan naming an unregistered id answers
+  `{ ok: false, reason: 'unknown_helper' }` before either transport touches the daemon or the API
+  server.
+- **Output is parsed as versioned bounded JSON, and nothing else.** `parseHelperOutput` checks the
+  byte cap BEFORE attempting `JSON.parse` — an oversized answer is never handed to the parser at
+  all — then the `schema`/`version` fields, then an `ok: false` line's own named `reason` (one of
+  `unknown_helper` / `malformed_output` / `oversized_output` / `wrong_version` / `auth_failed` /
+  `timeout` / `runner_error`), falling back to `runner_error` for anything a script names that this
+  module never declared. Malformed, oversized or wrong-version output is a helper FAILURE, never
+  agent context — the same discipline the review scripts' own bounded verdicts already carry.
+- **Docker runs the helper in the task worktree, over the existing runner image, under its own
+  attempt-scoped, per-call NAME** — never `--rm`: `execDocker`'s `timeout` kills the `docker run`
+  CLIENT process, not the container the daemon may still be running, so `--rm` (which fires only
+  when the daemon sees the container itself exit) could leak one on the timeout path — the same
+  reason `dockerRun`'s own runner container skips it. The `finally` removes the named container
+  explicitly and unconditionally instead, tolerating one already gone, exactly as `dockerRunVerdict`
+  does for the runner container. Otherwise: entrypoint swapped for `node`, the script passed by
+  content, the bounded input as one literal `-e HELPER_INPUT=` value (never a credential, the same
+  class as the sync's `REPO`/`WORKTREE` literals), attempt labels, and an env file only when the
+  helper writes to GitHub. Kubernetes runs the identical entrypoint/argv/script content as an aux
+  Job on the task PVC — the same shape `publishStepJobSpec` already uses for one publish step — with
+  its OWN per-call nonce in the Job/Secret name (never a bare `(job, plan)` hash, which would
+  collide the moment two plans of one phase ever name the same helper — `gateJobName`'s run counter
+  closes the identical hole for gates), an attempt-scoped Secret only when needed,
+  `HELPER_TIMEOUT_MS` (shared between both transports) as its `activeDeadlineSeconds`, and a
+  `DeadlineExceeded` condition read back as the named `timeout` failure (`k8s-poll.ts`'s
+  `helperVerdict`, the same check `pollRunnerJobUntilTerminal` makes for the runner Job). Both
+  transports clean up their Job/Secret and env file on every exit path.
+
 ## The session ids, and driving a job from the Claude UI
 
 **There are two of them, and they are not interchangeable.**

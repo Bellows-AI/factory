@@ -34,7 +34,7 @@ import type { ReclaimResult, SyncResult } from './publish.js';
  */
 
 /** A Job's status object, read as one of its three states — never both `succeeded` and `failed`. */
-function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pending' {
+export function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pending' {
     if ((status.succeeded ?? 0) >= 1) return 'succeeded';
     if ((status.failed ?? 0) >= 1) return 'failed';
     return 'pending';
@@ -109,7 +109,7 @@ export async function pollJobToTerminal(
 }
 
 /** The exit code and log tail off an aux Job's own pod, once its status has gone terminal. */
-async function readAuxVerdictOutput(
+export async function readAuxVerdictOutput(
     deps: K8sDeps,
     jobName: string,
     succeeded: boolean
@@ -159,6 +159,42 @@ export async function auxVerdict(deps: K8sDeps, jobName: string): Promise<{ exit
         return auxVerdict(deps, jobName);
     }
     return readAuxVerdictOutput(deps, jobName, outcome === 'succeeded');
+}
+
+/**
+ * A block-helper aux Job's verdict (issue #207) — `auxVerdict`'s shape, plus whether the
+ * kubelet's own `activeDeadlineSeconds` is what ended it, the same `DeadlineExceeded` condition
+ * check `pollRunnerJobUntilTerminal` makes for the runner Job. A helper that outlives its bound is
+ * reported as a named `timeout` failure by its caller, never an ordinary exit.
+ */
+export async function helperVerdict(
+    deps: K8sDeps,
+    jobName: string
+): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
+    const response = await readVerdict(
+        deps,
+        jobPath(deps.config.k8sNamespace, jobName),
+        `reading the helper job ${jobName}`
+    );
+    if (response.status === HTTP_NOT_FOUND) {
+        throw new Error(`the helper job ${jobName} no longer exists`);
+    }
+    if (response.status >= HTTP_ERROR_STATUS) {
+        throw new Error(
+            `reading the helper job answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
+        );
+    }
+    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+    const outcome = jobOutcome(status);
+    if (outcome === 'pending') {
+        await deps.sleep(POLL_MS);
+        return helperVerdict(deps, jobName);
+    }
+    const timedOut = (status.conditions ?? []).some(
+        (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded'
+    );
+    const { exitCode, output } = await readAuxVerdictOutput(deps, jobName, outcome === 'succeeded');
+    return { exitCode, output, timedOut };
 }
 
 /**

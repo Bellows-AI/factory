@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Board, BoardJob, LeaseState } from './board.js';
 import type { RunOutcome, RunSession } from './docker.js';
+import type { HelperFailureReport } from './helpers.js';
+import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, releaseGateSession, runDeclaredGates } from './loop-gates.js';
-import type { JobState } from './loop-attempt.js';
 import { down, heartbeat, newJobState, raceStep, watchOutput, watchRemote } from './loop-attempt.js';
-import type { LoopRuntime } from './loop-types.js';
+import type { AttemptCtx, LoopRuntime } from './loop-types.js';
+import { STOOD_DOWN } from './loop-types.js';
 import type { PublishResult, SyncResult } from './publish.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
@@ -59,18 +61,6 @@ async function reportScrapedSession(
         );
     }
 }
-
-/** Everything a setup step or the run phase needs about the one attempt it belongs to. */
-interface AttemptCtx {
-    rt: LoopRuntime;
-    job: BoardJob;
-    state: JobState;
-    settle: () => Promise<void>;
-    standDown: () => Promise<void>;
-}
-
-/** A terminal outcome of a setup step: it already reported and settled, or stood the attempt down. */
-const STOOD_DOWN = 'stood-down' as const;
 
 /**
  * The reclaim barrier (see `reclaims`): an in-flight removal of THIS thread's tree is waited out
@@ -216,12 +206,13 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
 
 /**
  * The setup phase of one attempt: the reclaim barrier, the checkout sync, the gates re-read and
- * its refusals, and the gate environment. Answers the gate session to run with (null when the
- * job declares none), or `'stood-down'` when a setup step already reported and settled the
- * attempt — the caller must not fall through to the run in that case.
+ * its refusals, the job's declared PRE block-helper steps, and the gate environment. Answers the
+ * gate session to run with (null when the job declares none), or `'stood-down'` when a setup step
+ * already reported and settled the attempt — the caller must not fall through to the run in that
+ * case.
  */
 async function runSetup(ctx: AttemptCtx): Promise<GateSession | null | typeof STOOD_DOWN> {
-    for (const step of [waitReclaimBarrier, syncCheckoutStep, rereadGatesStep]) {
+    for (const step of [waitReclaimBarrier, syncCheckoutStep, rereadGatesStep, preHelperStep]) {
         const outcome = await step(ctx);
         if (outcome === STOOD_DOWN) return STOOD_DOWN;
     }
@@ -338,22 +329,26 @@ function isPrematureFinish(outcome: RunOutcome): boolean {
     return typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost;
 }
 
+/** What decides whether a finished run is publish-due: its own outcome plus every failure kind. */
+interface PublishGate {
+    outcome: RunOutcome;
+    failure: GateFailure | null;
+    helperFailure: HelperFailureReport | null;
+}
+
 /**
  * Publishes a succeeded, ungated-or-passed run — the deterministic end of a task. Answers null
  * when the run does not qualify (a failure, a timeout, a premature stop, or publish disabled).
  */
-async function publishIfDue(
-    rt: LoopRuntime,
-    job: BoardJob,
-    outcome: RunOutcome,
-    failure: GateFailure | null
-): Promise<PublishResult | null> {
+async function publishIfDue(rt: LoopRuntime, job: BoardJob, gate: PublishGate): Promise<PublishResult | null> {
+    const { outcome, failure, helperFailure } = gate;
     const { board, runner, log } = rt;
     if (
         outcome.exitCode !== 0 ||
         outcome.timedOut ||
         isPrematureFinish(outcome) ||
         failure ||
+        helperFailure ||
         job.publish === false ||
         !runner.publishGit
     ) {
@@ -397,12 +392,13 @@ interface FinishCtx {
     job: BoardJob;
     outcome: RunOutcome;
     failure: GateFailure | null;
+    helperFailure: HelperFailureReport | null;
     published: PublishResult | null;
 }
 
 /** The verdict output text, annotated with every terminal condition worth telling the author about. */
 function buildOutput(rt: LoopRuntime, finish: FinishCtx, publishUnlanded: boolean): string {
-    const { job, outcome, failure, published } = finish;
+    const { job, outcome, failure, helperFailure, published } = finish;
     const { config, log } = rt;
     let output = outcome.timedOut
         ? `${outcome.output}\n[driver] killed after ${config.jobTimeoutMs}ms`
@@ -436,12 +432,17 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, publishUnlanded: boolea
     if (failure) {
         output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
     }
+    if (helperFailure) {
+        output =
+            `${output}\n[driver] helper "${helperFailure.helperId}" failed ` +
+            `(${helperFailure.result.reason}): ${helperFailure.result.message}`;
+    }
     return output;
 }
 
 /** Reports the run's final verdict to the board, after settle() and any publish attempt. */
 async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
-    const { job, outcome, failure, published } = finish;
+    const { job, outcome, failure, helperFailure, published } = finish;
     const { log } = rt;
     const publishUnlanded = published !== null && !published.ok;
     const status =
@@ -449,6 +450,7 @@ async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
         !outcome.timedOut &&
         !outcome.cacheLost &&
         !failure &&
+        !helperFailure &&
         !isPrematureFinish(outcome) &&
         !publishUnlanded
             ? 'succeeded'
@@ -472,7 +474,7 @@ async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
     log(
         verdict === 'lost'
             ? `job ${job.id}: finished ${status}, but the board had already reclaimed it`
-            : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''})`
+            : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''}${helperFailure ? ', helper' : ''})`
     );
 }
 
@@ -559,9 +561,20 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         try {
             const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput, watchingBox });
             if (outcome.done) return;
-            const published = await publishIfDue(rt, job, outcome.outcome, outcome.failure);
+            const helperFailure = await runPostHelperPhase(rt, job, state);
+            const published = await publishIfDue(rt, job, {
+                outcome: outcome.outcome,
+                failure: outcome.failure,
+                helperFailure,
+            });
             await settle();
-            await reportFinish(rt, { job, outcome: outcome.outcome, failure: outcome.failure, published });
+            await reportFinish(rt, {
+                job,
+                outcome: outcome.outcome,
+                failure: outcome.failure,
+                helperFailure,
+                published,
+            });
         } finally {
             if (gateSession) releaseGateSession(rt, gateSession);
         }

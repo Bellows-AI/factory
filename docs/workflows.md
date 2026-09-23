@@ -115,6 +115,12 @@ collide — collision-freedom is not trusted to the naming scheme alone, either:
 own re-validation pass is what actually refuses a true clash, via the ordinary `DUPLICATE_NODE`
 check every workflow gets.
 
+The driver-side transport a compiled block's declared pre/post helper would actually run through —
+`Runner.runHelper`, the docker/kubernetes parity, the loop's fencing — is issue #207 (docs/jobs.md,
+"Block-helper steps"). It ships the generic seam only: `WorkflowNode` carries no helper-plan field
+yet, so nothing `compileDefinition` above produces populates one today — a later issue (#122/#133)
+threads a real plan through the compiler and the claim.
+
 ## Launch parameters
 
 A workflow may declare parameters (`params`), and every declared parameter is REQUIRED at launch —

@@ -1,5 +1,6 @@
 import type { ServiceStatus } from './docker.js';
 import { isExecutorType, type ExecutorType } from './config.js';
+import type { HelperPlan } from './helpers.js';
 
 export interface BoardJob {
     id: string;
@@ -93,6 +94,15 @@ export interface BoardJob {
      * "publish", and every claim without the field behaves byte-identically to before it existed.
      */
     publish?: boolean;
+    /**
+     * Declared pre/post block-helper steps for this row's node (issue #207) — an expanded
+     * workflow `block` node's runtime plan, when its compiler produced one. Read defensively like
+     * every board field added after launch: absent on a board that predates the field, and on
+     * every claim of a workflow-less or `agent`-node task, which is the ordinary case — nothing
+     * here is populated by any producer yet (docs/workflows.md), so this stays empty on every real
+     * claim until a future issue threads a real plan through the compiler and the claim.
+     */
+    helperPlans?: HelperPlan[];
 }
 
 /** Whether the board still recognises this worker as the holder of the job. */
@@ -307,9 +317,15 @@ export function createBoard({
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
             if (response.status === HTTP_NO_CONTENT) return null;
-            const claimed = (await response.json()) as Partial<BoardJob>;
+            // Destructured out rather than left in the base spread: an invalid (non-array) value
+            // must not survive under exactOptionalPropertyTypes, which refuses assigning
+            // `undefined` to this optional property directly — the conditional spread below is
+            // the only way to represent "absent".
+            const { helperPlans, ...rest } = (await response.json()) as Partial<BoardJob>;
+            const claimed = rest;
             return {
                 ...(claimed as BoardJob),
+                ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
                 resumeSessionId: claimed.resumeSessionId ?? null,
                 followUp: claimed.followUp ?? false,
                 userId: claimed.userId ?? null,
