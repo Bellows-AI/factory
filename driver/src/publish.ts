@@ -138,6 +138,30 @@ export interface ReclaimResult {
     reason: string | null;
 }
 
+/**
+ * The tail line of a container's stdout, parsed as JSON, or the fallback when it does not —
+ * shared by both executors' sync/reclaim readouts (and the docker runner's close-read scrapes),
+ * which all print one JSON line as their verdict.
+ */
+export function parseLastJsonLine<T>(stdout: string, onUnparseable: () => T): T {
+    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+    try {
+        return JSON.parse(line) as T;
+    } catch {
+        return onUnparseable();
+    }
+}
+
+/** What an unparseable worktree sync verdict means — both executors' fallback for the same shape. */
+export const syncUnreadable: SyncResult = { ok: false, reason: 'the worktree sync answered nothing readable' };
+
+/** What an unparseable worktree reclaim verdict means — the sync fallback's twin. */
+export const reclaimUnreadable: ReclaimResult = {
+    ok: false,
+    removed: false,
+    reason: 'the worktree reclaim answered nothing readable',
+};
+
 /** Nothing to publish: no checkout, or a clean tree with nothing unpushed. Not an error. */
 export const publishNothing = (reason: string): PublishResult => ({
     ok: true,

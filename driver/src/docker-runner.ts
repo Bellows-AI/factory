@@ -4,9 +4,12 @@ import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import {
     gitWorktreeRemoveScript,
+    parseLastJsonLine,
     publishCheckout,
     publishFailed,
+    reclaimUnreadable,
     repoPath,
+    syncUnreadable,
     withPublishToken,
     worktreeDir,
     type PublishResult,
@@ -42,7 +45,6 @@ import {
     dockerRunVerdict,
     linesOf,
     listByLabelOrThrow,
-    parseLastJsonLine,
     removeEachTolerantly,
     run,
     setupJobServices,
@@ -253,10 +255,7 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob): Promise<Sync
         // docker knows, and the sync failed on every job while the compile and the flow
         // tests (which match argv by shape, not by head) stayed green.
         const out = await execDocker(syncCheckoutArgs(config, job, { clone, worktree, restore, envFile: file }));
-        return parseLastJsonLine<SyncResult>(out.stdout, () => ({
-            ok: false,
-            reason: 'the worktree sync answered nothing readable',
-        }));
+        return parseLastJsonLine<SyncResult>(out.stdout, () => syncUnreadable);
     } catch (e) {
         const detail = dockerErrorDetail(e);
         return {
@@ -295,11 +294,7 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
             '-e',
             gitWorktreeRemoveScript,
         ]);
-        return parseLastJsonLine<ReclaimResult>(out.stdout, () => ({
-            ok: false,
-            removed: false,
-            reason: 'the worktree reclaim answered nothing readable',
-        }));
+        return parseLastJsonLine<ReclaimResult>(out.stdout, () => reclaimUnreadable);
     } catch (e) {
         const detail = dockerErrorDetail(e);
         return {

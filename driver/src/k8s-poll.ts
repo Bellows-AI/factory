@@ -25,6 +25,7 @@ import {
     POLL_MS,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sResponse } from './k8s-transport.js';
+import { parseLastJsonLine, reclaimUnreadable, syncUnreadable } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 
 /**
@@ -395,12 +396,7 @@ export async function runSyncJob(
     const pollFailure = await pollSyncJobToTerminal(deps, job);
     if (pollFailure) return { ok: false, reason: pollFailure };
     const body = await readSyncJobLog(deps, job);
-    const line = body.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        return JSON.parse(line) as SyncResult;
-    } catch {
-        return { ok: false, reason: 'the worktree sync answered nothing readable' };
-    }
+    return parseLastJsonLine<SyncResult>(body, () => syncUnreadable);
 }
 
 /**
@@ -469,10 +465,5 @@ export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<Recla
     const pollFailure = await pollReclaimJobToTerminal(deps, job);
     if (pollFailure) return { ok: false, removed: false, reason: pollFailure };
     const body = await readReclaimJobLog(deps, job);
-    const line = body.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        return JSON.parse(line) as ReclaimResult;
-    } catch {
-        return { ok: false, removed: false, reason: 'the worktree reclaim answered nothing readable' };
-    }
+    return parseLastJsonLine<ReclaimResult>(body, () => reclaimUnreadable);
 }

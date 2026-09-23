@@ -102,16 +102,6 @@ export async function removeEachTolerantly(
     }
 }
 
-/** The tail line of a container's stdout, parsed as JSON, or the fallback when it does not. */
-export function parseLastJsonLine<T>(stdout: string, onUnparseable: () => T): T {
-    const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-    try {
-        return JSON.parse(line) as T;
-    } catch {
-        return onUnparseable();
-    }
-}
-
 /**
  * The full `docker run` argv for the startup sync/restore container. Pure, for the same pinning
  * as dockerArgs: a starting claim's fetch + create-or-rebase versus a continuing claim's
