@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import { isSafePattern } from './workflow-pattern.js';
 import {
     BLOCK_CONFIG_KEY,
@@ -60,9 +61,9 @@ const KNOWN_PARAM_KEYS = new Set(['name', 'pattern', 'description', 'example']);
 function resolveParamName(param: Record<string, unknown>, i: number, paramNames: Set<string>): StepResult<string> {
     const name = param.name;
     if (typeof name !== 'string' || !PARAM_NAME.test(name)) {
-        return stepRefuse('BAD_PARAMS', `params[${i}].name must match ${PARAM_NAME.source}`);
+        return stepRefuse(ERROR_CODES.BAD_PARAMS, `params[${i}].name must match ${PARAM_NAME.source}`);
     }
-    if (paramNames.has(name)) return stepRefuse('BAD_PARAMS', `duplicate param name "${name}"`);
+    if (paramNames.has(name)) return stepRefuse(ERROR_CODES.BAD_PARAMS, `duplicate param name "${name}"`);
     paramNames.add(name);
     return { ok: true, value: name };
 }
@@ -72,20 +73,20 @@ function resolveParamPattern(param: Record<string, unknown>, i: number): StepRes
     if (param.pattern === undefined) return { ok: true, value: undefined };
     if (typeof param.pattern !== 'string' || !param.pattern.trim() || param.pattern.length > PATTERN_LIMIT) {
         return stepRefuse(
-            'BAD_PARAMS',
+            ERROR_CODES.BAD_PARAMS,
             `params[${i}].pattern must be a non-empty regex source of at most ${PATTERN_LIMIT} characters`
         );
     }
     if (!isSafePattern(param.pattern)) {
         return stepRefuse(
-            'BAD_PARAMS',
+            ERROR_CODES.BAD_PARAMS,
             `params[${i}].pattern is outside the safe subset — see docs/workflows.md "Launch parameters"`
         );
     }
     try {
         new RegExp(param.pattern);
     } catch {
-        return stepRefuse('BAD_PARAMS', `params[${i}].pattern does not compile: ${param.pattern}`);
+        return stepRefuse(ERROR_CODES.BAD_PARAMS, `params[${i}].pattern does not compile: ${param.pattern}`);
     }
     return { ok: true, value: param.pattern };
 }
@@ -113,12 +114,12 @@ function resolveGuidanceField(
     const trimmed = typeof raw === 'string' ? raw.trim() : '';
     if (!trimmed || trimmed.length > limit) {
         return stepRefuse(
-            'BAD_PARAMS',
+            ERROR_CODES.BAD_PARAMS,
             `params[${ctx.i}].${key} must be a non-empty string of at most ${limit} characters`
         );
     }
     if (key === 'example' && ctx.pattern !== undefined && !new RegExp(`^(?:${ctx.pattern})$`).test(trimmed)) {
-        return stepRefuse('BAD_PARAMS', `params[${ctx.i}].example must match ${ctx.pattern}`);
+        return stepRefuse(ERROR_CODES.BAD_PARAMS, `params[${ctx.i}].example must match ${ctx.pattern}`);
     }
     return { ok: true, value: trimmed };
 }
@@ -151,11 +152,12 @@ function resolveParamGuidance(
 /** One declared param of `definition.params`, in isolation — see `validateDefinition`. */
 function parseWorkflowParam(item: unknown, i: number, paramNames: Set<string>): StepResult<WorkflowParam> {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-        return stepRefuse('BAD_PARAMS', `definition.params[${i}] must be an object`);
+        return stepRefuse(ERROR_CODES.BAD_PARAMS, `definition.params[${i}] must be an object`);
     }
     const param = item as Record<string, unknown>;
     for (const key of Object.keys(param)) {
-        if (!KNOWN_PARAM_KEYS.has(key)) return stepRefuse('UNKNOWN_KEY', `unknown key "${key}" in params[${i}]`);
+        if (!KNOWN_PARAM_KEYS.has(key))
+            return stepRefuse(ERROR_CODES.UNKNOWN_KEY, `unknown key "${key}" in params[${i}]`);
     }
     const resolvedName = resolveParamName(param, i, paramNames);
     if (!resolvedName.ok) return resolvedName;
@@ -180,7 +182,7 @@ function parseWorkflowParam(item: unknown, i: number, paramNames: Set<string>): 
 function parseParamsSection(def: Record<string, unknown>): StepResult<WorkflowParam[]> {
     if (def.params === undefined) return { ok: true, value: [] };
     if (!Array.isArray(def.params)) {
-        return stepRefuse('BAD_PARAMS', 'definition.params must be an array');
+        return stepRefuse(ERROR_CODES.BAD_PARAMS, 'definition.params must be an array');
     }
     const paramNames = new Set<string>();
     const params: WorkflowParam[] = [];
@@ -202,18 +204,18 @@ function parseParamsSection(def: Record<string, unknown>): StepResult<WorkflowPa
 function resolveNodeIdentity(node: Record<string, unknown>, i: number, names: Set<string>): StepResult<string> {
     const knownKeys = node.kind === 'block' ? KNOWN_BLOCK_NODE_KEYS : KNOWN_AGENT_NODE_KEYS;
     for (const key of Object.keys(node)) {
-        if (!knownKeys.has(key)) return stepRefuse('UNKNOWN_KEY', `unknown key "${key}" in nodes[${i}]`);
+        if (!knownKeys.has(key)) return stepRefuse(ERROR_CODES.UNKNOWN_KEY, `unknown key "${key}" in nodes[${i}]`);
     }
     const name = node.name;
     if (typeof name !== 'string' || !NODE_NAME.test(name)) {
-        return stepRefuse('BAD_NODE', `nodes[${i}].name must match ${NODE_NAME.source}`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].name must match ${NODE_NAME.source}`);
     }
     if (name === 'param') {
         // `{{param.NAME}}` is the parameter namespace and wins it — a node literally named
         // "param" could never have its `{{param.output}}` resolved.
-        return stepRefuse('BAD_NODE', `nodes[${i}].name "param" is reserved`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].name "param" is reserved`);
     }
-    if (names.has(name)) return stepRefuse('DUPLICATE_NODE', `duplicate node name "${name}"`);
+    if (names.has(name)) return stepRefuse(ERROR_CODES.DUPLICATE_NODE, `duplicate node name "${name}"`);
     names.add(name);
     return { ok: true, value: name };
 }
@@ -222,18 +224,18 @@ function resolveNodeIdentity(node: Record<string, unknown>, i: number, names: Se
 function resolveBlockWithValue(value: unknown, i: number, key: string): StepResult<BlockConfigValue> {
     if (typeof value === 'string') {
         if (value.length > PARAM_VALUE_LIMIT) {
-            return stepRefuse('BAD_NODE', `nodes[${i}].with.${key} exceeds ${PARAM_VALUE_LIMIT} characters`);
+            return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].with.${key} exceeds ${PARAM_VALUE_LIMIT} characters`);
         }
         return { ok: true, value };
     }
     if (typeof value === 'number') {
         if (!Number.isFinite(value)) {
-            return stepRefuse('BAD_NODE', `nodes[${i}].with.${key} must be a finite number`);
+            return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].with.${key} must be a finite number`);
         }
         return { ok: true, value };
     }
     if (typeof value !== 'boolean') {
-        return stepRefuse('BAD_NODE', `nodes[${i}].with.${key} must be a string, number or boolean`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].with.${key} must be a string, number or boolean`);
     }
     return { ok: true, value };
 }
@@ -245,17 +247,20 @@ function resolveBlockWith(
 ): StepResult<Record<string, BlockConfigValue> | undefined> {
     if (node.with === undefined) return { ok: true, value: undefined };
     if (typeof node.with !== 'object' || node.with === null || Array.isArray(node.with)) {
-        return stepRefuse('BAD_NODE', `nodes[${i}].with must be an object`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].with must be an object`);
     }
     const raw = node.with as Record<string, unknown>;
     const keys = Object.keys(raw);
     if (keys.length > BLOCK_WITH_MAX_KEYS) {
-        return stepRefuse('BAD_NODE', `nodes[${i}].with must declare at most ${BLOCK_WITH_MAX_KEYS} keys`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].with must declare at most ${BLOCK_WITH_MAX_KEYS} keys`);
     }
     const validated: Record<string, BlockConfigValue> = {};
     for (const key of keys) {
         if (!BLOCK_CONFIG_KEY.test(key)) {
-            return stepRefuse('BAD_NODE', `nodes[${i}].with key "${key}" must match ${BLOCK_CONFIG_KEY.source}`);
+            return stepRefuse(
+                ERROR_CODES.BAD_NODE,
+                `nodes[${i}].with key "${key}" must match ${BLOCK_CONFIG_KEY.source}`
+            );
         }
         const resolved = resolveBlockWithValue(raw[key], i, key);
         if (!resolved.ok) return resolved;
@@ -267,7 +272,10 @@ function resolveBlockWith(
 /** One declared `block` node of `definition.nodes`, in isolation — see `validateDefinition`. */
 function parseBlockNode(node: Record<string, unknown>, i: number, name: string): StepResult<BlockNode> {
     if (typeof node.uses !== 'string' || node.uses.length > BLOCK_USES_LIMIT || !BLOCK_USES.test(node.uses)) {
-        return stepRefuse('BAD_NODE', `nodes[${i}].uses must be a reserved block id matching ${BLOCK_USES.source}`);
+        return stepRefuse(
+            ERROR_CODES.BAD_NODE,
+            `nodes[${i}].uses must be a reserved block id matching ${BLOCK_USES.source}`
+        );
     }
     const withConfig = resolveBlockWith(node, i);
     if (!withConfig.ok) return withConfig;
@@ -285,19 +293,19 @@ function parseBlockNode(node: Record<string, unknown>, i: number, name: string):
 /** One declared `agent` node of `definition.nodes`, in isolation — see `validateDefinition`. */
 function parseAgentNode(node: Record<string, unknown>, i: number, name: string): StepResult<WorkflowNode> {
     if (node.kind !== 'agent') {
-        return stepRefuse('BAD_NODE', `nodes[${i}].kind must be "agent" or "block"`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].kind must be "agent" or "block"`);
     }
     if (node.session !== 'resume' && node.session !== 'fresh') {
-        return stepRefuse('BAD_NODE', `nodes[${i}].session must be "resume" or "fresh"`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].session must be "resume" or "fresh"`);
     }
     if (typeof node.prompt !== 'string' || !node.prompt.trim()) {
-        return stepRefuse('BAD_NODE', `nodes[${i}].prompt must be a non-empty string`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].prompt must be a non-empty string`);
     }
     if (node.gates !== undefined && typeof node.gates !== 'boolean') {
-        return stepRefuse('BAD_NODE', `nodes[${i}].gates must be a boolean`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].gates must be a boolean`);
     }
     if (node.publish !== undefined && typeof node.publish !== 'boolean') {
-        return stepRefuse('BAD_NODE', `nodes[${i}].publish must be a boolean`);
+        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].publish must be a boolean`);
     }
     return {
         ok: true,
@@ -318,7 +326,7 @@ function parseAgentNode(node: Record<string, unknown>, i: number, name: string):
  */
 function parseWorkflowNode(item: unknown, i: number, names: Set<string>): StepResult<AuthoredWorkflowNode> {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-        return stepRefuse('BAD_NODES', `definition.nodes[${i}] must be an object`);
+        return stepRefuse(ERROR_CODES.BAD_NODES, `definition.nodes[${i}] must be an object`);
     }
     const node = item as Record<string, unknown>;
     const resolvedName = resolveNodeIdentity(node, i, names);
@@ -332,7 +340,7 @@ function parseNodesSection(
     def: Record<string, unknown>
 ): StepResult<{ nodes: AuthoredWorkflowNode[]; names: Set<string> }> {
     if (!Array.isArray(def.nodes) || def.nodes.length === 0) {
-        return stepRefuse('BAD_NODES', 'definition.nodes must be a non-empty array');
+        return stepRefuse(ERROR_CODES.BAD_NODES, 'definition.nodes must be a non-empty array');
     }
     const nodes: AuthoredWorkflowNode[] = [];
     const names = new Set<string>();
@@ -351,7 +359,8 @@ function resolveEdgeEndpoints(
     names: Set<string>
 ): StepResult<{ from: string; to: string }> {
     for (const key of Object.keys(edge)) {
-        if (!KNOWN_EDGE_KEYS.has(key)) return stepRefuse('UNKNOWN_KEY', `unknown key "${key}" in edges[${i}]`);
+        if (!KNOWN_EDGE_KEYS.has(key))
+            return stepRefuse(ERROR_CODES.UNKNOWN_KEY, `unknown key "${key}" in edges[${i}]`);
     }
     const { from, to } = edge;
     for (const [label, value] of [
@@ -359,7 +368,7 @@ function resolveEdgeEndpoints(
         ['to', to],
     ] as const) {
         if (typeof value !== 'string' || !names.has(value)) {
-            return stepRefuse('UNKNOWN_NODE', `edges[${i}].${label} names no declared node`);
+            return stepRefuse(ERROR_CODES.UNKNOWN_NODE, `edges[${i}].${label} names no declared node`);
         }
     }
     return { ok: true, value: { from: from as string, to: to as string } };
@@ -379,7 +388,7 @@ function resolveEdgeRule(rule: unknown, i: number): StepResult<EdgeRule> {
             (rule as { marker: string }).marker.trim().length > MARKER_LIMIT)
     ) {
         return stepRefuse(
-            'BAD_RULE',
+            ERROR_CODES.BAD_RULE,
             `edges[${i}].when must be "succeeded", "failed", "gate-failed", or { marker } with a non-empty string of at most ${MARKER_LIMIT} characters`
         );
     }
@@ -393,7 +402,7 @@ function resolveEdgeRule(rule: unknown, i: number): StepResult<EdgeRule> {
 function resolveEdgeBound(edge: Record<string, unknown>, i: number): StepResult<number | undefined> {
     if (edge.max === undefined) return { ok: true, value: undefined };
     if (typeof edge.max !== 'number' || !Number.isInteger(edge.max) || edge.max < 1 || edge.max > MAX_EDGE_BOUND) {
-        return stepRefuse('BAD_BOUND', `edges[${i}].max must be an integer 1..${MAX_EDGE_BOUND}`);
+        return stepRefuse(ERROR_CODES.BAD_BOUND, `edges[${i}].max must be an integer 1..${MAX_EDGE_BOUND}`);
     }
     return { ok: true, value: edge.max };
 }
@@ -401,7 +410,7 @@ function resolveEdgeBound(edge: Record<string, unknown>, i: number): StepResult<
 /** One declared edge of `definition.edges`, in isolation — see `validateDefinition`. */
 function parseWorkflowEdge(item: unknown, i: number, names: Set<string>): StepResult<WorkflowEdge> {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-        return stepRefuse('BAD_EDGES', `definition.edges[${i}] must be an object`);
+        return stepRefuse(ERROR_CODES.BAD_EDGES, `definition.edges[${i}] must be an object`);
     }
     const edge = item as Record<string, unknown>;
     const endpoints = resolveEdgeEndpoints(edge, i, names);
@@ -424,7 +433,7 @@ function parseWorkflowEdge(item: unknown, i: number, names: Set<string>): StepRe
 /** `definition.edges`: every endpoint declared, every rule in the closed vocabulary, bounds positive. */
 function parseEdgesSection(def: Record<string, unknown>, names: Set<string>): StepResult<WorkflowEdge[]> {
     if (!Array.isArray(def.edges)) {
-        return stepRefuse('BAD_EDGES', 'definition.edges must be an array');
+        return stepRefuse(ERROR_CODES.BAD_EDGES, 'definition.edges must be an array');
     }
     const edges: WorkflowEdge[] = [];
     for (const [i, item] of def.edges.entries()) {
@@ -443,7 +452,7 @@ function resolveEntry(
 ): StepResult<string> {
     const entry = def.entry ?? nodes[0]!.name;
     if (typeof entry !== 'string' || !names.has(entry)) {
-        return stepRefuse('UNKNOWN_NODE', 'definition.entry names no declared node');
+        return stepRefuse(ERROR_CODES.UNKNOWN_NODE, 'definition.entry names no declared node');
     }
     return { ok: true, value: entry };
 }
@@ -477,7 +486,7 @@ function validatePlaceholders(
             const spec = match[1]!.trim();
             if (!placeholderKnown(spec, params, names)) {
                 return stepRefuse(
-                    'UNKNOWN_PLACEHOLDER',
+                    ERROR_CODES.UNKNOWN_PLACEHOLDER,
                     `nodes named "${node.name}" carry placeholder "{{${spec}}}" — expected {{nodeName.output}}, {{gate.name}}, {{gate.output}}, {{param.NAME}} or {{command}}`
                 );
             }
@@ -494,7 +503,7 @@ function validatePlaceholders(
 function checkPublishReachable(nodes: AuthoredWorkflowNode[], edges: WorkflowEdge[], entry: string): StepResult<null> {
     const publishing = nodes.filter((n) => n.kind === 'agent' && n.publish === true).map((n) => n.name);
     if (publishing.length === 0) {
-        return stepRefuse('NO_PUBLISH_PATH', 'no node declares publish: true — the graph has no exit');
+        return stepRefuse(ERROR_CODES.NO_PUBLISH_PATH, 'no node declares publish: true — the graph has no exit');
     }
     const reachable = new Set([entry]);
     for (let changed = true; changed; ) {
@@ -507,7 +516,7 @@ function checkPublishReachable(nodes: AuthoredWorkflowNode[], edges: WorkflowEdg
         }
     }
     if (!publishing.some((name) => reachable.has(name))) {
-        return stepRefuse('NO_PUBLISH_PATH', 'no publish node is reachable from the entry');
+        return stepRefuse(ERROR_CODES.NO_PUBLISH_PATH, 'no publish node is reachable from the entry');
     }
     return { ok: true, value: null };
 }
@@ -525,11 +534,11 @@ function checkPublishReachable(nodes: AuthoredWorkflowNode[], edges: WorkflowEdg
 export function validateDefinition(raw: unknown, opts?: { sizeLimit?: number }): DefinitionCheck {
     const sizeLimit = opts?.sizeLimit ?? DEFINITION_LIMIT;
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-        return refuse('BAD_DEFINITION', 'definition must be a JSON object');
+        return refuse(ERROR_CODES.BAD_DEFINITION, 'definition must be a JSON object');
     }
     const def = raw as Record<string, unknown>;
     for (const key of Object.keys(def)) {
-        if (!KNOWN_TOP_KEYS.has(key)) return refuse('UNKNOWN_KEY', `unknown definition key "${key}"`);
+        if (!KNOWN_TOP_KEYS.has(key)) return refuse(ERROR_CODES.UNKNOWN_KEY, `unknown definition key "${key}"`);
     }
 
     const parsedParams = parseParamsSection(def);
@@ -556,7 +565,7 @@ export function validateDefinition(raw: unknown, opts?: { sizeLimit?: number }):
 
     const definition: AuthoredWorkflowDefinition = { entry, nodes, edges, params };
     if (JSON.stringify(definition).length > sizeLimit) {
-        return refuse('TOO_LARGE', `definition exceeds ${sizeLimit} characters`);
+        return refuse(ERROR_CODES.TOO_LARGE, `definition exceeds ${sizeLimit} characters`);
     }
     return { ok: true, definition };
 }

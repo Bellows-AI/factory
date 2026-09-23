@@ -3,6 +3,7 @@
  * produces, and why a compile was refused. Registry-aware — the opposite of workflow-schema.ts,
  * which validates the authored `uses`/`with` shape but knows no block's real id or config.
  */
+import { ERROR_CODES } from '@factory-ai/core';
 import type {
     BlockConfigValue,
     DefinitionRefusal,
@@ -56,6 +57,12 @@ export type BlockRegistry = ReadonlyMap<string, BlockDescriptor>;
 
 export type CompileRefusal =
     | DefinitionRefusal
-    | { code: 'UNKNOWN_BLOCK' | 'BLOCK_UNAVAILABLE' | 'BAD_BLOCK_CONFIG'; message: string };
+    | {
+          code:
+              | typeof ERROR_CODES.UNKNOWN_BLOCK
+              | typeof ERROR_CODES.BLOCK_UNAVAILABLE
+              | typeof ERROR_CODES.BAD_BLOCK_CONFIG;
+          message: string;
+      };
 
 export type CompileCheck = { ok: true; definition: WorkflowDefinition } | { ok: false; refusal: CompileRefusal };

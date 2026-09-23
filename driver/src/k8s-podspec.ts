@@ -1,3 +1,4 @@
+import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
@@ -288,8 +289,8 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             // app.kubernetes.io/instance scopes bulk cleanup to THIS release: `make stop` and a
             // shared-namespace neighbor must not delete each other's runners.
             labels: {
-                'factory.job': job.id,
-                'factory.lease': job.leaseToken,
+                [JOB_LABEL]: job.id,
+                [LEASE_LABEL]: job.leaseToken,
                 ...(config.k8sRelease ? { 'app.kubernetes.io/instance': config.k8sRelease } : {}),
             },
         },
@@ -305,7 +306,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             activeDeadlineSeconds: Math.max(1, Math.round(config.jobTimeoutMs / MS_PER_SECOND)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken } },
+                metadata: { labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken } },
                 spec: {
                     restartPolicy: 'Never',
                     // The runner gets no ServiceAccount token: automounting one would hand the
@@ -365,7 +366,7 @@ export const secretBody = (job: BoardJob, env: Record<string, string>) => ({
     apiVersion: 'v1',
     kind: 'Secret',
     type: 'Opaque',
-    metadata: { name: secretName(job), labels: { 'factory.job': job.id } },
+    metadata: { name: secretName(job), labels: { [JOB_LABEL]: job.id } },
     stringData: env,
 });
 
@@ -437,7 +438,7 @@ interface AuxJobSpecInput {
  * with the aux Jobs would make "the runner has no envFrom" unreadable.
  */
 export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpecInput): AuxJobSpec {
-    const labels = { 'factory.job': job.id, 'factory.lease': job.leaseToken };
+    const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken };
     return {
         apiVersion: 'batch/v1',
         kind: 'Job',

@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 import type { GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
@@ -51,12 +52,12 @@ export function validateClaimBody(
     fields: Record<string, unknown>
 ): { ok: true; value: { worker: string; lease: number } } | { ok: false; code: string; message: string } {
     const workerResult = validateWorkerField(fields.worker);
-    if (!workerResult.ok) return { ok: false, code: 'BAD_WORKER', message: workerResult.message };
+    if (!workerResult.ok) return { ok: false, code: ERROR_CODES.BAD_WORKER, message: workerResult.message };
     const lease = leaseSeconds(fields.leaseSeconds);
     if (lease === null) {
         return {
             ok: false,
-            code: 'BAD_LEASE',
+            code: ERROR_CODES.BAD_LEASE,
             message: `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`,
         };
     }
@@ -118,7 +119,7 @@ export function buildWorkflowSelection(
     const checked = checkWorkflowParams(definition, workflowParams);
     if (!checked.ok) return { ok: false, code: checked.refusal.code, message: checked.refusal.message };
     const entry = nodeOf(definition, definition.entry);
-    if (!entry) return { ok: false, code: 'BAD_WORKFLOW', message: 'workflow has no entry node' };
+    if (!entry) return { ok: false, code: ERROR_CODES.BAD_WORKFLOW, message: 'workflow has no entry node' };
     const interpolated = interpolate(entry.prompt, {
         nodeOutput: () => '',
         gateName: '',
@@ -127,7 +128,7 @@ export function buildWorkflowSelection(
         command,
     });
     if (interpolated.length > COMMAND_LIMIT) {
-        return { ok: false, code: 'BAD_COMMAND', message: `command exceeds ${COMMAND_LIMIT} characters` };
+        return { ok: false, code: ERROR_CODES.BAD_COMMAND, message: `command exceeds ${COMMAND_LIMIT} characters` };
     }
     return {
         ok: true,
@@ -250,25 +251,37 @@ export function validateCompleteFields(
 ): { ok: true; value: CompleteFields } | { ok: false; code: string; message: string } {
     const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary } = fields;
     if (status !== 'succeeded' && status !== 'failed') {
-        return { ok: false, code: 'BAD_STATUS', message: "status must be 'succeeded' or 'failed'" };
+        return { ok: false, code: ERROR_CODES.BAD_STATUS, message: "status must be 'succeeded' or 'failed'" };
     }
     if (badExitCode(exitCode)) {
-        return { ok: false, code: 'BAD_EXIT_CODE', message: 'exitCode must be an integer or null' };
+        return { ok: false, code: ERROR_CODES.BAD_EXIT_CODE, message: 'exitCode must be an integer or null' };
     }
     if (badOutputField(output)) {
-        return { ok: false, code: 'BAD_OUTPUT', message: 'output must be a string or null' };
+        return { ok: false, code: ERROR_CODES.BAD_OUTPUT, message: 'output must be a string or null' };
     }
     if (badContextTokens(contextTokens)) {
-        return { ok: false, code: 'BAD_CONTEXT', message: `contextTokens must be an integer 0..${CONTEXT_TOKENS_MAX}` };
+        return {
+            ok: false,
+            code: ERROR_CODES.BAD_CONTEXT,
+            message: `contextTokens must be an integer 0..${CONTEXT_TOKENS_MAX}`,
+        };
     }
     if (badContextCost(contextCostUsd)) {
-        return { ok: false, code: 'BAD_CONTEXT', message: `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}` };
+        return {
+            ok: false,
+            code: ERROR_CODES.BAD_CONTEXT,
+            message: `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}`,
+        };
     }
     if (badAgentTurns(agentTurns)) {
-        return { ok: false, code: 'BAD_AGENT_TURNS', message: `agentTurns must be an integer 0..${AGENT_TURNS_MAX}` };
+        return {
+            ok: false,
+            code: ERROR_CODES.BAD_AGENT_TURNS,
+            message: `agentTurns must be an integer 0..${AGENT_TURNS_MAX}`,
+        };
     }
     if (badSummaryField(summary)) {
-        return { ok: false, code: 'BAD_SUMMARY', message: 'summary must be a string or null' };
+        return { ok: false, code: ERROR_CODES.BAD_SUMMARY, message: 'summary must be a string or null' };
     }
     return {
         ok: true,
@@ -346,15 +359,20 @@ export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
         case 'missing':
             return notFoundJob(reply);
         case 'not_finished':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: 'NOT_FINISHED' });
+            return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
         case 'task_done':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: 'TASK_DONE' });
+            return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: ERROR_CODES.TASK_DONE });
         case 'no_session':
             return reply
                 .code(HTTP_CONFLICT)
-                .send({ error: 'The finished run has no agent session to continue', code: 'NO_SESSION' });
+                .send({ error: 'The finished run has no agent session to continue', code: ERROR_CODES.NO_SESSION });
         case 'forbidden':
-            return bad(reply, 'FORBIDDEN', 'Only the account that queued the task can follow it up', HTTP_FORBIDDEN);
+            return bad(
+                reply,
+                ERROR_CODES.FORBIDDEN,
+                'Only the account that queued the task can follow it up',
+                HTTP_FORBIDDEN
+            );
     }
 }
 
@@ -369,18 +387,22 @@ export function validateListQuery(query: {
     // view can bound its request instead of filtering a newest-N window client-side and losing
     // finished runs behind a busy queue.
     if (query.status !== undefined && query.status !== 'terminal' && !STATUSES.includes(query.status as JobStatus)) {
-        return { ok: false, code: 'BAD_STATUS', message: `status must be one of ${STATUSES.join(', ')} or 'terminal'` };
+        return {
+            ok: false,
+            code: ERROR_CODES.BAD_STATUS,
+            message: `status must be one of ${STATUSES.join(', ')} or 'terminal'`,
+        };
     }
     const limit = query.limit === undefined ? LIST_LIMIT_DEFAULT : Number(query.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > LIST_LIMIT_MAX) {
-        return { ok: false, code: 'BAD_LIMIT', message: `limit must be an integer 1..${LIST_LIMIT_MAX}` };
+        return { ok: false, code: ERROR_CODES.BAD_LIMIT, message: `limit must be an integer 1..${LIST_LIMIT_MAX}` };
     }
     const repo = query.repo;
     // Fastify's query parser hands repeated keys over as an array, so the shape is checked before
     // use — a malformed filter is a 400, never a TypeError.
     if (repo !== undefined && (typeof repo !== 'string' || repoReason(repo) !== null)) {
         const reason = typeof repo === 'string' ? repoReason(repo) : 'repo must be a string';
-        return { ok: false, code: 'BAD_REPO', message: reason ?? 'repo must be owner/name' };
+        return { ok: false, code: ERROR_CODES.BAD_REPO, message: reason ?? 'repo must be owner/name' };
     }
     return { ok: true, value: { status: query.status as JobStatus | 'terminal' | undefined, repo, limit } };
 }

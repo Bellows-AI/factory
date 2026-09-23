@@ -1,3 +1,4 @@
+import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession } from './claim.js';
@@ -280,9 +281,9 @@ export function servicePodSpec(
     };
 } {
     const labels = {
-        'factory.job': job.id,
-        'factory.lease': job.leaseToken,
-        'factory.service': spec.name,
+        [JOB_LABEL]: job.id,
+        [LEASE_LABEL]: job.leaseToken,
+        [SERVICE_LABEL]: spec.name,
     };
     return {
         apiVersion: 'v1',
@@ -339,14 +340,14 @@ export function serviceDnsSpec(
         metadata: {
             name: spec.name,
             labels: {
-                'factory.job': job.id,
-                'factory.lease': job.leaseToken,
-                'factory.service': spec.name,
+                [JOB_LABEL]: job.id,
+                [LEASE_LABEL]: job.leaseToken,
+                [SERVICE_LABEL]: spec.name,
             },
         },
         spec: {
             clusterIP: 'None',
-            selector: { 'factory.job': job.id, 'factory.service': spec.name },
+            selector: { [JOB_LABEL]: job.id, [SERVICE_LABEL]: spec.name },
         },
     };
 }
@@ -370,9 +371,9 @@ export const secretsPath = (namespace: string): string => `/api/v1/namespaces/${
  * the same lease label, and only the service fleet may die at teardown.
  */
 const byJob = (path: string, job: BoardJob): string =>
-    `${path}?labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`;
+    `${path}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id}`)}`;
 const byLease = (path: string, job: BoardJob): string =>
-    `${path}?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)},factory.service`;
+    `${path}?labelSelector=${encodeURIComponent(`${LEASE_LABEL}=${job.leaseToken}`)},${SERVICE_LABEL}`;
 
 export const podsSelectorPath = (namespace: string, job: BoardJob): string => byJob(podsPath(namespace), job);
 export const servicesPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/services`;
@@ -416,7 +417,7 @@ export function deleteSecret(deps: K8sDeps, name: string): Promise<void> {
  * the one identifier they all carry, and it is what the fence selects on.
  */
 export const jobsSelectorPath = (namespace: string, job: BoardJob): string =>
-    `${jobsPath(namespace)}?labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`;
+    `${jobsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id}`)}`;
 
 /**
  * The checkout claim: one ConfigMap per JOB id, the one job-scoped name this runner ever writes,
@@ -454,7 +455,7 @@ export const claimBody = (job: BoardJob) => ({
     kind: 'ConfigMap',
     metadata: {
         name: claimName(job),
-        labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+        labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken },
     },
     data: { holder: job.leaseToken, attempt: String(job.attempts) },
 });

@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import type { AppConfig } from '../config.js';
@@ -29,7 +30,8 @@ export const repoRoutes =
             const orgId = orgOf(request);
             const rt = await orgs.for(orgId);
             // Principal-carried org ids are FK-guaranteed, so null is a failed build, not a typo.
-            if (!rt) return bad(reply, 'REPOS_UNAVAILABLE', `No runtime for '${orgId}'; retry`, HTTP_UNAVAILABLE);
+            if (!rt)
+                return bad(reply, ERROR_CODES.REPOS_UNAVAILABLE, `No runtime for '${orgId}'; retry`, HTTP_UNAVAILABLE);
             const repos = rt.repos;
 
             const { repos: list, installation } = await repos.detail();

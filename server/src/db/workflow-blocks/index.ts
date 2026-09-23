@@ -9,6 +9,7 @@
  * New reserved ids land as new files here plus one registry-array entry; this module and
  * workflow-schema.ts stay untouched by that work.
  */
+import { ERROR_CODES } from '@factory-ai/core';
 import {
     EXPANDED_DEFINITION_LIMIT,
     type AuthoredWorkflowDefinition,
@@ -134,14 +135,17 @@ function expandBlockNode(node: BlockNode, registry: BlockRegistry): BlockExpansi
     if (!descriptor) {
         return {
             ok: false,
-            refusal: { code: 'UNKNOWN_BLOCK', message: `node "${node.name}" uses unknown block "${node.uses}"` },
+            refusal: {
+                code: ERROR_CODES.UNKNOWN_BLOCK,
+                message: `node "${node.name}" uses unknown block "${node.uses}"`,
+            },
         };
     }
     if (!descriptor.available) {
         return {
             ok: false,
             refusal: {
-                code: 'BLOCK_UNAVAILABLE',
+                code: ERROR_CODES.BLOCK_UNAVAILABLE,
                 message: `node "${node.name}" uses "${node.uses}", which is not yet available`,
             },
         };
@@ -150,7 +154,7 @@ function expandBlockNode(node: BlockNode, registry: BlockRegistry): BlockExpansi
     if (!resolved.ok) {
         return {
             ok: false,
-            refusal: { code: 'BAD_BLOCK_CONFIG', message: `node "${node.name}": ${resolved.message}` },
+            refusal: { code: ERROR_CODES.BAD_BLOCK_CONFIG, message: `node "${node.name}": ${resolved.message}` },
         };
     }
 

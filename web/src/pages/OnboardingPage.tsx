@@ -21,7 +21,7 @@ import {
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
 import { ThemeSelector } from '../components/ThemeSelector.js';
-import { JSON_HEADERS } from '@factory-ai/core';
+import { ERROR_CODES, JSON_HEADERS } from '@factory-ai/core';
 
 /** The board's session-expired status — the same recovery (Start again) as everywhere on this
  * screen. */
@@ -110,7 +110,7 @@ async function handleSubmitFailure(
     }
 ): Promise<void> {
     const problem = (await response.json().catch(() => null)) as { code?: string } | null;
-    if (problem?.code === 'UNKNOWN_REPO') {
+    if (problem?.code === ERROR_CODES.UNKNOWN_REPO) {
         const result = await reconcileUnknownRepos(Object.keys(body.repos), ctx.setDrafts);
         if (result.expired) {
             ctx.setExpired(true);
@@ -122,7 +122,7 @@ async function handleSubmitFailure(
         ctx.focusOrg(result.firstReconciled);
         return;
     }
-    if (problem?.code === 'REPOS_UNAVAILABLE') {
+    if (problem?.code === ERROR_CODES.REPOS_UNAVAILABLE) {
         ctx.setError(
             'The repositories of one of the chosen organizations could not be listed, so its narrowing was refused. Try again.'
         );

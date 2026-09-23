@@ -1,3 +1,4 @@
+import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { claimContinuesSession, envFileBody } from './claim.js';
 import { reportTail } from './runner.js';
@@ -354,7 +355,7 @@ export async function runSyncJob(
             type: 'Opaque',
             metadata: {
                 name: syncEnvSecretName(job),
-                labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+                labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken },
             },
             stringData: env,
         });

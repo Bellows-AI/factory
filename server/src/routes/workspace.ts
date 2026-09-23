@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { EXECUTOR_TYPES } from '@factory-ai/core';
+import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
+import type { ErrorCode } from '@factory-ai/core';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import type { UserExecutor, UserExecutorStore } from '../db/user-executor-store.js';
@@ -125,7 +126,7 @@ async function runtimeOf(orgs: OrgRegistry, request: Parameters<typeof callerOf>
     if (!rt?.userRepos) {
         return {
             error: 'No workspace store for this organization',
-            code: 'WORKSPACE_UNAVAILABLE',
+            code: ERROR_CODES.WORKSPACE_UNAVAILABLE,
             status: HTTP_UNAVAILABLE,
         };
     }
@@ -169,7 +170,7 @@ function validateRepoSelection(
     if (typeof selection === 'string') {
         return {
             ok: false,
-            code: selection.startsWith('at most') ? 'TOO_MANY_REPOS' : 'BAD_BODY',
+            code: selection.startsWith('at most') ? ERROR_CODES.TOO_MANY_REPOS : ERROR_CODES.BAD_BODY,
             message: selection,
         };
     }
@@ -178,7 +179,7 @@ function validateRepoSelection(
         if (reason) {
             return {
                 ok: false,
-                code: 'BAD_REPO_NAME',
+                code: ERROR_CODES.BAD_REPO_NAME,
                 message: `"${repo.owner}/${repo.name}" cannot become a directory: ${reason}`,
             };
         }
@@ -192,7 +193,7 @@ function validateRepoSelection(
         if (first) {
             return {
                 ok: false,
-                code: 'REPO_NAME_CONFLICT',
+                code: ERROR_CODES.REPO_NAME_CONFLICT,
                 message: `"${first}/${repo.name}" and "${repo.owner}/${repo.name}" share the checkout directory "${repo.name}"`,
             };
         }
@@ -219,7 +220,7 @@ async function checkReposVisible(
         return {
             ok: false,
             status: HTTP_UNAVAILABLE,
-            code: 'UNAVAILABLE',
+            code: ERROR_CODES.UNAVAILABLE,
             message: `Cannot check the selection against the GitHub App installation: ${repos.lastError()}`,
         };
     }
@@ -227,7 +228,7 @@ async function checkReposVisible(
         if (available.has(`${repo.owner}/${repo.name}`)) continue;
         return {
             ok: false,
-            code: 'UNKNOWN_REPO',
+            code: ERROR_CODES.UNKNOWN_REPO,
             message: `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
         };
     }
@@ -240,9 +241,9 @@ function validateExecutorList(
 ): { ok: true; value: ExecutorEntry[] } | { ok: false; code: string; message: string } {
     const list = parseExecutors(raw);
     if (typeof list === 'string') {
-        let code = 'BAD_BODY';
-        if (list.startsWith('at most')) code = 'TOO_MANY_EXECUTORS';
-        else if (list.startsWith('unknown executor type')) code = 'BAD_EXECUTOR_TYPE';
+        let code: ErrorCode = ERROR_CODES.BAD_BODY;
+        if (list.startsWith('at most')) code = ERROR_CODES.TOO_MANY_EXECUTORS;
+        else if (list.startsWith('unknown executor type')) code = ERROR_CODES.BAD_EXECUTOR_TYPE;
         return { ok: false, code, message: list };
     }
     for (const executor of list) {
@@ -250,7 +251,7 @@ function validateExecutorList(
         if (reason) {
             return {
                 ok: false,
-                code: 'BAD_EXECUTOR_NAME',
+                code: ERROR_CODES.BAD_EXECUTOR_NAME,
                 message: `"${executor.name}" cannot be used as an executor name: ${reason}`,
             };
         }
@@ -259,16 +260,19 @@ function validateExecutorList(
     // member would see as a 503.
     const names = new Set(list.map((executor) => executor.name));
     if (names.size !== list.length) {
-        return { ok: false, code: 'EXECUTOR_NAME_CONFLICT', message: 'executor names must be unique' };
+        return { ok: false, code: ERROR_CODES.EXECUTOR_NAME_CONFLICT, message: 'executor names must be unique' };
     }
     return { ok: true, value: list };
 }
 
-const NO_EXECUTOR_STORE = { error: 'No executor store is configured for this deployment', code: 'UNAVAILABLE' };
+const NO_EXECUTOR_STORE = {
+    error: 'No executor store is configured for this deployment',
+    code: ERROR_CODES.UNAVAILABLE,
+};
 
 async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
-    if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
 
     const { root } = deps;
     // 200 with a null root, never a 503. "Workspaces are switched off" is a configuration an
@@ -321,10 +325,15 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
 
 async function handlePutRepos(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
-    if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
     const { root } = deps;
     if (!root) {
-        return bad(reply, 'WORKSPACE_DISABLED', 'This deployment has no workspace root configured', HTTP_CONFLICT);
+        return bad(
+            reply,
+            ERROR_CODES.WORKSPACE_DISABLED,
+            'This deployment has no workspace root configured',
+            HTTP_CONFLICT
+        );
     }
     const rt = await runtimeOf(deps.orgs, request);
     if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
@@ -372,9 +381,14 @@ async function handlePutRepos(deps: WorkspaceDeps, request: FastifyRequest, repl
 // once per dialog open rather than on a poll.
 async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
-    if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
     if (!deps.root) {
-        return bad(reply, 'WORKSPACE_DISABLED', 'This deployment has no workspace root configured', HTTP_CONFLICT);
+        return bad(
+            reply,
+            ERROR_CODES.WORKSPACE_DISABLED,
+            'This deployment has no workspace root configured',
+            HTTP_CONFLICT
+        );
     }
     const rt = await runtimeOf(deps.orgs, request);
     if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
@@ -402,9 +416,14 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
 // so replaying it after a dropped connection changes nothing.
 async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
-    if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
     if (!deps.root) {
-        return bad(reply, 'WORKSPACE_DISABLED', 'This deployment has no workspace root configured', HTTP_CONFLICT);
+        return bad(
+            reply,
+            ERROR_CODES.WORKSPACE_DISABLED,
+            'This deployment has no workspace root configured',
+            HTTP_CONFLICT
+        );
     }
     const rt = await runtimeOf(deps.orgs, request);
     if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);

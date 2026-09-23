@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 import type { JobStatus, RuntimeVitals, ServiceStatus } from '../db/job-store-types.js';
 import { bad, badSegment } from './helpers.js';
@@ -229,14 +230,14 @@ export const HTTP_UNAVAILABLE = 503;
 const NO_BOARD_MESSAGE = 'No job board for this organization';
 
 export function noBoard(reply: FastifyReply) {
-    return bad(reply, 'JOBS_UNAVAILABLE', NO_BOARD_MESSAGE, HTTP_UNAVAILABLE);
+    return bad(reply, ERROR_CODES.JOBS_UNAVAILABLE, NO_BOARD_MESSAGE, HTTP_UNAVAILABLE);
 }
 
 /** The lease-guarded routes all answer the same two refusals; named once instead of a dozen times. */
 export function notFoundJob(reply: FastifyReply) {
-    return reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: 'NOT_FOUND' });
+    return reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: ERROR_CODES.NOT_FOUND });
 }
 
 export function leaseLost(reply: FastifyReply) {
-    return reply.code(HTTP_CONFLICT).send({ error: 'Lease lost', code: 'LEASE_LOST' });
+    return reply.code(HTTP_CONFLICT).send({ error: 'Lease lost', code: ERROR_CODES.LEASE_LOST });
 }

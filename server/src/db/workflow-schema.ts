@@ -1,7 +1,8 @@
 /**
  * The workflow definition grammar: types, the strict validator, and the prompt-template
- * interpolation. Pure — no I/O, no imports — so the offline suite pins every rule in it, and the
- * store, the engine and the claim's publish read all speak one grammar (docs/workflows.md).
+ * interpolation. Pure — no I/O, no imports beyond core's constants — so the offline suite pins every
+ * rule in it, and the store, the engine and the claim's publish read all speak one grammar
+ * (docs/workflows.md).
  *
  * The grammar is deliberately closed. A node is an `agent` node and nothing else: checkout/sync,
  * gates and publish are driver machinery the graph references by OUTCOME (`gate-failed`, a
@@ -10,6 +11,8 @@
  * its own rows. Unknown keys are refused with named errors: a pasted foreign pipeline fails loudly
  * instead of silently doing nothing.
  */
+
+import { ERROR_CODES } from '@factory-ai/core';
 
 /** The size cap of a definition, in JSON characters — the same body-limit discipline as commands. */
 export const DEFINITION_LIMIT = 16_384;
@@ -208,19 +211,19 @@ export interface WorkflowDefinition {
 /** Why a definition was refused. The code is the API's name for it; the message names the culprit. */
 export interface DefinitionRefusal {
     code:
-        | 'BAD_DEFINITION'
-        | 'UNKNOWN_KEY'
-        | 'BAD_NODES'
-        | 'BAD_NODE'
-        | 'DUPLICATE_NODE'
-        | 'BAD_EDGES'
-        | 'UNKNOWN_NODE'
-        | 'BAD_RULE'
-        | 'BAD_BOUND'
-        | 'BAD_PARAMS'
-        | 'UNKNOWN_PLACEHOLDER'
-        | 'NO_PUBLISH_PATH'
-        | 'TOO_LARGE';
+        | typeof ERROR_CODES.BAD_DEFINITION
+        | typeof ERROR_CODES.UNKNOWN_KEY
+        | typeof ERROR_CODES.BAD_NODES
+        | typeof ERROR_CODES.BAD_NODE
+        | typeof ERROR_CODES.DUPLICATE_NODE
+        | typeof ERROR_CODES.BAD_EDGES
+        | typeof ERROR_CODES.UNKNOWN_NODE
+        | typeof ERROR_CODES.BAD_RULE
+        | typeof ERROR_CODES.BAD_BOUND
+        | typeof ERROR_CODES.BAD_PARAMS
+        | typeof ERROR_CODES.UNKNOWN_PLACEHOLDER
+        | typeof ERROR_CODES.NO_PUBLISH_PATH
+        | typeof ERROR_CODES.TOO_LARGE;
     message: string;
 }
 
@@ -298,11 +301,11 @@ export type ParamValues = Record<string, string>;
 /** Why a launch's parameter values were refused. The route surfaces it as `400 BAD_WORKFLOW_PARAMS`. */
 export type ParamValuesCheck =
     | { ok: true; values: ParamValues }
-    | { ok: false; refusal: { code: 'BAD_WORKFLOW_PARAMS'; message: string } };
+    | { ok: false; refusal: { code: typeof ERROR_CODES.BAD_WORKFLOW_PARAMS; message: string } };
 
 const refuseParams = (message: string): ParamValuesCheck => ({
     ok: false,
-    refusal: { code: 'BAD_WORKFLOW_PARAMS', message },
+    refusal: { code: ERROR_CODES.BAD_WORKFLOW_PARAMS, message },
 });
 
 /** One declared param's value against `checkWorkflowParams`'s rules, in isolation. */

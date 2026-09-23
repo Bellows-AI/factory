@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import type { JobStore, TaskListFilters, TaskState } from '../db/job-store-types.js';
@@ -50,34 +51,36 @@ const isQueryError = (value: unknown): value is QueryError =>
 function parseState(query: Record<string, unknown>): TaskState | QueryError {
     if (query.state === undefined) return 'attention';
     const state = oneOf(query.state, TASK_STATES);
-    if (state === null) return { code: 'BAD_TASK_STATE', message: `state must be one of ${TASK_STATES.join(', ')}` };
+    if (state === null)
+        return { code: ERROR_CODES.BAD_TASK_STATE, message: `state must be one of ${TASK_STATES.join(', ')}` };
     return state;
 }
 
 function parseQ(query: Record<string, unknown>): string | undefined | QueryError {
     if (query.q === undefined) return undefined;
-    if (!isText(query.q)) return { code: 'BAD_QUERY', message: 'q must be a string' };
+    if (!isText(query.q)) return { code: ERROR_CODES.BAD_QUERY, message: 'q must be a string' };
     const q = query.q.trim();
-    if (q.length > QUERY_MAX) return { code: 'BAD_QUERY', message: `q must be at most ${QUERY_MAX} characters` };
+    if (q.length > QUERY_MAX)
+        return { code: ERROR_CODES.BAD_QUERY, message: `q must be at most ${QUERY_MAX} characters` };
     return q === '' ? undefined : q;
 }
 
 function parseRepo(query: Record<string, unknown>): string | undefined | QueryError {
     if (query.repo === undefined) return undefined;
-    if (!isText(query.repo)) return { code: 'BAD_REPO', message: 'repo must be owner/name' };
+    if (!isText(query.repo)) return { code: ERROR_CODES.BAD_REPO, message: 'repo must be owner/name' };
     const reason = repoReason(query.repo);
-    if (reason !== null) return { code: 'BAD_REPO', message: reason };
+    if (reason !== null) return { code: ERROR_CODES.BAD_REPO, message: reason };
     return query.repo;
 }
 
 function parseAuthor(query: Record<string, unknown>): string | undefined | QueryError {
     if (query.author === undefined) return undefined;
-    if (!isText(query.author)) return { code: 'BAD_AUTHOR', message: 'author must be a string' };
+    if (!isText(query.author)) return { code: ERROR_CODES.BAD_AUTHOR, message: 'author must be a string' };
     const author = query.author.trim();
     if (author === '') return undefined;
     if (author.length > AUTHOR_MAX || !AUTHOR_SHAPE.test(author)) {
         return {
-            code: 'BAD_AUTHOR',
+            code: ERROR_CODES.BAD_AUTHOR,
             message: `author must be a login of letters, digits and dashes, at most ${AUTHOR_MAX} characters`,
         };
     }
@@ -89,14 +92,14 @@ function parseAuthor(query: Record<string, unknown>): string | undefined | Query
 function parseSort(query: Record<string, unknown>): 'newest' | 'oldest' | QueryError {
     if (query.sort === undefined) return 'newest';
     const sort = oneOf(query.sort, SORTS);
-    if (sort === null) return { code: 'BAD_SORT', message: 'sort must be newest or oldest' };
+    if (sort === null) return { code: ERROR_CODES.BAD_SORT, message: 'sort must be newest or oldest' };
     return sort;
 }
 
 function parseLimit(query: Record<string, unknown>): number | QueryError {
     const limit = query.limit === undefined ? TASK_LIMIT_DEFAULT : Number(query.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > TASK_LIMIT_MAX) {
-        return { code: 'BAD_LIMIT', message: `limit must be an integer 1..${TASK_LIMIT_MAX}` };
+        return { code: ERROR_CODES.BAD_LIMIT, message: `limit must be an integer 1..${TASK_LIMIT_MAX}` };
     }
     return limit;
 }
@@ -107,7 +110,7 @@ function parseCursor(query: Record<string, unknown>, expected: TaskCursorFilters
     if (query.cursor === undefined) return undefined;
     const raw = query.cursor;
     if (!isText(raw) || decodeCursor(raw, expected) === null) {
-        return { code: 'BAD_CURSOR', message: 'cursor was not issued by this endpoint for this query' };
+        return { code: ERROR_CODES.BAD_CURSOR, message: 'cursor was not issued by this endpoint for this query' };
     }
     return raw;
 }
@@ -171,7 +174,8 @@ export const taskRoutes =
 
         app.get('/api/tasks', async (request, reply) => {
             const store = await storeOf(request);
-            if (!store) return bad(reply, 'JOBS_UNAVAILABLE', 'No job board for this organization', HTTP_UNAVAILABLE);
+            if (!store)
+                return bad(reply, ERROR_CODES.JOBS_UNAVAILABLE, 'No job board for this organization', HTTP_UNAVAILABLE);
             // Fastify's query parser hands repeated keys over as an array, so every param is
             // shape-checked before use — a malformed filter is a 400, never a TypeError.
             const query = request.query as Record<string, unknown>;

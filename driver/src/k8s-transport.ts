@@ -1,3 +1,4 @@
+import { SERVICE_LABEL } from './labels.js';
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { DriverConfig } from './config.js';
@@ -344,7 +345,7 @@ export function parseServicePods(body: string): ServiceStatus[] {
     }
     const out: ServiceStatus[] = [];
     for (const item of list.items ?? []) {
-        const name = item.metadata?.labels?.['factory.service'];
+        const name = item.metadata?.labels?.[SERVICE_LABEL];
         const image = item.spec?.containers?.[0]?.image;
         if (!name || !image) continue;
         out.push({ name, image, state: (item.status?.phase ?? 'unknown').toLowerCase() });

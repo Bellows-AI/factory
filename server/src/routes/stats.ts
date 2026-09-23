@@ -1,4 +1,4 @@
-import { isRangePreset, resolveRange } from '@factory-ai/core';
+import { ERROR_CODES, isRangePreset, resolveRange } from '@factory-ai/core';
 import type { DateRange, Organization, OrganizationMeta } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -87,7 +87,8 @@ async function resolveOrg(
     request: Parameters<typeof callerOf>[0],
     requested: string | undefined
 ): Promise<
-    { meta: OrganizationMeta; serviceOrg: Organization } | { error: string; code: 'UNKNOWN_ORG' | 'FORBIDDEN' }
+    | { meta: OrganizationMeta; serviceOrg: Organization }
+    | { error: string; code: typeof ERROR_CODES.UNKNOWN_ORG | typeof ERROR_CODES.FORBIDDEN }
 > {
     const caller = callerOf(request);
     const orgToken = request.auth?.kind === 'org' ? request.auth.token : null;
@@ -107,14 +108,14 @@ async function resolveOrg(
 
     const org = (await store?.findOrg(requested)) ?? null;
     if (!org) {
-        return { error: `Unknown organization '${requested}'`, code: 'UNKNOWN_ORG' };
+        return { error: `Unknown organization '${requested}'`, code: ERROR_CODES.UNKNOWN_ORG };
     }
     // Known, but not this caller's: the org decides WHICH data set, and the membership join —
     // not the parameter — decides whose. "Trust the parameter" is how a cross-tenant read is
     // born. Read ONCE: this route is the dashboard's two-second poll, and ?org= is on it.
     const memberships = caller ? await store!.membershipsOf(caller.user.id) : [];
     if (!caller || !memberships.some((m) => m.id === requested)) {
-        return { error: `Not a member of '${requested}'`, code: 'FORBIDDEN' };
+        return { error: `Not a member of '${requested}'`, code: ERROR_CODES.FORBIDDEN };
     }
     return {
         serviceOrg: org,
@@ -144,7 +145,7 @@ function resolveScope(
     const raw = requested ?? 'org';
     if (raw === 'org') return { value: 'org' };
     if (raw !== 'mine') {
-        return { error: `Unknown scope '${raw}'`, code: 'BAD_SCOPE' };
+        return { error: `Unknown scope '${raw}'`, code: ERROR_CODES.BAD_SCOPE };
     }
     if (config.auth.mode !== 'none') {
         const caller = callerOf(request as Parameters<typeof callerOf>[0]);
@@ -152,7 +153,7 @@ function resolveScope(
     }
     return {
         error: 'Caller scope needs a signed-in member; this deployment has none behind this request',
-        code: 'SCOPE_REQUIRES_USER',
+        code: ERROR_CODES.SCOPE_REQUIRES_USER,
     };
 }
 
@@ -172,7 +173,7 @@ function noPayloadResponse(
             status: HTTP_UNAVAILABLE,
             body: {
                 error: 'Telemetry is disabled on this deployment (TELEMETRY_SOURCE=off)',
-                code: 'TELEMETRY_DISABLED',
+                code: ERROR_CODES.TELEMETRY_DISABLED,
                 fetch: service.fetchState(),
             },
         };
@@ -223,7 +224,7 @@ async function resolveOrgContext(
     // just belongs to somebody else.
     const org = await resolveOrg(config, store, request, requestedOrg);
     if ('error' in org) {
-        const status = org.code === 'FORBIDDEN' ? HTTP_FORBIDDEN : HTTP_BAD_REQUEST;
+        const status = org.code === ERROR_CODES.FORBIDDEN ? HTTP_FORBIDDEN : HTTP_BAD_REQUEST;
         return { ok: false, status, body: { error: org.error, code: org.code } };
     }
 
@@ -238,7 +239,7 @@ async function resolveOrgContext(
             status: HTTP_UNAVAILABLE,
             body: {
                 error: `The runtime for '${org.serviceOrg.id}' could not be built; retry`,
-                code: 'ORG_UNAVAILABLE',
+                code: ERROR_CODES.ORG_UNAVAILABLE,
             },
         };
     }
@@ -269,7 +270,7 @@ export const statsRoutes =
             }
             const range = parseRange(query, new Date(now()));
             if ('error' in range) {
-                return reply.code(HTTP_BAD_REQUEST).send({ error: range.error, code: 'BAD_RANGE' });
+                return reply.code(HTTP_BAD_REQUEST).send({ error: range.error, code: ERROR_CODES.BAD_RANGE });
             }
 
             service.ensureFresh();

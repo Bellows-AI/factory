@@ -2,10 +2,11 @@ import {
     ENV_NAME,
     ENV_NAME_LIMIT,
     ENV_VALUE_LIMIT,
+    ERROR_CODES,
     MAX_ENV_VARS_PER_SCOPE,
     RESERVED_ENV_NAMES,
 } from '@factory-ai/core';
-import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
@@ -135,14 +136,14 @@ async function checkRepoVisible(
         return {
             ok: false,
             status: HTTP_UNAVAILABLE,
-            code: 'UNAVAILABLE',
+            code: ERROR_CODES.UNAVAILABLE,
             message: `Cannot check the repository against the GitHub App installation: ${repos.lastError()}`,
         };
     }
     if (!available.has(`${repo.owner}/${repo.name}`)) {
         return {
             ok: false,
-            code: 'UNKNOWN_REPO',
+            code: ERROR_CODES.UNKNOWN_REPO,
             message: `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
         };
     }
@@ -160,9 +161,9 @@ async function validatePutRepoRequest(
     { ok: true; repo: Repo; vars: EnvVarEntry[] } | { ok: false; code: string; message: string; status?: number }
 > {
     const repo = parseRepo(request.body);
-    if (typeof repo === 'string') return { ok: false, code: 'BAD_BODY', message: repo };
+    if (typeof repo === 'string') return { ok: false, code: ERROR_CODES.BAD_BODY, message: repo };
     const segmentReason = repoSegmentReason(repo);
-    if (segmentReason) return { ok: false, code: 'BAD_REPO_NAME', message: segmentReason };
+    if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
     const vars = parseVars(request.body);
     if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
     const visible = await checkRepoVisible(repos, repo);
@@ -197,10 +198,9 @@ export const envRoutes =
 
         app.get('/api/env', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt)
-                return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', HTTP_UNAVAILABLE);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
             const loaded = await guard(
@@ -225,10 +225,9 @@ export const envRoutes =
         // installation access is membership, and there are no roles above member to gate it with.
         app.put('/api/env/org', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt)
-                return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', HTTP_UNAVAILABLE);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
             const vars = parseVars(request.body);
@@ -251,10 +250,9 @@ export const envRoutes =
         // The caller's own scope. Any member may write it — it is their runners' environment.
         app.put('/api/env/workspace', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt)
-                return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', HTTP_UNAVAILABLE);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
             const vars = parseVars(request.body);
@@ -278,10 +276,9 @@ export const envRoutes =
         // member's runs in it — the GitHub Actions precedent.
         app.put('/api/env/repo', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt)
-                return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', HTTP_UNAVAILABLE);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
             const parsed = await validatePutRepoRequest(request, rt.repos);
@@ -303,12 +300,17 @@ export const envRoutes =
 
 /** The refusal code for a parseVars reason, in one place so the codes stay honest. */
 function varsCode(reason: string): string {
-    if (reason.startsWith('at most')) return 'TOO_MANY_ENV_VARS';
-    if (reason.includes('exceeds the limit or contains a newline')) return 'BAD_ENV_VALUE';
-    if (reason.includes('exceeds 255 characters')) return 'BAD_ENV_NAME';
-    if (reason.endsWith('is not a legal environment variable name')) return 'BAD_ENV_NAME';
-    if (reason.endsWith('is reserved by the runner')) return 'RESERVED_ENV_NAME';
-    if (reason.includes('only a secret may be left blank')) return 'BAD_VALUE';
-    if (reason.startsWith('variable names must be unique')) return 'ENV_NAME_CONFLICT';
-    return 'BAD_BODY';
+    if (reason.startsWith('at most')) return ERROR_CODES.TOO_MANY_ENV_VARS;
+    if (reason.includes('exceeds the limit or contains a newline')) return ERROR_CODES.BAD_ENV_VALUE;
+    if (reason.includes('exceeds 255 characters')) return ERROR_CODES.BAD_ENV_NAME;
+    if (reason.endsWith('is not a legal environment variable name')) return ERROR_CODES.BAD_ENV_NAME;
+    if (reason.endsWith('is reserved by the runner')) return ERROR_CODES.RESERVED_ENV_NAME;
+    if (reason.includes('only a secret may be left blank')) return ERROR_CODES.BAD_VALUE;
+    if (reason.startsWith('variable names must be unique')) return ERROR_CODES.ENV_NAME_CONFLICT;
+    return ERROR_CODES.BAD_BODY;
+}
+
+/** The refusal every route sends when the caller's org has no env store behind it. */
+function noEnvStore(reply: FastifyReply) {
+    return bad(reply, ERROR_CODES.ENV_UNAVAILABLE, 'No environment store for this organization', HTTP_UNAVAILABLE);
 }

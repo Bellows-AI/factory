@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -52,13 +53,13 @@ export const workflowSettingsRoutes =
             if (!store) {
                 return bad(
                     reply,
-                    'WORKFLOW_SETTINGS_UNAVAILABLE',
+                    ERROR_CODES.WORKFLOW_SETTINGS_UNAVAILABLE,
                     'No workflow settings store for this organization',
                     HTTP_UNAVAILABLE
                 );
             }
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
 
             const loaded = await guard(
                 reply,
@@ -75,16 +76,16 @@ export const workflowSettingsRoutes =
             if (!store) {
                 return bad(
                     reply,
-                    'WORKFLOW_SETTINGS_UNAVAILABLE',
+                    ERROR_CODES.WORKFLOW_SETTINGS_UNAVAILABLE,
                     'No workflow settings store for this organization',
                     HTTP_UNAVAILABLE
                 );
             }
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
 
             const pair = parsePair(request.body);
-            if (typeof pair === 'string') return bad(reply, 'BAD_DEFAULT_WORKFLOW', pair);
+            if (typeof pair === 'string') return bad(reply, ERROR_CODES.BAD_DEFAULT_WORKFLOW, pair);
 
             const saved = await guard(
                 reply,

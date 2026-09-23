@@ -1,3 +1,4 @@
+import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
@@ -112,11 +113,11 @@ async function dockerServiceTeardown(deps: RunnerDeps, job: BoardJob): Promise<v
             'ps',
             '-aq',
             '--filter',
-            `label=factory.job=${job.id}`,
+            `label=${JOB_LABEL}=${job.id}`,
             '--filter',
-            `label=factory.lease=${job.leaseToken}`,
+            `label=${LEASE_LABEL}=${job.leaseToken}`,
             '--filter',
-            'label=factory.service',
+            `label=${SERVICE_LABEL}`,
         ])
         .catch(() => ({ stdout: '' }));
     for (const id of linesOf(found.stdout)) {
@@ -144,9 +145,9 @@ async function dockerKill(deps: RunnerDeps, job: BoardJob): Promise<void> {
             'ps',
             '-aq',
             '--filter',
-            `label=factory.job=${job.id}`,
+            `label=${JOB_LABEL}=${job.id}`,
             '--filter',
-            `label=factory.lease=${job.leaseToken}`,
+            `label=${LEASE_LABEL}=${job.leaseToken}`,
         ])
         .catch(() => ({ stdout: '' }));
     for (const id of linesOf(found.stdout)) {
@@ -189,7 +190,7 @@ async function dockerKill(deps: RunnerDeps, job: BoardJob): Promise<void> {
 async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void> {
     const containerIds = await listByLabelOrThrow(
         deps.execDocker,
-        ['ps', '-aq', '--filter', `label=factory.job=${job.id}`],
+        ['ps', '-aq', '--filter', `label=${JOB_LABEL}=${job.id}`],
         `the re-claim fence could not list the leftover containers of job ${job.id}`
     );
     await removeEachTolerantly(
@@ -201,7 +202,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
 
     const staleNetworks = await listByLabelOrThrow(
         deps.execDocker,
-        ['network', 'ls', '--filter', `label=factory.job=${job.id}`, '--format', '{{.Name}}'],
+        ['network', 'ls', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', '{{.Name}}'],
         `the re-claim fence could not list the leftover networks of job ${job.id}`
     );
     await removeEachTolerantly(
@@ -405,9 +406,9 @@ async function dockerRunHelper(
         if (worktree) args.push('-w', worktree);
         args.push(
             '--label',
-            `factory.job=${job.id}`,
+            `${JOB_LABEL}=${job.id}`,
             '--label',
-            `factory.lease=${job.leaseToken}`,
+            `${LEASE_LABEL}=${job.leaseToken}`,
             '-e',
             `HELPER_INPUT=${helperInputValue(plan)}`
         );
@@ -458,11 +459,11 @@ async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omi
               'ps',
               '-a',
               '--filter',
-              `label=factory.job=${job.id}`,
+              `label=${JOB_LABEL}=${job.id}`,
               '--filter',
-              `label=factory.lease=${job.leaseToken}`,
+              `label=${LEASE_LABEL}=${job.leaseToken}`,
               '--filter',
-              'label=factory.service',
+              `label=${SERVICE_LABEL}`,
               '--format',
               '{{json .}}',
           ])

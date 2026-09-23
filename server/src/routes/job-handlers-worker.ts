@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -51,7 +52,7 @@ async function resolveNamedWorkflow(
 ): Promise<{ handled: true } | { handled: false; workflow: ResolvedWorkflow; command: string }> {
     const { workflowsStore, fields, repo, createdBy, command } = opts;
     if (typeof fields.workflow !== 'string' || !fields.workflow.trim()) {
-        bad(reply, 'BAD_WORKFLOW', 'workflow must be a non-empty string');
+        bad(reply, ERROR_CODES.BAD_WORKFLOW, 'workflow must be a non-empty string');
         return { handled: true };
     }
     const found = await guard(
@@ -61,7 +62,7 @@ async function resolveNamedWorkflow(
     );
     if (!found.ok) return { handled: true };
     if (found.value === null) {
-        bad(reply, 'UNKNOWN_WORKFLOW', `"${fields.workflow}" is not a workflow you can use`, HTTP_NOT_FOUND);
+        bad(reply, ERROR_CODES.UNKNOWN_WORKFLOW, `"${fields.workflow}" is not a workflow you can use`, HTTP_NOT_FOUND);
         return { handled: true };
     }
     const selection = buildWorkflowSelection(found.value, fields.workflowParams, command);
@@ -77,15 +78,15 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     if (!store) return noBoard(reply);
     const fields = body(request.body);
     const commandResult = validateCommandField(fields.command);
-    if (!commandResult.ok) return bad(reply, 'BAD_COMMAND', commandResult.message);
+    if (!commandResult.ok) return bad(reply, ERROR_CODES.BAD_COMMAND, commandResult.message);
     // The command the task runs: the member's line verbatim — or, when a workflow resolves, the
     // interpolated ENTRY prompt built below.
     let command = commandResult.value;
 
     const repoResult = validateRepoField(fields.repo);
-    if (!repoResult.ok) return bad(reply, 'BAD_REPO', repoResult.message);
+    if (!repoResult.ok) return bad(reply, ERROR_CODES.BAD_REPO, repoResult.message);
     const executorResult = validateExecutorField(fields.executor);
-    if (!executorResult.ok) return bad(reply, 'BAD_EXECUTOR', executorResult.message);
+    if (!executorResult.ok) return bad(reply, ERROR_CODES.BAD_EXECUTOR, executorResult.message);
     const repo = repoResult.value;
     const executor = executorResult.value;
 
@@ -118,7 +119,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     // Parameters are workflow-bound: sent beside a task that resolves no workflow, they are a
     // client bug — refused, never silently dropped.
     if (fields.workflowParams !== undefined && fields.workflowParams !== null && workflow === null) {
-        return bad(reply, 'BAD_WORKFLOW_PARAMS', 'workflowParams requires a resolved workflow');
+        return bad(reply, ERROR_CODES.BAD_WORKFLOW_PARAMS, 'workflowParams requires a resolved workflow');
     }
 
     const created = await guard(
@@ -157,15 +158,15 @@ export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const { leaseToken, leaseSeconds: requested } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
     const lease = leaseSeconds(requested);
     if (lease === null) {
-        return bad(reply, 'BAD_LEASE', `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
+        return bad(reply, ERROR_CODES.BAD_LEASE, `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
     }
 
     const beat = await guard(
@@ -192,21 +193,21 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const { leaseToken, sessionId, remoteSessionId } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
     if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
-        return bad(reply, 'BAD_SESSION_ID', 'sessionId must be a short opaque token');
+        return bad(reply, ERROR_CODES.BAD_SESSION_ID, 'sessionId must be a short opaque token');
     }
     // Not a uuid, and not checked against a shape: it is an opaque token minted elsewhere
     // (`cse_…` today), and pinning its format here would break on the day it changes.
     if (badRemoteSessionId(remoteSessionId)) {
         return bad(
             reply,
-            'BAD_REMOTE_SESSION_ID',
+            ERROR_CODES.BAD_REMOTE_SESSION_ID,
             `remoteSessionId must be a non-empty string of at most ${REMOTE_SESSION_LIMIT} characters`
         );
     }
@@ -234,17 +235,17 @@ export async function handleOutput(orgs: OrgRegistry, request: FastifyRequest, r
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const { leaseToken, output, runtime } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
     if (typeof output !== 'string') {
-        return bad(reply, 'BAD_OUTPUT', 'output must be a string');
+        return bad(reply, ERROR_CODES.BAD_OUTPUT, 'output must be a string');
     }
     const vitals = runtimeVitals(runtime);
-    if (typeof vitals === 'string') return bad(reply, 'BAD_RUNTIME', vitals);
+    if (typeof vitals === 'string') return bad(reply, ERROR_CODES.BAD_RUNTIME, vitals);
 
     const result = await guard(
         reply,
@@ -265,14 +266,14 @@ export async function handleGates(orgs: OrgRegistry, request: FastifyRequest, re
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const { leaseToken, gates } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
     const parsed = validateGates(gates);
-    if (!parsed.ok) return bad(reply, 'BAD_GATES', parsed.message);
+    if (!parsed.ok) return bad(reply, ERROR_CODES.BAD_GATES, parsed.message);
 
     const result = await guard(
         reply,
@@ -294,11 +295,11 @@ export async function handleGatesReread(orgs: OrgRegistry, request: FastifyReque
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const { leaseToken } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
 
     const reread = await guard(
@@ -326,11 +327,11 @@ export async function handlePublishToken(orgs: OrgRegistry, request: FastifyRequ
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const { leaseToken } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
 
     const minted = await guard(
@@ -355,11 +356,11 @@ export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, 
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const { leaseToken } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
 
     const result = await guard(

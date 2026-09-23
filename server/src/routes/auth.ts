@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver } from '../auth/plugin.js';
 import type { GitHubIdentity, GitHubIdentityClient } from '../auth/github.js';
@@ -253,29 +254,32 @@ interface SwitchOrgCtx {
 async function handleSwitchOrg(ctx: SwitchOrgCtx, request: FastifyRequest, reply: FastifyReply) {
     const { store, secret, resolveUser } = ctx;
     const caller = await resolveUser(request).catch(() => null);
-    if (!caller) return reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: 'UNAUTHENTICATED' });
+    if (!caller)
+        return reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
 
     const body = request.body as { orgId?: unknown } | undefined;
     const orgId = typeof body?.orgId === 'string' ? body.orgId.trim() : '';
-    if (!orgId) return reply.code(HTTP_BAD_REQUEST).send({ error: 'orgId is required', code: 'BAD_ORG' });
+    if (!orgId) return reply.code(HTTP_BAD_REQUEST).send({ error: 'orgId is required', code: ERROR_CODES.BAD_ORG });
 
     const org = await store.findOrg(orgId);
     if (!org) {
-        return reply.code(HTTP_BAD_REQUEST).send({ error: `Unknown organization "${orgId}"`, code: 'UNKNOWN_ORG' });
+        return reply
+            .code(HTTP_BAD_REQUEST)
+            .send({ error: `Unknown organization "${orgId}"`, code: ERROR_CODES.UNKNOWN_ORG });
     }
 
     const memberships = await store.membershipsOf(caller.user.id);
     if (!isMemberOf(memberships, orgId)) {
         return reply
             .code(HTTP_FORBIDDEN)
-            .send({ error: 'You are not a member of this organization', code: 'FORBIDDEN' });
+            .send({ error: 'You are not a member of this organization', code: ERROR_CODES.FORBIDDEN });
     }
 
     const token = unsign(request.cookies[SESSION_COOKIE], secret);
     if (!token) {
         // Registered in github mode only, so this is a caller with no session cookie at all — the
         // same 401 class the hook answers for every other route.
-        return reply.code(HTTP_BAD_REQUEST).send({ error: 'No session to switch', code: 'NO_SESSION' });
+        return reply.code(HTTP_BAD_REQUEST).send({ error: 'No session to switch', code: ERROR_CODES.NO_SESSION });
     }
     const moved = await store.updateSessionOrg(hashToken(token), orgId);
     // The membership check above passed, so false means it vanished concurrently — same answer
@@ -283,7 +287,7 @@ async function handleSwitchOrg(ctx: SwitchOrgCtx, request: FastifyRequest, reply
     if (!moved) {
         return reply
             .code(HTTP_FORBIDDEN)
-            .send({ error: 'You are not a member of this organization', code: 'FORBIDDEN' });
+            .send({ error: 'You are not a member of this organization', code: ERROR_CODES.FORBIDDEN });
     }
     return reply.code(HTTP_OK).send({ organization: org });
 }

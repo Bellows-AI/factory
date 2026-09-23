@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { PENDING_COOKIE, hashToken, pendingCookieOptions, unsign } from '../auth/session.js';
 import type { AuthStore, Caller, PendingSignIn } from '../auth/store.js';
@@ -105,7 +106,7 @@ async function validateRepoVisibility(
             if (!fetched) {
                 return {
                     ok: false,
-                    code: 'REPOS_UNAVAILABLE',
+                    code: ERROR_CODES.REPOS_UNAVAILABLE,
                     message: 'Repos cannot be listed for this installation',
                 };
             }
@@ -113,7 +114,7 @@ async function validateRepoVisibility(
         }
         const visible = new Set(listings.get(orgId)!.map((repo) => `${repo.owner}/${repo.name}`));
         if (!names.every((name) => visible.has(name))) {
-            return { ok: false, code: 'UNKNOWN_REPO', message: 'Unknown repository' };
+            return { ok: false, code: ERROR_CODES.UNKNOWN_REPO, message: 'Unknown repository' };
         }
     }
     return { ok: true };
@@ -227,7 +228,9 @@ async function materializeOnboarding(
 
         const claimed = await ctx.store.deletePendingSignIn(hashToken(resolved.token));
         if (!claimed) {
-            reply.code(HTTP_UNAUTHORIZED).send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+            reply
+                .code(HTTP_UNAUTHORIZED)
+                .send({ error: 'No pending sign-in — start again', code: ERROR_CODES.NO_PENDING });
             return null;
         }
         // The choice, in report order, and the session lands in the deep-linked org when it was
@@ -253,7 +256,9 @@ async function materializeOnboarding(
             priorSelection,
             caller,
         });
-        reply.code(HTTP_SERVER_ERROR).send({ error: 'Could not complete the sign-in', code: 'COMPLETE_FAILED' });
+        reply
+            .code(HTTP_SERVER_ERROR)
+            .send({ error: 'Could not complete the sign-in', code: ERROR_CODES.COMPLETE_FAILED });
         return null;
     }
 }
@@ -285,7 +290,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
         if (!resolved) {
             return reply
                 .code(HTTP_UNAUTHORIZED)
-                .send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+                .send({ error: 'No pending sign-in — start again', code: ERROR_CODES.NO_PENDING });
         }
         const { pending } = resolved;
         const stored = await store.storedSelection(pending.identity.githubUserId);
@@ -343,12 +348,14 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
         if (!resolved) {
             return reply
                 .code(HTTP_UNAUTHORIZED)
-                .send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+                .send({ error: 'No pending sign-in — start again', code: ERROR_CODES.NO_PENDING });
         }
         const { installationId } = request.params as { installationId: string };
         const reported = resolved.pending.installations.some((install) => install.id === installationId);
         if (!INSTALLATION_ID.test(installationId) || !reported) {
-            return reply.code(HTTP_BAD_REQUEST).send({ error: 'Unknown installation', code: 'UNKNOWN_INSTALLATION' });
+            return reply
+                .code(HTTP_BAD_REQUEST)
+                .send({ error: 'Unknown installation', code: ERROR_CODES.UNKNOWN_INSTALLATION });
         }
         if (!listInstallationRepos) return reply.code(HTTP_OK).send({ repos: [], source: 'none' });
         const repos = await listInstallationRepos(installationId).catch((e: Error) => {
@@ -378,17 +385,18 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
         if (!resolved) {
             return reply
                 .code(HTTP_UNAUTHORIZED)
-                .send({ error: 'No pending sign-in — start again', code: 'NO_PENDING' });
+                .send({ error: 'No pending sign-in — start again', code: ERROR_CODES.NO_PENDING });
         }
         const { pending } = resolved;
 
         const body = request.body as { orgs?: unknown; repos?: unknown } | undefined;
         const orgIds = parseSelectedOrgIds(body, pending);
-        if (!orgIds) return reply.code(HTTP_BAD_REQUEST).send({ error: 'Bad org selection', code: 'BAD_SELECTION' });
+        if (!orgIds)
+            return reply.code(HTTP_BAD_REQUEST).send({ error: 'Bad org selection', code: ERROR_CODES.BAD_SELECTION });
 
         const reposByOrg = parseRequestedRepos(body, orgIds);
         if (!reposByOrg) {
-            return reply.code(HTTP_BAD_REQUEST).send({ error: 'Bad repo selection', code: 'BAD_SELECTION' });
+            return reply.code(HTTP_BAD_REQUEST).send({ error: 'Bad repo selection', code: ERROR_CODES.BAD_SELECTION });
         }
 
         const visibility = await validateRepoVisibility(request, reposByOrg, listInstallationRepos);

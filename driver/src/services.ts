@@ -10,6 +10,7 @@
  * Nothing here imports docker.ts, which imports this module: one direction only, so the parse
  * stays testable without a daemon and the modules cannot knot.
  */
+import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { containerScript } from './container-scripts.js';
@@ -663,11 +664,11 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec): string[] {
         '--name',
         serviceContainerName(job, spec.name),
         '--label',
-        `factory.job=${job.id}`,
+        `${JOB_LABEL}=${job.id}`,
         '--label',
-        `factory.lease=${job.leaseToken}`,
+        `${LEASE_LABEL}=${job.leaseToken}`,
         '--label',
-        `factory.service=${spec.name}`,
+        `${SERVICE_LABEL}=${spec.name}`,
         '--network',
         networkName(job),
         '--network-alias',

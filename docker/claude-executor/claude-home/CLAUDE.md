@@ -25,6 +25,10 @@ Before implementing:
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
+- No magic strings. A value spelled in more than one place — an API error code, a label or header
+  key, a value a client branches on — gets one named constant that every other site imports. If
+  the repo already has a home for such values (a constants module, a lint rule banning the raw
+  spelling), put new ones there. Tests may still pin the raw wire value on purpose.
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
@@ -106,6 +110,8 @@ expectation — ask first.**
 4. Linter clean
 5. Build verification
 6. Performance implications
+7. Magic strings — a recurring value (error code, key, label) spelled raw instead of imported from
+   its named constant
 
 ## Tooling
 

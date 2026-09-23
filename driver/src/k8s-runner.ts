@@ -1,3 +1,4 @@
+import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { envFileBody } from './claim.js';
@@ -289,7 +290,7 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
             apiVersion: 'v1',
             kind: 'Secret',
             type: 'Opaque',
-            metadata: { name: secret, labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken } },
+            metadata: { name: secret, labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken } },
             stringData: env,
         });
         if (response.status >= HTTP_ERROR_STATUS) {

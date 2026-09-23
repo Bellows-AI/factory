@@ -40,6 +40,10 @@ Before implementing:
 - No abstractions for single-use code.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
+- No magic strings. A value spelled in more than one place — an API error code, a label or header
+  key, a value a client branches on — gets one named constant that every other site imports. If
+  the repo already has a home for such values (a constants module, a lint rule banning the raw
+  spelling), put new ones there. Tests may still pin the raw wire value on purpose.
 
 ## 3. Surgical changes
 
@@ -50,7 +54,20 @@ Before implementing:
 - Match the existing style of the file, even if you'd do it differently.
 - Every changed line should trace back to the task.
 
-## 4. Finish with a report
+## 4. Review before you finish
+
+Read your own diff as a reviewer would, and fix what it finds:
+
+1. Critical bugs (crash risks, null dereferences)
+2. Error handling patterns
+3. Test coverage for the change
+4. Linter clean
+5. Build verification
+6. Performance implications
+7. Magic strings — a recurring value (error code, key, label) spelled raw instead of imported from
+   its named constant
+
+## 5. Finish with a report
 
 You run headless — nobody watches the terminal. The final message is the only thing a human reads:
 state what you changed, what you verified, and anything you could not do.

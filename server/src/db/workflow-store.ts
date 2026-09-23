@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { type WorkflowDefinition, type WorkflowParam, WORKFLOW_NAME, SCOPE_SEGMENT } from './workflow-schema.js';
 import { validateDefinition } from './workflow-schema-validate.js';
@@ -48,7 +49,11 @@ export interface WorkflowTarget {
 export interface WorkflowRefusal {
     // CompileRefusal['code'] already includes every DefinitionRefusal code — validateDefinition's
     // own refusal is surfaced through compileDefinition's re-validation pass either way.
-    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | CompileRefusal['code'];
+    code:
+        | typeof ERROR_CODES.BAD_NAME
+        | typeof ERROR_CODES.BAD_SCOPE
+        | typeof ERROR_CODES.NAME_TAKEN
+        | CompileRefusal['code'];
     message: string;
 }
 
@@ -92,10 +97,10 @@ const toRecord = (row: WorkflowRow): WorkflowRecord => ({
  */
 function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal | null {
     if (typeof name !== 'string' || !WORKFLOW_NAME.test(name.trim()) || name.trim() !== name) {
-        return { code: 'BAD_NAME', message: 'name must be 1..100 characters without padding' };
+        return { code: ERROR_CODES.BAD_NAME, message: 'name must be 1..100 characters without padding' };
     }
     if (scope.kind === 'user' && !SCOPE_SEGMENT.test(scope.userId)) {
-        return { code: 'BAD_SCOPE', message: 'user scope must name an account id' };
+        return { code: ERROR_CODES.BAD_SCOPE, message: 'user scope must name an account id' };
     }
     if (scope.kind === 'repo') {
         for (const [label, part] of [
@@ -103,7 +108,7 @@ function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal |
             ['name', scope.name],
         ] as const) {
             if (!SCOPE_SEGMENT.test(part)) {
-                return { code: 'BAD_SCOPE', message: `repo scope ${label} must be a checkout-safe segment` };
+                return { code: ERROR_CODES.BAD_SCOPE, message: `repo scope ${label} must be a checkout-safe segment` };
             }
         }
     }
@@ -113,7 +118,7 @@ function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal |
     // their own same-named definitions untouched.
     if (scope.kind === 'org' && name.trim() === BASE_WORKFLOW.name) {
         return {
-            code: 'NAME_TAKEN',
+            code: ERROR_CODES.NAME_TAKEN,
             message: `"${BASE_WORKFLOW.name}" is reserved for the board's own org-level workflow`,
         };
     }
@@ -168,7 +173,7 @@ async function insertWorkflowRow(sql: Sql, row: NewWorkflowRow): Promise<CreateR
         if (err.code === '23505') {
             return {
                 refused: true,
-                code: 'NAME_TAKEN',
+                code: ERROR_CODES.NAME_TAKEN,
                 message: `a workflow named "${row.name}" already exists in this scope`,
             };
         }

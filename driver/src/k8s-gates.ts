@@ -1,3 +1,4 @@
+import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
@@ -49,7 +50,7 @@ async function createGateEnvSecret(deps: K8sDeps, job: BoardJob, secretName: str
         type: 'Opaque',
         metadata: {
             name: secretName,
-            labels: { 'factory.job': job.id, 'factory.lease': job.leaseToken },
+            labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken },
         },
         stringData: envBodyToData(envBody),
     });

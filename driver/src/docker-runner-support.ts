@@ -5,6 +5,7 @@
  * setup, the `docker run` verdict, and the killed-job guards around the env-file write.
  */
 
+import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import { execFile, spawn } from 'node:child_process';
 import { writeFile, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
@@ -200,9 +201,9 @@ export async function setupJobServices(
             'network',
             'create',
             '--label',
-            `factory.job=${job.id}`,
+            `${JOB_LABEL}=${job.id}`,
             '--label',
-            `factory.lease=${job.leaseToken}`,
+            `${LEASE_LABEL}=${job.leaseToken}`,
             servicesNetwork,
         ]);
     } catch (e) {

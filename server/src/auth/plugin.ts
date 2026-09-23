@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -207,7 +208,7 @@ async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store
     const accessToken = bearer(request);
     if (!accessToken) return false;
     if (!isAccessToken(accessToken)) {
-        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
         return true;
     }
     const tokenHash = hashToken(accessToken);
@@ -216,12 +217,16 @@ async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store
         // reads only that one, whatever else this database serves.
         const orgToken = await store.findOrgToken(tokenHash);
         if (!orgToken) {
-            await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+            await reply
+                .code(HTTP_UNAUTHORIZED)
+                .send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
             return true;
         }
         const path = pathOf(request.url);
         if (!orgTokenAllowed(request.method, path)) {
-            await reply.code(HTTP_FORBIDDEN).send({ error: 'Organization tokens can only read', code: 'FORBIDDEN' });
+            await reply
+                .code(HTTP_FORBIDDEN)
+                .send({ error: 'Organization tokens can only read', code: ERROR_CODES.FORBIDDEN });
             return true;
         }
         request.auth = { kind: 'org', token: orgToken };
@@ -229,7 +234,7 @@ async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store
     }
     const tokenCaller = await store.findPersonalToken(tokenHash);
     if (!tokenCaller) {
-        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
         return true;
     }
     request.auth = { kind: 'user', caller: tokenCaller };
@@ -245,7 +250,7 @@ async function enforceIngest(auth: AuthConfig, request: FastifyRequest, reply: F
     if (!auth.ingestToken) return;
     const provided = request.headers['x-factory-ingest-token'];
     if (typeof provided === 'string' && secretsMatch(provided, auth.ingestToken)) return;
-    await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid ingest token', code: 'UNAUTHENTICATED' });
+    await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid ingest token', code: ERROR_CODES.UNAUTHENTICATED });
 }
 
 interface BranchAuthDeps {
@@ -270,7 +275,9 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
     if (typeof jobId === 'string' && jobId && typeof leaseToken === 'string' && leaseToken) {
         const orgId = await leaseOrgOf(jobId, leaseToken);
         if (!orgId) {
-            await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Unknown job or lease', code: 'UNAUTHENTICATED' });
+            await reply
+                .code(HTTP_UNAUTHORIZED)
+                .send({ error: 'Unknown job or lease', code: ERROR_CODES.UNAUTHENTICATED });
             return;
         }
         request.auth = { kind: 'job', orgId };
@@ -280,7 +287,9 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
     // The laptop plugin's credential: the user's personal access token, through the same
     // resolution the person routes use. No pair and no bearer → 401.
     if (await resolveBearer(request, reply, store)) return;
-    await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Branch ingest needs a credential', code: 'UNAUTHENTICATED' });
+    await reply
+        .code(HTTP_UNAUTHORIZED)
+        .send({ error: 'Branch ingest needs a credential', code: ERROR_CODES.UNAUTHENTICATED });
 }
 
 interface WorkerAuthDeps {
@@ -305,7 +314,7 @@ async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, repl
     // row it names.
     const token = bearer(request);
     if (!token || !secretsMatch(token, auth.jobBoardToken)) {
-        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid worker token', code: 'UNAUTHENTICATED' });
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid worker token', code: ERROR_CODES.UNAUTHENTICATED });
         return;
     }
 
@@ -324,7 +333,7 @@ async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, repl
         orgId = path.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
     }
     if (rowId && !orgId) {
-        await reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: 'NOT_FOUND' });
+        await reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: ERROR_CODES.NOT_FOUND });
         return;
     }
     request.auth = { kind: 'worker', orgId };
@@ -352,7 +361,7 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
         // is a database that has not finished starting rather than a bad request — but it is
         // reported the same way, because a route that answers 503 only in one auth mode is a
         // difference between modes that nothing else in the system has.
-        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: 'UNAUTHENTICATED' });
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
         return;
     }
     request.auth = { kind: 'user', caller };

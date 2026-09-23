@@ -1,3 +1,4 @@
+import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type DriverConfig, executorImage } from './config.js';
@@ -161,8 +162,8 @@ export function parseDockerServicePs(stdout: string): ServiceStatus[] {
         const labels = typeof fields.Labels === 'string' ? fields.Labels : '';
         const name = labels
             .split(',')
-            .find((pair) => pair.startsWith('factory.service='))
-            ?.slice('factory.service='.length);
+            .find((pair) => pair.startsWith(`${SERVICE_LABEL}=`))
+            ?.slice(`${SERVICE_LABEL}=`.length);
         const image = typeof fields.Image === 'string' ? fields.Image : null;
         const state = typeof fields.State === 'string' ? fields.State.toLowerCase() : null;
         if (!name || !image || !state) continue;
@@ -204,9 +205,6 @@ export const containerName = (job: BoardJob): string => `factory-job-${job.id}-$
  * refuses to exec into, a checkout that can never pass.
  */
 const GATE_CONTAINER = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/;
-
-/** The label an orphan sweep filters on — `docker ps --filter label=factory.gates`. */
-export const GATE_LABEL = 'factory.gates';
 
 export function gateEnvContainerName(key: string): string {
     if (!GATE_KEY.test(key)) {
@@ -431,9 +429,9 @@ export function dockerArgs(
         // operation (kill, teardown, cleanup) to this attempt's containers: a stale attempt's
         // filters can only ever resolve its own fleet, never a replacement's.
         '--label',
-        `factory.job=${job.id}`,
+        `${JOB_LABEL}=${job.id}`,
         '--label',
-        `factory.lease=${job.leaseToken}`,
+        `${LEASE_LABEL}=${job.leaseToken}`,
         '-e',
         // The AUTHOR's checkouts sit one directory down. A command-only job names no repo, so the
         // agent starts at the root of that person's workspace and can see everything they selected

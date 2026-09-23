@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 
 const HTTP_UNAVAILABLE = 503;
@@ -76,7 +77,7 @@ export async function guard<T>(
         return { ok: true, value: await run() };
     } catch (e) {
         log(e as Error);
-        await reply.code(HTTP_UNAVAILABLE).send({ error: (e as Error).message, code: 'UNAVAILABLE' });
+        await reply.code(HTTP_UNAVAILABLE).send({ error: (e as Error).message, code: ERROR_CODES.UNAVAILABLE });
         return { ok: false };
     }
 }

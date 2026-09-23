@@ -1,5 +1,7 @@
 export { HOUR } from './config.js';
 export { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, MAX_ENV_VARS_PER_SCOPE, RESERVED_ENV_NAMES } from './env.js';
+export type { ErrorCode } from './error-codes.js';
+export { ERROR_CODES } from './error-codes.js';
 export type { ExecutorType } from './executors.js';
 export { CLAUDE_CODE, EXECUTOR_TYPES, OPENCODE } from './executors.js';
 export { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, JSON_HEADERS } from './http.js';

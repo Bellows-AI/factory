@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { AuthStore } from '../auth/store.js';
 import type { OrgRegistry } from '../orgs.js';
-import { JSON_CONTENT_TYPE } from '@factory-ai/core';
+import { ERROR_CODES, JSON_CONTENT_TYPE } from '@factory-ai/core';
 
 /**
  * A payload big enough for any member or PR event and far above what a real delivery can reach.
@@ -186,7 +186,9 @@ export const webhookRoutes =
             // (OPEN_ROUTES) precisely so it can do its own authentication.
             const body = request.body as Buffer;
             if (!signatureMatches(secret, request.headers['x-hub-signature-256'], body)) {
-                return reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid signature', code: 'UNAUTHENTICATED' });
+                return reply
+                    .code(HTTP_UNAUTHORIZED)
+                    .send({ error: 'Invalid signature', code: ERROR_CODES.UNAUTHENTICATED });
             }
 
             // A body GitHub signed that does not parse is not fixed by a redelivery, so it is

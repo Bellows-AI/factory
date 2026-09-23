@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
 import { mintAccessToken } from '../auth/access-token.js';
 import { callerOf } from '../auth/plugin.js';
@@ -58,9 +59,10 @@ export const tokenRoutes =
 
         app.post('/api/tokens', { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const label = parseLabel(request.body);
-            if (label === null) return bad(reply, 'BAD_LABEL', `label must be 1 to ${LABEL_LIMIT} characters`);
+            if (label === null)
+                return bad(reply, ERROR_CODES.BAD_LABEL, `label must be 1 to ${LABEL_LIMIT} characters`);
 
             const created = await guard(
                 reply,
@@ -84,7 +86,7 @@ export const tokenRoutes =
 
         app.get('/api/tokens', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const listed = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
@@ -96,9 +98,9 @@ export const tokenRoutes =
 
         app.post('/api/tokens/:id/revoke', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const { id } = request.params as { id: string };
-            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+            if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
             const revoked = await guard(
                 reply,
@@ -108,15 +110,16 @@ export const tokenRoutes =
             if (!revoked.ok) return reply;
             // Not-found covers unknown, someone else's, and already revoked alike: a revoke that
             // changed nothing has no row to name.
-            if (revoked.value === 'missing') return bad(reply, 'NOT_FOUND', 'No such token', HTTP_NOT_FOUND);
+            if (revoked.value === 'missing') return bad(reply, ERROR_CODES.NOT_FOUND, 'No such token', HTTP_NOT_FOUND);
             return reply.code(HTTP_OK).send({ id, revoked: true });
         });
 
         app.post('/api/tokens/org', { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const label = parseLabel(request.body);
-            if (label === null) return bad(reply, 'BAD_LABEL', `label must be 1 to ${LABEL_LIMIT} characters`);
+            if (label === null)
+                return bad(reply, ERROR_CODES.BAD_LABEL, `label must be 1 to ${LABEL_LIMIT} characters`);
 
             const created = await guard(
                 reply,
@@ -140,7 +143,7 @@ export const tokenRoutes =
 
         app.get('/api/tokens/org', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const listed = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
@@ -152,9 +155,9 @@ export const tokenRoutes =
 
         app.post('/api/tokens/org/:id/revoke', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', HTTP_UNAUTHORIZED);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const { id } = request.params as { id: string };
-            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+            if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
             const revoked = await guard(
                 reply,
@@ -162,7 +165,7 @@ export const tokenRoutes =
                 () => store.revokeOrgToken(orgIdOf(request), id)
             );
             if (!revoked.ok) return reply;
-            if (revoked.value === 'missing') return bad(reply, 'NOT_FOUND', 'No such token', HTTP_NOT_FOUND);
+            if (revoked.value === 'missing') return bad(reply, ERROR_CODES.NOT_FOUND, 'No such token', HTTP_NOT_FOUND);
             return reply.code(HTTP_OK).send({ id, revoked: true });
         });
     };

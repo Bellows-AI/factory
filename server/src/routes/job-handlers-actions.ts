@@ -1,3 +1,4 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -35,11 +36,11 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const fields = body(request.body);
     const commandResult = validateCommandField(fields.command);
-    if (!commandResult.ok) return bad(reply, 'BAD_COMMAND', commandResult.message);
+    if (!commandResult.ok) return bad(reply, ERROR_CODES.BAD_COMMAND, commandResult.message);
 
     // Read off the authenticated request, never off the body — the create route's rule about
     // impersonation applies word for word here.
@@ -61,7 +62,7 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const result = await guard(
         reply,
@@ -72,7 +73,7 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
     if (result.value === 'conflict') {
-        return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: 'NOT_FINISHED' });
+        return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
     }
     return reply.code(HTTP_OK).send({ id, status: result.value.status, doneAt: result.value.doneAt });
 }
@@ -88,7 +89,7 @@ export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, rep
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const result = await guard(
         reply,
@@ -101,7 +102,7 @@ export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, rep
     if (result.value.result === 'conflict') {
         return reply.code(HTTP_CONFLICT).send({
             error: `Task is ${result.value.status} — nothing to stop`,
-            code: 'NOT_STOPPABLE',
+            code: ERROR_CODES.NOT_STOPPABLE,
             status: result.value.status,
         });
     }
@@ -120,7 +121,7 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const result = await guard(
         reply,
@@ -134,7 +135,7 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
     if (result.value === 'conflict') {
         return reply
             .code(HTTP_CONFLICT)
-            .send({ error: 'The task is still running — stop it first', code: 'TASK_RUNNING' });
+            .send({ error: 'The task is still running — stop it first', code: ERROR_CODES.TASK_RUNNING });
     }
     return reply.code(HTTP_OK).send({ id, removed: true });
 }
@@ -170,10 +171,10 @@ export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyReque
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const workerResult = validateWorkerField(body(request.body).worker);
-    if (!workerResult.ok) return bad(reply, 'BAD_WORKER', workerResult.message);
+    if (!workerResult.ok) return bad(reply, ERROR_CODES.BAD_WORKER, workerResult.message);
 
     const result = await guard(
         reply,
@@ -182,10 +183,10 @@ export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyReque
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') {
-        return reply.code(HTTP_NOT_FOUND).send({ error: 'No such reclaim', code: 'NOT_FOUND' });
+        return reply.code(HTTP_NOT_FOUND).send({ error: 'No such reclaim', code: ERROR_CODES.NOT_FOUND });
     }
     if (result.value === 'lost') {
-        return reply.code(HTTP_CONFLICT).send({ error: 'Reclaim is not yours', code: 'LEASE_LOST' });
+        return reply.code(HTTP_CONFLICT).send({ error: 'Reclaim is not yours', code: ERROR_CODES.LEASE_LOST });
     }
     return reply.code(HTTP_OK).send({ id });
 }
@@ -200,17 +201,17 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const fields = body(request.body);
     const { leaseToken } = fields;
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, 'BAD_TOKEN', 'leaseToken must be a uuid');
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
     const parsed = validateCompleteFields(fields);
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
     const publicationResult = validatePublication(fields.publication ?? null);
-    if (!publicationResult.ok) return bad(reply, 'BAD_PUBLICATION', publicationResult.message);
+    if (!publicationResult.ok) return bad(reply, ERROR_CODES.BAD_PUBLICATION, publicationResult.message);
 
     const result = await guard(
         reply,
@@ -229,7 +230,7 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const job = await guard(
         reply,
@@ -248,7 +249,7 @@ export async function handleThread(orgs: OrgRegistry, request: FastifyRequest, r
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
     const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
     const jobs = await guard(
         reply,
