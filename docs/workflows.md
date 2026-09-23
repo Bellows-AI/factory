@@ -80,11 +80,13 @@ object (scalar values, at most 16 keys, camelCase field names — `maxRounds` ab
 `block` node, never both — `prompt`, `session`, `gates` and `publish` on a `block` node refuse
 `UNKNOWN_KEY`, and `uses`/`with` on an `agent` node refuse the same way.
 
-The two initial reserved ids — `builtin/github-review-reconcile` and
-`builtin/merge-conflict-autofix` — are listed by the catalog (`GET /api/workflow-blocks`) but ship
-`available: false`: their own issues have not landed. Referencing either in a definition refuses
-`BLOCK_UNAVAILABLE` at create — an unavailable block cannot be stored, so it can never be launched.
-Naming an id the registry has never reserved refuses `UNKNOWN_BLOCK`; a `with` value the block's own
+The two initial reserved ids are `builtin/github-review-reconcile` (issue #133, still
+`available: false` — its own issue has not landed) and `builtin/merge-conflict-autofix` (issue
+#122, `available: true` — see "The merge-conflict-autofix block" below). Both are listed by the
+catalog (`GET /api/workflow-blocks`) regardless of availability. Referencing an unavailable id in
+a definition refuses `BLOCK_UNAVAILABLE` at create — an unavailable block cannot be stored, so it
+can never be launched. Naming an id the registry has never reserved refuses `UNKNOWN_BLOCK`; a
+`with` value the block's own
 `configSchema` rejects (unknown key, wrong type, out of range) refuses `BAD_BLOCK_CONFIG` — all
 three are compile-time refusals from `workflow-blocks/index.ts`'s `compileDefinition`, distinct
 from `workflow-schema.ts`'s own `DefinitionRefusal` codes: the schema validates `uses`/`with`
@@ -115,11 +117,53 @@ collide — collision-freedom is not trusted to the naming scheme alone, either:
 own re-validation pass is what actually refuses a true clash, via the ordinary `DUPLICATE_NODE`
 check every workflow gets.
 
-The driver-side transport a compiled block's declared pre/post helper would actually run through —
-`Runner.runHelper`, the docker/kubernetes parity, the loop's fencing — is issue #207 (docs/jobs.md,
-"Block-helper steps"). It ships the generic seam only: `WorkflowNode` carries no helper-plan field
-yet, so nothing `compileDefinition` above produces populates one today — a later issue (#122/#133)
-threads a real plan through the compiler and the claim.
+The driver-side transport a compiled block's declared pre/post helper actually runs through —
+`Runner.runHelper`, the docker/kubernetes parity, the loop's fencing — is issue #207
+(docs/jobs.md, "Block-helper steps"). `WorkflowNode.helperPlans` (issue #122) is what a block's
+`expand()` populates it with: a bounded array of `{helperId, phase, githubWriting}`, validated the
+same way `gates`/`publish` are, registry-unaware like the rest of this file — it names no
+helperId's own meaning. `job-store-claim.ts`'s `resolveClaimHelperPlans` resolves each declared
+plan onto the claim GENERICALLY, injecting one value every helperId alike may use: the thread's
+recorded PR publication (`job_pr`, issue #202's `pr-lifecycle-store.ts`), when it has one. A node
+that declares none carries no `helperPlans` on its claim — unchanged from before this field
+existed, and still true of every plain `agent` node outside a block's own expansion today.
+
+### The merge-conflict-autofix block
+
+`builtin/merge-conflict-autofix` (issue #122, `server/src/db/workflow-blocks/merge-conflict-autofix.ts`)
+reconciles an existing task's pull request with its current base branch. It expands to two nodes:
+
+- `repair` (entry, `session: resume`, `gates: false`) declares one PRE helper,
+  `merge-conflict-probe` (`driver/src/scripts/merge-conflict-probe.cjs`): a deterministic script
+  that fetches the PR's recorded base and either finds the branch already up to date, rebases it
+  cleanly, or leaves a known conflicted rebase state — writing its verdict to
+  `.factory/merge-conflict-probe.json` in the worktree (the generic helper transport surfaces only
+  ok/fail to the loop, never a helper's own output, to the agent turn that follows — the state file
+  is how that agent reads it). `repair`'s own prompt is a fixed relay: read the file, and when the
+  verdict names a real conflict, resolve it using ONLY `git rebase --continue`/`--abort` — an
+  INITIATING `git rebase`, `git merge`, `git switch`/`checkout` of a branch, and `gh pr create` are
+  all denied to the agent by the executor's git guard for exactly this reason (docs/jobs.md,
+  "The runner images refuse checkout manipulation at the hook"): a rebase initiation is the
+  driver's own job, and `--continue`/`--abort` on one already in progress is the guard's own
+  documented repair path for a tree an interrupted rebase left mid-flight.
+- `verify` (`publish: true`, gates default on) is a trivial confirmation turn — the driver's own
+  claim machinery runs the declared gates and publishes through the existing publisher
+  automatically once claimed, reusing the thread's existing PR for free (its branch is always
+  `factory/<rootJobId>`, unchanged since the thread's original publish).
+
+`repair`'s up-to-date and needs-review markers carry no outgoing edge, so a completed run that
+emits either rests the thread loudly — "Marker absence is a first-class outcome" above — which is
+what keeps an up-to-date branch from ever reaching gates or publish, and an unresolved conflict
+resting as needs-review with its reason in the run's own output. The one loop the block declares
+is `repair`'s own retry on ITS RUN failing outright (a crash, a lost lease), bounded by the
+block's `maxAttempts` config (1-5, default 2) on a `repair -> repair` self-edge — a deliberate
+`MERGE-NEEDS-REVIEW` verdict is not a failure and is never retried, matching the issue's "one
+agent repair round" for the substantive case. Because `repair` carries `session: resume`, this
+block must be referenced as a LATER node of a thread that already produced a PR earlier in the
+same thread (never a fresh thread's own entry) — restore mode (the sync's `RESTORE=1`, which skips
+the fetch/rebase that would otherwise race the block's own preflight) falls out of
+`claimContinuesSession` automatically once the claim carries a `resumeSessionId`, with no extra
+wiring. This block never merges, closes, or auto-merges the PR — it only reconciles and republishes.
 
 ## Launch parameters
 
@@ -363,14 +407,20 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
   `sizeLimit` override) — registry-unaware, matching `workflow-schema.ts` itself.
 - Offline units: `server/test/workflow-block-compiler.test.ts` — expansion, namespacing, edge
   rewriting into/out of a block, config resolution against a descriptor's `configSchema`, and the
-  real registry's `UNKNOWN_BLOCK`/`BLOCK_UNAVAILABLE` refusals against both shipped, unavailable
-  descriptors — via fake, dependency-injected descriptors, since both real blocks are unavailable.
+  real registry's `UNKNOWN_BLOCK`/`BLOCK_UNAVAILABLE` refusals against fake, dependency-injected
+  descriptors, plus the still-unavailable `builtin/github-review-reconcile`.
+- Offline units: `server/test/workflow-block-merge-conflict-autofix.test.ts` — the real
+  `builtin/merge-conflict-autofix` expansion: node/edge shape, namespacing, the declared
+  `helperPlans`, the `maxAttempts`-bounded retry edge, and that a custom graph can reference it
+  independently of any other workflow.
 - HTTP contracts: `server/test/routes.workflows.test.ts` (including `GET /api/workflow-blocks` and
   the compiler's refusal codes surfacing the same way a schema refusal does), the
   workflow-resolution block of `routes.jobs.test.ts`.
 - Against a real database (`npm run test:db`): `server/test-db/workflow-store.test.ts` and
   `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds.
 - Driver: the publish-flag twins in `driver/test/loop.test.ts`, and the transport parity pins in
-  `docker.test.ts` / `k8s.test.ts`.
+  `docker.test.ts` / `k8s.test.ts`. Real offline git fixtures for the merge-conflict-autofix
+  preflight (up-to-date, clean rebase, conflicted, stale/precondition-refused, and stale-rebase
+  cleanup) live in `driver/test/merge-conflict-probe-script.test.ts`.
 - End to end: the `# workflows` phase of `scripts/test-jobs.sh` walks a stub workflow on a real
   board and driver.

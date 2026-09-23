@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
-import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
+import { Menu, MenuButton, MenuItem, MenuItems, MenuSeparator } from '@headlessui/react';
+import { useDownwardAnchor } from '../anchor.js';
 import { signOut, type Session } from '../api/useSession.js';
 
 /**
@@ -12,9 +13,16 @@ import { signOut, type Session } from '../api/useSession.js';
  * since the page change survives it and the menu would otherwise still be open on the page it led to.
  */
 export function UserMenu({ session }: { session: Session }) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('end');
     return (
         <Menu>
-            <MenuButton className="user-menu-button" title={`${session.user.login} (${session.role})`}>
+            <MenuButton
+                ref={setReference}
+                className="select-trigger user-menu-button"
+                title={`${session.user.login} (${session.role})`}
+            >
                 {session.user.avatarUrl ? (
                     <img className="avatar" src={session.user.avatarUrl} alt="" width={24} height={24} />
                 ) : (
@@ -24,7 +32,7 @@ export function UserMenu({ session }: { session: Session }) {
                 )}
                 <span className="user-menu-login">{session.user.login}</span>
             </MenuButton>
-            <MenuItems anchor="bottom end" className="popover user-menu-panel">
+            <MenuItems ref={setFloating} style={floatingStyles} portal className="popover user-menu-panel">
                 <MenuItem>
                     <NavLink to="/account" className="popover-option">
                         Account
@@ -36,11 +44,14 @@ export function UserMenu({ session }: { session: Session }) {
                     form navigation, and the server refuses GET for the same CSRF reason.
                 */}
                 {session.mode !== 'none' ? (
-                    <MenuItem>
-                        <button type="button" className="popover-option" onClick={() => void signOut()}>
-                            Sign out
-                        </button>
-                    </MenuItem>
+                    <>
+                        <MenuSeparator className="popover-separator" />
+                        <MenuItem>
+                            <button type="button" className="popover-option" onClick={() => void signOut()}>
+                                Sign out
+                            </button>
+                        </MenuItem>
+                    </>
                 ) : null}
             </MenuItems>
         </Menu>

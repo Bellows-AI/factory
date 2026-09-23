@@ -57,6 +57,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['review-collect.cjs', 'node'],
     ['review-reply.cjs', 'node'],
     ['helper-noop.cjs', 'node'],
+    ['merge-conflict-probe.cjs', 'node'],
 ];
 
 describe('the container scripts', () => {
@@ -103,6 +104,9 @@ describe('the container scripts', () => {
         expect(reviewCollectScript).toBe(readFileSync(pathOf('review-collect.cjs'), 'utf8'));
         expect(reviewReplyScript).toBe(readFileSync(pathOf('review-reply.cjs'), 'utf8'));
         expect(HELPER_REGISTRY.get('noop')?.scriptBody).toBe(readFileSync(pathOf('helper-noop.cjs'), 'utf8'));
+        expect(HELPER_REGISTRY.get('merge-conflict-probe')?.scriptBody).toBe(
+            readFileSync(pathOf('merge-conflict-probe.cjs'), 'utf8')
+        );
     });
 
     // The review scripts are not yet loaded by any argv builder, so a byte pin through a
