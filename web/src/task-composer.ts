@@ -5,6 +5,7 @@
  * function here is testable without a DOM, which is what lets the offline suite pin the launch
  * contract the board enforces.
  */
+import type { DefaultWorkflowSteps } from './api/useDefaultWorkflowSettings.js';
 import type { QueueTaskInput } from './api/useTasks.js';
 
 /**
@@ -168,15 +169,6 @@ export function paramFieldVerdict(
         }
     }
     return { kind: 'ok', message: null };
-}
-
-/**
- * The default workflow's two optional steps (issue 208, riding issue 203's frozen settings API): the
- * mandatory prompt → gates → publish spine is not a choice, so only these two travel.
- */
-export interface DefaultWorkflowSteps {
-    reviewReconciliation: boolean;
-    mergeConflictAutofix: boolean;
 }
 
 /**

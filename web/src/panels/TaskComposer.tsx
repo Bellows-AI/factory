@@ -23,7 +23,8 @@ import {
     type StartBlocker,
     type WorkflowParamChoice,
 } from '../task-composer.js';
-import type { DefaultStepOverrides, DefaultWorkflowSteps } from '../task-composer.js';
+import type { DefaultWorkflowSteps } from '../api/useDefaultWorkflowSettings.js';
+import type { DefaultStepOverrides } from '../task-composer.js';
 
 /**
  * The prompt's example placeholder. The issue number travels as string parts because
