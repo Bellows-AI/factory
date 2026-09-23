@@ -125,8 +125,11 @@ expect_contains() { # expect_contains <name> <haystack> <needle>
 }
 
 create_job() { # create_job <command> [executor] -> id, recorded in $work/created-jobs for teardown
-    local id
-    id="$(field "$(body "$(api POST /api/jobs "{\"command\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"),\"executor\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "${2:-claude}")}")")" id)"
+    local id payload
+    # One node call builds the whole body. Two `$(node -e '…')` spliced into an escaped JSON string
+    # inside nested "$( … )" is a quoting shape macOS's bash 3.2 mis-parses into an invalid body.
+    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: process.argv[2] }))' "$1" "${2:-claude}")"
+    id="$(field "$(body "$(api POST /api/jobs "$payload")")" id)"
     # A file, not a variable: every caller captures this function's output by command substitution,
     # which runs it in a subshell — an assignment here would be thrown away.
     printf '%s\n' "$id" >>"$work/created-jobs"
@@ -784,7 +787,9 @@ for _ in $(seq 1 120); do
         mounted=1
         break
     fi
-    docker inspect -s "$COMPOSE_DRIVER" >/dev/null 2>&1 || break
+    # Give up only once `compose run` itself has exited. The container does not exist yet while
+    # compose is still creating volumes and the network, so "no such container" is not an exit.
+    kill -0 "$compose_pid" 2>/dev/null || break
     sleep 1
 done
 if [ -n "$mounted" ]; then

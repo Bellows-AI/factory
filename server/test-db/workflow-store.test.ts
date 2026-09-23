@@ -73,8 +73,13 @@ describe.skipIf(!enabled)('the workflow store', () => {
             definition: {
                 entry: 'review',
                 params: [],
-                nodes: [{ name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' }],
-                edges: [],
+                // A block never publishes itself, so a downstream publishing agent keeps the graph
+                // past the NO_PUBLISH_PATH check and on to the block refusal this test is about.
+                nodes: [
+                    { name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' },
+                    { name: 'ship', kind: 'agent', session: 'fresh', prompt: 'ship', publish: true },
+                ],
+                edges: [{ from: 'review', to: 'ship', when: 'succeeded' }],
             },
             createdBy: ALICE,
         });
