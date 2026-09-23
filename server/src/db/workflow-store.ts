@@ -125,6 +125,62 @@ function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal |
     return null;
 }
 
+type CompileOutcome = { ok: true; definition: WorkflowDefinition } | { ok: false; refusal: WorkflowRefusal };
+
+/**
+ * The schema check and the block-expansion compile, chained: a `kind: "block"` node never reaches
+ * storage, since `compileDefinition` expands every block reference into its low-level agent-node
+ * subgraph and re-validates the result before any row exists. Pulled out of `create` so its own
+ * two sequential refusals do not add to that method's complexity budget.
+ */
+function validateAndCompile(definition: unknown): CompileOutcome {
+    const check = validateDefinition(definition);
+    if (!check.ok) return { ok: false, refusal: { code: check.refusal.code, message: check.refusal.message } };
+    const compiled = compileDefinition(check.definition);
+    if (!compiled.ok) {
+        return { ok: false, refusal: { code: compiled.refusal.code, message: compiled.refusal.message } };
+    }
+    return { ok: true, definition: compiled.definition };
+}
+
+interface NewWorkflowRow {
+    org_id: string;
+    name: string;
+    user_id: string | null;
+    repo_owner: string | null;
+    repo_name: string | null;
+    // Typed `never`, not `WorkflowDefinition`: postgres.js's jsonb helper wants an index
+    // signature no named interface carries, and the caller already validated the value's real
+    // shape — this cast is for the SQL builder's benefit only, the same as the pre-split code's.
+    definition: never;
+    created_by: string | null;
+}
+
+/**
+ * The insert itself, with the one conflict a name-uniqueness index can raise turned into the
+ * named refusal `create` answers with — pulled out so the try/catch does not add to that
+ * method's complexity budget either.
+ */
+async function insertWorkflowRow(sql: Sql, row: NewWorkflowRow): Promise<CreateResult> {
+    try {
+        const rows = await sql`
+            insert into workflow ${sql([row], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'created_by')}
+            returning id
+        `;
+        return { id: (rows as unknown as { id: string }[])[0]!.id };
+    } catch (e) {
+        const err = e as { code?: string };
+        if (err.code === '23505') {
+            return {
+                refused: true,
+                code: 'NAME_TAKEN',
+                message: `a workflow named "${row.name}" already exists in this scope`,
+            };
+        }
+        throw e;
+    }
+}
+
 /**
  * The organization is bound at construction, the way every store is: one deployment, one org, and
  * a per-call parameter is one more thing a write path can forget. `ready` gates every query the
@@ -175,17 +231,14 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
             await gate();
             const refusal = checkCreateInput(name, scope);
             if (refusal) return { refused: true, ...refusal };
-            const check = validateDefinition(definition);
-            if (!check.ok) return { refused: true, code: check.refusal.code, message: check.refusal.message };
-            // A `kind: "block"` node never reaches storage: compileDefinition expands every block
-            // reference into its low-level agent-node subgraph and re-validates the result BEFORE
-            // this row exists, so what lands in `definition` — and later, unchanged, on a root
-            // job's frozen snapshot — is always the ordinary agent-only shape workflow-engine.ts
-            // and routes/jobs.ts already depend on (docs/workflows.md, "Built-in blocks").
-            const compiled = compileDefinition(check.definition);
-            if (!compiled.ok) return { refused: true, code: compiled.refusal.code, message: compiled.refusal.message };
+            // A `kind: "block"` node never reaches storage — see validateAndCompile — so what
+            // lands here, and later unchanged on a root job's frozen snapshot, is always the
+            // ordinary agent-only shape workflow-engine.ts and routes/jobs.ts already depend on
+            // (docs/workflows.md, "Built-in blocks").
+            const compiled = validateAndCompile(definition);
+            if (!compiled.ok) return { refused: true, ...compiled.refusal };
 
-            const values = {
+            return insertWorkflowRow(sql, {
                 org_id: orgId,
                 name: name.trim(),
                 user_id: scope.kind === 'user' ? scope.userId : null,
@@ -193,24 +246,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
                 repo_name: scope.kind === 'repo' ? scope.name : null,
                 definition: compiled.definition as never,
                 created_by: createdBy,
-            };
-            try {
-                const rows = await sql`
-                    insert into workflow ${sql([values], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'created_by')}
-                    returning id
-                `;
-                return { id: (rows as unknown as { id: string }[])[0]!.id };
-            } catch (e) {
-                const err = e as { code?: string };
-                if (err.code === '23505') {
-                    return {
-                        refused: true,
-                        code: 'NAME_TAKEN',
-                        message: `a workflow named "${name.trim()}" already exists in this scope`,
-                    };
-                }
-                throw e;
-            }
+            });
         },
 
         async listVisible(target) {

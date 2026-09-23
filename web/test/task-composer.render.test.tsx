@@ -251,7 +251,61 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).toContain('A workflow can turn this request into a repeatable multi-step process.');
         // Unchosen means NO process: the trigger reads the empty option's label. The offered
         // names are client-side; e2e/composer.spec.ts drives the real dropdown.
-        expect(html).toContain('>No workflow — run prompt as written</button>');
+        expect(html).toContain('>Default workflow</button>');
+    });
+
+    describe('default-workflow step checkboxes (#208)', () => {
+        const oneWorkflow = [{ id: 'w1', name: 'fix-issue', scope: 'org' as const }];
+
+        it('shows both optional steps, initialized from the saved defaults, once they have answered', () => {
+            const html = renderComposer({
+                workflows: oneWorkflow,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: false },
+            });
+            expect(html).toContain('Iterate on PR review comments');
+            expect(html).toContain('Repair merge conflicts');
+            const checkboxes = html.match(/<input type="checkbox"[^>]*>/g) ?? [];
+            expect(checkboxes).toHaveLength(2);
+            expect(checkboxes[0]).toContain('checked=""');
+            expect(checkboxes[1]).not.toContain('checked=""');
+        });
+
+        it('shows both steps on for the missing-row defaults', () => {
+            const html = renderComposer({
+                workflows: oneWorkflow,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
+            });
+            const checkboxes = html.match(/<input type="checkbox"[^>]*>/g) ?? [];
+            expect(checkboxes).toHaveLength(2);
+            for (const box of checkboxes) expect(box).toContain('checked=""');
+        });
+
+        it('renders no checkboxes while the saved defaults have not answered yet', () => {
+            const html = renderComposer({ workflows: oneWorkflow, defaultWorkflowSettings: null });
+            expect(html).not.toContain('Iterate on PR review comments');
+            expect(html).not.toContain('Repair merge conflicts');
+        });
+
+        it('renders no checkboxes on a board that serves no workflows at all', () => {
+            // The same gate as the dropdown itself: a board without the feature renders exactly
+            // the composer that came before it.
+            const html = renderComposer({
+                workflows: null,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
+            });
+            expect(html).not.toContain('Iterate on PR review comments');
+            expect(html).not.toContain('Repair merge conflicts');
+        });
+
+        it('lists the final step set in the preflight sentence', () => {
+            const html = renderComposer({
+                workflows: oneWorkflow,
+                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: false },
+            });
+            expect(html).toContain(
+                'Default workflow selected: prompt, gates, publish, plus iterate on PR review comments.'
+            );
+        });
     });
 });
 
@@ -273,7 +327,7 @@ describe('composer parameters', () => {
         expect(html).not.toContain('composer-param');
         // The dropdown renders unchosen; the offered names are client-side, and e2e covers the
         // real dropdown.
-        expect(html).toContain('>No workflow — run prompt as written</button>');
+        expect(html).toContain('>Default workflow</button>');
     });
 });
 
