@@ -2,6 +2,7 @@ import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { isTerminal, type Job } from '../api/useJobs.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { wallClock } from '../format.js';
+import { isWaitingForReview } from '../task-outcome.js';
 import { taskSummary, taskTitleFromCommand } from '../task-tree.js';
 
 /** Stop run's own three faces: the button, this click's own in-flight label, and the board's own
@@ -53,6 +54,7 @@ function TaskHeaderActions({
     closed,
     doneId,
     removeAvailable,
+    waiting,
     onStop,
     onDone,
     onRemoveRequest,
@@ -65,6 +67,8 @@ function TaskHeaderActions({
     closed: boolean;
     doneId: string | null;
     removeAvailable: boolean;
+    /** An open PR-review wait (206) — Stop run stays offered, with copy explaining what it does. */
+    waiting: boolean;
     onStop: (id: string) => Promise<void>;
     onDone: (id: string) => Promise<void>;
     onRemoveRequest: () => void;
@@ -73,6 +77,11 @@ function TaskHeaderActions({
         <div className="task-actions">
             {stoppable ? (
                 <StopControl latestTaskId={latestTask.id} stopping={stopping} stoppingId={stoppingId} onStop={onStop} />
+            ) : null}
+            {stoppable && waiting ? (
+                <p className="muted">
+                    Stopping cancels remaining automation. It does not close or merge the pull request.
+                </p>
             ) : null}
             {open ? (
                 <button
@@ -167,6 +176,7 @@ export function TaskHeader({
     // The task's live summary — the newest run's activity line, while there is one — beside the
     // title, the same line the sidebar's "Task" row and the sidenav read.
     const summary = taskSummary(latestTask.id, jobs);
+    const waiting = isWaitingForReview(latestTask);
 
     return (
         <PageHeader
@@ -174,7 +184,11 @@ export function TaskHeader({
             title={taskTitleFromCommand(rootTask.command)}
             meta={
                 <>
-                    <span className="pill">{latestTask.status}</span>
+                    {/* Polite, not assertive: a poll that lands the same text announces nothing —
+                    the live region only speaks when the status word itself actually changes. */}
+                    <span className="pill" aria-live="polite">
+                        {waiting ? 'Waiting for review' : latestTask.status}
+                    </span>
                     {/* The overall wall clock: everything the board has banked for the task,
                     plus the head run's live segment while it is going — the 2s poll is the
                     ticker. A task that has never run says so with a dash, not a zero. */}
@@ -198,6 +212,7 @@ export function TaskHeader({
                     closed={closed}
                     doneId={doneId}
                     removeAvailable={removeAvailable}
+                    waiting={waiting}
                     onStop={onStop}
                     onDone={onDone}
                     onRemoveRequest={onRemoveRequest}

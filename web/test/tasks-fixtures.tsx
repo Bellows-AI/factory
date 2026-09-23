@@ -43,6 +43,9 @@ export function job(overrides: Partial<Job> = {}): Job {
         // offered for exactly these, and the sessionless case has its own test below.
         sessionId: '33333333-3333-4333-8333-333333333333',
         remoteSessionId: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
         ...overrides,
     };
 }

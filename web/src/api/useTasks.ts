@@ -29,6 +29,9 @@ export interface TaskSummary {
     activity: string | null;
     /** The head's terminal summary — the agent's own last words on the newest run. */
     summary: string | null;
+    waitReason: string | null;
+    waitingSince: string | null;
+    waitTerminalReason: string | null;
     createdAt: string;
     /** The head's newest of created/started/finished/done — what orders and paginates. */
     activityAt: string;

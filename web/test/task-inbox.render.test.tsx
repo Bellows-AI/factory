@@ -24,6 +24,9 @@ const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary>
     author: null,
     activity: null,
     summary: null,
+    waitReason: null,
+    waitingSince: null,
+    waitTerminalReason: null,
     createdAt: '2026-09-01T12:00:00.000Z',
     activityAt: '2026-09-01T12:10:00.000Z',
     ...over,
@@ -131,6 +134,34 @@ describe('TaskInboxPage rows', () => {
         expect(html).toContain('Failed · Needs review');
         expect(html).toContain('Stopped · Needs review');
         expect(html).toContain('Done');
+    });
+
+    it('renders an open PR-review wait as Waiting for review, with the grey paused dot', () => {
+        const html = renderInbox({
+            navigation: navigation({ review: 1 }),
+            items: [taskSummary({ status: 'standby', waitReason: 'review', waitingSince: '2026-09-01T12:05:00.000Z' })],
+            nextCursor: null,
+            initial: false,
+        });
+        expect(html).toContain('Waiting for review');
+        expect(html).not.toContain('>Parked<');
+        expect(html).toContain('sidenav-dot-paused');
+    });
+
+    it('appends the terminal wait reason to the needs-review row once the wait has ended', () => {
+        const html = renderInbox({
+            navigation: navigation({ review: 1 }),
+            items: [
+                taskSummary({
+                    status: 'succeeded',
+                    waitReason: 'review',
+                    waitTerminalReason: 'exhausted',
+                }),
+            ],
+            nextCursor: null,
+            initial: false,
+        });
+        expect(html).toContain('Succeeded · Needs review · exhausted');
     });
 
     it('makes the title the one link to the detail view, with repo, author and a precise age', () => {

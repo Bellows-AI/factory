@@ -32,6 +32,46 @@ describe('TaskOutcome', () => {
         expect(html).toContain('exit 0');
     });
 
+    it('explains an open PR-review wait: what Factory is waiting for, since when, and that no executor is occupied', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    status: 'standby',
+                    waitReason: 'review',
+                    waitingSince: '2026-09-01T11:00:00.000Z',
+                    exitCode: null,
+                    finishedAt: null,
+                }),
+            ],
+        });
+        expect(html).toContain('Waiting for review');
+        // The outcome's own pill reads waiting, not the raw status — the per-run pill inside the
+        // conversation below is a different component and legitimately still says "standby".
+        expect(html).toContain('<span class="pill">Waiting for review</span>');
+        expect(html).toMatch(/no executor|not occupied/i);
+    });
+
+    it('shows the terminal wait reason once the review wait has ended, beside the ordinary result', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    status: 'succeeded',
+                    waitReason: 'review',
+                    waitTerminalReason: 'exhausted',
+                }),
+            ],
+        });
+        expect(html).toContain('exhausted');
+        // A terminal wait does not relabel the pill — the status/done rule alone decides that.
+        expect(html).toContain('<span class="pill">succeeded</span>');
+    });
+
+    it('renders no waiting copy at all for a thread that never entered a wait', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html).not.toContain('Waiting for review');
+        expect(html).not.toContain('no executor is occupied');
+    });
+
     it('names the root author as Started by, unknown when nobody is recorded', () => {
         const author = { id: 'u', login: 'kim', name: 'Kim Doe', avatarUrl: null };
         expect(renderDetail({ jobs: [job({ author })] })).toContain('Started by');

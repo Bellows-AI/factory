@@ -35,7 +35,42 @@ describe('the task page header', () => {
     it('shows the status beside the title', () => {
         const html = renderHeader({ jobs: [job()] });
         expect(html).toContain('page-header-meta');
-        expect(html).toContain('<span class="pill">succeeded</span>');
+        expect(html).toContain('<span class="pill" aria-live="polite">succeeded</span>');
+    });
+
+    it('shows Waiting for review instead of the raw status while a PR-review wait is open', () => {
+        const html = renderHeader({
+            jobs: [
+                job({
+                    status: 'standby',
+                    waitReason: 'review',
+                    exitCode: null,
+                    finishedAt: null,
+                    startedAt: null,
+                    output: null,
+                }),
+            ],
+        });
+        expect(html).toContain('<span class="pill" aria-live="polite">Waiting for review</span>');
+        expect(html).not.toContain('>standby<');
+    });
+
+    it('preserves Stop run while waiting, with copy explaining it cancels automation but not the PR', () => {
+        const html = renderHeader({
+            jobs: [
+                job({
+                    status: 'standby',
+                    waitReason: 'review',
+                    exitCode: null,
+                    finishedAt: null,
+                    startedAt: null,
+                    output: null,
+                }),
+            ],
+        });
+        expect(html).toContain('>Stop run<');
+        expect(html).toMatch(/cancels remaining automation/i);
+        expect(html).toMatch(/not close|does not close/i);
     });
 
     /** The action matrix: stoppable = queued/running/standby, done = the one primary, closed = text. */

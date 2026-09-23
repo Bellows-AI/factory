@@ -33,6 +33,9 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => {
         author: over.author ?? null,
         activity: over.activity ?? null,
         summary: over.summary ?? null,
+        waitReason: over.waitReason ?? null,
+        waitingSince: over.waitingSince ?? null,
+        waitTerminalReason: over.waitTerminalReason ?? null,
         createdAt: over.createdAt ?? '2026-09-02T12:00:00.000Z',
         activityAt: over.activityAt ?? '2026-09-02T12:10:00.000Z',
     };
@@ -282,6 +285,12 @@ describe('SideNav status dots and live lines', () => {
         expect(done).toContain('sidenav-dot sidenav-dot-done');
         const stopped = render('/tasks', navigation([], [summary({ status: 'stopped' })]));
         expect(stopped).not.toContain('sidenav-dot ');
+    });
+
+    it('holds the same grey paused dot for an open PR-review wait as for parked/queued', () => {
+        const html = render('/tasks', navigation([], [summary({ status: 'standby', waitReason: 'review' })]));
+        expect(html).toContain('sidenav-dot sidenav-dot-paused');
+        expect(html).not.toContain('sidenav-dot-done');
     });
 });
 

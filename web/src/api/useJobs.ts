@@ -155,6 +155,16 @@ export interface Job {
     taskWallClockMs: number | null;
     sessionId: string | null;
     remoteSessionId: string | null;
+    /**
+     * The thread's durable PR-review wait, when it has one: the block's reason ("review", ...),
+     * when the wait began, and — once the wait is terminal — why it ended. The open wait wins
+     * over a terminal one, so a thread waiting for review reads waiting and a finished wait reads
+     * what exhausted it. All null for a thread that never entered a wait. Carried the same on
+     * every member of the thread, never derived from output text or a workflow node name.
+     */
+    waitReason: string | null;
+    waitingSince: string | null;
+    waitTerminalReason: string | null;
 }
 
 /**

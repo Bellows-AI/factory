@@ -18,9 +18,21 @@ const TERMINAL: readonly JobStatus[] = ['succeeded', 'failed', 'dead', 'stopped'
  * The bucket of a task whose newest run has `status` and the user's done stamp `doneAt` — the
  * HEAD run's, not the thread's: `taskSections()` reads the head, and a done task resurrected by a
  * follow-up must land back in running because the head is that follow-up.
+ *
+ * An OPEN PR-review wait (`waitReason` set, `waitTerminalReason` still null) buckets as review
+ * the same way a terminal status does, whatever status the row itself carries while parked on it
+ * — a thread waiting on a human is exactly the actionable case review exists for, never running.
+ * A wait that has gone terminal (`waitTerminalReason` set) carries no special weight here: the
+ * ordinary status/doneAt rule decides, the same as a thread that never waited at all.
  */
-export function taskBucket(status: JobStatus, doneAt: string | null): TaskBucket {
-    return TERMINAL.includes(status) ? (doneAt === null ? 'review' : 'past') : 'running';
+export function taskBucket(
+    status: JobStatus,
+    doneAt: string | null,
+    waitReason: string | null,
+    waitTerminalReason: string | null
+): TaskBucket {
+    const terminal = TERMINAL.includes(status) || (waitReason !== null && waitTerminalReason === null);
+    return terminal ? (doneAt === null ? 'review' : 'past') : 'running';
 }
 
 /**
@@ -143,7 +155,10 @@ function resolveTaskThreads(jobs: readonly Job[]): ResolvedTask[] {
             createdAt: root.createdAt,
             activityAt: activityAtOf(head),
         };
-        return { summary, bucket: taskBucket(summary.status, summary.doneAt) };
+        return {
+            summary,
+            bucket: taskBucket(summary.status, summary.doneAt, summary.waitReason, summary.waitTerminalReason),
+        };
     });
 }
 
