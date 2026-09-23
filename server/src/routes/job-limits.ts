@@ -1,5 +1,5 @@
 import type { FastifyReply } from 'fastify';
-import type { JobStatus, RuntimeVitals, ServiceStatus } from '../db/job-store-contract.js';
+import type { JobStatus, RuntimeVitals, ServiceStatus } from '../db/job-store-types.js';
 import { bad, badSegment } from './helpers.js';
 
 /**

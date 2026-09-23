@@ -146,7 +146,7 @@ name `GITHUB_TOKEN`. This section used to call that "deliberately not built" and
 read-only tokens, a GitHub call on the claim hot path, impossibility without a credential — and
 each is answered in place:
 
-- **The mint is the base layer, below every configured scope** (`withMintedToken` in job-store.ts,
+- **The mint is the base layer, below every configured scope** (`withMintedToken` in job-store-org-resolvers.ts,
   pinned by the offline suite like `stackEnv` is). A `GITHUB_TOKEN` configured in org, workspace or
   repo WINS the collision: it is a credential an operator deliberately chose, and silently
   replacing one token with another is a failure nobody notices. The mint fills only the gap. The

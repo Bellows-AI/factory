@@ -1,5 +1,5 @@
 import type { FastifyReply } from 'fastify';
-import type { GateReport, JobOutcome, JobStatus } from '../db/job-store-contract.js';
+import type { GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
     type WorkflowDefinition,

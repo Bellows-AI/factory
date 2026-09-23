@@ -5,7 +5,7 @@ import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
-import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-contract.js';
+import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-types.js';
 import type {
     FollowUpRefusal,
     JobStore,
@@ -13,7 +13,7 @@ import type {
     ReclaimClaim,
     RemoveResult,
     StopResult,
-} from '../src/db/job-store-read-model.js';
+} from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
 import {
     githubAuth,

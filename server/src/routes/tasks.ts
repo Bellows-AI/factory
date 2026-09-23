@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
-import type { JobStore, TaskListFilters, TaskState } from '../db/job-store-read-model.js';
+import type { JobStore, TaskListFilters, TaskState } from '../db/job-store-types.js';
 import { decodeCursor, type TaskCursorFilters } from '../db/task-summary.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, guard, repoReason } from './helpers.js';

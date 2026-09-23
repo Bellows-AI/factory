@@ -1,48 +1,46 @@
-import { type Job, type JobStatus, type RuntimeVitals } from './job-store-contract.js';
-import type { JobStore } from './job-store-read-model.js';
-import {
-    type CreateJobStoreDeps,
-    type JobStorePrs,
-    authorColumnsFragment,
-    authorJoinFragment,
-    taskPreviewColumnsFragment,
-    wallTickFragment,
-} from './job-store-rows.js';
-import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './job-store-org-resolvers.js';
-import { createFollowUpRow } from './job-store-claim.js';
-import {
-    type JobStoreContext,
-    ackReclaimRow,
-    claimJob,
-    claimReclaimRow,
-    completeJob,
-    createJobRow,
-    gatesReport,
-    getJob,
-    heartbeatJob,
-    listJobs,
-    listTasksOf,
-    markJobDone,
-    progressReport,
-    publishTokenJob,
-    removeJobThread,
-    rereadGatesJob,
-    sessionReport,
-    stopJob,
-    suspendJob,
-    threadOf,
-} from './job-store-methods.js';
-
 /**
  * The job board: task and thread creation, the claim/lease protocol a driver walks a run through,
- * and the read models (`get`/`thread`/`list`/`listTasks`) the dashboard polls.
+ * and the read models the dashboard polls. `createJobStore` binds a connection and an org into a
+ * `JobStore` whose every method delegates to a free function over a `JobStoreContext`:
  *
- * The types, row mappers, and the pure per-concern helpers (claim resolution, the workflow
- * transition, the task list's SQL fragments) live in `job-store-contract.ts`, `job-store-read-model.ts`,
- * `job-store-rows.ts`, `job-store-org-resolvers.ts` and `job-store-claim.ts`; import them from
- * there. Read docs/jobs.md before touching any of them: the decisions here look simplifiable and
- * mostly are not.
+ * - `job-store-types.ts` — every shape: `Job`, `Claim`, the `JobStore` contract, results, deps.
+ * - `job-store-rows.ts` — row shapes, mappers and the shared SQL fragments.
+ * - `job-store-claim.ts` — the worker's claim and the reclaim claim/ack.
+ * - `job-store-worker.ts` — heartbeat, reports, publish token, `complete` and the workflow walk.
+ * - `job-store-actions.ts` — member actions: create, follow up, done, stop, suspend, remove.
+ * - `job-store-reads.ts` — get, thread, list, and the task list.
+ * - `job-store-org-resolvers.ts` — org-of-lease/job/reclaim, and the minted-token base layer.
+ *
+ * Import from the file that owns a name; there is no barrel. Read docs/jobs.md before touching any
+ * of them: the decisions here look simplifiable and mostly are not.
  */
+
+import {
+    createJobRow,
+    createFollowUpRow,
+    markJobDone,
+    stopJob,
+    suspendJob,
+    removeJobThread,
+} from './job-store-actions.js';
+import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
+import { threadOf, getJob, listJobs, listTasksOf } from './job-store-reads.js';
+import {
+    wallTickFragment,
+    authorJoinFragment,
+    authorColumnsFragment,
+    taskPreviewColumnsFragment,
+} from './job-store-rows.js';
+import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
+import {
+    heartbeatJob,
+    sessionReport,
+    progressReport,
+    gatesReport,
+    rereadGatesJob,
+    publishTokenJob,
+    completeJob,
+} from './job-store-worker.js';
 
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a
@@ -61,10 +59,8 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         if (ready) await ready;
     };
 
-    // Every method's own body lives in job-store-methods.ts, one function apiece, purely to keep
-    // this factory under the repo's line-count ceiling — no behavior change. This context is what
-    // each of them closes over: the connection, the bound org, the precompiled SQL fragments, and
-    // the optional collaborators.
+    // Every method's own body is a function in the sibling job-store-*.ts files (the header's map);
+    // this context is what each of them closes over.
     const ctx: JobStoreContext = {
         sql,
         orgId,

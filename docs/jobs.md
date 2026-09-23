@@ -1,6 +1,6 @@
 # Job board
 
-Read before: touching `server/src/routes/jobs.ts`, `server/src/db/job-store.ts`,
+Read before: touching `server/src/routes/jobs.ts`, `server/src/db/job-store*.ts`,
 `server/migrations/006_jobs.sql` or anything under `driver/`.
 
 A job is a text command waiting for a worker — read as an agent prompt. The runner's `ENTRYPOINT`

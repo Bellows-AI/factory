@@ -1,3 +1,8 @@
+/**
+ * The org resolvers the auth layer asks before a worker write (which org a lease, a job or a reclaim
+ * belongs to), and `withMintedToken`, the claim env's base layer.
+ */
+
 import type { Sql } from 'postgres';
 
 /**

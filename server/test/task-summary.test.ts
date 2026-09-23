@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Job, JobStatus } from '../src/db/job-store-contract.js';
-import type { TaskListFilters } from '../src/db/job-store-read-model.js';
+import type { Job, JobStatus } from '../src/db/job-store-types.js';
+import type { TaskListFilters } from '../src/db/job-store-types.js';
 import { activityAtOf, decodeCursor, encodeCursor, memoryTaskList, taskBucket } from '../src/db/task-summary.js';
 
 /** ISO stamps count backwards from a fixed base — `at(60)` is an hour before `at(5)`. */

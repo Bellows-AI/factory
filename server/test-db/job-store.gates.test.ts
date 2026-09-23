@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
-import type { GateReport } from '../src/db/job-store-contract.js';
-import type { JobStore } from '../src/db/job-store-read-model.js';
+import type { GateReport } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);

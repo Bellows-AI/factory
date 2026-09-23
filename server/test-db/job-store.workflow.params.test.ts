@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
-import type { Claim } from '../src/db/job-store-contract.js';
-import type { JobStore } from '../src/db/job-store-read-model.js';
+import type { Claim } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { ParamValues, WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';

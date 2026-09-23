@@ -1,6 +1,6 @@
 import { UUID } from '../config.js';
-import type { Job, JobStatus } from './job-store-contract.js';
-import type { TaskBucket, TaskListFilters, TaskListResponse, TaskState, TaskSummary } from './job-store-read-model.js';
+import type { Job, JobStatus } from './job-store-types.js';
+import type { TaskBucket, TaskListFilters, TaskListResponse, TaskState, TaskSummary } from './job-store-types.js';
 
 /**
  * The task read model's pure half — the rules `GET /api/tasks` serves, written once so the
