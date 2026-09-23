@@ -62,7 +62,7 @@ async function claimNextCandidate(
          * two runners and two sync jobs into the same tree. The blocker is status = 'running'
          * and nothing else: an expired lease is still a run the board believes in until the
          * claim reclaims it (the same-row reclaim, o.id <> <candidate>, is the heartbeat-409
-         * path and stays), and a standby row neither blocks nor is claimable. Every member of
+         * path and stays). Every member of
          * the thread carries the same root_job_id (022), so the exclusion is one indexed
          * lookup, not a walk — and it is symmetric and terminal rows block nothing.
          */
@@ -149,10 +149,6 @@ async function claimNextCandidate(
                         when parent_job_id is not null then session_id
                         else null
                     end,
-                    remote_session_id = case
-                        when parent_job_id is not null then remote_session_id
-                        else null
-                    end,
                     -- The previous attempt's vitals are not this attempt's, and a new container
                     -- starts unsampled: the started_at reset, one row down.
                     runtime          = null,
@@ -170,7 +166,7 @@ async function claimNextCandidate(
                 -- their pre-update values: delivered-so-far is exactly "this row was suspended at
                 -- least once with its command in the transcript". A fresh or crashed follow-up has
                 -- never been parked, so its command still has to go out; a suspended one settles
-                -- stopped or standby, and is never claimed again.
+                -- stopped, and is never claimed again.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
                           session_id, repo, parent_job_id, executor, workflow_node,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up

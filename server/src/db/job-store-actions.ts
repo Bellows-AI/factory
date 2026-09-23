@@ -75,7 +75,7 @@ export async function createFollowUpRow(
     const { orgId, parentId, command, createdBy } = input;
     const rows = await sql<{ id: string }[]>`
         with parent as (
-            select id, repo, executor, session_id, remote_session_id, root_job_id, workflow_name
+            select id, repo, executor, session_id, root_job_id, workflow_name
             from job
             where org_id = ${orgId} and id = ${parentId}
               and status in ('succeeded','failed','dead','stopped')
@@ -105,28 +105,12 @@ export async function createFollowUpRow(
                         order by r.created_at, r.id
                         limit 1
                     )
-                end as session_id,
-                case
-                    when root.snapshot is null then parent.remote_session_id
-                    else (
-                        select r.remote_session_id
-                        from job r
-                        where r.org_id = ${orgId} and r.root_job_id = root.root_id
-                          and r.session_id is not null
-                          and exists (
-                              select 1 from jsonb_array_elements(root.snapshot -> 'nodes') node
-                              where node->>'name' = r.workflow_node and node->>'session' = 'resume'
-                          )
-                        order by r.created_at, r.id
-                        limit 1
-                    )
-                end as remote_session_id
+                end as session_id
             from parent, root
         )
-        insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, remote_session_id, root_job_id, workflow_name)
+        insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_name)
         select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.id,
                coalesce(primary_session.session_id, parent.session_id),
-               coalesce(primary_session.remote_session_id, parent.remote_session_id),
                parent.root_job_id, parent.workflow_name
         from parent, root, primary_session
         returning id
@@ -191,7 +175,7 @@ export async function markJobDone(
  * `markDone`'s second half: if this done just made the whole thread terminal, queue its worktree
  * reclaim. The thread is one indexed read off the root column (022), and the ROOT row carries the
  * labels the reclaim is addressed by — the same fields removeThread queues. Terminal only: a
- * member still queued, parked or running keeps the tree (its verdict will reclaim); one member
+ * member still queued or running keeps the tree (its verdict will reclaim); one member
  * done (this one, usually — the UI marks the head) is what makes the done a THREAD's done and not
  * one turn's.
  */
@@ -231,9 +215,9 @@ export type StopJobResult = Awaited<ReturnType<JobStore['stop']>>;
 
 export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: string | null): Promise<StopJobResult> {
     const { sql, orgId, wallTick, prs } = ctx;
-    // One statement decides the outcome by the status it sees. A QUEUED row never started
-    // and a STANDBY row's run is long gone — both are settled `stopped` here: the turn is
-    // over, and the session these rows keep is what the follow-up continues. A RUNNING
+    // One statement decides the outcome by the status it sees. A QUEUED row never started,
+    // so it is settled `stopped` here: the turn is over, and the session it keeps is what
+    // the follow-up continues. A RUNNING
     // row whose lease is still live is stamped `cancel_requested_at` and left running:
     // the request travels on the heartbeat the worker already sends, and the settle that
     // honours it (suspend under the stamp) clears it. A RUNNING row whose lease has
@@ -250,12 +234,12 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
     const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null; root_job_id: string }[]>`
         update job set
             status = case
-                when status in ('queued','standby') then 'stopped'
+                when status = 'queued' then 'stopped'
                 when status = 'running' and lease_expires_at <= now() then 'stopped'
                 else status
             end,
             finished_at = case
-                when status in ('queued','standby') then now()
+                when status = 'queued' then now()
                 when status = 'running' and lease_expires_at <= now() then now()
                 else finished_at
             end,
@@ -281,7 +265,7 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
             end,
             stopped_by = coalesce(stopped_by, ${stoppedBy})
         where org_id = ${orgId} and id = ${id}
-          and status in ('queued','running','standby')
+          and status in ('queued','running')
         returning status, cancel_requested_at, root_job_id
     `;
     const row = rows[0];
@@ -309,31 +293,20 @@ export async function suspendJob(
     leaseToken: string
 ): ReturnType<JobStore['suspend']> {
     const { sql, orgId, wallTick } = ctx;
-    // One update, two landings decided by the stop stamp the heartbeat delivered. Under a
-    // stamp the parking IS the user's stop landing: the row settles `stopped` — terminal,
-    // `finished_at` stamped, the session kept for the follow-up that continues the turn.
-    // Without one this is the Remote Control idle park: `standby`, not finished, the
-    // session kept so the conversation can be driven on from the Claude UI. Both expire
-    // the lease, exactly as insert does it: neither landing is claimable, so this changes
-    // nothing while the row sits — and then it is the difference between the next poll
-    // acting on the row and it waiting out the lease the dying worker held. The command
-    // is in the transcript now either way (command_delivered_at), the stamp clears — the
-    // stop has happened, whatever landing it produced — and the attempt is handed back:
-    // a park is not a failed try, so parking a hundred times must never exhaust
-    // max_attempts.
+    // One update: the parking IS the user's stop landing (the stamp the heartbeat
+    // delivered). The row settles `stopped` — terminal, `finished_at` stamped, the session
+    // kept for the follow-up that continues the turn. The lease expires, exactly as insert
+    // does it: the row is not claimable, so this changes nothing while it sits — and then
+    // it is the difference between the next poll acting on the row and it waiting out the
+    // lease the dying worker held. The command is in the transcript now
+    // (command_delivered_at), the stamp clears — the stop has happened — and the attempt is
+    // handed back: a park is not a failed try, so it must never exhaust max_attempts.
     const rows = await sql<{ id: string; status: JobStatus }[]>`
         update job set
-            status           = case
-                                   when cancel_requested_at is not null then 'stopped'
-                                   else 'standby'
-                               end,
-            finished_at      = case
-                                   when cancel_requested_at is not null then now()
-                                   else finished_at
-                               end,
-            -- The park ends the segment the attempt was running, whichever landing it
-            -- takes: stopped or standby, the container was doing real work up to now, and
-            -- the parked time after this statement banks nothing.
+            status           = 'stopped',
+            finished_at      = now(),
+            -- The park ends the segment the attempt was running: the container was doing
+            -- real work up to now, and the time after this statement banks nothing.
             wall_clock_ms    = ${wallTick},
             lease_token      = null,
             -- Expired on the way in, exactly as insert does it.

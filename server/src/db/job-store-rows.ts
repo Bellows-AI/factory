@@ -32,7 +32,6 @@ export interface JobRow {
     stopped_by: string | null;
     done_by: string | null;
     session_id: string | null;
-    remote_session_id: string | null;
     exit_code: number | null;
     output?: string | null;
     /** Absent from reads before 028 filled it; null is unmeasured, never empty. */
@@ -150,7 +149,6 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         stoppedBy: userRef(row.stopper_id, row.stopper_login, row.stopper_name, row.stopper_avatar_url),
         doneBy: userRef(row.doner_id, row.doner_login, row.doner_name, row.doner_avatar_url),
         sessionId: row.session_id,
-        remoteSessionId: row.remote_session_id,
         exitCode: row.exit_code,
         output: row.output ?? null,
         summary: row.summary ?? null,

@@ -9,15 +9,11 @@ import type { BoardJob, ServiceStatus } from './board.js';
 import type { HelperPlan, HelperResult } from './helpers.js';
 import type { PublishResult, SyncResult, ReclaimResult } from './publish.js';
 
-/**
- * What the board is told afterwards. `timedOut` is reported as a failure, with a reason; `idled` is
- * not a failure at all — the job is parked and keeps its session.
- */
+/** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
 export interface RunOutcome {
     exitCode: number | null;
     output: string;
     timedOut: boolean;
-    idled: boolean;
     /**
      * False only when the runner knows the container never ran — the daemon refused to accept
      * it. The docker runner does not guess from the shared stderr stream, where the CLI's errors
@@ -82,8 +78,7 @@ export interface RunOutcome {
      * counted from the session's own records at close (opencode: the session database the
      * readout walks; claude-code: the transcript on the workspaces volume). Null when the read
      * ran and could not measure — the transcript was gone, or the container died first; absent
-     * when no read was attempted (claude-code's Remote Control keeps an interactive
-     * conversation no single read may freeze mid-flight). The board stores what arrives: absent
+     * when no read was attempted. The board stores what arrives: absent
      * and null both land as null — unmeasured, never zero.
      */
     agentTurns?: number | null;
@@ -100,7 +95,7 @@ export interface RunOutcome {
 
 /**
  * The session a run is to use. `resume` restores an existing one rather than starting it, which is
- * how a parked job picks up where it left off — under the same id, so its link does not move.
+ * how a follow-up continues its parent's conversation — under the same id.
  *
  * Null for a runner that takes no session at all: opencode mints its own ids and cannot adopt one
  * (`run --session <id>` continues an existing session, it never creates one with a given id), so
@@ -118,12 +113,6 @@ export interface Runner {
      * often. Optional — a caller that does not stream simply never gets a call.
      */
     run(job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void): Promise<RunOutcome>;
-    /**
-     * The Remote Control id the Claude UI addresses this session by, or null while the bridge has
-     * not connected yet — which is the ordinary answer for the first few seconds of a run, and the
-     * permanent one for a headless job.
-     */
-    remoteSessionId(job: BoardJob, sessionId: string): Promise<string | null>;
     /**
      * The runner container's vitals right now — the liveness signal the dashboard renders — or
      * null when none can be taken. Sampling failures are the ordinary case (the container can be
@@ -147,7 +136,7 @@ export interface Runner {
      * Prepares the job's task worktree before the run. A STARTING claim syncs it with the
      * remote default: fetch, create the worktree branched off `origin/<default>` (first attempt
      * of the thread) or rebase it onto the new default, keeping its commits. A claim that
-     * CONTINUES a session (a follow-up, or a parked job resumed) RESTORES instead: no fetch, no
+     * CONTINUES a session (a follow-up) RESTORES instead: no fetch, no
      * rebase — the tree is kept exactly as the run before it left it, or recreated from the
      * surviving thread branch (issue #58: git operations that touch the remote belong to the
      * task's beginning and end, never its middle). Called before the runner spawns, so a task

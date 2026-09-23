@@ -367,7 +367,7 @@ describe('per-task usage panel', () => {
     });
 
     it('carries the unmeasured-run caveat in a disclosure below the table', () => {
-        // Remote Control runs and failed close-time reads store null; a task holding one is
+        // Failed close-time reads store null; a task holding one is
         // excluded. The panel says so instead of rendering a quietly small number.
         const html = renderToStaticMarkup(<TaskUsagePanel tasks={populated} meta={telemetryMeta()} />);
         expect(html).toContain('a task with any unmeasured run is left out, never counted as zero');

@@ -24,7 +24,7 @@ describe('isTerminal', () => {
     });
 
     it('is false while the task can still move', () => {
-        for (const status of ['queued', 'running', 'standby'] as const) {
+        for (const status of ['queued', 'running'] as const) {
             expect(isTerminal(status), status).toBe(false);
         }
     });

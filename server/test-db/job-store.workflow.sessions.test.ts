@@ -118,13 +118,13 @@ describe.skipIf(!enabled)('workflow execution: sessions and publish', () => {
     it('carries the primary session across a fresh-eyes branch', async () => {
         const root = await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
-        await store.session(first.id, first.leaseToken, 'sess-implement', null);
+        await store.session(first.id, first.leaseToken, 'sess-implement');
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
         // The review row is `fresh`: no session on the claim; its run mints its own.
         const review = (await store.claim(WORKER, 60))!;
         expect(review.resumeSessionId).toBeNull();
-        await store.session(review.id, review.leaseToken, 'sess-review-side-branch', null);
+        await store.session(review.id, review.leaseToken, 'sess-review-side-branch');
         await store.complete(review.id, review.leaseToken, {
             status: 'succeeded',
             exitCode: 0,
@@ -139,13 +139,13 @@ describe.skipIf(!enabled)('workflow execution: sessions and publish', () => {
     it("copies the primary session — not the last row's — onto a user follow-up", async () => {
         await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
-        await store.session(first.id, first.leaseToken, 'sess-primary', null);
+        await store.session(first.id, first.leaseToken, 'sess-primary');
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
         // The review mints a side-branch session, then says nothing machine-readable: the thread
         // RESTS at the review, whose row is the thread's newest — and carries the branch session.
         const review = (await store.claim(WORKER, 60))!;
-        await store.session(review.id, review.leaseToken, 'sess-fresh-branch', null);
+        await store.session(review.id, review.leaseToken, 'sess-fresh-branch');
         await store.complete(review.id, review.leaseToken, {
             status: 'succeeded',
             exitCode: 0,

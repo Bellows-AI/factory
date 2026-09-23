@@ -126,7 +126,7 @@ function TaskHeaderActions({
  * thread is a complete render.
  *
  * The action matrix is state-specific (issue 178): every not-terminal state offers **Stop run**
- * — the board lands queued and standby stops as readily as a moving run's — with the request in
+ * — the board lands queued stops as readily as a moving run's — with the request in
  * flight and the request landed both reading **Stopping…**; a terminal task that nobody has
  * closed offers **Mark done** as the page's one primary action; and a closed task shows its
  * closure as attribution text — **Done by <login>**, or **Marked done** when no actor is on
@@ -170,8 +170,8 @@ export function TaskHeader({
     // Both halves of a stop that has not settled yet read the same: the request this click sent,
     // and the one the board has stamped while the worker has not parked the run.
     const stopping = stoppingId === latestTask.id || latestTask.cancelRequestedAt !== null;
-    // Remove is hidden while any member is running — not merely the newest. Queued and standby
-    // members do not block it; nothing on the board is executing them.
+    // Remove is hidden while any member is running — not merely the newest. Queued members do
+    // not block it; nothing on the board is executing them.
     const removeAvailable = !jobs.some((task) => task.status === 'running');
     // The task's live summary — the newest run's activity line, while there is one — beside the
     // title, the same line the sidebar's "Task" row and the sidenav read.

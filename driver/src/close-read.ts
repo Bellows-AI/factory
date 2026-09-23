@@ -8,7 +8,6 @@
 
 import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
-import type { DriverConfig } from './config.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import { CLAUDE_CODE } from './executors.js';
 
@@ -166,16 +165,10 @@ export function parseClaudeCloseRead(stdout: string): { turns: number | null; su
 
 /**
  * Whether this run gets a close-time agent-turn read at all. Opencode's count rides its own
- * readout; claude-code's needs the session id the runner minted and a HEADLESS run — Remote
- * Control keeps an interactive conversation that continues after any single read, so its count
- * stays unmeasured rather than freezing a mid-conversation number (the design's null posture).
+ * readout; claude-code's needs the session id the runner minted.
  */
-export function readsAgentTurns(
-    config: DriverConfig,
-    job: Pick<BoardJob, 'executorType'>,
-    session: RunSession | null
-): boolean {
-    return job.executorType === CLAUDE_CODE && !config.remoteControl && session !== null && UUID.test(session.id);
+export function readsAgentTurns(job: Pick<BoardJob, 'executorType'>, session: RunSession | null): boolean {
+    return job.executorType === CLAUDE_CODE && session !== null && UUID.test(session.id);
 }
 
 /*

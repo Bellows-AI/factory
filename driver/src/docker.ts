@@ -15,7 +15,7 @@ import {
     SESSION_ID,
     transcriptDir,
 } from './claim.js';
-import { remoteSessionScript, opencodeReadoutScript } from './container-scripts.js';
+import { opencodeReadoutScript } from './container-scripts.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, type RuntimeSample, type RunSession } from './runner.js';
 import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
@@ -56,38 +56,6 @@ export const workspacesMountArgs = (config: DriverConfig, subPath: string, readO
         readOnly ? ',readonly' : ''
     }`,
 ];
-
-/**
- * `docker exec` argv for reading the bridge record out of a running runner. Pure and exported for
- * the same reason dockerArgs is: it interpolates a value into a shell command, and that is worth
- * pinning in one place.
- *
- * The transcript is the only place the remote id appears — the CLI prints it into a TUI, not onto
- * stdout — and the container is where it is legible, so this reads it in place rather than trying
- * to locate the auth volume on the host.
- *
- * The session id is asserted to be a uuid before it is interpolated. It comes from the board on a
- * resume, and a board is not something this process should trust with a fragment of a shell
- * command. It travels as the script's FIRST POSITIONAL PARAMETER (`sh -c <script> sh <id>` →
- * `$1`), a plain argv value — the script text itself (remote-session.sh) is static, so nothing
- * board-supplied is ever part of it.
- */
-export function remoteSessionArgs(job: BoardJob, sessionId: string): string[] {
-    if (!UUID.test(sessionId)) throw new Error(`refusing to read a session id that is not a uuid: ${sessionId}`);
-    return ['exec', containerName(job), 'sh', '-c', remoteSessionScript, 'sh', sessionId];
-}
-
-/** Pulls `bridgeSessionId` out of the transcript line, tolerating anything that is not one. */
-export function parseRemoteSessionId(line: string): string | null {
-    const trimmed = line.trim();
-    if (!trimmed) return null;
-    try {
-        const parsed = JSON.parse(trimmed) as { bridgeSessionId?: unknown };
-        return typeof parsed.bridgeSessionId === 'string' && parsed.bridgeSessionId ? parsed.bridgeSessionId : null;
-    } catch {
-        return null;
-    }
-}
 
 const PERCENT = /^([0-9.]+)%/;
 const MEMORY = /^([0-9.]+)\s*([A-Za-z]+)/;
@@ -324,13 +292,6 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
 }
 
 /**
- * Where the image sets CLAUDE_CONFIG_DIR. The login lives under it, so that whole directory is what
- * the auth volume has to cover — mounting anything narrower hides the baked configuration behind an
- * empty volume without carrying the credential.
- */
-const AUTH_MOUNT = '/home/node/.claude';
-
-/**
  * Where the run's env file lives — one per ATTEMPT, lease token included, so a re-claimed
  * attempt's write can never race a previous attempt's cleanup on the same path. Both halves of the
  * name are asserted before they join a path: the file write is the one place a board-supplied id
@@ -349,30 +310,11 @@ export const envFilePath = (job: BoardJob): string => {
 };
 
 /**
- * Pushes the runner's credential onto the argv: the auth volume under Remote Control, or the
- * driver's passEnv names plus the claim's `--env-file` for a headless run.
+ * Pushes the runner's credential onto the argv: the driver's passEnv names plus the claim's
+ * `--env-file`.
  */
 function pushRunnerCredentialArgs(args: string[], config: DriverConfig, job: BoardJob, envFile?: string): void {
-    if (config.remoteControl) {
-        // `-t` alone, and NOT `-i -t`. Remote Control is an interactive session and will not start
-        // one without a tty — but the driver's own stdin is not a terminal, and `docker run -i`
-        // from a process whose stdin is not a tty fails outright with "the input device is not a
-        // TTY". With `-t` by itself the daemon allocates the pty anyway and never attaches the
-        // client's stdin to it, so the container gets a terminal that simply never delivers input
-        // or EOF — which is exactly what a session waiting to be driven from elsewhere needs.
-        args.push('-t');
-        // Deliberately NOT passEnv. Remote Control requires a claude.ai subscription login, and
-        // forwarding a token instead degrades it in silence: `--remote-control` still starts a
-        // perfectly ordinary local session, and the only symptom is that it never appears at
-        // claude.ai/code. So the volume is the only credential a Remote Control runner gets.
-        args.push('-v', `${config.authVolume}:${AUTH_MOUNT}`);
-        // The trust dialog is a real prompt, and an interactive session started by a driver has
-        // nobody to answer it. See docker/claude-executor/README.md for what accepting it implies
-        // when the checkout ships a .claude/settings.local.json.
-        args.push('-e', 'TRUST_WORKDIR=1');
-        return;
-    }
-    // The driver's own credentials ride as before: `-e NAME` without a value, docker reads it
+    // The driver's own credentials: `-e NAME` without a value, docker reads it
     // from THIS process's environment. `-e NAME=value` would put the credential in an argv
     // every `ps` on the host can read — the same distinction the workspace reconcile makes for
     // the git token.
@@ -477,9 +419,8 @@ export function dockerArgs(
     args.push('-e', `OTEL_EXPORTER_OTLP_ENDPOINT=${config.otelEndpoint}`);
 
     // Where the runner's branch reporter posts. The board's own URL — the same reasoning as the
-    // OTEL endpoint beside it: a literal URL, not a credential, forwarded under Remote Control
-    // too (attribution is as wanted on a drivable session as on a headless one). Unset in the
-    // config would have refused at boot; the default names the board JOB_BOARD_URL names.
+    // OTEL endpoint beside it: a literal URL, not a credential. Unset in the config would have
+    // refused at boot; the default names the board JOB_BOARD_URL names.
     args.push('-e', `FACTORY_STATS_URL=${config.statsUrl}`);
 
     if (job.executorType === OPENCODE) {
@@ -489,27 +430,18 @@ export function dockerArgs(
 }
 
 /**
- * Appends the opencode invocation to the argv, and answers it. Headless only — Remote Control is
- * refused in the config, so there is no RC branch here and no permissions flag either (the
+ * Appends the opencode invocation to the argv, and answers it. No permissions flag here (the
  * image's baked opencode.json decides them).
  *
  * Sessions: opencode mints its own (`ses_…`) and cannot adopt one minted in advance, so a fresh
  * run is given none — the runner scrapes the id the run actually used after it ends and the loop
  * reports it. A follow-up is the exception to "cannot adopt": its claim carries the session
  * opencode ITSELF created (persisted via XDG_DATA_HOME below), and `run --session <id> <command>`
- * continues that conversation with the new adjustment. A resume claim with nothing to deliver is
- * a parked claude-code session — standby is a Remote Control feature — and is refused by loop.ts
- * before it gets here.
+ * continues that conversation with the new adjustment.
  */
 function pushOpencodeArgs(args: string[], config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
     if (session && !session.resume) {
         throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
-    }
-    if (session && !job.followUp) {
-        // Unreachable through the loop, which refuses this state first — this is the runner
-        // asserting it too, because `run --session <id>` with nothing to deliver would idle a
-        // headless run to its deadline. Standby is a Remote Control feature; opencode has none.
-        throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
     }
     // The session database has to outlive the container or there is nothing to resume into:
     // a fresh container starts with an empty one. Pointing XDG_DATA_HOME at the member's own
@@ -538,33 +470,23 @@ function pushClaudeCodeArgs(args: string[], config: DriverConfig, job: BoardJob,
     if (!session) {
         throw new Error(`refusing to run job ${job.id}: the claude-code runner runs every job as a session`);
     }
-    // The transcript store, HEADLESS claude-code only — fresh runs and resumes alike, because the
-    // resume is the run that needs the thread's earlier transcripts sitting in its config dir.
-    // Remote Control is excluded: its CLAUDE_CONFIG_DIR must stay the auth volume (standby/park
-    // depends on the transcript surviving there), which is also why the entrypoint refuses the
-    // combination outright. A path literal like WORKDIR and XDG_DATA_HOME, never a credential.
-    if (!config.remoteControl) {
-        args.push('-e', `FACTORY_TRANSCRIPT_DIR=${transcriptDir(config, job)}`);
-    }
+    // The transcript store — fresh runs and resumes alike, because the resume is the run that
+    // needs the thread's earlier transcripts sitting in its config dir. A path literal like
+    // WORKDIR and XDG_DATA_HOME, never a credential.
+    args.push('-e', `FACTORY_TRANSCRIPT_DIR=${transcriptDir(config, job)}`);
     // The session id the reporter claims. It is safe by construction — minted here as a uuid, or
     // arriving on the claim only after the board's own token check — which is the same guarantee
     // `--session-id` below has always ridden on.
     args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
 
     // Restoring a session versus starting one. `--resume` keeps the original id — forking it is a
-    // separate flag — which is what makes a parked job's link survive being parked.
+    // separate flag — which is what keeps a follow-up in its parent's conversation.
     args.push(executorImage(config, job.executorType), session.resume ? '--resume' : '--session-id', session.id);
     if (config.skipPermissions) args.push('--dangerously-skip-permissions');
 
-    // Interactive versus headless. The command is the session's opening prompt and is delivered
-    // once: on a resume it is already in the transcript, and sending it again would re-run the job
-    // the human has been driving. The exception is a follow-up — its command is the NEW
-    // adjustment, and the restored transcript is the conversation it continues, so it goes out
-    // even though the session is being resumed. It goes last, so a command that looks like a flag
-    // is still read as a prompt.
-    const deliver = !session.resume || job.followUp;
-    if (config.remoteControl) args.push('--remote-control', containerName(job));
-    else if (deliver) args.push('-p');
-    if (deliver) args.push(job.command);
+    // The command is the prompt. On a follow-up it is the NEW adjustment, and the restored
+    // transcript is the conversation it continues. It goes last, so a command that looks like a
+    // flag is still read as a prompt.
+    args.push('-p', job.command);
     return args;
 }

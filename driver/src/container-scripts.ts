@@ -17,9 +17,6 @@ export const containerScript = (name: string): string =>
     readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
 const script = containerScript;
 
-/** The `sh -c` command that reads the Remote Control id out of a live transcript: see scripts/remote-session.sh. */
-export const remoteSessionScript = script('remote-session.sh');
-
 /** The close-time opencode readout: see scripts/opencode-readout.cjs. */
 export const opencodeReadoutScript = script('opencode-readout.cjs');
 

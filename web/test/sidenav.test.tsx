@@ -268,17 +268,17 @@ describe('SideNav status dots and live lines', () => {
         expect(html).toContain('→ Read src/x.ts');
     });
 
-    it('keeps the live line out of parked and finished tasks', () => {
+    it('keeps the live line out of queued and finished tasks', () => {
         const html = render(
             '/tasks',
-            navigation([], [summary(), summary({ ...running(), status: 'standby' } as Partial<TaskSummary>)])
+            navigation([], [summary(), summary({ ...running(), status: 'queued' } as Partial<TaskSummary>)])
         );
         expect(html).not.toContain('sidenav-task-summary');
     });
 
-    it('paints the states text-first: grey parked, red failed, green done, plain stopped', () => {
-        const parked = render('/tasks', navigation([summary({ status: 'standby' })], []));
-        expect(parked).toContain('sidenav-dot sidenav-dot-paused');
+    it('paints the states text-first: grey queued, red failed, green done, plain stopped', () => {
+        const queued = render('/tasks', navigation([summary({ status: 'queued' })], []));
+        expect(queued).toContain('sidenav-dot sidenav-dot-paused');
         const failed = render('/tasks', navigation([], [summary({ status: 'failed' })]));
         expect(failed).toContain('sidenav-dot sidenav-dot-failed');
         const done = render('/tasks', navigation([], [summary({ doneAt: '2026-09-02T13:00:00.000Z' })]));
@@ -287,8 +287,8 @@ describe('SideNav status dots and live lines', () => {
         expect(stopped).not.toContain('sidenav-dot ');
     });
 
-    it('holds the same grey paused dot for an open PR-review wait as for parked/queued', () => {
-        const html = render('/tasks', navigation([], [summary({ status: 'standby', waitReason: 'review' })]));
+    it('holds the same grey paused dot for an open PR-review wait as for queued', () => {
+        const html = render('/tasks', navigation([], [summary({ status: 'queued', waitReason: 'review' })]));
         expect(html).toContain('sidenav-dot sidenav-dot-paused');
         expect(html).not.toContain('sidenav-dot-done');
     });

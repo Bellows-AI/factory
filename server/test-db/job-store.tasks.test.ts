@@ -60,7 +60,7 @@ const craft = async (
     shape: {
         root?: string;
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         command?: string;
         createdMinutesAgo?: number;
         startedMinutesAgo?: number;
@@ -162,8 +162,8 @@ describe.skipIf(!enabled)('listTasks', () => {
         expect(Math.abs(minutesAgo(task.activityAt) - RUNNING_HEAD_STARTED_MINUTES_AGO)).toBeLessThan(2);
     });
 
-    it('buckets queued, running and standby heads as running', async () => {
-        const RUNNING_STATUSES = ['queued', 'running', 'standby'] as const;
+    it('buckets queued and running heads as running', async () => {
+        const RUNNING_STATUSES = ['queued', 'running'] as const;
         for (const status of RUNNING_STATUSES) {
             await craft({ status, command: `task ${status}`, createdMinutesAgo: 30 });
         }
@@ -173,7 +173,7 @@ describe.skipIf(!enabled)('listTasks', () => {
     });
 
     it('buckets a non-terminal head with an open wait as review, not running', async () => {
-        const root = await craft({ status: 'standby', command: 'waiting task', createdMinutesAgo: 30 });
+        const root = await craft({ status: 'queued', command: 'waiting task', createdMinutesAgo: 30 });
         await enterWait(root, { activeMinutesAgo: 10 });
 
         const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
@@ -189,11 +189,11 @@ describe.skipIf(!enabled)('listTasks', () => {
     });
 
     it('falls back to the ordinary bucket once the wait has gone terminal', async () => {
-        const root = await craft({ status: 'standby', command: 'exhausted wait task', createdMinutesAgo: 30 });
+        const root = await craft({ status: 'queued', command: 'exhausted wait task', createdMinutesAgo: 30 });
         await enterWait(root, { activeMinutesAgo: 20, completed: true, terminalReason: 'exhausted' });
 
         const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
-        // standby is not itself terminal, and the wait no longer overrides it — back to running.
+        // queued is not itself terminal, and the wait no longer overrides it — back to running.
         expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
         const running = await store.listTasks({ state: 'running', sort: 'newest', limit: 30 });
         expect(running.page.items[0]).toMatchObject({

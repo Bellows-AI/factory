@@ -46,15 +46,6 @@ force exactly as in an unredirected run.
 - **WHEN** a redirected headless run attempts a deny-listed git command (e.g. `git switch` off the task branch)
 - **THEN** the baked git-guard hook refuses it, as it would in an unredirected run
 
-### Requirement: Remote Control keeps its existing store
-Under Remote Control the config directory SHALL remain the auth volume. The transcript-store
-mechanism MUST NOT redirect it: standby/park depends on the transcript surviving its
-container on that volume for a later `--resume`.
-
-#### Scenario: RC run is untouched
-- **WHEN** a Remote Control job is claimed and spawned
-- **THEN** the runner's config directory is the auth volume and no transcript-store path is passed
-
 ### Requirement: The transcript location is not member-steerable
 The environment name carrying the transcript location SHALL be reserved on both the driver
 and the board, so member configuration can neither set nor shadow it — the value the runner

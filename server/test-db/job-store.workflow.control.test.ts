@@ -93,12 +93,12 @@ describe.skipIf(!enabled)('workflow execution: dead rows and stop', () => {
         };
         const root = await queueWorkflowJob(boundedOnce, 'bound-once');
         const first = (await store.claim(WORKER, 60))!;
-        await store.session(first.id, first.leaseToken, 'sess-implement', null);
+        await store.session(first.id, first.leaseToken, 'sess-implement');
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
         // Review 1 runs, reports its session, then burns its attempts and dies.
         const review1 = (await store.claim(WORKER, 60))!;
-        await store.session(review1.id, review1.leaseToken, 'sess-review', null);
+        await store.session(review1.id, review1.leaseToken, 'sess-review');
         await sql`update job set status = 'dead', finished_at = now(), lease_token = null where id = ${review1.id}`;
 
         // The human follows up the dead review row; the completion re-fires the halted node's
@@ -125,11 +125,11 @@ describe.skipIf(!enabled)('workflow execution: dead rows and stop', () => {
     it("a user follow-up re-fires the halted node's edges so the graph continues", async () => {
         const root = await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
-        await store.session(first.id, first.leaseToken, 'sess-implement', null);
+        await store.session(first.id, first.leaseToken, 'sess-implement');
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         // The review says nothing machine-readable: the thread rests AT the review.
         const review = (await store.claim(WORKER, 60))!;
-        await store.session(review.id, review.leaseToken, 'sess-review', null);
+        await store.session(review.id, review.leaseToken, 'sess-review');
         await store.complete(review.id, review.leaseToken, {
             status: 'succeeded',
             exitCode: 0,

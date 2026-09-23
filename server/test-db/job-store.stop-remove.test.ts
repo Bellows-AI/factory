@@ -51,7 +51,7 @@ beforeAll(async () => {
 const craft = async (
     shape: {
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         lease?: 'live' | 'expired';
         createdBy?: string | null;
         repo?: string | null;
@@ -84,13 +84,6 @@ describe.skipIf(!enabled)('stopping a task', () => {
         expect(job?.status).toBe('stopped');
         expect(job?.finishedAt).toBeTruthy();
         expect(job?.cancelRequestedAt).toBeNull();
-    });
-
-    it('settles an already-parked job directly too', async () => {
-        const id = await craft({ status: 'standby' });
-
-        expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
-        expect((await store.get(id))?.status).toBe('stopped');
     });
 
     it('stamps a running job as stop-requested and leaves it running until the worker settles it', async () => {
@@ -163,7 +156,7 @@ describe.skipIf(!enabled)('stopping a task', () => {
         // The worker reports the session mid-run — after the claim, which clears a fresh
         // attempt's session (only a follow-up keeps a copied one). This is the lease-guarded
         // route a real run uses, not a direct row write the claim would erase.
-        await store.session(id, token, randomUUID(), null);
+        await store.session(id, token, randomUUID());
 
         await store.stop(id, null);
         await store.suspend(id, token);

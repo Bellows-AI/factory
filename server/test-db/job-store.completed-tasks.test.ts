@@ -49,7 +49,7 @@ const craft = async (
     shape: {
         root?: string;
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         command?: string;
         createdMinutesAgo?: number;
         finishedMinutesAgo?: number;
@@ -194,8 +194,8 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task', () =
         expect(listed[1]?.summary).toBeNull();
     });
 
-    it('excludes a thread whose follow-up is still queued, running or parked', async () => {
-        for (const moving of ['queued', 'running', 'standby'] as const) {
+    it('excludes a thread whose follow-up is still queued or running', async () => {
+        for (const moving of ['queued', 'running'] as const) {
             const root = await craft({ status: 'succeeded', finishedMinutesAgo: 30 });
             await craft({ parent: root, status: moving, createdMinutesAgo: 5 });
 

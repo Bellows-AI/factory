@@ -20,7 +20,6 @@ const OTHER_ORG = 'other-org';
 const ABSENT = '00000000-0000-4000-8000-000000000000';
 const SESSION = '33333333-3333-4333-8333-333333333333';
 /** Shaped like a real one: opaque, prefixed, and not a uuid. */
-const REMOTE = 'cse_015tb2nHhHNrBuL7ZDhn9Wx5';
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 
@@ -505,7 +504,7 @@ describe.skipIf(!enabled)('job store', () => {
         const { id } = await queue('echo hi');
         const claim = await store.claim('w1', LEASE_SECONDS);
 
-        expect(await store.session(id, claim!.leaseToken, SESSION, null)).toBe('ok');
+        expect(await store.session(id, claim!.leaseToken, SESSION)).toBe('ok');
         expect(await store.get(id)).toMatchObject({ sessionId: SESSION });
     });
 
@@ -520,7 +519,7 @@ describe.skipIf(!enabled)('job store', () => {
         const claim = await store.claim('w1', LEASE_SECONDS);
         const ses = 'ses_f86188c3dffeZGYO4yZq4atba9';
 
-        await store.session(id, claim!.leaseToken, ses, null);
+        await store.session(id, claim!.leaseToken, ses);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
         const followUp = await mustFollowUp(id, 'again', null);
@@ -530,39 +529,14 @@ describe.skipIf(!enabled)('job store', () => {
         expect(second).toMatchObject({ id: followUp.id, resumeSessionId: ses, followUp: true });
     });
 
-    // Two reports per attempt: the local id at spawn, the remote one once the bridge connects. The
-    // second must not be able to wipe the first, and the first must not wipe a remote id that a
-    // later report already stored.
-    it('adds the remote session id without clearing what is already there', async () => {
-        const { id } = await queue('drive me');
-        const claim = await store.claim('w1', LEASE_SECONDS);
-
-        await store.session(id, claim!.leaseToken, SESSION, null);
-        await store.session(id, claim!.leaseToken, SESSION, REMOTE);
-        await store.session(id, claim!.leaseToken, SESSION, null);
-
-        expect(await store.get(id)).toMatchObject({ sessionId: SESSION, remoteSessionId: REMOTE });
-    });
-
-    it('drops the remote session when the job is claimed again', async () => {
-        const { id } = await queue('drive me');
-        const first = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, first!.leaseToken, SESSION, REMOTE);
-        await expireLease(id);
-
-        await store.claim('w2', LEASE_SECONDS);
-
-        expect((await store.get(id))?.remoteSessionId).toBeNull();
-    });
-
     it('refuses a session report from a worker whose lease was reclaimed', async () => {
         const { id } = await queue('echo hi');
         const stale = await store.claim('w1', LEASE_SECONDS);
         await expireLease(id);
         await store.claim('w2', LEASE_SECONDS);
 
-        expect(await store.session(id, stale!.leaseToken, SESSION, null)).toBe('lost');
-        expect(await store.session(ABSENT, stale!.leaseToken, SESSION, null)).toBe('missing');
+        expect(await store.session(id, stale!.leaseToken, SESSION)).toBe('lost');
+        expect(await store.session(ABSENT, stale!.leaseToken, SESSION)).toBe('missing');
     });
 
     // The attempt that died ran a different session, and showing its link next to this attempt's
@@ -570,7 +544,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('clears the session when the job is claimed again', async () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, first!.leaseToken, SESSION, null);
+        await store.session(id, first!.leaseToken, SESSION);
         await expireLease(id);
 
         await store.claim('w2', LEASE_SECONDS);
@@ -578,16 +552,15 @@ describe.skipIf(!enabled)('job store', () => {
         expect((await store.get(id))?.sessionId).toBeNull();
     });
 
-    it('parks a running job without finishing it, keeping its session', async () => {
+    it('parks a running job as stopped, keeping its session', async () => {
         const { id } = await queue('drive me');
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, claim!.leaseToken, SESSION, null);
+        await store.session(id, claim!.leaseToken, SESSION);
 
-        // No stop was asked, so this is the Remote Control idle landing: standby, not finished.
-        expect(await store.suspend(id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'standby' });
+        expect(await store.suspend(id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
 
-        expect(await store.get(id)).toMatchObject({ status: 'standby', sessionId: SESSION });
-        expect((await store.get(id))?.finishedAt).toBeNull();
+        expect(await store.get(id)).toMatchObject({ status: 'stopped', sessionId: SESSION });
+        expect((await store.get(id))?.finishedAt).not.toBeNull();
     });
 
     // A parked job must not be picked up by the next idle poll — that would resume it instantly,
@@ -600,13 +573,13 @@ describe.skipIf(!enabled)('job store', () => {
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
     });
 
-    // Parking is not a failed try: the attempt is handed back, whatever the landing.
+    // Parking is not a failed try: the attempt is handed back.
     it('hands back the attempt it took, so parking is not a retry', async () => {
         const { id } = await queue('drive me');
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.suspend(id, claim!.leaseToken);
 
-        expect(await store.get(id)).toMatchObject({ status: 'standby', attempts: 0 });
+        expect(await store.get(id)).toMatchObject({ status: 'stopped', attempts: 0 });
     });
 
     // A lease that expired mid-run is not a park: that attempt's session is not this one, and
@@ -614,7 +587,7 @@ describe.skipIf(!enabled)('job store', () => {
     it('does not offer a session to resume when it is reclaiming a crashed attempt', async () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, first!.leaseToken, SESSION, null);
+        await store.session(id, first!.leaseToken, SESSION);
         await expireLease(id);
 
         const second = await store.claim('w2', LEASE_SECONDS);

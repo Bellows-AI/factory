@@ -20,7 +20,6 @@ const SESSION = '33333333-3333-4333-8333-333333333333';
 /** A second session, for proving a follow-up chains the NEWEST session and not the root's. */
 const CHAIN = '55555555-5555-4555-8555-555555555555';
 /** Shaped like a real one: opaque, prefixed, and not a uuid. */
-const REMOTE = 'cse_015tb2nHhHNrBuL7ZDhn9Wx5';
 /** A lease long enough that nothing in this suite outlives it by accident. */
 const LEASE_SECONDS = 300;
 
@@ -79,12 +78,11 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
      */
     const finishWithSession = async (
         command: string,
-        target: { repo: string | null; executor: string | null } = { repo: null, executor: null },
-        remote = false
+        target: { repo: string | null; executor: string | null } = { repo: null, executor: null }
     ): Promise<string> => {
         const { id } = await store.create(command, null, target);
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, claim!.leaseToken, SESSION, remote ? REMOTE : null);
+        await store.session(id, claim!.leaseToken, SESSION);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         return id;
     };
@@ -92,7 +90,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // The follow-up must arrive at the worker as a continuation of the conversation so far: the
     // parent's session is what makes "ask for an adjustment" mean anything to the agent.
     it('creates a follow-up that continues the parent session and links to it', async () => {
-        const parent = await finishWithSession('drive me', { repo: null, executor: null }, true);
+        const parent = await finishWithSession('drive me');
 
         const followUp = await mustFollowUp(parent, 'now adjust the tone', null);
 
@@ -101,7 +99,6 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             status: 'queued',
             followUpTo: parent,
             sessionId: SESSION,
-            remoteSessionId: REMOTE,
             doneAt: null,
         });
     });
@@ -111,7 +108,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('creates a follow-up on a task the user stopped', async () => {
         const { id } = await store.create('drive me', null, { repo: null, executor: null });
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, claim!.leaseToken, SESSION, REMOTE);
+        await store.session(id, claim!.leaseToken, SESSION);
         await store.stop(id, null);
         expect(await store.suspend(id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
         expect((await store.get(id))?.status).toBe('stopped');
@@ -147,7 +144,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     });
 
     it('claims a follow-up — and a follow-up of a follow-up — with the thread root as the root', async () => {
-        const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null }, true);
+        const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null });
         const child = await mustFollowUp(root, 'adjust the tone', null);
 
         // Finish the child so the grandchild can attach to it.
@@ -250,7 +247,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const authorB = await account(AUTHOR_B_GITHUB_ID, 'author-b');
         const { id: parent } = await store.create('drive me', authorA, { repo: null, executor: null });
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(parent, claim!.leaseToken, SESSION, null);
+        await store.session(parent, claim!.leaseToken, SESSION);
         await store.complete(parent, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
         expect(await store.createFollowUp(parent, 'again', authorB)).toBe('forbidden');
@@ -276,7 +273,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const parent = await finishWithSession('drive me');
         const first = await mustFollowUp(parent, 'first adjustment', null);
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(first.id, claim!.leaseToken, SESSION, null);
+        await store.session(first.id, claim!.leaseToken, SESSION);
         await store.complete(first.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
         const second = await mustFollowUp(first.id, 'second adjustment', null);
 
@@ -346,7 +343,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     it('hands a follow-up claim of a stopped task the parent session and the command to deliver', async () => {
         const { id: parent } = await store.create('drive me', null, { repo: null, executor: null });
         const parked = await store.claim('w1', LEASE_SECONDS);
-        await store.session(parent, parked!.leaseToken, SESSION, null);
+        await store.session(parent, parked!.leaseToken, SESSION);
         await store.stop(parent, null);
         expect(await store.suspend(parent, parked!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
 
@@ -377,7 +374,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const parent = await finishWithSession('drive me');
         const first = await mustFollowUp(parent, 'first adjustment', null);
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.session(first.id, claim!.leaseToken, CHAIN, null);
+        await store.session(first.id, claim!.leaseToken, CHAIN);
         await store.complete(first.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
 
         const second = await mustFollowUp(first.id, 'second adjustment', null);
@@ -457,7 +454,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             const followUp = await mustFollowUp(root, 'first adjustment', null);
             const claim = await store.claim('w1', LEASE_SECONDS);
             expect(claim?.id).toBe(followUp.id);
-            await store.session(followUp.id, claim!.leaseToken, SESSION, null);
+            await store.session(followUp.id, claim!.leaseToken, SESSION);
             await store.stop(followUp.id, null);
             expect(await store.suspend(followUp.id, claim!.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
 
@@ -558,33 +555,12 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(result).toEqual({ result: 'ok', threadDone: true });
         });
 
-        it('answers false while a parked member holds the thread open', async () => {
-            const root = await finishWithSession('drive me');
-            const first = await mustFollowUp(root, 'first adjustment', null);
-            const second = await mustFollowUp(root, 'second adjustment', null);
-
-            const firstClaim = await store.claim('w1', LEASE_SECONDS);
-            expect(firstClaim?.id).toBe(first.id);
-            await store.suspend(first.id, firstClaim!.leaseToken);
-
-            // Standby neither blocks nor is claimable, so the second adjustment can run.
-            const secondClaim = await store.claim('w2', LEASE_SECONDS);
-            expect(secondClaim?.id).toBe(second.id);
-            const result = await store.complete(second.id, secondClaim!.leaseToken, {
-                status: 'succeeded',
-                exitCode: 0,
-                output: null,
-            });
-
-            expect(result).toEqual({ result: 'ok', threadDone: false });
-        });
-
         it('counts a dead member as terminal', async () => {
             const { id } = await queue('drive me');
             await sql`update job set max_attempts = 1 where id = ${id}`;
             const claim = await store.claim('w1', LEASE_SECONDS);
             // Reported before the job dies, or the follow-up would have nothing to continue.
-            await store.session(id, claim!.leaseToken, SESSION, null);
+            await store.session(id, claim!.leaseToken, SESSION);
             await expireLease(id);
             expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
             expect((await row(id))[0]?.status).toBe('dead');

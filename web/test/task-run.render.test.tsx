@@ -202,7 +202,7 @@ describe('TaskRun — footer attribution, prompt and output wells', () => {
         ...over,
     });
 
-    it('carries the stop and done attributions, and the parked marker, in the footer', () => {
+    it('carries the stop and done attributions in the footer', () => {
         const stopped = articleOf(
             renderDetail({
                 jobs: [job({ status: 'stopped', stoppedBy: { id: 'u', login: 'lee', name: null, avatarUrl: null } })],
@@ -222,9 +222,6 @@ describe('TaskRun — footer attribution, prompt and output wells', () => {
             'fix the flaky login test'
         );
         expect(done).toContain('done by kim');
-        expect(articleOf(renderDetail({ jobs: [job({ status: 'standby' })] }), 'fix the flaky login test')).toContain(
-            'parked'
-        );
     });
 
     it('renders the prompt as prose with preserved line breaks, never as mono code', () => {

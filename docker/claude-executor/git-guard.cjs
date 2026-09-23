@@ -9,8 +9,8 @@
  * keep threads runnable; it is a guardrail, not a security boundary — the agent is root in
  * its container, and the driver-side sync refusal stays the last line of defense.
  *
- * Lives in /usr/local/bin, not the config home: the Remote Control auth volume mounts over
- * CLAUDE_CONFIG_DIR and would shadow anything baked there. Read-only git, `git add` and
+ * Lives in /usr/local/bin, not the config home: the transcript store moves CLAUDE_CONFIG_DIR
+ * off the baked home, and the hook command names an absolute path. Read-only git, `git add` and
  * `git commit` stay allowed — a commit endangers no checkout, and publishing is the driver's
  * publish flow.
  */

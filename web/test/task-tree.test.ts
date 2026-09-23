@@ -57,7 +57,6 @@ describe('taskStatusLabel', () => {
     it('names the moving states, a stop request louder than the run itself', () => {
         expect(taskStatusLabel(status({ status: 'running' }))).toBe('Running');
         expect(taskStatusLabel(status({ status: 'queued' }))).toBe('Queued');
-        expect(taskStatusLabel(status({ status: 'standby' }))).toBe('Parked');
         expect(taskStatusLabel(status({ status: 'running', cancelRequestedAt: '2026-09-01T12:00:00.000Z' }))).toBe(
             'Stopping'
         );
@@ -76,11 +75,9 @@ describe('taskStatusLabel', () => {
     });
 
     it('reads an open PR-review wait as waiting, whatever non-terminal status it is parked under', () => {
-        for (const s of ['queued', 'standby'] as const) {
-            expect(taskStatusLabel(status({ status: s, waitReason: 'review' }))).toBe('Waiting for review');
-        }
-        // Never as running, queued or parked while a wait is genuinely open.
-        expect(taskStatusLabel(status({ status: 'standby', waitReason: 'review' }))).not.toBe('Parked');
+        expect(taskStatusLabel(status({ status: 'queued', waitReason: 'review' }))).toBe('Waiting for review');
+        // Never as running or queued while a wait is genuinely open.
+        expect(taskStatusLabel(status({ status: 'queued', waitReason: 'review' }))).not.toBe('Queued');
     });
 
     it('never overrides a live run with a waiting label — running stays the loudest state', () => {
@@ -113,8 +110,7 @@ describe('taskDotClass', () => {
         );
     });
 
-    it('holds grey for parked and queued runs', () => {
-        expect(taskDotClass(status({ status: 'standby' }))).toBe('sidenav-dot-paused');
+    it('holds grey for queued runs', () => {
         expect(taskDotClass(status({ status: 'queued' }))).toBe('sidenav-dot-paused');
     });
 
@@ -128,7 +124,6 @@ describe('taskDotClass', () => {
     });
 
     it('holds grey for an open wait, never green or red, whatever status it is parked under', () => {
-        expect(taskDotClass(status({ status: 'standby', waitReason: 'review' }))).toBe('sidenav-dot-paused');
         expect(taskDotClass(status({ status: 'queued', waitReason: 'review' }))).toBe('sidenav-dot-paused');
     });
 
@@ -162,7 +157,6 @@ describe('taskSummary', () => {
         taskWallClockMs: null,
         summary: null,
         sessionId: null,
-        remoteSessionId: null,
         waitReason: null,
         waitingSince: null,
         waitTerminalReason: null,
@@ -181,11 +175,11 @@ describe('taskSummary', () => {
         expect(taskSummary(root.id, [root, child])).toBe('→ Bash npm test');
     });
 
-    it('keeps it out of parked and finished tasks, and of blank activity lines', () => {
+    it('keeps it out of queued and finished tasks, and of blank activity lines', () => {
         const finished = threadJob('11111111-1111-4111-8111-111111111111');
         expect(taskSummary(finished.id, [finished])).toBeNull();
-        const parked = threadJob('22222222-2222-4222-8222-222222222222', { status: 'standby' });
-        expect(taskSummary(parked.id, [parked])).toBeNull();
+        const queued = threadJob('22222222-2222-4222-8222-222222222222', { status: 'queued' });
+        expect(taskSummary(queued.id, [queued])).toBeNull();
         const blank = threadJob('33333333-3333-4333-8333-333333333333', {
             status: 'running',
             runtime: { cpuPercent: 1, memUsedMb: 1, memPercent: null, activity: '   ', sampledAt: 'x' },

@@ -12,7 +12,7 @@ factory, and an **operator for runners** — which, deliberately, is not a CRD c
 
 `EXECUTOR` selects the platform runners run on: `docker` (the default, the original path) or
 `kubernetes`. The seam is the `Runner` interface in `driver/src/runner.ts` — `run`, `kill`,
-`remoteSessionId` — which `driver/src/k8s-runner.ts` implements a second time. **The loop, the
+`sampleRuntime` — which `driver/src/k8s-runner.ts` implements a second time. **The loop, the
 board contract and the server change not at all**: `loop.ts` cannot tell which executor is under
 it, and that is the point. A third platform would add a third `Runner`, nothing else.
 
@@ -40,9 +40,6 @@ name, there is no barrel:
   service as a Pod + headless Service, and the lease-scoped teardown.
 - `k8s-runner.ts` — `createKubernetesRunner` itself, composing the above into the `Runner`.
 - `k8s-gates.ts` — `createKubernetesGateManager`, the second `GateManager`.
-
-Remote Control has no counterpart here — a tty held open, an auth volume, idle parking — so
-`loadDriverConfig` refuses the combination outright rather than running a half-mode.
 
 The two implementations decide the same things and are pinned the same way:
 
@@ -126,8 +123,7 @@ the winner's objects — and the apiserver's name uniqueness arbitrates: `201` a
 ours; `409` and somebody holds it, so the claim is read. `data.attempt` is the board's per-job
 attempt counter, and it orders the contenders with no clock anywhere — against a live claim it
 only moves forward: every claim increments it, and the one decrement in the board (`suspend`'s
-give-back) belongs to docker-side idle parking, which a kubernetes attempt can never reach
-(Remote Control is refused under this executor, and this runner reports `idled: false` always);
+give-back) lands the row `stopped`, which is terminal and never claimed again;
 even if an equal number ever arose, the rule below is the conservative direction — stand down and
 burn one attempt, and the claim after that carries a strictly higher number. A claim whose
 attempt is at or ahead of ours belongs to our own replacement, and this attempt STANDS DOWN
@@ -255,11 +251,9 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT` in the pod spec. Always provided, so a pod never relies on an image-baked default that nothing in a cluster resolves; the default names the compose collector and the chart overrides it with the in-chart collector. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy. Kubernetes reads a missing or `:latest` tag as `Always`, which reaches past the node's local images for a registry copy of `claude-executor` — where the docker runner would have used what the daemon holds. The chart passes `driver.imagePullPolicy` through. |
 
-Refused combinations, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_REMOTE_CONTROL=1` — Remote
-Control needs a tty held open, an auth volume and an idle-parking loop that only the docker runner
-has; and `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each watch tick is one throwaway
-container on the docker daemon, and the kubernetes form would be a Job per tick, pod admission
-every poll period. The alternative to refusing either was a driver that claims jobs and burns
+Refused combination, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each
+watch tick is one throwaway container on the docker daemon, and the kubernetes form would be a Job
+per tick, pod admission every poll period. The alternative to refusing it was a driver that claims jobs and burns
 attempts running nothing.
 
 **An OpenCode task runs under this executor** when its selected executor profile type is `opencode`:

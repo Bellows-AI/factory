@@ -32,7 +32,7 @@ beforeAll(async () => {
  */
 const craft = async (shape: {
     parent?: string | null;
-    status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+    status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
     lease?: 'live' | 'expired';
     /** Seconds before now the row was created. Bigger = older: orders the queue deterministically. */
     olderBySeconds?: number;
@@ -107,15 +107,6 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         await craft({ parent: root, status: 'running', lease: 'live' });
 
         expect(await store.claim('w1', LEASE_SECONDS)).toBeNull();
-    });
-
-    // Standby is parked, not running: it holds no worktree work, so it blocks nothing — and the
-    // claim's status filter already keeps it unclaimable.
-    it('a standby row neither blocks nor is claimable', async () => {
-        await craft({ status: 'standby', lease: 'expired' });
-        const followUp = await craft({ parent: '00000000-0000-4000-8000-000000000001', status: 'queued' });
-
-        expect((await store.claim('w1', LEASE_SECONDS))?.id).toBe(followUp);
     });
 
     // Stopped is the user's verdict on a turn they ended: terminal, so it blocks nothing and is

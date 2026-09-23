@@ -206,8 +206,7 @@ function claudeRunnerPlan(
     if (!session) {
         throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
     }
-    // The transcript store for headless claude-code (opencode persists through its own database;
-    // Remote Control has no counterpart here and is the docker runner's only excluded path). The
+    // The transcript store for claude-code (opencode persists through its own database). The
     // same name the docker argv carries for the same claim, so transcript persistence does not
     // depend on which executor ran the job — the entrypoint redirects CLAUDE_CONFIG_DIR onto the
     // workspaces PVC. A path literal like WORKDIR, never a credential.

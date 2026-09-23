@@ -42,7 +42,7 @@ describe('the task page header', () => {
         const html = renderHeader({
             jobs: [
                 job({
-                    status: 'standby',
+                    status: 'queued',
                     waitReason: 'review',
                     exitCode: null,
                     finishedAt: null,
@@ -52,14 +52,14 @@ describe('the task page header', () => {
             ],
         });
         expect(html).toContain('<span class="pill" aria-live="polite">Waiting for review</span>');
-        expect(html).not.toContain('>standby<');
+        expect(html).not.toContain('>queued<');
     });
 
     it('preserves Stop run while waiting, with copy explaining it cancels automation but not the PR', () => {
         const html = renderHeader({
             jobs: [
                 job({
-                    status: 'standby',
+                    status: 'queued',
                     waitReason: 'review',
                     exitCode: null,
                     finishedAt: null,
@@ -73,10 +73,10 @@ describe('the task page header', () => {
         expect(html).toMatch(/not close|does not close/i);
     });
 
-    /** The action matrix: stoppable = queued/running/standby, done = the one primary, closed = text. */
-    it('offers Stop run on every state a stop can land on — queued, running, standby', () => {
-        // The board accepts queued and standby stops, not just a moving run.
-        for (const status of ['queued', 'running', 'standby'] as const) {
+    /** The action matrix: stoppable = queued/running, done = the one primary, closed = text. */
+    it('offers Stop run on every state a stop can land on — queued, running', () => {
+        // The board accepts queued stops, not just a moving run.
+        for (const status of ['queued', 'running'] as const) {
             const html = renderHeader({
                 jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
             });
@@ -167,7 +167,7 @@ describe('the task page header — Mark done, overflow and meta', () => {
     });
 
     it('keeps Remove task out of the main action row, behind More task actions', () => {
-        for (const status of ['queued', 'standby', 'succeeded', 'failed', 'dead', 'stopped'] as const) {
+        for (const status of ['queued', 'succeeded', 'failed', 'dead', 'stopped'] as const) {
             const html = renderHeader({ jobs: [job({ status })] });
             expect(html, status).toContain('More task actions');
             // The destructive item lives in the anchored menu, which only the client renders;
@@ -195,7 +195,7 @@ describe('the task page header — Mark done, overflow and meta', () => {
         };
         expect(renderHeader({ jobs: [root, child] })).not.toContain('More task actions');
 
-        // Queued and standby members do not block it: the board has no run to refuse.
+        // Queued members do not block it: the board has no run to refuse.
         const queued = {
             ...job({ status: 'queued', ...moving }),
             id: '44444444-4444-4444-8444-444444444444',
@@ -220,7 +220,7 @@ describe('the task page header — Mark done, overflow and meta', () => {
     });
 
     it('renders no empty action wrapper in any state', () => {
-        for (const status of ['queued', 'running', 'standby', 'succeeded', 'failed', 'dead', 'stopped'] as const) {
+        for (const status of ['queued', 'running', 'succeeded', 'failed', 'dead', 'stopped'] as const) {
             const html = renderHeader({ jobs: [job({ status })] });
             expect(html, status).not.toContain('<div class="task-actions"></div>');
         }

@@ -43,8 +43,8 @@ describe('the executor branch reporter', () => {
         expect(opencode).toContain("const AGENT = 'opencode';");
     });
 
-    // claude-home/ cannot hold it: the Remote Control auth volume mounts over CLAUDE_CONFIG_DIR
-    // and would shadow the script on exactly the runs that most want to be attributed.
+    // claude-home/ cannot hold it: the transcript redirect moves CLAUDE_CONFIG_DIR onto the
+    // workspaces volume, so a script baked into a config home is not a stable path.
     it('is copied to /usr/local/bin by both Dockerfiles, never into a config home', () => {
         for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
             const dockerfile = read(`${dir}/Dockerfile`);
@@ -154,10 +154,8 @@ describe('the executor branch reporter', () => {
  * FACTORY_TRANSCRIPT_DIR, the entrypoint moves CLAUDE_CONFIG_DIR onto the workspaces volume
  * BEFORE the seed block — the settings.json-keyed seed then runs against the thread dir, so the
  * baked git guard and every baked setting ride along (the spec's "baked runner configuration
- * survives the redirect"). TRUST_WORKDIR is the Remote Control-only env; the combination is a
- * contract violation the driver must never produce, refused loudly rather than silently
- * mis-homing the config dir onto the auth volume or vice versa. Pinned against drift like every
- * baked script: the block's exact shape, and its position before the seed.
+ * survives the redirect"). Pinned against drift like every baked script: the block's exact shape,
+ * and its position before the seed.
  */
 describe('the claude-executor transcript redirect', () => {
     const ENTRYPOINT = 'docker/claude-executor/entrypoint.sh';
@@ -169,11 +167,8 @@ describe('the claude-executor transcript redirect', () => {
         expect(entry).toMatch(/\n    export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
     });
 
-    it('refuses the Remote Control combination loudly', () => {
-        const entry = read(ENTRYPOINT);
-        expect(entry).toMatch(
-            /\n    if \[ -n "\$\{TRUST_WORKDIR:-\}" \]; then\n        echo "claude-executor: refusing FACTORY_TRANSCRIPT_DIR together with TRUST_WORKDIR\." >&2\n        echo "The transcript store is headless-only; Remote Control keeps the auth volume\." >&2\n        exit 2\n    fi\n/
-        );
+    it('carries no Remote Control trust patch', () => {
+        expect(read(ENTRYPOINT)).not.toContain('TRUST_WORKDIR');
     });
 
     it('redirects before the seed, so the thread dir is seeded from the baked home', () => {
@@ -232,7 +227,7 @@ interface Sandbox {
 // A PATH-shimmed directory with a stub for each image's CLI name, plus the env the
 // entrypoints expect: WORKDIR must exist (they exit 2 otherwise), HOME and CLAUDE_CONFIG_DIR
 // point at the sandbox, and the container-only blocks — /opt/claude-home seeding, the OTEL
-// rewrites, TRUST_WORKDIR — are all skipped because their guards are absent locally.
+// rewrites — are all skipped because their guards are absent locally.
 const EXECUTABLE_MODE = 0o755;
 
 const makeSandbox = (): Sandbox => {
@@ -408,9 +403,9 @@ describe('the claude-executor git guard', () => {
         expect(junk.stdout).toBe('');
     });
 
-    // /usr/local/bin, like the branch reporter: the Remote Control auth volume mounts over
-    // CLAUDE_CONFIG_DIR and would shadow a hook script baked into a config home — and the
-    // settings.json hook command names this exact absolute path.
+    // /usr/local/bin, like the branch reporter: the transcript redirect moves CLAUDE_CONFIG_DIR
+    // off the baked config home — and the settings.json hook command names this exact absolute
+    // path.
     it('is baked at /usr/local/bin by the Dockerfile, never into a config home', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
         expect(dockerfile).toMatch(/COPY[^\n]*git-guard\.cjs \/usr\/local\/bin\/git-guard\.cjs/);
@@ -456,7 +451,7 @@ describe('the shared executor skills', () => {
         }
     });
 
-    it('lands in claude-executor before the Remote Control seed is snapshotted', () => {
+    it('lands in claude-executor before the /opt/claude-home seed is snapshotted', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
         const copy = dockerfile.indexOf('COPY --from=skills');
         expect(copy).toBeGreaterThan(-1);
