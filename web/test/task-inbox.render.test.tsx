@@ -102,7 +102,6 @@ describe('TaskInboxPage rows', () => {
         const items = [
             taskSummary({ status: 'running', activity: '→ Bash npm test' }),
             taskSummary({ id: '22222222-2222-4222-8222-222222222222', status: 'queued' }),
-            taskSummary({ id: '33333333-3333-4333-8333-333333333333', status: 'standby' }),
             taskSummary({
                 id: '44444444-4444-4444-8444-444444444444',
                 status: 'running',
@@ -129,7 +128,6 @@ describe('TaskInboxPage rows', () => {
         const { html } = everyState();
         expect(html).toContain('Running');
         expect(html).toContain('Queued');
-        expect(html).toContain('Parked');
         expect(html).toContain('Stopping');
         expect(html).toContain('Failed · Needs review');
         expect(html).toContain('Stopped · Needs review');
@@ -139,12 +137,12 @@ describe('TaskInboxPage rows', () => {
     it('renders an open PR-review wait as Waiting for review, with the grey paused dot', () => {
         const html = renderInbox({
             navigation: navigation({ review: 1 }),
-            items: [taskSummary({ status: 'standby', waitReason: 'review', waitingSince: '2026-09-01T12:05:00.000Z' })],
+            items: [taskSummary({ status: 'queued', waitReason: 'review', waitingSince: '2026-09-01T12:05:00.000Z' })],
             nextCursor: null,
             initial: false,
         });
         expect(html).toContain('Waiting for review');
-        expect(html).not.toContain('>Parked<');
+        expect(html).not.toContain('>Queued<');
         expect(html).toContain('sidenav-dot-paused');
     });
 
@@ -185,7 +183,7 @@ describe('TaskInboxPage rows', () => {
             navigation: navigation({ running: 1 }),
             items: [
                 taskSummary({ status: 'running', activity: '→ Bash npm test' }),
-                taskSummary({ id: '22222222-2222-4222-8222-222222222222', status: 'standby', activity: '→ stale' }),
+                taskSummary({ id: '22222222-2222-4222-8222-222222222222', status: 'queued', activity: '→ stale' }),
             ],
             nextCursor: null,
             initial: false,

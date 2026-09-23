@@ -8,8 +8,7 @@
 //   REPO        — the clone, where `origin` lives and the worktree is created FROM;
 //   WORKTREE    — the task's own tree;
 //   BRANCH      — the branch the worktree runs on (`factory/<thread root id>`);
-//   RESTORE     — set to `1` for a claim that CONTINUES a session (a follow-up, or a parked
-//                 job resumed): the task is mid-flight, and git operations that touch the
+//   RESTORE     — set to `1` for a claim that CONTINUES a session (a follow-up): the task is mid-flight, and git operations that touch the
 //                 remote belong to the task's beginning and end, never its middle. No fetch,
 //                 no rebase: the existing tree is left byte-for-byte as the run before it
 //                 left it, and a reclaimed tree is recreated from the surviving branch —

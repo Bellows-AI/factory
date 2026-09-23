@@ -107,10 +107,10 @@ describe.skipIf(!enabled)('the frozen workflow name', () => {
     it('a user follow-up inherits the thread name', async () => {
         await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
-        await store.session(first.id, first.leaseToken, 'sess-primary', null);
+        await store.session(first.id, first.leaseToken, 'sess-primary');
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const review = (await store.claim(WORKER, 60))!;
-        await store.session(review.id, review.leaseToken, 'sess-fresh-branch', null);
+        await store.session(review.id, review.leaseToken, 'sess-fresh-branch');
         await store.complete(review.id, review.leaseToken, {
             status: 'succeeded',
             exitCode: 0,
@@ -127,10 +127,10 @@ describe.skipIf(!enabled)('the frozen workflow name', () => {
     it('a follow-up of a follow-up inherits it too — the parent row always carries the name', async () => {
         await queueWorkflowJob(walk);
         const first = (await store.claim(WORKER, 60))!;
-        await store.session(first.id, first.leaseToken, 'sess-primary', null);
+        await store.session(first.id, first.leaseToken, 'sess-primary');
         await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const review = (await store.claim(WORKER, 60))!;
-        await store.session(review.id, review.leaseToken, 'sess-branch', null);
+        await store.session(review.id, review.leaseToken, 'sess-branch');
         await store.complete(review.id, review.leaseToken, {
             status: 'succeeded',
             exitCode: 0,
@@ -156,7 +156,7 @@ describe.skipIf(!enabled)('the frozen workflow name', () => {
     it('a follow-up on a workflow-less thread keeps null', async () => {
         const job = await store.create('plain', null, { repo: null, executor: null });
         const claim = (await store.claim(WORKER, 60))!;
-        await store.session(claim.id, claim.leaseToken, 'sess-plain', null);
+        await store.session(claim.id, claim.leaseToken, 'sess-plain');
         await store.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const followUp = await store.createFollowUp(job.id, 'adjust', null);
         expect(followUp).toHaveProperty('id');

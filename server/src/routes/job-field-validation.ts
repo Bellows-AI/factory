@@ -24,7 +24,6 @@ import {
     OUTPUT_LIMIT,
     PR_URL,
     PR_URL_LIMIT,
-    REMOTE_SESSION_LIMIT,
     STATUSES,
     SUMMARY_LIMIT,
     WORKER_NAME_LIMIT,
@@ -144,16 +143,6 @@ export function buildWorkflowSelection(
         },
         command: interpolated,
     };
-}
-
-export function badRemoteSessionId(remoteSessionId: unknown): boolean {
-    return (
-        remoteSessionId !== undefined &&
-        remoteSessionId !== null &&
-        (typeof remoteSessionId !== 'string' ||
-            !remoteSessionId.trim() ||
-            remoteSessionId.length > REMOTE_SESSION_LIMIT)
-    );
 }
 
 function validateGateEntry(raw: unknown): GateReport | string {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
+import { useDownwardAnchor } from '../anchor.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
@@ -285,6 +286,10 @@ function ComposerContextRow({
     setWorkflow: (value: string) => void;
     setParamTouched: (value: Record<string, boolean>) => void;
 }) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const repoAnchor = useDownwardAnchor('start');
+    const executorAnchor = useDownwardAnchor('start');
     return (
         <>
             <div className="composer-context">
@@ -299,13 +304,19 @@ function ComposerContextRow({
                         }}
                     >
                         <ListboxButton
-                            className="composer-select"
+                            ref={repoAnchor.setReference}
+                            className="select-trigger"
                             aria-label="Repository"
                             title={repo === '' ? 'No repository' : repo}
                         >
                             <span className="composer-context-value">{repo === '' ? 'No repository' : repo}</span>
                         </ListboxButton>
-                        <ListboxOptions anchor="bottom start" className="popover">
+                        <ListboxOptions
+                            ref={repoAnchor.setFloating}
+                            style={repoAnchor.floatingStyles}
+                            portal
+                            className="popover"
+                        >
                             <ListboxOption value="" className="popover-option">
                                 No repository
                             </ListboxOption>
@@ -324,7 +335,8 @@ function ComposerContextRow({
                     <span className="composer-label">Executor</span>
                     <Listbox value={executor} disabled={executors.length === 0} onChange={setExecutor}>
                         <ListboxButton
-                            className="composer-select"
+                            ref={executorAnchor.setReference}
+                            className="select-trigger"
                             aria-label="Executor"
                             title={executor === '' ? 'No executor configured' : executor}
                         >
@@ -332,7 +344,12 @@ function ComposerContextRow({
                                 {executor === '' ? 'No executor configured' : executor}
                             </span>
                         </ListboxButton>
-                        <ListboxOptions anchor="bottom start" className="popover">
+                        <ListboxOptions
+                            ref={executorAnchor.setFloating}
+                            style={executorAnchor.floatingStyles}
+                            portal
+                            className="popover"
+                        >
                             {executors.map((candidate) => (
                                 <ListboxOption key={candidate.name} value={candidate.name} className="popover-option">
                                     {candidate.name}
@@ -379,6 +396,11 @@ function ComposerWorkflowTrigger({
     setWorkflow: (value: string) => void;
     setParamTouched: (value: Record<string, boolean>) => void;
 }) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`. Called
+    // unconditionally, before the null bail below, so the hook order never varies with the
+    // board's workflow feature.
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
     if (workflows === null) return null;
     const label = workflow === '' ? 'Default workflow' : workflow;
     return (
@@ -396,10 +418,15 @@ function ComposerWorkflowTrigger({
                     // effect above.
                 }}
             >
-                <ListboxButton className="composer-select" aria-label="Reusable workflow" title={label}>
+                <ListboxButton
+                    ref={setReference}
+                    className="select-trigger"
+                    aria-label="Reusable workflow"
+                    title={label}
+                >
                     <span className="composer-context-value">{label}</span>
                 </ListboxButton>
-                <ListboxOptions anchor="bottom start" className="popover">
+                <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
                     <ListboxOption value="" className="popover-option">
                         Default workflow
                     </ListboxOption>

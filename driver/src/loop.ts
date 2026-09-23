@@ -6,7 +6,7 @@ import type { ReclaimResult } from './publish.js';
 import { worktreeRelDir } from './publish.js';
 import type { GateStack, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
-import { CLAUDE_CODE, OPENCODE } from './executors.js';
+import { CLAUDE_CODE } from './executors.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -58,23 +58,6 @@ function claimRefusal(job: BoardJob): { log: string; output: string } | null {
         return {
             log: 'no resolvable task worktree for its repo label, failing',
             output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
-        };
-    }
-
-    /*
-     * A job's session cannot follow a profile whose type changed — with one carve-out:
-     * a FOLLOW-UP under opencode runs, because its session is opencode's own and the
-     * runner restores it with `--session`. What is still refused is a resume claim
-     * carrying nothing to deliver: standby is a Remote Control feature and opencode
-     * cannot run under Remote Control, so a parked claim under opencode means the
-     * profile changed type while something was parked. Restoring a claude-code
-     * session is impossible — opencode has none in its database — and resuming it
-     * without a command would idle a headless run to its deadline.
-     */
-    if (job.executorType === OPENCODE && job.resumeSessionId && !job.followUp) {
-        return {
-            log: 'carries a session its selected OpenCode executor cannot restore, failing',
-            output: 'This job was parked with a Claude Code session, and its selected OpenCode executor cannot restore that session. Start a new task to run it fresh.',
         };
     }
 

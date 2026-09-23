@@ -8,7 +8,7 @@ const read = (relative: string): string => readFileSync(join(ROOT, relative), 'u
 
 describe('runner telemetry shipping', () => {
     it('configures both agents for OTLP/HTTP JSON while keeping prompt and tool bodies private', () => {
-        const claude = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
+        const claude = JSON.parse(read('docker/claude-executor/managed-settings.json')) as {
             env: Record<string, string>;
         };
         const opencode = JSON.parse(read('docker/opencode-executor/opencode-home/otel.json')) as Record<string, string>;

@@ -11,7 +11,7 @@ import type { PublicationState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
-export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
 export type JobOutcome = 'succeeded' | 'failed';
@@ -98,11 +98,6 @@ export interface Job {
     doneBy: UserRef | null;
     /** The agent session this attempt runs as, once its driver has reported it. */
     sessionId: string | null;
-    /**
-     * The Remote Control session claude.ai addresses this run by (`cse_…`), once the bridge has
-     * connected and the driver has read it back. Null for every headless job.
-     */
-    remoteSessionId: string | null;
     exitCode: number | null;
     output: string | null;
     /**
@@ -348,9 +343,8 @@ export type LeaseResult = 'ok' | 'lost' | 'missing';
 /**
  * What a suspend (park) did.
  *
- * - `ok`      the run left `running`, and `status` says where it landed: `stopped` when the
- *             parking was the user's stop landing (the stamp the heartbeat delivered),
- *             `standby` for the Remote Control idle park.
+ * - `ok`      the run left `running`, and `status` says where it landed: `stopped`, the
+ *             user's stop landing (the stamp the heartbeat delivered).
  * - `lost`    the job is no longer running under this token — the lease expired and someone else
  *             has it, or the board gave up on it. The caller must stop working.
  * - `missing` no such job in this organization.
@@ -361,7 +355,7 @@ export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'los
  * Why a follow-up was refused.
  *
  * - `missing`      no such job in this organization.
- * - `not_finished` the parent is still queued, running or parked — its run is not over.
+ * - `not_finished` the parent is still queued or running — its run is not over.
  * - `task_done`    the user has declared the task done; the conversation is closed.
  * - `no_session`   the parent has no agent session to continue — every opencode run, and a
  *                  claude-code run that died before its driver reported the session. Starting a
@@ -375,9 +369,9 @@ export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_ses
 /**
  * What a stop request did.
  *
- * - `stopped`   the row was settled `stopped` in place — it was queued (never started), its run
- *               was already parked, or it was running under a lease that has already expired
- *               (nobody holds it, so there is nobody left to deliver to — issue #152); the turn
+ * - `stopped`   the row was settled `stopped` in place — it was queued (never started), or it
+ *               was running under a lease that has already expired (nobody holds it, so there
+ *               is nobody left to deliver to — issue #152); the turn
  *               is over.
  * - `requested` the row is running under a live lease; the worker has been told and will settle
  *               it. The timestamp is the FIRST request, kept on later stops so the answer is
@@ -495,8 +489,8 @@ export interface JobStore {
         doneBy: string | null
     ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
     /**
-     * The user's stop. A QUEUED row never started and a STANDBY row's run is long gone — both are
-     * settled `stopped` right here: the turn is over. A RUNNING row whose lease is still live is
+     * The user's stop. A QUEUED row never started, so it is settled `stopped` right here: the
+     * turn is over. A RUNNING row whose lease is still live is
      * stamped `cancel_requested_at` (idempotently) and left running: the driver reads the request
      * on the heartbeat it already sends, kills its runner and settles it with the existing
      * suspend route — the flag IS the stop travelling, and the settle clears it. A RUNNING row
@@ -537,12 +531,8 @@ export interface JobStore {
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded
      * like every other worker write: a superseded worker must not relabel the run that replaced it.
-     *
-     * Called more than once per attempt: the local id is known before the container starts, and the
-     * remote one only after the bridge connects. A null `remoteSessionId` therefore leaves whatever
-     * is already stored alone rather than clearing it.
      */
-    session(id: string, leaseToken: string, sessionId: string, remoteSessionId: string | null): Promise<LeaseResult>;
+    session(id: string, leaseToken: string, sessionId: string): Promise<LeaseResult>;
     /**
      * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
      * while it happens instead of a silent spinner — with the attempt's last sampled vitals riding
@@ -591,11 +581,9 @@ export interface JobStore {
         leaseToken: string
     ): Promise<{ result: 'ok'; token: string | null } | { result: 'lost' | 'missing' }>;
     /**
-     * Ends a running job's attempt. Lease-guarded, like every other worker write. Where it lands
-     * is decided by the stop stamp the heartbeat delivered: under one, the parking IS the user's
-     * stop — the row settles `stopped` (terminal, session kept for the follow-up that continues
-     * the conversation). Without one, this is the Remote Control idle park: `standby`, the session
-     * kept so it can be driven on from the Claude UI.
+     * Ends a running job's attempt. Lease-guarded, like every other worker write. The parking IS
+     * the user's stop landing — the row settles `stopped` (terminal, session kept for the follow-up
+     * that continues the conversation).
      */
     suspend(id: string, leaseToken: string): Promise<SuspendResult>;
     /**
@@ -676,7 +664,7 @@ export interface JobStore {
      * session, started) — the rule the sidenav's `chainHead` already applies — and the wall
      * clock and completion stamp are the thread's (sum and max over the members); `doneAt`
      * comes from whichever member carries the thread's done. A thread with a member still
-     * queued, running or parked is not completed and is excluded whole. Ordering is by the
+     * queued or running is not completed and is excluded whole. Ordering is by the
      * thread's newest completion, and the limit bounds tasks. The per-run lists (no status,
      * one named status) keep their row-per-run contract — the tasks pages and sidenav group on
      * the client.

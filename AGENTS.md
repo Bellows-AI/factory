@@ -210,7 +210,7 @@ extension even in `.tsx` files.
 
 **Container scripts are files, never inline strings.** Every script the driver hands to a
 container — the git probe, the worktree sync, the `.bellows.yaml` readout, the opencode session
-readout and cache probe, the push credential helper, the remote-session read — lives as a real
+readout and cache probe, the push credential helper — lives as a real
 file under `driver/src/scripts/` (`.cjs` for node, `.sh` for shell), is read at load time via
 `import.meta.url`, and is passed to the container by content (`node -e`, `sh -c`), never by
 mounting a path (the driver talks to a remote daemon and has no host path into the volumes it

@@ -66,12 +66,7 @@ export interface DriverConfig {
     concurrency: number;
     pollMs: number;
     leaseSeconds: number;
-    /**
-     * The wall-clock cap on a headless run. **Not armed under Remote Control**, where idleMs is the
-     * bound instead: an interactive session has no meaningful total duration — being driven for
-     * three hours is the feature — and arming both would mean the shorter one always won, killing a
-     * drivable job before it could ever be parked.
-     */
+    /** The wall-clock cap on a run. */
     jobTimeoutMs: number;
     /**
      * Appends --dangerously-skip-permissions. Off by default and deliberately a separate switch: a
@@ -80,31 +75,6 @@ export interface DriverConfig {
      * Making that a decision someone types is the whole point.
      */
     skipPermissions: boolean;
-    /**
-     * Runs the job as an interactive Remote Control session instead of a headless `-p` prompt, so it
-     * can be driven from claude.ai/code and the mobile app.
-     *
-     * This changes what a job is. An interactive session does not end when the agent stops talking,
-     * so the container lives until somebody ends the session or idleMs parks it, and a drivable job
-     * holds its worker slot for that whole time. Off by default for that reason.
-     */
-    remoteControl: boolean;
-    /**
-     * How long a Remote Control runner may produce nothing before it is parked. Silence is the
-     * signal because it is the one the driver already has: it reads every chunk the container
-     * writes, and asking the board or the telemetry store instead would make this process a client
-     * of something other than the HTTP board.
-     *
-     * Only armed under Remote Control. A headless run is bounded by jobTimeoutMs and has nobody to
-     * come back to it, so parking one would strand it.
-     */
-    idleMs: number;
-    /**
-     * The volume holding a full-scope claude.ai login, mounted over the runner's CLAUDE_CONFIG_DIR.
-     * Only used in Remote Control mode, which is the only mode that cannot work without one — see
-     * docker/claude-executor/run.sh, which writes it.
-     */
-    authVolume: string;
     /**
      * Names of environment variables forwarded to the runner. Names only: the values are passed as
      * `-e NAME`, which makes docker read them from this process's environment rather than putting a
@@ -204,14 +174,10 @@ export function executorImage(config: DriverConfig, executorType: ExecutorType |
 
 /** One hour in milliseconds — the unit most of the bounds below are expressed in. */
 const MS_PER_HOUR = 3_600_000;
-/** One minute in milliseconds. */
-const MS_PER_MINUTE = 60_000;
 /** The upper bound on DRIVER_LEASE_SECONDS: one hour. */
 const MAX_LEASE_SECONDS = 3600;
 /** The lower bound on DRIVER_JOB_TIMEOUT_MS. */
 const MIN_JOB_TIMEOUT_MS = 1_000;
-/** The lower bound on RUNNER_IDLE_MS. */
-const MIN_IDLE_MS = 1_000;
 /** The upper bound on DRIVER_CONCURRENCY. */
 const MAX_CONCURRENCY = 32;
 /** The lower bound on DRIVER_POLL_MS. */
@@ -250,8 +216,6 @@ const DEFAULTS = {
     pollMs: 5_000,
     leaseSeconds: 300,
     jobTimeoutMs: 2 * MS_PER_HOUR,
-    idleMs: 60 * MS_PER_MINUTE,
-    authVolume: 'claude-executor-auth',
     otelEndpoint: 'http://collector:4318',
     passEnv: 'CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY',
 } as const;
@@ -308,16 +272,6 @@ function resolvePullPolicy(env: NodeJS.ProcessEnv): (typeof PULL_POLICIES)[numbe
     return pullPolicyRaw as (typeof PULL_POLICIES)[number];
 }
 
-function assertRemoteControlSupported(remoteControl: boolean, executor: (typeof EXECUTORS)[number]): void {
-    if (remoteControl && executor === 'kubernetes') {
-        throw new Error(
-            'RUNNER_REMOTE_CONTROL is not supported under EXECUTOR=kubernetes: it needs a tty, an auth ' +
-                'volume and an idle-parking loop that only the docker runner has. Run Remote Control ' +
-                'workloads on EXECUTOR=docker.'
-        );
-    }
-}
-
 // The cache watch is opencode's, so Claude Code tasks ignore it even when the same driver also
 // serves OpenCode work. The probe reads the opencode session database, whose message rows
 // record per-turn input and cache tokens; a claude-code transcript answers nothing. It stays
@@ -357,9 +311,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
 
     const executor = resolveExecutor(env);
 
-    const remoteControl = flag(env.RUNNER_REMOTE_CONTROL);
-    assertRemoteControlSupported(remoteControl, executor);
-
     // Auxiliary services run under both executors: docker networks and sibling containers
     // there, service pods with headless DNS Services here. The RUNNER_SERVICES flag decides
     // whether they run at all, on either platform — ON by default: a checkout that declares no
@@ -397,12 +348,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         leaseSeconds,
         jobTimeoutMs,
         skipPermissions: flag(env.RUNNER_SKIP_PERMISSIONS),
-        remoteControl,
-        idleMs: int(env.RUNNER_IDLE_MS, 'RUNNER_IDLE_MS', DEFAULTS.idleMs, {
-            min: MIN_IDLE_MS,
-            max: 24 * MS_PER_HOUR,
-        }),
-        authVolume: text(env.RUNNER_AUTH_VOLUME, 'RUNNER_AUTH_VOLUME', DEFAULTS.authVolume),
         passEnv: text(env.RUNNER_ENV, 'RUNNER_ENV', DEFAULTS.passEnv)
             .split(',')
             .map((name) => name.trim())

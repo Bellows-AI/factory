@@ -17,7 +17,7 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
     // and the read answers null.
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
+               session_id, exit_code, output, gates, runtime, repo, executor,
                parent_job_id, root_job_id, workflow_node, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The task's overall wall clock, summed over the thread the WHERE already
                -- scoped: every member carries the total, so the view reads it off any of
@@ -49,7 +49,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     const { sql, orgId, authorJoin, authorColumns } = ctx;
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, remote_session_id, exit_code, output, gates, runtime, repo, executor,
+               session_id, exit_code, output, gates, runtime, repo, executor,
                parent_job_id, root_job_id, workflow_node, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                summary, wall_clock_ms
                ${authorColumns}
@@ -71,7 +71,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
     // — the newest member, the same resolution `chainHead` renders in the sidenav; the
     // clock and the completion stamp are the thread's sum and max; the done comes from
     // whichever member carries it (one done is the thread's). A thread with a member
-    // still queued, running or parked is not completed and is excluded whole — which
+    // still queued or running is not completed and is excluded whole — which
     // also makes the sum exact, because nothing in it is still banking.
     if (status === 'terminal') {
         const rows = await sql<JobRow[]>`
@@ -106,7 +106,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
             select job.id as id, job.command as command, head.status as status,
                    head.attempts as attempts, head.max_attempts as max_attempts,
                    head.claimed_by as claimed_by, job.created_by as created_by,
-                   head.session_id as session_id, head.remote_session_id as remote_session_id,
+                   head.session_id as session_id,
                    head.exit_code as exit_code, head.summary as summary, head.runtime as runtime,
                    head.wall_clock_ms as wall_clock_ms,
                    job.repo as repo, job.executor as executor,
@@ -147,7 +147,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
     }
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, remote_session_id, exit_code, runtime, repo, executor,
+               session_id, exit_code, runtime, repo, executor,
                parent_job_id, root_job_id, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The close-time summary and the run's own banked clock ride beside the
                -- vitals, both bounded where output is not (#109).

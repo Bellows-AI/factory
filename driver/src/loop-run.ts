@@ -5,7 +5,7 @@ import type { HelperFailureReport } from './helpers.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, releaseGateSession, runDeclaredGates } from './loop-gates.js';
-import { down, heartbeat, newJobState, raceStep, watchOutput, watchRemote } from './loop-attempt.js';
+import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-attempt.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { PublishResult, SyncResult } from './publish.js';
@@ -24,9 +24,6 @@ function pickSession(job: BoardJob, executorType: BoardJob['executorType']): Run
 function executorRefusalReason(rt: LoopRuntime, job: BoardJob): string | null {
     if (job.executorType === null) {
         return 'The selected executor no longer exists. Choose a configured executor and start a new task.';
-    }
-    if (job.executorType === OPENCODE && rt.config.remoteControl) {
-        return 'The selected OpenCode executor cannot run with Remote Control enabled.';
     }
     return null;
 }
@@ -50,7 +47,7 @@ async function reportScrapedSession(
     const { board, log } = rt;
     if (outcome.sessionId) {
         try {
-            await board.session(job, outcome.sessionId, null);
+            await board.session(job, outcome.sessionId);
             log(`job ${job.id}: session ${outcome.sessionId}`);
         } catch (e) {
             log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
@@ -263,23 +260,19 @@ interface RunInputs {
     gateSession: GateSession | null;
     executorType: BoardJob['executorType'];
     onOutput: (tail: string) => void;
-    watchingBox: { promise: Promise<void> };
 }
 
-/** The run itself: spawn, watch for Remote Control, and resolve to what to report (or nothing). */
+/** The run itself: spawn, and resolve to what to report (or nothing). */
 async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
     const { rt, job, state, settle, standDown } = ctx;
-    const { session, gateSession, executorType, onOutput, watchingBox } = inputs;
-    const { runner, config, log } = rt;
+    const { session, gateSession, executorType, onOutput } = inputs;
+    const { runner, log } = rt;
     if (down(state)) {
         await runner.releaseFence?.(job);
         await standDown();
         return { done: true };
     }
     state.launched = true;
-    // Watched, not awaited: `settle()` is what waits this out (Promise.all with the heartbeat),
-    // so a Remote Control lookup still mid-flight when the run ends never blocks the verdict.
-    watchingBox.promise = config.remoteControl && session ? watchRemote(rt, job, session, state) : Promise.resolve();
 
     const outcome = await runner.run(job, session, onOutput);
 
@@ -293,19 +286,6 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     if (!outcome.started) {
         await settle();
         log(`job ${job.id}: the runner reports the container never started, leaving it to the lease`);
-        return { done: true };
-    }
-
-    // Parked, not finished: the container is gone, the session is kept, and the job goes back
-    // on the board for somebody to pick up from the Claude UI.
-    if (outcome.idled) {
-        await settle();
-        const verdict = await rt.board.suspend(job);
-        log(
-            verdict === 'lost'
-                ? `job ${job.id}: idle, but the board had already reclaimed it`
-                : `job ${job.id}: idle for ${config.idleMs}ms, parked on standby`
-        );
         return { done: true };
     }
 
@@ -509,14 +489,10 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const onOutput = watchOutput(rt, job, state);
     const session = pickSession(job, executorType);
 
-    // (Only under Remote Control, assigned at launch — a headless run registers no bridge, so
-    // looking for one would be forty `docker exec`s that can never find anything.)
-    const watchingBox: { promise: Promise<void> } = { promise: Promise.resolve() };
-
     const settle = async () => {
         state.finished = true;
         state.wake();
-        await Promise.all([beating, watchingBox.promise]);
+        await beating;
     };
 
     /*
@@ -549,7 +525,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         );
         if (session && !session.resume) {
             try {
-                await rt.board.session(job, session.id, null);
+                await rt.board.session(job, session.id);
             } catch (e) {
                 log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
             }
@@ -560,7 +536,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         if (gateSession === STOOD_DOWN) return;
 
         try {
-            const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput, watchingBox });
+            const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput });
             if (outcome.done) return;
             const helperFailure = await runPostHelperPhase(rt, job, state);
             const published = await publishIfDue(rt, job, {

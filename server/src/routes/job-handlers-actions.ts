@@ -78,7 +78,7 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
     return reply.code(HTTP_OK).send({ id, status: result.value.status, doneAt: result.value.doneAt });
 }
 
-// The user's stop. Two fates in one answer: a queued (never started), an already parked, or a
+// The user's stop. Two fates in one answer: a queued (never started) or a
 // running row whose lease has already expired (#152) is settled `stopped` directly — the turn is
 // over — while a running row under a live lease is left running and stamped, and the WORKER
 // settles it when its next heartbeat reports the stamp (suspend lands `stopped` under the flag).

@@ -11,14 +11,13 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
 
 /**
  * The names the driver's own contract with the runner claims. A claim env named WORKDIR would be
- * two different paths to one runner's working directory; TRUST_WORKDIR is how a Remote Control
- * runner is told its checkout is trusted; CRED_HELPER is the credential-helper CODE the sync
+ * two different paths to one runner's working directory; CRED_HELPER is the credential-helper CODE the sync
  * fetch runs — a member value there would be member-controlled code executed by the sync
  * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
  * starting claims into restore mode, silently skipping the fetch and rebase (issue #58). The
  * three reporter names steer the branch reporter — where it posts, which
  * attempt it speaks for, and which session it claims — and a member value in any of them is a
- * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the headless
+ * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the
  * transcript store lives: the driver composes it from the claim (transcriptDir in
  * driver/src/claim.ts), and a member value would steer transcripts — and, through the runner
  * entrypoint's redirect, the CLI's whole config dir — somewhere else. `OPENCODE_CONFIG_CONTENT` and
@@ -30,7 +29,6 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  */
 export const RESERVED_ENV_NAMES: readonly string[] = [
     'WORKDIR',
-    'TRUST_WORKDIR',
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',

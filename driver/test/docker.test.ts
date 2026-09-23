@@ -15,8 +15,6 @@ import {
     opencodeSessionReadoutArgs,
     parseDockerServicePs,
     parseDockerStats,
-    parseRemoteSessionId,
-    remoteSessionArgs,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { currentActivity, reportTail, stripAnsi, tailBytes } from '../src/runner.js';
@@ -94,9 +92,8 @@ describe('the docker run arguments', () => {
 
     // The link the UI shows is built from this, so it has to be the id the runner actually uses —
     // which is why it is given to the CLI rather than read back out of it.
-    it('tells the runner which session id to use, in both modes', () => {
+    it('tells the runner which session id to use', () => {
         expect(args()).toEqual(expect.arrayContaining(['--session-id', SESSION]));
-        expect(args({ RUNNER_REMOTE_CONTROL: '1' })).toEqual(expect.arrayContaining(['--session-id', SESSION]));
     });
 
     it("mounts the checkouts volume and starts at the AUTHOR's workspace root", () => {
@@ -119,7 +116,7 @@ describe('the docker run arguments', () => {
     it('refuses a workspace path that is not <org>/<uuid>', () => {
         /*
          * The board is not something this process trusts with a fragment of a command line — the
-         * same rule remoteSessionArgs applies to a session id, and the stakes are higher here:
+         * same rule every board-supplied id is held to, and the stakes are higher here:
          * the value becomes the agent's working directory, and `..` in it points at the parent of
          * every member's tree.
          */
@@ -210,21 +207,17 @@ describe('the docker run arguments', () => {
     });
 
     // The branch reporter posts to the board's API, and the endpoint rides beside the OTEL one:
-    // a URL, not a credential, defaulted from JOB_BOARD_URL and forwarded under Remote Control
-    // too — attribution is as wanted on a drivable session as on a headless one.
+    // a URL, not a credential, defaulted from JOB_BOARD_URL.
     it('points the runner at the board so it can report its branch', () => {
         expect(args()).toEqual(expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://127.0.0.1:8080']));
         expect(args({ RUNNER_STATS_URL: 'http://stats.internal:8080' })).toEqual(
             expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://stats.internal:8080'])
         );
-        expect(args({ RUNNER_REMOTE_CONTROL: '1' })).toEqual(
-            expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://127.0.0.1:8080'])
-        );
     });
 
     // The claude runner is told the session id before the container starts (the driver mints it),
     // so the reporter never has to scrape a transcript. A resumed session keeps its id — the
-    // parked job's spans must join to the same conversation.
+    // follow-up's spans must join to the same conversation.
     it('tells the claude runner which session to report', () => {
         expect(args()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
         expect(resumed()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
@@ -262,7 +255,7 @@ describe('the docker run arguments', () => {
 
     it('never hands the transcript store to opencode', () => {
         // opencode persists through its own per-member session database; a second store buys
-        // nothing (Remote Control's exclusion is pinned in its own describe).
+        // nothing.
         expect(dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' })).not.toContain(
             expect.stringContaining('FACTORY_TRANSCRIPT_DIR')
         );
@@ -303,7 +296,7 @@ describe('the docker run arguments', () => {
 describe("the board's environment", () => {
     const envJob: BoardJob = {
         ...job,
-        env: { MY_TOKEN: 'board-secret', WORKDIR: '/etc', TRUST_WORKDIR: '1' },
+        env: { MY_TOKEN: 'board-secret', WORKDIR: '/etc' },
     };
 
     it('reads a claim without an env field as no environment', () => {
@@ -425,9 +418,8 @@ describe("the board's environment", () => {
             { id: SESSION, resume: false },
             { envFile: '/tmp/env-file' }
         );
-        // The one WORKDIR on the line is the runner's own, with the mount in it; TRUST_WORKDIR
-        // belongs to the Remote Control branch, which this is not.
-        expect(line.filter((arg) => arg === 'WORKDIR' || arg === 'TRUST_WORKDIR')).toHaveLength(0);
+        // The one WORKDIR on the line is the runner's own, with the mount in it.
+        expect(line.filter((arg) => arg === 'WORKDIR')).toHaveLength(0);
         expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
     });
 
@@ -459,23 +451,6 @@ describe("the board's environment", () => {
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
 
-    it('forwards no board env to a Remote Control runner, and writes no env file for one', () => {
-        // The same exclusion RUNNER_ENV obeys: a forwarded credential does not fail there, it
-        // degrades the session in silence.
-        const line = dockerArgs(
-            loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }),
-            envJob,
-            {
-                id: SESSION,
-                resume: false,
-            },
-            { envFile: '/tmp/env-file' }
-        );
-        expect(line).not.toContain('--env-file');
-        expect(line).not.toContain('MY_TOKEN');
-        expect(line.some((arg) => arg.includes('board-secret'))).toBe(false);
-    });
-
     it('always writes the env file for the runner — the pair rides it even with no claim env', () => {
         // The claim-less body is exactly the pair: the runner's own credential, nothing else.
         expect(envFileBody(job, loadDriverConfig({}))).toBe(
@@ -496,9 +471,8 @@ describe('a follow-up run', () => {
 
     /**
      * The one new thing a follow-up asks of the runner: restore the parent conversation AND
-     * deliver the new command into it. A plain resume restores only, because its command is
-     * already in the transcript — a follow-up's command is not, and without the `-p` the
-     * adjustment would never reach the agent.
+     * deliver the new command into it — without the `-p` the adjustment would never reach the
+     * agent.
      */
     it('delivers the command into the restored session', () => {
         const line = dockerArgs(
@@ -509,68 +483,6 @@ describe('a follow-up run', () => {
         );
         expect(line.slice(-5)).toEqual(['claude-executor', '--resume', SESSION, '-p', 'fix the failing build']);
         expect(line).not.toContain('--session-id');
-    });
-
-    it('delivers it under Remote Control as the opening prompt of the restored session', () => {
-        const line = dockerArgs(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), followUp, {
-            id: SESSION,
-            resume: true,
-        });
-        expect(line.slice(-5)).toEqual([
-            '--resume',
-            SESSION,
-            '--remote-control',
-            containerName(job),
-            'fix the failing build',
-        ]);
-    });
-
-    // The delivered-once rule is not suspended for follow-ups: a PARKED one has its command in
-    // the transcript already, and its resume is an ordinary resume. Only the board knows which
-    // kind of resume a claim is — hence the flag rather than a local guess.
-    it('still omits the command when a parked job is resumed', () => {
-        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' });
-        expect(line.slice(-3)).toEqual(['claude-executor', '--resume', SESSION]);
-        expect(line).not.toContain('fix the failing build');
-    });
-});
-
-describe('reading the remote session id', () => {
-    it('reads the bridge record out of the running container, by session id', () => {
-        const line = remoteSessionArgs(job, SESSION);
-        expect(line.slice(0, 4)).toEqual(['exec', containerName(job), 'sh', '-c']);
-        // The script is the static file; the session id rides as its first positional
-        // parameter, a plain argv value — never interpolated into the script text.
-        expect(line[5]).toBe('sh');
-        expect(line[6]).toBe(SESSION);
-        expect(line[4]).toContain('bridge-session');
-        expect(line[4]).toContain('"$1".jsonl');
-        expect(line[4]).not.toContain(SESSION);
-    });
-
-    // The id arrives from the board on a resume, and a board is not something this process should
-    // trust with a fragment of a shell command.
-    it('refuses a session id that is not a uuid, rather than interpolating it', () => {
-        expect(() => remoteSessionArgs(job, '$(touch /tmp/pwned)')).toThrow('not a uuid');
-    });
-
-    it('pulls the remote id out of the transcript line', () => {
-        const line = JSON.stringify({
-            type: 'bridge-session',
-            sessionId: SESSION,
-            bridgeSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
-        });
-        expect(parseRemoteSessionId(line)).toBe('cse_015tb2nHhHNrBuL7ZDhn9Wx5');
-    });
-
-    // Every one of these is the ordinary case: the bridge has not connected, or the file is being
-    // written as it is read.
-    it.each([
-        ['', 'nothing yet'],
-        ['not json', 'a partial line'],
-        ['{"type":"mode"}', 'another record'],
-    ])('answers null for %p (%s)', (line) => {
-        expect(parseRemoteSessionId(line)).toBeNull();
     });
 });
 
@@ -638,84 +550,15 @@ describe('the close-time claude-code turn count', () => {
 });
 
 describe('which runs get a close-time turn read', () => {
-    /**
-     * The null posture for Remote Control (the design's stated exception): its conversation
-     * keeps going after the run parks, so any single read would freeze a mid-conversation
-     * number onto the job row. The read is claude-code-headless-only, and this decision is
-     * pure so the posture stays pinned as the runners evolve.
-     */
-    it('reads for a headless claude-code run with a session, and never under Remote Control', () => {
+    /** The read is claude-code-only, and this decision is pure so it stays pinned as the runners evolve. */
+    it('reads for a claude-code run with a session', () => {
         const session = { id: SESSION, resume: false };
-        expect(readsAgentTurns(loadDriverConfig({}), job, session)).toBe(true);
-        expect(readsAgentTurns(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), job, session)).toBe(false);
+        expect(readsAgentTurns(job, session)).toBe(true);
         // Opencode counts in its own readout; there is no second read for it.
-        expect(readsAgentTurns(loadDriverConfig({}), opencodeJob, session)).toBe(false);
+        expect(readsAgentTurns(opencodeJob, session)).toBe(false);
         // No session minted — nothing to read a transcript for.
-        expect(readsAgentTurns(loadDriverConfig({}), job, null)).toBe(false);
-        expect(readsAgentTurns(loadDriverConfig({}), job, { id: 'not-a-uuid', resume: false })).toBe(false);
-    });
-});
-
-describe('a Remote Control runner', () => {
-    const rc = (env: NodeJS.ProcessEnv = {}) => args({ RUNNER_REMOTE_CONTROL: '1', ...env });
-
-    it('starts an interactive session with the command as its opening prompt', () => {
-        expect(rc().slice(-3)).toEqual(['--remote-control', containerName(job), 'fix the failing build']);
-        expect(rc()).not.toContain('-p');
-    });
-
-    /**
-     * `-t` and never `-i -t`. The CLI will not start an interactive session without a tty, but the
-     * driver's stdin is not a terminal, and `docker run -i` from such a process fails outright with
-     * "the input device is not a TTY" — so the pairing that looks obvious is the one that breaks.
-     */
-    it('allocates a tty without attaching stdin to it', () => {
-        expect(rc()).toContain('-t');
-        expect(rc()).not.toContain('-i');
-        expect(args()).not.toContain('-t');
-    });
-
-    /**
-     * The two halves of resuming a parked job. `--resume` keeps the original session id rather than
-     * forking it, so the link the UI shows still opens the session — and the command is NOT
-     * re-delivered, because it is already in the transcript and sending it again would re-run the
-     * work somebody has been driving by hand.
-     */
-    it('restores the session instead of starting one, without re-sending the command', () => {
-        const line = resumed({ RUNNER_REMOTE_CONTROL: '1' });
-        expect(line.slice(-4)).toEqual(['--resume', SESSION, '--remote-control', containerName(job)]);
-        expect(line).not.toContain('--session-id');
-        expect(line).not.toContain('fix the failing build');
-    });
-
-    it('mounts the login volume over the config directory', () => {
-        expect(rc()).toEqual(expect.arrayContaining(['-v', 'claude-executor-auth:/home/node/.claude']));
-        expect(rc({ RUNNER_AUTH_VOLUME: 'other' })).toEqual(expect.arrayContaining(['-v', 'other:/home/node/.claude']));
-        expect(args().join(' ')).not.toContain('/home/node/.claude');
-    });
-
-    /**
-     * The failure this prevents is silent, which is why it is pinned. Remote Control needs a
-     * claude.ai subscription login; given a token instead, `--remote-control` still starts a
-     * perfectly ordinary local session and the only symptom is that it never appears at
-     * claude.ai/code.
-     */
-    it('forwards no credentials, so the volume login is the only one available', () => {
-        expect(rc({ RUNNER_ENV: 'CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY' })).not.toContain(
-            'CLAUDE_CODE_OAUTH_TOKEN'
-        );
-    });
-
-    // An interactive session started by a driver has nobody to answer the trust dialog.
-    it('accepts the trust dialog for the mount', () => {
-        expect(rc()).toEqual(expect.arrayContaining(['-e', 'TRUST_WORKDIR=1']));
-        expect(args()).not.toContain('TRUST_WORKDIR=1');
-    });
-
-    // The transcript store is headless-only, and this runner must never receive the name: its
-    // CLAUDE_CONFIG_DIR is the auth volume, which standby/park depends on for a later --resume.
-    it('never hands the transcript store to Remote Control', () => {
-        expect(rc()).not.toContain(expect.stringContaining('FACTORY_TRANSCRIPT_DIR'));
+        expect(readsAgentTurns(job, null)).toBe(false);
+        expect(readsAgentTurns(job, { id: 'not-a-uuid', resume: false })).toBe(false);
     });
 });
 
@@ -902,17 +745,6 @@ describe('an opencode runner', () => {
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.readoutError).toBe('the readout container failed: daemon refused the readout');
-    });
-
-    // Standby is a Remote Control feature and opencode cannot be configured for it, so a resume
-    // with nothing to deliver means the selected profile changed type while parked. The loop refuses
-    // it first; the runner refuses it too, because a headless run restoring a session without a
-    // command would idle to its deadline.
-    it('refuses to restore a session when there is no command to deliver', () => {
-        expect(() =>
-            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' })
-        ).toThrow(/session/);
-        expect(() => oc()).not.toThrow();
     });
 
     it('uses the image configured for its selected executor type', () => {
@@ -1892,21 +1724,6 @@ describe('the docker runner', () => {
             'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n' +
                 `RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\n`
         );
-    });
-
-    // The Remote Control posture is untouched: no forwarded credential of any kind, the volume
-    // login is the only one — so gate credentials make no env file appear either.
-    it('writes no env file for a Remote Control runner, gate credentials included', async () => {
-        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }),
-            spawnFn as unknown as typeof spawn,
-            noContainer
-        );
-        await runner.run({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok' } }, { id: SESSION, resume: false });
-
-        const [, argv] = spawnFn.mock.calls[0]!;
-        expect(argv).not.toContain('--env-file');
     });
 
     // The lease lost DURING the env-file write: the kill-check just above the write has already
@@ -3286,7 +3103,7 @@ describe('publishing the produced work', () => {
         expect(empty.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
     });
 
-    // A claim that CONTINUES a session — a follow-up, or a parked job resumed — is mid-task,
+    // A claim that CONTINUES a session — a follow-up — is mid-task,
     // and git operations that touch the remote belong to the task's beginning and end (issue
     // #58). Its sync is a RESTORE: the script runs with RESTORE=1, the claim env file is not
     // written (restore talks only to the local clone — nothing to credential), and the fetch's
@@ -3310,8 +3127,8 @@ describe('publishing the produced work', () => {
         expect(follow).not.toContain('--env-file');
         expect(follow.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
 
-        // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard:
-        // the session's tree must not move under it either.
+        // A claim carrying a resume session (resumeSessionId without the followUp flag) is the
+        // same mid-task hazard: the session's tree must not move under it either.
         await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } });
         const parked = calls.filter((a) => a[0] === 'run')[1]!;
         expect(parked).toEqual(expect.arrayContaining(['-e', 'RESTORE=1']));

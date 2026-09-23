@@ -70,8 +70,8 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                 { name: 'REPO', value: clone },
                 { name: 'WORKTREE', value: worktree },
                 { name: 'BRANCH', value: worktreeBranch(job) },
-                // Restore mode, as a literal: a claim that continues a session (a follow-up, or
-                // a parked job resumed) keeps the tree exactly as the run before it left it — no
+                // Restore mode, as a literal: a claim that continues a session (a follow-up)
+                // keeps the tree exactly as the run before it left it — no
                 // fetch, no rebase, nothing that touches the remote (issue #58).
                 ...(claimContinuesSession(job) ? [{ name: 'RESTORE', value: '1' }] : []),
                 // The fetch's credential helper CODE — a literal that is code, the same class as

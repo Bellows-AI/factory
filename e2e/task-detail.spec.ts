@@ -31,7 +31,7 @@ async function queueTask(page: Page, command: string): Promise<string> {
 
 /**
  * The board claim, driven the way the driver drives it — the offline board's worker routes are
- * open (AUTH_MODE=none), so the spec can move its own queued task through running and standby
+ * open (AUTH_MODE=none), so the spec can move its own queued task through running and stopped
  * the same hands a real worker would.
  */
 async function claimQueued(page: Page, taskId: string): Promise<string> {
@@ -73,7 +73,7 @@ test.describe('the task detail actions', () => {
      * open task offers Mark done as the one primary; Remove task lives only behind More task
      * actions and vanishes while any member of the thread is running.
      */
-    test('Stop run spans queued, running, stopping and standby; Mark done waits behind them', async ({
+    test('Stop run spans queued, running and stopping; Mark done waits behind them', async ({
         page,
     }) => {
         const problems = watchConsole(page);
@@ -108,19 +108,6 @@ test.describe('the task detail actions', () => {
         expect(parked.status()).toBe(200);
         expect(((await parked.json()) as { status: string }).status).toBe('stopped');
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible({ timeout: 10_000 });
-
-        // Standby: a park nobody asked for. Stop run is offered for it too, and lands directly.
-        const standbyId = await queueTask(page, 'e2e — stop a standby task');
-        const idleLease = await claimQueued(page, standbyId);
-        const idled = await page.request.post(`/api/jobs/${standbyId}/suspend`, { data: { leaseToken: idleLease } });
-        expect(((await idled.json()) as { status: string }).status).toBe('standby');
-        await expect(page.locator('.page-header-meta')).toContainText('standby', { timeout: 10_000 });
-        await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
-        await expect(header(page).getByRole('button', { name: 'More task actions' })).toBeVisible();
-        await page.screenshot({ path: `${SHOTS}/task-detail-standby.png`, fullPage: true });
-
-        await header(page).getByRole('button', { name: 'Stop run' }).click();
-        await expect(page.locator('.page-header-meta')).toContainText('stopped', { timeout: 10_000 });
 
         for (const token of FORBIDDEN) expect(problems.join('\n'), token).not.toContain(token);
         expect(problems.join('\n')).toBe('');
@@ -543,7 +530,6 @@ test.describe('the task detail page', () => {
                 wallClockMs: null,
                 taskWallClockMs: null,
                 sessionId: 'bbbbbbbb-0000-4000-8000-000000000007',
-                remoteSessionId: null,
                 gates: null,
                 runtime: {
                     cpuPercent: 12,

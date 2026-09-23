@@ -57,16 +57,12 @@ export async function sessionReport(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    report: { sessionId: string; remoteSessionId: string | null }
+    sessionId: string
 ): ReturnType<JobStore['session']> {
     const { sql, orgId } = ctx;
-    const { sessionId, remoteSessionId } = report;
     const rows = await sql<{ id: string }[]>`
         update job set
-            session_id = ${sessionId},
-            -- coalesce, not assignment: the first report of an attempt carries no remote id
-            -- yet, and it must not wipe one a later report already stored.
-            remote_session_id = coalesce(${remoteSessionId}, remote_session_id)
+            session_id = ${sessionId}
         where org_id = ${orgId} and id = ${id}
           and status = 'running' and lease_token = ${leaseToken}
         returning id

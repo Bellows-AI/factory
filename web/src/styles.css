@@ -116,6 +116,10 @@
     --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
     --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
+    /* Issue 224: the quiet selector's hover/focus/open highlight, and the floating panel's
+       shadow — a soft surface, never another hairline. */
+    --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
+    --shadow-float: color-mix(in oklab, black 40%, transparent);
 }
 
 /* ---------- Semantic tokens: light ---------- */
@@ -154,6 +158,8 @@
     --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
     --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
+    --accent-wash: color-mix(in oklab, var(--accent) 12%, transparent);
+    --shadow-float: color-mix(in oklab, var(--ink) 14%, transparent);
 }
 
 /* ---------- Expose semantic tokens as utilities ----------
@@ -823,17 +829,55 @@
         max-width: 52ch;
     }
 
-    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
-       renders in the page's theme without this rule carrying one. */
-    .org-select {
-        background: var(--surface-sunken);
-        color: var(--ink);
-        border: 1px solid var(--line);
+    /* The shared quiet-trigger skin (issue 224): the account menu, the organization and
+       appearance selectors, and the composer's listboxes. Unframed at rest — the persistent
+       border every other button carries would fight the reference's restrained look — with a
+       soft accent wash on hover, keyboard focus and while its panel is open, so the highlight
+       reads as one state whichever way it was reached. Border stays transparent rather than
+       `none` so nothing shifts size when a state adds one back. */
+    .select-trigger {
+        align-items: center;
+        background: transparent;
+        border: 1px solid transparent;
         border-radius: var(--radius-lg);
-        padding: 5px 8px;
+        color: var(--ink);
+        display: inline-flex;
         font: inherit;
+        gap: 6px;
+        /* A long organization, workflow, repository or executor name wraps inside the trigger,
+           never the page. */
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        padding: 6px 10px;
     }
 
+    .select-trigger:hover,
+    .select-trigger:focus-visible,
+    .select-trigger[data-open] {
+        background: var(--accent-wash);
+        border-color: transparent;
+    }
+
+    .select-trigger:disabled {
+        border-color: transparent;
+        color: var(--ink-muted);
+        cursor: default;
+    }
+
+    /* The chevron is the "a choice is available here" cue; a disabled trigger has none to make. */
+    .select-trigger::after {
+        content: '▾';
+        color: var(--ink-muted);
+        flex: none;
+        margin-left: auto;
+    }
+
+    .select-trigger:disabled::after {
+        display: none;
+    }
+
+    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
+       renders in the page's theme without this rule carrying one. */
     .org-selector {
         display: flex;
         align-items: center;
@@ -844,13 +888,6 @@
         illegible anyway (~700px); past 900px the whole selector leaves the bar for the drawer. */
     .org-select {
         max-width: 220px;
-    }
-
-    /* Inert, not broken: the field keeps its shape and drops to muted text, exactly as
-       `button:disabled` does, so the page has one vocabulary for "not available here". */
-    .org-select:disabled {
-        color: var(--ink-muted);
-        cursor: default;
     }
 
     /* The routed page's content container (issue 160) — a class, not a `main` element selector,
@@ -1343,10 +1380,11 @@
         border-color: var(--accent);
     }
 
-    /* The appearance control (issue 188): the one System/Light/Dark preference select, worn by
-       the app bar and the public header's actions cell alike. Sunken like every other form
-       control; the focus ring comes from the global `:focus-visible` rule, and `color-scheme`
-       in the theme blocks paints the native popup without a rule of its own. */
+    /* The appearance control (issue 188): the one System/Light/Dark preference, worn by the app
+       bar and the public header's actions cell alike. Issue 224 moved it off a native `<select>`
+       onto the shared `select-trigger` Listbox skin — a native popup cannot be anchored below
+       the trigger, capped to the viewport, or given a checkmark, all of which the quiet-selector
+       treatment requires. The focus ring still comes from the global `:focus-visible` rule. */
     .theme-field {
         align-items: center;
         display: flex;
@@ -1356,16 +1394,6 @@
     .theme-label {
         color: var(--ink-muted);
         font-size: 13px;
-    }
-
-    .theme-select {
-        background: var(--surface-sunken);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
-        font: inherit;
-        height: 36px;
-        padding: 0 8px;
     }
 
     /* Narrow screens drop the visible label — the select keeps its accessible name, and the
@@ -1956,8 +1984,7 @@
         .mobile-nav .sidenav-link,
         .mobile-nav .sidenav-sublink,
         .mobile-nav .sidenav-newtask,
-        .mobile-nav .org-select,
-        .appbar .user-menu-button,
+        .select-trigger,
         .range-option,
         .range-draft input,
         .range-draft-actions button,
@@ -1972,19 +1999,13 @@
         .unsaved-actions button,
         .env-tab,
         .composer-start button,
-        .composer-select,
+        .composer-param-input,
         .settings-toggle,
         .legend-button {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
-        }
-
-        /* The appearance select is a replaced element, not a flex box — it clears the same
-            44px target through height alone, on both surfaces it mounts in. */
-        .theme-select {
-            min-height: 44px;
         }
 
         /* A summary keeps its native disclosure marker only under `display: list-item`, so it
@@ -2207,29 +2228,35 @@
         margin-top: 16px;
     }
 
-    /* The shared floating surface for the anchored Headless UI panels — the user menu, the org and
-       composer listboxes — and their option rows. The library's anchor engine positions the panel
-       with inline styles, so this class carries only the skin and the z-index policy: dialogs sit at
-       40, popovers at 30, nothing else on the page stacks. */
+    /* The shared floating surface for the account, organization, appearance and composer
+       dropdowns (issue 224) — and their option rows. `useDownwardAnchor` (web/src/anchor.ts)
+       positions the panel and caps its height with an inline `max-height`; this class carries
+       the skin, the internal scroll and the z-index policy: dialogs sit at 40, popovers at 30,
+       nothing else on the page stacks. */
     .popover {
         background: var(--surface-raised);
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
-        padding: 4px;
+        box-shadow: 0 8px 24px var(--shadow-float);
+        max-width: min(320px, calc(100vw - 16px));
+        overflow-y: auto;
+        padding: 6px;
         z-index: 30;
     }
 
     .popover-option {
         /* One skin for both an <a> and a <button> item: the button resets, so the sign-out item reads
            exactly like the Settings link beside it. */
+        align-items: center;
         background: none;
         border: none;
         border-radius: var(--radius-md);
         color: inherit;
         cursor: pointer;
-        display: block;
+        display: flex;
         font: inherit;
-        padding: 6px 10px;
+        gap: 8px;
+        padding: 8px 12px;
         text-align: left;
         text-decoration: none;
         width: 100%;
@@ -2237,11 +2264,25 @@
 
     .popover-option:hover,
     .popover-option[data-focus] {
-        background: var(--surface-sunken);
+        background: var(--accent-wash);
     }
 
+    /* The selected row (an equivalent to the reference's checkmark): bolder text plus a trailing
+       mark, never color alone. */
     .popover-option[data-selected] {
         color: var(--accent);
+        font-weight: 600;
+    }
+
+    .popover-option[data-selected]::after {
+        content: '✓';
+        margin-left: auto;
+    }
+
+    /* A restrained divider between option groups — the account menu's Account/Sign out split. */
+    .popover-separator {
+        border-top: 1px solid var(--line);
+        margin: 4px 2px;
     }
 
     button.primary {
@@ -2620,13 +2661,14 @@
         font-size: 12px;
     }
 
-    .composer-select {
+    /* A declared parameter's text value — a real field, so unlike the composer's listbox
+       triggers (issue 224's `select-trigger`) it keeps its own frame. */
+    .composer-param-input {
         background: var(--surface);
         border: 1px solid var(--line);
         border-radius: var(--radius-md);
         color: var(--ink);
         font: inherit;
-        /* A long repository or workflow name wraps inside the control, never the page. */
         max-width: 100%;
         overflow-wrap: anywhere;
         padding: 2px 6px;
@@ -2745,7 +2787,7 @@
     }
 
     /* A failed field tints its edge like the status pills do — the lamp is the message's color. */
-    .composer-select[aria-invalid='true'] {
+    .composer-param-input[aria-invalid='true'] {
         border-color: var(--lamp-stop);
     }
 
@@ -2775,8 +2817,8 @@
 
     /* The app bar's user menu and the settings page's identity section. */
 
-    /* The trigger is a real button, so the global button skin applies; this only lays the avatar and
-       the login out and keeps the old summary's tighter padding. */
+    /* The trigger wears the shared `select-trigger` skin (issue 224); this only lays the avatar
+       and the login out and keeps the old summary's tighter padding and gap. */
     .user-menu-button {
         align-items: center;
         display: flex;

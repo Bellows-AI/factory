@@ -243,7 +243,6 @@ export async function dockerRunVerdict(
         serviceTeardown: (job: BoardJob) => Promise<void>;
         output: string;
         timedOut: boolean;
-        idled: boolean;
         cacheLost: string | null;
     }
 ): Promise<RunOutcome> {
@@ -264,7 +263,6 @@ export async function dockerRunVerdict(
         exitCode: code,
         output: ctx.output,
         timedOut: ctx.timedOut,
-        idled: ctx.idled,
         started,
         cacheLost: ctx.cacheLost,
     };

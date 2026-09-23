@@ -106,11 +106,11 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
         await reader.create('root task', userId, { repo: 'acme/web', executor: null });
         const rootClaim = await reader.claim('driver-1', LEASE_SECONDS);
         const root = rootClaim!.id;
-        await reader.session(root, rootClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
+        await reader.session(root, rootClaim!.leaseToken, '33333333-3333-4333-8333-333333333333');
         await reader.complete(root, rootClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const child = await followUp(reader, root, 'adjust', userId);
         const childClaim = await reader.claim('driver-1', LEASE_SECONDS);
-        await reader.session(child.id, childClaim!.leaseToken, '33333333-3333-4333-8333-333333333333', null);
+        await reader.session(child.id, childClaim!.leaseToken, '33333333-3333-4333-8333-333333333333');
         await reader.complete(child.id, childClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const grand = await followUp(reader, child.id, 'again', userId);
 

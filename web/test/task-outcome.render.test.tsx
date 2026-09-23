@@ -36,7 +36,7 @@ describe('TaskOutcome', () => {
         const html = renderDetail({
             jobs: [
                 job({
-                    status: 'standby',
+                    status: 'queued',
                     waitReason: 'review',
                     waitingSince: '2026-09-01T11:00:00.000Z',
                     exitCode: null,
@@ -46,7 +46,7 @@ describe('TaskOutcome', () => {
         });
         expect(html).toContain('Waiting for review');
         // The outcome's own pill reads waiting, not the raw status — the per-run pill inside the
-        // conversation below is a different component and legitimately still says "standby".
+        // conversation below is a different component and legitimately still says "queued".
         expect(html).toContain('<span class="pill">Waiting for review</span>');
         expect(html).toMatch(/no executor|not occupied/i);
     });

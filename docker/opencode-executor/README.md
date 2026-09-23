@@ -4,8 +4,7 @@ opencode in a container, with a fixed configuration baked in. It runs an agent a
 checkout; it does not build or run this repo's application.
 
 Headless only. The driver selects it when the task's chosen executor profile has type `opencode`.
-An OpenCode task is refused when the driver is in `RUNNER_REMOTE_CONTROL` mode — Remote Control is
-Claude Code's bridge. `RUNNER_SKIP_PERMISSIONS` applies only to Claude Code tasks; OpenCode takes
+`RUNNER_SKIP_PERMISSIONS` applies only to Claude Code tasks; OpenCode takes
 its permissions from the config baked into this image, not from a CLI flag.
 
 ## Layout
@@ -161,8 +160,7 @@ outlives the container, which is the whole mechanism: a follow-up runs `run --se
 fresh container, and that only works if the session is still in the database it reads. After a
 run the driver reads the newest root session out of the database with one throwaway node
 container (`node:sqlite`, read-only) and reports the id to the board, which is what makes the
-task follow-up-able. A job run by this image still shows no session link — the link is built from
-claude-code's Remote Control id, which opencode does not have. Its runs still emit OTLP through the image's baked plugin, and the server's metric map prices the `opencode.*` metrics under the `opencode` agent.
+task follow-up-able. Its runs emit OTLP through the image's baked plugin, and the server's metric map prices the `opencode.*` metrics under the `opencode` agent.
 
 ## Branch reporter
 

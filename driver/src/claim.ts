@@ -104,7 +104,7 @@ export function workspacePath(job: BoardJob): string {
 
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
- * sets, TRUST_WORKDIR is the Remote Control trust answer, the two BELLOWS_GATE_ names are the
+ * sets, the two BELLOWS_GATE_ names are the
  * ad-hoc gate credentials the loop mints per attempt, CRED_HELPER is the credential-helper CODE
  * the sync fetch runs, RESTORE is the sync's restore-mode switch (a member value there would
  * flip starting claims into restore mode, silently skipping the fetch and rebase issue #58
@@ -124,7 +124,6 @@ export function workspacePath(job: BoardJob): string {
  */
 export const RESERVED_ENV_NAMES = [
     'WORKDIR',
-    'TRUST_WORKDIR',
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',
@@ -166,8 +165,8 @@ export function claimEnv(job: BoardJob): Record<string, string> {
 export const claimCarriesGithubToken = (job: BoardJob): boolean => Boolean(claimEnv(job).GITHUB_TOKEN);
 
 /**
- * Whether the claim CONTINUES a session rather than starting a task: a follow-up, or a parked
- * job resumed. Either way the task is mid-flight, and the startup git work is a RESTORE, not a
+ * Whether the claim CONTINUES a session rather than starting a task: a follow-up. The task is
+ * mid-flight, and the startup git work is a RESTORE, not a
  * sync — no fetch, no rebase onto the remote default (issue #58): the conversation's tree is
  * what the run continues from, and moving its base underneath it is the mid-task "sync with
  * main" the follow-up flow must not do. Lease-expired RE-claims of ordinary jobs are not

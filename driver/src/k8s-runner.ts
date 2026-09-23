@@ -244,7 +244,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     const { timedOut, jobSucceeded } = await pollRunnerJobUntilTerminal(deps, job, onOutput);
     const { exitCode, output } = await readRunnerVerdict(deps, job, jobSucceeded);
 
-    const outcome: RunOutcome = { exitCode, output, timedOut, idled: false, started: true };
+    const outcome: RunOutcome = { exitCode, output, timedOut, started: true };
 
     if (job.executorType === OPENCODE) {
         await attachOpencodeOutcome(deps, job, startedAt, outcome);
@@ -425,11 +425,6 @@ export function createKubernetesRunner(
 ): Runner {
     const deps: K8sDeps = { config, request, sleep };
     return {
-        // Remote Control is refused at config under this executor, and the loop polls the remote
-        // id only under Remote Control — so null is never even asked for. The interface blesses it.
-        async remoteSessionId() {
-            return null;
-        },
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>

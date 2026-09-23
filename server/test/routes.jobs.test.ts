@@ -48,7 +48,7 @@ interface StoreStub extends JobStore {
         agentTurns: number | null;
         summary: string | null;
     }[];
-    sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
+    sessions: { id: string; sessionId: string }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
@@ -115,7 +115,7 @@ function stubStore(
             boom();
             stub.suspended.push(id);
             const result = options.verdict ?? 'ok';
-            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'standby' } : { result };
+            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'stopped' } : { result };
         },
         async create(command, createdBy, target) {
             boom();
@@ -172,9 +172,9 @@ function stubStore(
             stub.reclaimAcks.push({ id, worker });
             return options.ackReclaim ?? 'ok';
         },
-        async session(id, _token, sessionId, remoteSessionId) {
+        async session(id, _token, sessionId) {
             boom();
-            stub.sessions.push({ id, sessionId, remoteSessionId });
+            stub.sessions.push({ id, sessionId });
             return options.verdict ?? 'ok';
         },
         async progress(id: string, _token: string, output: string, runtime: RuntimeVitals | null) {
@@ -800,7 +800,7 @@ describe('POST /api/jobs/:id/session', () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(store.sessions).toEqual([{ id: ID, sessionId: SESSION, remoteSessionId: null }]);
+        expect(store.sessions).toEqual([{ id: ID, sessionId: SESSION }]);
     });
 
     /**
@@ -817,35 +817,6 @@ describe('POST /api/jobs/:id/session', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.sessions[0]?.sessionId).toBe(ses);
-    });
-
-    // The second report of an attempt. The remote id is assigned by Anthropic's backend when the
-    // bridge connects, so it can only ever arrive after the run has started.
-    it('records the remote session id when the bridge has reported one', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/session`, {
-            leaseToken: TOKEN,
-            sessionId: SESSION,
-            remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(store.sessions[0]?.remoteSessionId).toBe('cse_015tb2nHhHNrBuL7ZDhn9Wx5');
-    });
-
-    // Deliberately not shape-checked: it is an opaque token minted elsewhere, and pinning `cse_`
-    // here would break on the day it changes.
-    it('takes any reasonable string as the remote id, but not junk', async () => {
-        const instance = await harnessWith(stubStore());
-        const send = (remoteSessionId: unknown) =>
-            post(instance, `/api/jobs/${ID}/session`, { leaseToken: TOKEN, sessionId: SESSION, remoteSessionId });
-
-        expect((await send('anything-at-all')).statusCode).toBe(200);
-        expect((await send('   ')).statusCode).toBe(400);
-        expect((await send(42)).statusCode).toBe(400);
-        expect((await send('x'.repeat(257))).statusCode).toBe(400);
     });
 
     // Same rule as every other worker write: a superseded worker must not relabel the run that
@@ -1152,13 +1123,6 @@ describe('POST /api/jobs/:id/suspend', () => {
         expect(store.suspended).toEqual([ID]);
     });
 
-    it('lands the Remote Control idle park on standby', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'ok' }));
-        const response = await post(instance, `/api/jobs/${ID}/suspend`, { leaseToken: TOKEN });
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, status: 'standby' });
-    });
-
     it('refuses a park from a worker whose lease was reclaimed', async () => {
         const instance = await harnessWith(stubStore({ verdict: 'lost' }));
         const response = await post(instance, `/api/jobs/${ID}/suspend`, { leaseToken: TOKEN });
@@ -1175,19 +1139,6 @@ describe('POST /api/jobs/:id/stop', () => {
     // A queued job never started, so stopping it IS settling it — the turn ends before it began,
     // and the session (there is none yet) is untouched.
     it('settles a queued task directly', async () => {
-        const store = stubStore({ stop: { result: 'stopped' } });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, status: 'stopped' });
-        expect(store.stopped).toEqual([{ id: ID, stoppedBy: null }]);
-    });
-
-    // A parked task settles the same way: stopping it is the verdict that ends its stay. The
-    // second stop of the same task is the store's conflict to answer — it already ended.
-    it('settles an already-parked task directly too', async () => {
         const store = stubStore({ stop: { result: 'stopped' } });
         const instance = await harnessWith(store);
 
@@ -1749,7 +1700,6 @@ describe('GET /api/jobs', () => {
         stoppedBy: null,
         doneBy: null,
         sessionId: '33333333-3333-4333-8333-333333333333',
-        remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
         exitCode: 0,
         output: 'hello',
         summary: null,
