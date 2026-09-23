@@ -185,9 +185,6 @@ export const LEASE_SECONDS_MAX = 3600;
 export const LIST_LIMIT_DEFAULT = 50;
 export const LIST_LIMIT_MAX = 200;
 
-/** Far past the `cse_` tokens seen in practice, and short enough that it cannot be an essay. */
-export const REMOTE_SESSION_LIMIT = 256;
-
 /**
  * What an agent session id may look like. Not pinned to a uuid: claude-code's are, but opencode
  * mints its own (`ses_…`), and the board's job is to RECORD the session the run used, not to
@@ -196,15 +193,7 @@ export const REMOTE_SESSION_LIMIT = 256;
  */
 export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 
-export const STATUSES: readonly JobStatus[] = [
-    'queued',
-    'running',
-    'standby',
-    'succeeded',
-    'failed',
-    'dead',
-    'stopped',
-];
+export const STATUSES: readonly JobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'dead', 'stopped'];
 
 export function leaseSeconds(raw: unknown): number | null {
     if (raw === undefined || raw === null) return LEASE_SECONDS_DEFAULT;

@@ -384,13 +384,9 @@ Dead: `k8s-transport.ts:74-75` `OPENCODE_SESSION_SCRAPE_*` (#4).
 
 ## 13. Unreachable config branches and parity nits
 
-- Config-unreachable paths: `config.ts:322-345` refuses Remote Control and cache watch under kubernetes,
-  and the k8s files already contain no Remote Control, idle or cache-watch code (grep is clean).
-  Nothing to prune.
-  - Keep `remoteSessionId() { return null }` (k8s-runner 523-525). The `Runner` interface requires it,
-    and the loop calls it only under Remote Control (`loop-attempt.ts:213`).
-  - Making it optional on `Runner` would save 3 lines, which is not worth an interface change.
-  - Keep the `idled: false` literals.
+- Config-unreachable paths: `config.ts` refuses the cache watch under kubernetes, and the k8s files
+  already contain no cache-watch code (grep is clean). Nothing to prune. (Remote Control, its idle
+  park and `Runner.remoteSessionId` have since been removed outright.)
 - Claude close-read gating:
   - `k8s-runner.ts:307` gates with `job.executorType === 'claude-code' && session`. Docker uses
     `readsAgentTurns(config, job, session)` (`close-read.ts:108`, `docker-close-read.ts:180`).

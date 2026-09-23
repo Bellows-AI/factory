@@ -37,7 +37,7 @@ interface BoardStub extends Board {
             baseBranch: string;
         } | null;
     }[];
-    sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
+    sessions: { id: string; sessionId: string }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     beats: number;
@@ -98,9 +98,9 @@ function stubBoard(
             board.suspended.push(claimed.id);
             return 'held';
         },
-        async session(claimed, sessionId, remoteSessionId) {
+        async session(claimed, sessionId) {
             if (options.failSession) throw new Error('board unreachable');
-            board.sessions.push({ id: claimed.id, sessionId, remoteSessionId });
+            board.sessions.push({ id: claimed.id, sessionId });
             return 'held';
         },
         async progress(claimed, output, runtime) {
@@ -161,7 +161,6 @@ function stubBoard(
 function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
     options: {
-        remote?: string | null;
         sample?: Omit<RuntimeSample, 'sampledAt'> | null;
         publish?: PublishResult | null;
         sync?: SyncResult | null;
@@ -169,27 +168,21 @@ function stubRunner(
     } = {}
 ): Runner & {
     killed: string[];
-    lookups: number;
     samples: number;
     published: BoardJob[];
     publishTokens: (string | undefined)[];
     synced: BoardJob[];
     reclaimed: BoardJob[];
 } {
-    const { remote = null, sample = null, publish = null, sync = null, reclaim = null } = options;
+    const { sample = null, publish = null, sync = null, reclaim = null } = options;
     const runner = {
         killed: [] as string[],
-        lookups: 0,
         samples: 0,
         published: [] as BoardJob[],
         publishTokens: [] as (string | undefined)[],
         synced: [] as BoardJob[],
         reclaimed: [] as BoardJob[],
         run: outcome,
-        async remoteSessionId() {
-            runner.lookups += 1;
-            return remote;
-        },
         async sampleRuntime() {
             runner.samples += 1;
             return sample;
@@ -229,7 +222,6 @@ const ok = (over: Partial<RunOutcome> = {}): RunOutcome => ({
     exitCode: 0,
     output: 'done',
     timedOut: false,
-    idled: false,
     started: true,
     ...over,
 });
@@ -1104,9 +1096,7 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.sessions).toEqual([
-            { id: job(1).id, sessionId: 'ses_stoppedrun00000000001', remoteSessionId: null },
-        ]);
+        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: 'ses_stoppedrun00000000001' }]);
         expect(events).toEqual(['parked with 1 session(s) reported']);
         expect(board.board.suspended).toEqual([job(1).id]);
         expect(board.board.completed).toEqual([]);
@@ -1703,8 +1693,7 @@ describe('the poll loop', () => {
     });
 
     // The id the board is told has to be the one the runner is given, or the UI links to a session
-    // that does not exist. Reported before the run so the link works while the job is still going —
-    // which, under Remote Control, is the only time it is worth anything.
+    // that does not exist. Reported before the run so the link works while the job is still going.
     it('reports the session it is about to run as, before starting the container', async () => {
         const board = stubBoard([job(1)]);
         let given = '';
@@ -1719,41 +1708,8 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(given).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: given, remoteSessionId: null }]);
+        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: given }]);
         expect(reportedFirst).toBe(true);
-    });
-
-    /**
-     * The remote id is the one the Claude UI addresses a session by, and unlike the local uuid it
-     * cannot be minted: Anthropic's backend assigns it when the bridge connects, seconds into the
-     * run. So the worker goes and finds it, which is the whole reason this poll exists.
-     */
-    it('reports the remote session id once the bridge has one', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(
-            async () => {
-                await new Promise((resolve) => setTimeout(resolve, 10));
-                return ok();
-            },
-            { remote: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5' }
-        );
-
-        await drive({ ...board, runner }, { RUNNER_REMOTE_CONTROL: '1' });
-
-        expect(board.board.sessions.map((s) => s.remoteSessionId)).toContain('cse_015tb2nHhHNrBuL7ZDhn9Wx5');
-    });
-
-    // Forty `docker exec`s that can never find anything: a headless run registers no bridge.
-    it('does not go looking for a bridge on a headless run', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 10));
-            return ok();
-        }, 'cse_never-read');
-
-        await drive({ ...board, runner });
-
-        expect(runner.lookups).toBe(0);
     });
 
     // Losing the link is not losing the job.
@@ -1949,21 +1905,9 @@ describe('the poll loop', () => {
         ]);
     });
 
-    // An idle Remote Control session is nobody's failure: it is a job waiting for a human. Reporting
-    // an exit code for it would make it indistinguishable from a run that ended.
-    it('parks an idle runner instead of completing it', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok({ exitCode: 137, output: 'quiet', idled: true }));
-
-        await drive({ ...board, runner });
-
-        expect(board.board.suspended).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
-    });
-
-    // The other half of standby: the board hands the session back on the claim, and the runner
-    // restores it rather than being given a new one. A fresh id here would strand the transcript
-    // the human has been driving and move the link.
+    // The board hands the session back on the claim, and the runner restores it rather than being
+    // given a new one. A fresh id here would strand the transcript the conversation continues
+    // from and move the link.
     it('resumes the session the board hands back, and does not report it again', async () => {
         const parked = '44444444-4444-4444-8444-444444444444';
         const board = stubBoard([job(1, parked)]);
@@ -2040,25 +1984,6 @@ describe('an opencode runner', () => {
         ]);
     });
 
-    // A claim carrying resumeSessionId under opencode WITHOUT a follow-up can only be board state
-    // from before the selected profile changed type: standby is a Remote Control feature, and opencode refuses
-    // Remote Control at startup. Failing it with a reason beats restoring a session the runner
-    // cannot adopt — or idling a headless run to its deadline.
-    it('fails a parked job it cannot resume, with a reason, without running it', async () => {
-        const board = stubBoard([{ ...job(1, '44444444-4444-4444-8444-444444444444'), executorType: 'opencode' }]);
-        let ran = 0;
-        const runner = stubRunner(async () => {
-            ran += 1;
-            return ok();
-        });
-
-        await drive({ ...board, runner });
-
-        expect(ran).toBe(0);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
-        expect(board.board.completed[0]?.output).toContain('OpenCode');
-    });
-
     /**
      * The follow-up carve-out, and the reason an opencode task is follow-up-able at all: the
      * child's session is opencode's OWN (scraped and reported when the parent ran), so the runner
@@ -2091,9 +2016,7 @@ describe('an opencode runner', () => {
 
         await drive({ ...board, runner });
 
-        expect(board.board.sessions).toEqual([
-            { id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9', remoteSessionId: null },
-        ]);
+        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9' }]);
         expect(board.board.completed).toHaveLength(1);
     });
 });
@@ -2410,15 +2333,7 @@ describe('verification gates', () => {
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
     });
 
-    // An idle park is not a finished run: the gates would run on a session somebody is still
-    // driving, and their verdict would mean nothing.
-    it('runs no gates for a parked, a never-started or a lost run', async () => {
-        const idleBoard = stubBoard([gatedJob(1)]);
-        const idleStack = stubGateStack();
-        await drive({ ...idleBoard, runner: stubRunner(async () => ok({ idled: true })), gates: idleStack.gates });
-        expect(idleStack.stack.ran.names).toEqual([]);
-        expect(idleBoard.board.completed).toEqual([]);
-
+    it('runs no gates for a never-started or a lost run', async () => {
         const unstartedBoard = stubBoard([gatedJob(2)]);
         const unstartedStack = stubGateStack();
         await drive({

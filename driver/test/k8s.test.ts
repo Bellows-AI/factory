@@ -161,8 +161,7 @@ describe('the runner job spec', () => {
 
     // Executor parity for the transcript store (issue #55): the same name with the same
     // driver-composed path the docker argv carries for the same claim, so persistence does not
-    // depend on which executor ran the job. Headless claude-code only — Remote Control has no
-    // counterpart on this platform, and opencode is pinned just below.
+    // depend on which executor ran the job. Claude-code only — opencode is pinned just below.
     it('carries the transcript store for claude-code, the same path docker composes', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(container.env).toContainEqual({
@@ -197,7 +196,7 @@ describe('the runner job spec', () => {
     it('refuses a workspace path that is not <org>/<uuid>', () => {
         /*
          * The board is not something this process trusts with a fragment of a command line — the
-         * same rule remoteSessionArgs applies to a session id, and the stakes are higher here:
+         * same rule every board-supplied id is held to, and the stakes are higher here:
          * the value becomes the agent's working directory, and `..` in it points at the parent of
          * every member's tree.
          */
@@ -1811,7 +1810,6 @@ describe('the kubernetes runner', () => {
             exitCode: 0,
             output: 'did the work\n',
             timedOut: false,
-            idled: false,
             started: true,
         });
     });
@@ -2016,7 +2014,6 @@ describe('the kubernetes runner', () => {
             exitCode: 0,
             output: 'did the work\n',
             timedOut: false,
-            idled: false,
             started: true,
         });
     });
@@ -4583,13 +4580,6 @@ describe('the kubernetes runner', () => {
     it('kill refuses a job id that is not a uuid', async () => {
         const { request } = fakeRequest();
         await expect(runner(request).kill({ ...job, id: 'not-a-uuid' })).rejects.toThrow(/not a uuid/);
-    });
-
-    // Remote Control is refused at config under this executor, and the loop only polls the remote
-    // id under Remote Control — so the honest answer here is the interface's own null.
-    it('answers null for the remote session id', async () => {
-        const { request } = fakeRequest();
-        expect(await runner(request).remoteSessionId(job, SESSION)).toBeNull();
     });
 });
 

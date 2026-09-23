@@ -20,9 +20,6 @@ describe('the driver config: basics', () => {
             leaseSeconds: 300,
             jobTimeoutMs: 7_200_000,
             skipPermissions: false,
-            remoteControl: false,
-            idleMs: 3_600_000,
-            authVolume: 'claude-executor-auth',
         });
         expect(config.passEnv).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
     });
@@ -49,15 +46,6 @@ describe('the driver config: basics', () => {
         expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '0' }).skipPermissions).toBe(false);
         expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: 'false' }).skipPermissions).toBe(false);
         expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '' }).skipPermissions).toBe(false);
-    });
-
-    // Turning this on stops a job being run-to-completion: the container lives until the session is
-    // ended or the timeout kills it. A typo must not read as "on".
-    it('treats only an explicit value as a request for Remote Control', () => {
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }).remoteControl).toBe(true);
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '0' }).remoteControl).toBe(false);
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: 'false' }).remoteControl).toBe(false);
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '' }).remoteControl).toBe(false);
     });
 
     it('reads RUNNER_ENV as a list of names', () => {
@@ -132,7 +120,7 @@ describe('the driver config: executor and endpoints', () => {
     });
 });
 
-describe('the driver config: policy, remote control and gates', () => {
+describe('the driver config: policy and gates', () => {
     // An explicit enum, like EXECUTOR: the API server would reject a bad policy only at
     // job-create time, which is attempt-burning — this loader exists to move failures to startup.
     it('accepts only a real image pull policy', () => {
@@ -142,20 +130,6 @@ describe('the driver config: policy, remote control and gates', () => {
             /RUNNER_IMAGE_PULL_POLICY/
         );
         expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'sometimes' })).toThrow(/RUNNER_IMAGE_PULL_POLICY/);
-    });
-
-    /**
-     * Remote Control needs a tty held open, a login volume and an idle-parking loop — three things
-     * that are decided in docker terms inside the docker runner and have no k8s counterpart yet.
-     * A config that half-works is worse than one that refuses to start: the session would run and
-     * simply never appear at claude.ai/code.
-     */
-    it('refuses Remote Control under the kubernetes executor', () => {
-        expect(() => loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_REMOTE_CONTROL: '1' })).toThrow(
-            /RUNNER_REMOTE_CONTROL.*EXECUTOR|EXECUTOR.*RUNNER_REMOTE_CONTROL/s
-        );
-        // And the same combination is fine under docker, which is the only executor that has it.
-        expect(() => loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' })).not.toThrow();
     });
 
     // The gate environment cooldown: how long a container outlives the task that started it, so

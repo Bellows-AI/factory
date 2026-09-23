@@ -46,7 +46,7 @@ beforeAll(async () => {
 const craft = async (
     shape: {
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         startedMinutesAgo?: number;
         wallClockMs?: number;
     } = {}
@@ -198,10 +198,10 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         expect(wall).toBeLessThan(FOUR_MINUTES_UPPER_BOUND_MS);
     });
 
-    it('the idle park records the run time too — the segment it ends was real', async () => {
+    it('the park records the run time too — the segment it ends was real', async () => {
         const { id, token } = await claimBackdated(2);
 
-        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'standby' });
+        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
 
         const wall = await wallOf(id);
         const TWO_MINUTES_LOWER_BOUND_MS = 119_000;

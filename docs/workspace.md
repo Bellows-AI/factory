@@ -61,9 +61,8 @@ variable no user could change.
   deliberately never read by any code: a breadcrumb something resolves against is a second source of
   truth for what `app_user.id` already is.
 - **`workspaceDir()` asserts the uuid before it joins anything**, and `driver/src/docker.ts` asserts
-  the whole `<org>/<uuid>` again before interpolating it into a `docker run`. The same posture
-  `remoteSessionArgs` already takes with a session id — except here the value becomes an agent's
-  working directory, and `..` in it points at the parent of every member's tree.
+  the whole `<org>/<uuid>` again before interpolating it into a `docker run`: the value becomes an
+  agent's working directory, and `..` in it points at the parent of every member's tree.
 - **The segment and the repo name sit at different depths, so neither can shadow the other** — the
   arrangement `<orgId>/<name>` already had.
 - **Repo names are constrained where a name becomes a directory, not at boot.** This was
@@ -200,9 +199,9 @@ come and go with a PUT).
   persisted: there is no default, no ordering UI, no make-default action.
 - **The dialog says what each type's config does.** The claude-code help: merged into the
   runner's settings.json, with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped —
-  everything else applies, except that the baked `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env
-  values and the driver's `OTEL_EXPORTER_OTLP_ENDPOINT` override always win over anything a member
-  pastes. The opencode help: merged over the baked configuration by the
+  everything else applies, except that the `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env values
+  live in the image's managed settings (with the driver's `OTEL_EXPORTER_OTLP_ENDPOINT` patched in)
+  and always win over anything a member pastes. The opencode help: merged over the baked configuration by the
   selected OpenCode runner — model and provider apply, permission rules ignored. A note under the
   Type select says tasks using the executor run with that selected type; both
   helps are tied to their fields with `aria-describedby`, and the actions read "Add executor" /
@@ -244,7 +243,7 @@ come and go with a PUT).
 - **Clones drift from their remotes**, because nothing fetches — but a task never works on the
   drift: the driver's startup sync creates the task worktree from `origin/<default>` fresh at
   each task's starting claim, which is why the drift is survivable at all. A claim that
-  continues a session (a follow-up, a parked resume) restores the tree without fetching —
+  continues a session (a follow-up) restores the tree without fetching —
   mid-flight is exactly when a task must not sync with main (issue #58).
 
 ## Tests

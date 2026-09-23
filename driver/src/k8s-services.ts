@@ -180,7 +180,7 @@ export async function startServiceFleet(deps: K8sDeps, job: BoardJob): Promise<R
     }
     if (refusal !== null) {
         await teardownServices(deps, job);
-        return { exitCode: null, output: refusal, timedOut: false, idled: false, started: true };
+        return { exitCode: null, output: refusal, timedOut: false, started: true };
     }
     return null;
 }

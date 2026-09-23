@@ -27,15 +27,14 @@ export interface BoardJob {
      */
     executorType: ExecutorType | null;
     /**
-     * Set when this claim is picking a parked job back up: the runner restores that session rather
-     * than starting one, and the command is not re-delivered — it is already in the transcript.
-     * Absent on a board that predates standby, which is why it is read as `?? null`.
+     * Set when this claim is a follow-up resuming its parent's session: the runner restores that
+     * session rather than starting one. Read defensively as `?? null`.
      */
     resumeSessionId: string | null;
     /**
      * True when this claim resumes a session AND should still deliver the command into it — a
      * follow-up on a finished task, whose restored transcript is the parent conversation and whose
-     * command is the new adjustment. False on a parked resume, where the delivered-once rule holds.
+     * command is the new adjustment.
      * Read defensively like everything else here: a board that predates follow-ups omits it.
      */
     followUp: boolean;
@@ -207,12 +206,8 @@ export interface Board {
             output: string | null;
         }[]
     ): Promise<LeaseState>;
-    /**
-     * Tells the board which agent session this attempt runs as. Called twice under Remote Control:
-     * once at spawn with the local id alone, and again once the bridge has reported the remote one
-     * the Claude UI addresses the session by.
-     */
-    session(job: BoardJob, sessionId: string, remoteSessionId: string | null): Promise<LeaseState>;
+    /** Tells the board which agent session this attempt runs as. */
+    session(job: BoardJob, sessionId: string): Promise<LeaseState>;
     /**
      * Re-reads the gates the job's checkout declares NOW. The claim read the file before the
      * driver's startup sync freshened the checkout, so a repository whose gates file just arrived
@@ -245,7 +240,7 @@ export interface Board {
      * closed the thread (a `done_at` on some member), computed by the board in the SAME
      * lease-guarded transaction as the verdict — which is the signal a worker uses right after a
      * verdict to decide the task worktree can be reclaimed (issue #47). A follow-up still
-     * queued, parked, or running keeps it false; so does a thread that finished but was never
+     * queued or running keeps it false; so does a thread that finished but was never
      * declared done — a failed task's tree is exactly what its next turn continues from, and the
      * tree is the user's to free.
      */
@@ -400,11 +395,10 @@ export function createBoard({
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
-        async session(job, sessionId, remoteSessionId) {
+        async session(job, sessionId) {
             const response = await post(`/api/jobs/${job.id}/session`, {
                 leaseToken: job.leaseToken,
                 sessionId,
-                remoteSessionId,
             });
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },

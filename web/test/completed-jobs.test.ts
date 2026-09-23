@@ -23,7 +23,6 @@ const job = (id: string): Job =>
         stoppedBy: null,
         doneBy: null,
         sessionId: null,
-        remoteSessionId: null,
         exitCode: 0,
         output: null,
         summary: null,

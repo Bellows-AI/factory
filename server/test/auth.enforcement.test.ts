@@ -61,7 +61,7 @@ const jobStub = (): JobStore =>
             return 'ok';
         },
         async suspend() {
-            return { result: 'ok', status: 'standby' };
+            return { result: 'ok', status: 'stopped' };
         },
         async complete() {
             return 'ok';

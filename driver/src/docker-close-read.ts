@@ -117,15 +117,14 @@ async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext
  * The claude-code turn count: one throwaway container over the workspaces volume, reading the
  * transcript the CLI wrote onto it while it lived. Best-effort like every close-time read — a
  * failed read costs the task its agent-turn figure, never its verdict, and a missing transcript
- * answers null rather than zero. Remote Control is excluded by readsAgentTurns: its conversation
- * continues after this read would run, so its count stays unmeasured.
+ * answers null rather than zero.
  */
 async function applyClaudeCloseRead(
     outcome: RunOutcome,
     ctx: CloseReadContext,
     session: RunSession | null
 ): Promise<void> {
-    if (!readsAgentTurns(ctx.config, ctx.job, session)) return;
+    if (!readsAgentTurns(ctx.job, session)) return;
     const read = await ctx
         .execDocker(claudeTurnsArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt), {
             timeout: CLOSE_READ_DEADLINE_MS,

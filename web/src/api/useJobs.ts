@@ -13,7 +13,7 @@ import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js
  * startedAt), and the wall clock and completion stamp are the thread's sum and max. The per-run
  * lists (tasks pages, sidenav) carry plain per-run rows and group on the client.
  */
-export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
 /** Where one declared verification gate stands. The board stores current/last only — no history. */
 export interface GateCheck {
@@ -154,7 +154,6 @@ export interface Job {
      */
     taskWallClockMs: number | null;
     sessionId: string | null;
-    remoteSessionId: string | null;
     /**
      * The thread's durable PR-review wait, when it has one: the block's reason ("review", ...),
      * when the wait began, and — once the wait is terminal — why it ended. The open wait wins

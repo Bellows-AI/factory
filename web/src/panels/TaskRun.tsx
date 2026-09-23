@@ -207,7 +207,6 @@ function RunMetaFooter({ job, parked }: { job: Job; parked: boolean }) {
             ) : null}
             {job.doneAt !== null ? <span className="pill chat-done">done</span> : null}
             {job.doneBy !== null ? <span className="pill chat-done">done by {job.doneBy.login}</span> : null}
-            {job.status === 'standby' ? <span className="pill">parked</span> : null}
         </p>
     );
 }
@@ -234,7 +233,7 @@ export function TaskRun({
     liveRef?: Ref<HTMLPreElement> | undefined;
 }) {
     const terminal = isTerminal(job.status);
-    const parked = job.status === 'queued' || job.status === 'standby';
+    const parked = job.status === 'queued';
     const gates = job.gates ?? null;
     const publish = publicationForRun(job);
     return (

@@ -113,7 +113,7 @@ describe('TaskDetail — the follow-up composer states', () => {
         const finished = renderDetail({ jobs: [job()] });
         expect(finished).toContain('<textarea');
         expect(finished).toContain('Send follow-up');
-        for (const status of ['queued', 'running', 'standby'] as const) {
+        for (const status of ['queued', 'running'] as const) {
             const moving = renderDetail({
                 jobs: [job({ status, exitCode: null, finishedAt: null, startedAt: null, output: null })],
             });
@@ -284,7 +284,7 @@ describe('TaskDetail — runtime', () => {
     });
 
     it('renders no strip once the run has ended, whatever it sampled last', () => {
-        for (const status of ['succeeded', 'failed', 'dead', 'standby'] as const) {
+        for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
             const html = renderDetail({ jobs: [job({ status, runtime })] });
             expect(html, status).not.toContain('chat-runtime');
         }

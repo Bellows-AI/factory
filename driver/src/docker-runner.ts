@@ -27,8 +27,6 @@ import {
     envFilePath,
     parseDockerServicePs,
     parseDockerStats,
-    parseRemoteSessionId,
-    remoteSessionArgs,
     workspacesMountArgs,
 } from './docker.js';
 import { claimContinuesSession, envFileBody, workspacePath } from './claim.js';
@@ -434,13 +432,6 @@ async function dockerRunHelper(
     }
 }
 
-async function dockerRemoteSessionId(job: BoardJob, sessionId: string): Promise<string | null> {
-    // Every failure here is the ordinary case, not an error: the container may have exited,
-    // the transcript may not exist yet, or the bridge may simply not have connected.
-    const read = await run('docker', remoteSessionArgs(job, sessionId)).catch(() => null);
-    return read ? parseRemoteSessionId(read.stdout) : null;
-}
-
 // The container is named by this attempt's lease token, so a sample can only ever resolve
 // its own attempt's runner — the same attempt-scoping every per-attempt operation here
 // leans on. A refused read (the container exited between the ask and the stats round-trip,
@@ -513,7 +504,7 @@ async function dockerRun(
         serviceTeardown: (j) => dockerServiceTeardown(deps, j),
     });
     if (refusal !== null) {
-        return { exitCode: null, output: refusal, timedOut: false, idled: false, started: true };
+        return { exitCode: null, output: refusal, timedOut: false, started: true };
     }
 
     // The runner container is the last resource this attempt creates, and the spawn is
@@ -527,10 +518,9 @@ async function dockerRun(
      * in argv and never in this process's environment. The body is the claim env PLUS the
      * loop's minted gate credentials PLUS the runner's own attempt pair, so a gated job whose
      * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN and the credential
-     * its attribution reports authenticate with. Skipped under Remote Control, exactly like
-     * every other forwarded credential.
+     * its attribution reports authenticate with.
      */
-    const body = config.remoteControl ? '' : envFileBody(job, config);
+    const body = envFileBody(job, config);
     const file = body ? envFilePath(job) : null;
     if (file) await files.writeFile(file, body, { mode: 0o600 });
     // The write above is an await, so the kill-check must run once more: see
@@ -549,7 +539,6 @@ async function dockerRun(
                 serviceTeardown: (j) => dockerServiceTeardown(deps, j),
                 output,
                 timedOut,
-                idled,
                 cacheLost: cacheState.cacheLost,
             });
 
@@ -565,22 +554,7 @@ async function dockerRun(
             }
         );
         let timedOut = false;
-        let idled = false;
         const cacheState: { cacheLost: string | null } = { cacheLost: null };
-
-        // Armed only under Remote Control, where a session sits waiting for a human and
-        // silence means nobody is driving it. A headless run has nobody to come back to
-        // it, so parking one would strand it.
-        let idleTimer: NodeJS.Timeout | null = null;
-        const idle = () => {
-            if (!config.remoteControl) return;
-            if (idleTimer) clearTimeout(idleTimer);
-            idleTimer = setTimeout(() => {
-                idled = true;
-                void dockerKill(deps, job);
-            }, config.idleMs);
-        };
-        idle();
 
         let output = '';
         const collect = (chunk: Buffer | string) => {
@@ -592,20 +566,14 @@ async function dockerRun(
             // The same tail a complete report would carry, handed over as it grows. Every
             // chunk calls back; throttling is the loop's business, not this runner's.
             onOutput?.(output);
-            idle();
         };
         child.stdout?.on('data', collect);
         child.stderr?.on('data', collect);
 
-        // Armed only under Remote Control: with both running the shorter one always wins, so
-        // a drivable job would be killed and reported failed before it could ever be
-        // parked. There, silence is the bound.
-        const timer = config.remoteControl
-            ? null
-            : setTimeout(() => {
-                  timedOut = true;
-                  void dockerKill(deps, job);
-              }, config.jobTimeoutMs);
+        const timer = setTimeout(() => {
+            timedOut = true;
+            void dockerKill(deps, job);
+        }, config.jobTimeoutMs);
 
         /*
          * The cache watch polls on a period while the run is live. Each tick is one
@@ -623,8 +591,7 @@ async function dockerRun(
         }
 
         const done = () => {
-            if (timer) clearTimeout(timer);
-            if (idleTimer) clearTimeout(idleTimer);
+            clearTimeout(timer);
             if (cacheTimer) clearInterval(cacheTimer);
         };
 
@@ -698,7 +665,6 @@ export function createDockerRunner(
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),
         runHelper: (job, plan, token) => dockerRunHelper(deps, job, plan, token),
-        remoteSessionId: (job, sessionId) => dockerRemoteSessionId(job, sessionId),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
     };

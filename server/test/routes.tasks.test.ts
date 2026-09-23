@@ -48,7 +48,6 @@ const job = (overrides: Partial<Job> & { id: string }): Job => ({
     stoppedBy: null,
     doneBy: null,
     sessionId: null,
-    remoteSessionId: null,
     exitCode: null,
     output: null,
     summary: null,

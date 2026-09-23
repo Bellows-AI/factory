@@ -1,11 +1,7 @@
 import type { BoardJob, HeartbeatVerdict, RuntimeReport } from './board.js';
 import { currentActivity } from './runner.js';
-import type { RunSession, RuntimeSample } from './runner.js';
+import type { RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
-
-/** The bridge connects a few seconds in; two minutes of looking is generous and bounded. */
-const REMOTE_POLL_MS = 3_000;
-const REMOTE_LOOKUPS = 40;
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;
@@ -187,42 +183,6 @@ export function heartbeat(rt: LoopRuntime, job: BoardJob, state: JobState): Prom
             // reported; a settled stop, lease or Remove resolves `abort` for the setup races
             // and `woken` ends the loop outright.
             await Promise.race([sleep(state.launched ? every : SETUP_POLL_MS), state.woken]);
-        }
-    })();
-}
-
-/**
- * Polls the running container for the Remote Control id and reports the first one it sees.
- *
- * Unlike the local session id this cannot be minted in advance — Anthropic's backend assigns it
- * when the bridge connects, a few seconds into the run — so the worker has to go and find it.
- * It is the id the Claude UI addresses the session by, and therefore the one a link is built
- * from.
- *
- * Gives up quietly after `REMOTE_LOOKUPS` tries: a session that has not registered by then is a
- * Remote Control that did not connect, and the run is no less valid for it.
- */
-export function watchRemote(rt: LoopRuntime, job: BoardJob, session: RunSession, state: JobState): Promise<void> {
-    const { board, runner, log, sleep } = rt;
-    return (async () => {
-        for (let i = 0; i < REMOTE_LOOKUPS && !state.finished && !state.lost; i += 1) {
-            await Promise.race([sleep(REMOTE_POLL_MS), state.woken]);
-            if (state.finished) return;
-            let remote: string | null;
-            try {
-                remote = await runner.remoteSessionId(job, session.id);
-            } catch (e) {
-                log(`job ${job.id}: could not read the remote session: ${(e as Error).message}`);
-                return;
-            }
-            if (!remote) continue;
-            try {
-                await board.session(job, session.id, remote);
-                log(`job ${job.id}: remote session ${remote}`);
-            } catch (e) {
-                log(`job ${job.id}: could not report the remote session: ${(e as Error).message}`);
-            }
-            return;
         }
     })();
 }

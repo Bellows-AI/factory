@@ -273,8 +273,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.mobile-nav .sidenav-link',
             '.mobile-nav .sidenav-sublink',
             '.mobile-nav .sidenav-newtask',
-            '.mobile-nav .org-select',
-            '.appbar .user-menu-button',
+            '.select-trigger',
             '.range-option',
             '.range-draft input',
             '.range-draft-actions button',
@@ -289,7 +288,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.unsaved-actions button',
             '.env-tab',
             '.composer-start button',
-            '.composer-select',
+            '.composer-param-input',
             '.legend-button',
         ]) {
             expect(prelude.includes(selector), `${selector} in the 44px target list`).toBe(true);

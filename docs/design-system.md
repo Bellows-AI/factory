@@ -66,6 +66,8 @@ block's tokens, and where a pair's contrast demands it the two blocks deliberate
 | `--chart-grid` | Chart gridlines — a step behind `--line` (lines behind data, not edges) | line 60% over surface |
 | `--chart-primary` | Chart series fill and its legend swatch | accent 70% over black |
 | `--lamp-glow` | The halo behind a breathing lamp | currentColor 26% over transparent |
+| `--accent-wash` | A selector trigger's hover/focus/open highlight, and an option row's hover/focus fill (issue 224) | accent 16% (dark) / 12% (light) over transparent |
+| `--shadow-float` | The floating popover's soft shadow (issue 224) | black 40% (dark) / ink 14% (light) over transparent |
 
 Typography and shape tokens live in the static `@theme` block (`@theme static`, so they are
 emitted even where only a `var()` points at them):
@@ -174,6 +176,36 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 ### Controls
 
+#### Selector (issue 224)
+
+The shared trigger and option-row language behind every dropdown: the app-bar account and
+organization menus, the appearance control, and the composer's workflow, repository and executor
+listboxes. All are Headless UI (`Menu` or `Listbox`) — a native `<select>` cannot be anchored,
+capped to the viewport, or given a checkmark, which is why the appearance control (issue 188)
+moved off one.
+
+- **Trigger — `select-trigger`.** Unframed at rest (`border` stays a transparent 1px, so nothing
+  shifts size later): a real `button`'s usual `--line` border and sunken fill are both suppressed
+  by this class's higher specificity. Hover, keyboard focus and "panel open" (`[data-open]`, the
+  Headless UI attribute) all paint the same `--accent-wash` background — one highlight, however it
+  was reached — and keyboard focus keeps the global accent ring on top of it, so it never
+  degrades to the hover look alone. A trailing `▾` (`::after`) marks "a choice is available here"
+  and disappears on `:disabled`, which otherwise only mutes the text. Long values wrap inside the
+  trigger (`overflow-wrap: anywhere`), never the page.
+- **Panel — `popover`.** A raised surface with a soft shadow (`--shadow-float`) instead of a
+  harder outline. It never flips above its trigger: `web/src/anchor.ts`'s `useDownwardAnchor`
+  hook builds its own floating-ui middleware stack (`offset`, `shift`, `size`, deliberately no
+  `flip` — Headless UI's own `anchor` prop always adds one, with no way to turn it off) and caps
+  the panel's height to the space actually below the trigger, so `overflow-y: auto` scrolls it
+  internally rather than clipping or flipping. `portal` keeps it out of any clipping ancestor
+  (the mobile drawer included).
+- **Option rows — `popover-option`.** Comfortable flex rows (`gap`, roomier padding than the old
+  block layout) sharing the trigger's `--accent-wash` on hover and keyboard focus (`[data-focus]`)
+  — one coherent highlight language between the open trigger and its rows. The selected row
+  (`[data-selected]`) bolds its text and adds a trailing `✓`, never color alone.
+  `popover-separator` is the one restrained divider, used between the user menu's Account link and
+  Sign out.
+
 #### Appearance (issue 188)
 
 The System/Light/Dark preference is a client-only display setting, never a server one: it lives
@@ -189,22 +221,22 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Appearance | `theme-field`, `theme-label`, `theme-select` | The one System/Light/Dark select (native, keyboard-complete), worn by the app bar and the public header's actions cell; the label is clipped below 640px while the accessible name stays |
+| Appearance | `theme-field`, `theme-label`, `select-trigger` | The one System/Light/Dark choice (a Headless UI `Listbox`, `id="theme-select"` on its trigger for the label's `for`), worn by the app bar and the public header's actions cell; the label is clipped below 640px while the accessible name stays |
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
 | Toggle | `settings-toggle` | A labelled checkbox row — the design system's one boolean-control primitive (no dedicated switch family exists): the default-workflow settings panel's two switches and the composer's matching pair of optional-step checkboxes (issue 208) |
-| Popover | `popover`, `popover-option` | The shared floating surface for the anchored Headless UI panels — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
+| Popover | `select-trigger`, `popover`, `popover-option`, `popover-separator` | The shared quiet-selector language above — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
 | Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166): label above control, read-only values sunken like the inputs they echo |
 | Range | `range-presets`, `range-option.active`, `range-picker`, `range-popover-root`, `range-popover`, `range-draft`, `range-draft-actions` | The date-range presets and the Custom trigger; the dates live in the anchored popover (`--line-strong` edge, z-index 30), whose draft form commits only through Apply or Clear |
 | Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar groups — mono, muted, a polite live region |
 | Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
-| Org | `org-selector`, `org-select` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
+| Org | `org-selector`, `org-select`, `select-trigger` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
 | Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
 | Public header | `public-header`, `public-brand`, `public-context`, `public-header-actions` | The compact chrome both public pages (gate, onboarding) carry: the Factory brand, one context word, and the actions cell, which holds the theme control (issue 187; the appearance control arrived in issue 188). No navigation, no session, no `h1` — each page owns its one heading |
 | Onboarding | `onboarding`, `onboarding-purpose`, `onboarding-identity`, `onboarding-orgs`, `onboarding-org`, `onboarding-org-head`, `onboarding-org-name`, `onboarding-org-mark`, `onboarding-requested`, `onboarding-org-details`, `onboarding-org-summary`, `onboarding-mode`, `onboarding-mode-option`, `onboarding-mode-help`, `onboarding-repos`, `onboarding-repo`, `onboarding-repo-count`, `onboarding-note`, `onboarding-summary`, `onboarding-summary-total`, `onboarding-summary-rows`, `onboarding-summary-row`, `onboarding-actions`, `onboarding-loading`, `onboarding-loading-line` | The setup screen (issue 125, recomposed by issue 187): the centered column, the org checkbox list with each org's initial identity mark and its `Requested for this sign-in` mark, one org's bordered row — a focus target for a blocked attempt, never a click target — whose disclosure summary names the org's repository mode while collapsed, the explicit mode radios with their helpers, the specific-mode checklist with its `N of M` count, the access note, the final selection summary, and the action region (global error, disabled reason, Continue). `onboarding-loading` shapes the pending-load placeholders: static rows and a status line, no shimmer |
-| User menu | `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover` | The app bar's identity disclosure (Headless UI Menu) |
+| User menu | `select-trigger`, `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover`, `popover-separator` | The app bar's identity disclosure (Headless UI Menu): Account, a separator, then Sign out |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
 | Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox executor picker; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay`. The `dialog-*` shell is shared with the dialogs below |
 | Repository setup | `repo-search`, `repo-columns` | The repositories page's visibly labeled search row, and the summary/list/detail stack that becomes master/detail at ≥1100px; below that the DOM order — summary, list, detail — is the reading order (issue 181) |
@@ -248,7 +280,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Gates | `chat-gates`, `chat-gate-list`, `gate-passed`, `gate-failed`, `gate-running` | The verification-gate tree |
 | Output | `chat-output` | The scrolled raw-run well (`--surface`) |
 | Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
-| Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `composer-select`, `task-compose`, `composer-field`, `composer-fields`, `composer-grid`, `composer-helper`, `composer-preflight`, `composer-start`, `composer-blocker`, `composer-param-error`, `composer-param-details` | The message input and its row; `task-compose` is the full-page variant. The guided composer (#176) stacks label-above-control `composer-field` groups — prompt, execution context in a `composer-grid` (one column until 768px), the workflow select, and the `composer-fields` parameter inputs — each with `composer-helper` guidance, a `composer-preflight` sentence before the `composer-start` action row (button, `kbd` shortcut, `composer-blocker` reason), per-field `composer-param-error` lines, and the raw rule only inside `composer-param-details`. A failed field tints its `.composer-select` edge via `aria-invalid` |
+| Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `select-trigger`, `composer-param-input`, `task-compose`, `composer-field`, `composer-fields`, `composer-grid`, `composer-helper`, `composer-preflight`, `composer-start`, `composer-blocker`, `composer-param-error`, `composer-param-details` | The message input and its row; `task-compose` is the full-page variant. The guided composer (#176) stacks label-above-control `composer-field` groups — prompt, execution context in a `composer-grid` (one column until 768px), the workflow select, and the `composer-fields` parameter inputs — each with `composer-helper` guidance, a `composer-preflight` sentence before the `composer-start` action row (button, `kbd` shortcut, `composer-blocker` reason), per-field `composer-param-error` lines, and the raw rule only inside `composer-param-details`. The workflow/repository/executor listboxes wear `select-trigger` (issue 224); a failed parameter field tints its `.composer-param-input` edge via `aria-invalid` |
 | Outcome | `task-outcome`, `task-outcome-summary`, `task-outcome-body`, `task-outcome-label` | The task page's summary disclosure: result, execution, verification, published work, services — one `<details>`, expanded by default, whose grid area flips from above the conversation (narrow) to a bounded right column (≥1024px) without a second component |
 | Task head | `task-actions`, `task-layout`, `task-avatar` | The task's action row (now inside the page header), the outcome/conversation grid frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
 | Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
@@ -301,7 +333,7 @@ Components:
 | `LoginGate.tsx` | login, appearance, public-header |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `OnboardingOrganization.tsx` | onboarding |
-| `OrgSelector.tsx` | org |
+| `OrgSelector.tsx` | org, selector |
 | `PageHeader.tsx` | page-header |
 | `PublicPageHeader.tsx` | public-header |
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
@@ -312,11 +344,11 @@ Components:
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
-| `ThemeSelector.tsx` | appearance |
+| `ThemeSelector.tsx` | appearance, selector |
 | `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
 | `UnsavedChangesDialog.tsx` | picker (dialog shell), unsaved, chat-resume, chat-remove |
-| `UserMenu.tsx` | user-menu-button, popover, user-menu-panel, avatar |
-| `WorkflowParameterFields.tsx` | composer-field, composer-fields, composer-label, composer-select, composer-helper, composer-param-error, composer-param-details |
+| `UserMenu.tsx` | selector, user-menu-button, popover, popover-separator, user-menu-panel, avatar |
+| `WorkflowParameterFields.tsx` | composer-field, composer-fields, composer-label, composer-param-input, composer-helper, composer-param-error, composer-param-details |
 
 Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a helper, not a panel):
 
@@ -329,7 +361,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `IdentityPanel.tsx` | identity, avatar |
 | `TrackedOrgsPanel.tsx` | panel, login-button |
 | `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
-| `TaskComposer.tsx` | panel, composer, composer-field, composer-grid, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, settings-toggle, kbd, chat-resume, task-compose |
+| `TaskComposer.tsx` | panel, composer, selector, composer-field, composer-grid, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, settings-toggle, kbd, chat-resume, task-compose |
 | `TaskDetail.tsx` | task-layout, task-conversation, panel-head, panel, composer, status, muted |
 | `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done, muted |
 | `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |

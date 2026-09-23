@@ -107,9 +107,9 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
             return heartbeatJob(ctx, id, leaseToken, leaseSeconds);
         },
 
-        async session(id, leaseToken, sessionId, remoteSessionId) {
+        async session(id, leaseToken, sessionId) {
             await gate();
-            return sessionReport(ctx, id, leaseToken, { sessionId, remoteSessionId });
+            return sessionReport(ctx, id, leaseToken, sessionId);
         },
 
         async progress(id, leaseToken, output, runtime: RuntimeVitals | null = null) {

@@ -40,7 +40,7 @@ beforeAll(async () => {
 const craft = async (
     shape: {
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         lease?: 'live' | 'expired';
         createdBy?: string | null;
         repo?: string | null;
@@ -73,7 +73,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         const id = await craft();
         const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         const sid = randomUUID();
-        await store.session(id, token, sid, null);
+        await store.session(id, token, sid);
         expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
         await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
 
@@ -96,7 +96,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         const id = await craft();
         const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         const sid = randomUUID();
-        await store.session(id, token, sid, null);
+        await store.session(id, token, sid);
         await store.stop(id, null);
         await sql`update job set attempts = max_attempts, lease_expires_at = now() - interval '1 second'
                   where id = ${id}`;
@@ -117,7 +117,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         const id = await craft();
         const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         const sid = randomUUID();
-        await store.session(id, token, sid, null);
+        await store.session(id, token, sid);
         await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
 
         expect(await store.stop(id, AUTHOR)).toEqual({ result: 'stopped' });
@@ -139,7 +139,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         const id = await craft();
         const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         const sid = randomUUID();
-        await store.session(id, token, sid, null);
+        await store.session(id, token, sid);
         await store.stop(id, null);
         await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
@@ -164,7 +164,7 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         const zombie = await craft();
         const token = (await store.claim('w1', LEASE_SECONDS))!.leaseToken;
         const sid = randomUUID();
-        await store.session(zombie, token, sid, null);
+        await store.session(zombie, token, sid);
         await store.stop(zombie, null);
         await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${zombie}`;
 

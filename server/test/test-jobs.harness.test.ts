@@ -29,12 +29,12 @@ describe('the test-jobs harness', () => {
         }
     });
 
-    it('the standby block exercises the follow-up contract', () => {
-        expect(SCRIPT).toContain('POST "/api/jobs/$park_id/suspend"');
-        expect(SCRIPT).toContain('POST "/api/jobs/$park_id/stop"');
-        expect(SCRIPT).toContain("'a parked job is not offered'");
-        expect(SCRIPT).toMatch(/409 POST "\/api\/jobs\/\$park_id\/follow-up"/);
-        expect(SCRIPT.split('POST "/api/jobs/$park_id/follow-up"').length - 1).toBeGreaterThanOrEqual(2);
+    it('the stop block exercises the follow-up contract', () => {
+        expect(SCRIPT).toContain('202 POST "/api/jobs/$park_id/stop"');
+        expect(SCRIPT).toContain('200 POST "/api/jobs/$park_id/suspend"');
+        expect(SCRIPT).toContain("'a stopped job is not offered'");
+        expect(SCRIPT).toContain('POST "/api/jobs/$park_id/follow-up"');
+        expect(SCRIPT).not.toMatch(/standby|remoteSessionId/);
         expect(SCRIPT).toContain('resumeSessionId "$PARKED_SESSION"');
         expect(SCRIPT).toContain('followUp true');
         expect(SCRIPT).toContain('attempts 0');

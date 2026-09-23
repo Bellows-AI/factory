@@ -6,7 +6,6 @@ import { type BoardScanner, boardsFor, storeFor, workflowsFor } from './job-cont
 import {
     type ResolvedWorkflow,
     buildWorkflowSelection,
-    badRemoteSessionId,
     validateClaimBody,
     validateCommandField,
     validateExecutorField,
@@ -22,7 +21,6 @@ import {
     HTTP_OK,
     LEASE_SECONDS_MAX,
     OUTPUT_LIMIT,
-    REMOTE_SESSION_LIMIT,
     SESSION_ID,
     leaseSeconds,
     leaseLost,
@@ -195,32 +193,23 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
     const id = (request.params as { id: string }).id;
     if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
 
-    const { leaseToken, sessionId, remoteSessionId } = body(request.body);
+    const { leaseToken, sessionId } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
         return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
     if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
         return bad(reply, ERROR_CODES.BAD_SESSION_ID, 'sessionId must be a short opaque token');
     }
-    // Not a uuid, and not checked against a shape: it is an opaque token minted elsewhere
-    // (`cse_…` today), and pinning its format here would break on the day it changes.
-    if (badRemoteSessionId(remoteSessionId)) {
-        return bad(
-            reply,
-            ERROR_CODES.BAD_REMOTE_SESSION_ID,
-            `remoteSessionId must be a non-empty string of at most ${REMOTE_SESSION_LIMIT} characters`
-        );
-    }
 
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job session failed'),
-        () => store.session(id, leaseToken, sessionId, (remoteSessionId as string | undefined) ?? null)
+        () => store.session(id, leaseToken, sessionId)
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
     if (result.value === 'lost') return leaseLost(reply);
-    return reply.code(HTTP_OK).send({ id, sessionId, remoteSessionId: remoteSessionId ?? null });
+    return reply.code(HTTP_OK).send({ id, sessionId });
 }
 
 // A rolling tail of the running attempt's output, so the dashboard shows the work while it
@@ -349,9 +338,8 @@ export async function handlePublishToken(orgs: OrgRegistry, request: FastifyRequ
 
 // Ending a running job's attempt. Separate from complete because there is no worker outcome
 // here: an exit code would have to be invented, and inventing one makes a user's stop
-// indistinguishable from a run that ended on its own. Where the row lands is the board's
-// decision, read off the stop stamp the heartbeat delivered — `stopped` when the park was the
-// user's stop landing, `standby` for the Remote Control idle park — and the answer carries it.
+// indistinguishable from a run that ended on its own. The row lands `stopped` — the park is the
+// user's stop landing — and the answer carries the status.
 export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);

@@ -340,43 +340,27 @@ api POST "/api/jobs/$reclaim_id/complete" \
     "{\"leaseToken\":\"$(field "$again" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
 
 PARKED_SESSION='55555555-5555-4555-8555-555555555555'
-REMOTE_SESSION='cse_015tb2nHhHNrBuL7ZDhn9Wx5'
 
-# Standby, end to end: park a running job, prove the board does not re-queue it, end its turn with
-# Stop, and continue it as a follow-up — the only resumed claim there is (docs/jobs.md).
+# Stop, end to end: a running job asked to stop is settled by its worker's park, lands stopped —
+# terminal, the session kept — and continues as a follow-up, the only resumed claim there is
+# (docs/jobs.md).
 park_id="$(create_job 'park me')"
 park_claim="$(body "$(api POST /api/jobs/claim '{"worker":"parks","leaseSeconds":300}')")"
 park_token="$(field "$park_claim" leaseToken)"
 api POST "/api/jobs/$park_id/session" \
     "{\"leaseToken\":\"$park_token\",\"sessionId\":\"$PARKED_SESSION\"}" >/dev/null
-# The second report of an attempt. Not a uuid — it is an opaque token minted by Anthropic's backend
-# when the Remote Control bridge connects, and it is what claude.ai/code addresses the session by.
-api POST "/api/jobs/$park_id/session" \
-    "{\"leaseToken\":\"$park_token\",\"sessionId\":\"$PARKED_SESSION\",\"remoteSessionId\":\"$REMOTE_SESSION\"}" >/dev/null
-expect_field 'the remote session is kept' "$(body "$(api GET "/api/jobs/$park_id")")" \
-    remoteSessionId "$REMOTE_SESSION"
-expect_status 'a running job can be parked'   200 POST "/api/jobs/$park_id/suspend" \
+# A live lease: the stop is stamped and rides the heartbeat to the worker, which parks the run.
+expect_status 'a running job can be asked to stop' 202 POST "/api/jobs/$park_id/stop"
+expect_status 'the worker parks the stopped run'   200 POST "/api/jobs/$park_id/suspend" \
     "{\"leaseToken\":\"$park_token\"}"
-parked="$(body "$(api GET "/api/jobs/$park_id")")"
-expect_field  'it is on standby'              "$parked" status standby
-expect_field  'it keeps its session'          "$parked" sessionId "$PARKED_SESSION"
-# The link has to keep working while the job waits to be picked up.
-expect_field  'and its remote session'        "$parked" remoteSessionId "$REMOTE_SESSION"
-# The reason standby is a status and not just an expired lease: an idle poll must not resume it.
-expect_status 'a parked job is not offered'   204 POST /api/jobs/claim '{"worker":"idle-poll"}'
-# The continuation of a parked task is a person's action on a FINISHED one: while the row sits on
-# standby the turn is still open, and the follow-up is refused.
-expect_status 'a parked task cannot be continued' 409 POST "/api/jobs/$park_id/follow-up" \
-    '{"command":"too soon"}'
-# Stop ends the turn: the parked row settles stopped — terminal, the session kept for the
-# follow-up that continues exactly where things stood. There is no resume and no park resume.
-expect_status 'stop settles the parked row'   200 POST "/api/jobs/$park_id/stop"
 stopped="$(body "$(api GET "/api/jobs/$park_id")")"
 expect_field  'it is stopped'                 "$stopped" status stopped
 expect_field  'stopped keeps the session'     "$stopped" sessionId "$PARKED_SESSION"
-# Parking handed the attempt back, and Stop settles without taking one: the parked row never
-# burned a try. (suspend: attempts = greatest(attempts - 1, 0); stop does not touch attempts.)
+# Parking handed the attempt back: the stopped row never burned a try.
+# (suspend: attempts = greatest(attempts - 1, 0).)
 expect_field  'parking did not burn a try'    "$stopped" attempts 0
+# Stopped is terminal: an idle poll must not pick it back up.
+expect_status 'a stopped job is not offered'  204 POST /api/jobs/claim '{"worker":"idle-poll"}'
 # One api call, not expect_status plus a second request: every follow-up POST that passes the
 # preconditions INSERTS a row, so a duplicate call would queue a second continuation.
 follow_out="$(api POST "/api/jobs/$park_id/follow-up" '{"command":"continue this"}')"

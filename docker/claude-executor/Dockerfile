@@ -50,9 +50,18 @@ ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 # runtime as environment (see README).
 COPY --chown=node:node claude-home/ /home/node/.claude/
 
+# Telemetry lives in MANAGED settings, not in claude-home/settings.json: managed is the one scope
+# that outranks the checkout's own .claude/settings.json. A target repo that sets its own OTEL_*
+# for host development (this repo points OTEL_EXPORTER_OTLP_ENDPOINT at 127.0.0.1:4318) would
+# otherwise win inside the runner and export every datapoint into the container's own loopback —
+# silently, since the CLI never reports a failed export. It also outranks a member's executor
+# config, so telemetry cannot be switched off or redirected from there. Owned by node because the
+# entrypoint rewrites its endpoint from the driver's OTEL_EXPORTER_OTLP_ENDPOINT.
+COPY --chown=node:node managed-settings.json /etc/claude-code/managed-settings.json
+
 # The skills, from docker/skills/ — one source for both executor images, so a task sees the same
-# skills whichever executor runs it. Before the /opt/claude-home snapshot below, so a Remote Control
-# auth volume is seeded with them too.
+# skills whichever executor runs it. Before the /opt/claude-home snapshot below, so a seeded config
+# dir (the transcript store's) carries them too.
 COPY --from=skills --chown=node:node . /home/node/.claude/skills/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
@@ -60,10 +69,10 @@ RUN mkdir -p /workspace /opt/claude-home && chown node:node /workspace /opt/clau
 WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/claude-executor
-# The branch reporter lives in /usr/local/bin, NOT claude-home/: the Remote Control auth volume
-# mounts over CLAUDE_CONFIG_DIR and would shadow anything baked there — exactly the runs that
-# most want to be attributed. The git guard (settings.json's PreToolUse hook) is in the same
-# boat and for the same reason: the checkout it protects matters most on driver-run attempts.
+# The branch reporter lives in /usr/local/bin, NOT claude-home/: the transcript store moves
+# CLAUDE_CONFIG_DIR off the baked home, so a script there is not a fixed path. The git guard
+# (settings.json's PreToolUse hook) is in the same boat and for the same reason: its hook
+# command names an absolute path.
 COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
 COPY git-guard.cjs /usr/local/bin/git-guard.cjs
 COPY claude-progress.cjs /usr/local/bin/claude-progress.cjs
@@ -80,16 +89,15 @@ RUN claude plugin marketplace add mksglu/context-mode \
     && claude plugin install context-mode@context-mode
 
 # Mark first-run onboarding done. Without this the CLI opens the theme picker and waits for a
-# keypress, which an unattended container never sends — `--remote-control` in particular hangs on a
-# prompt nobody can see. Merged into the file the CLI just wrote rather than replacing it, since it
+# keypress, which an unattended container never sends. Merged into the file the CLI just wrote rather than replacing it, since it
 # already holds a generated machineID and userID.
 RUN node -e "const f=process.env.CLAUDE_CONFIG_DIR+'/.claude.json',fs=require('fs'); \
     const c=JSON.parse(fs.readFileSync(f,'utf8')); c.hasCompletedOnboarding=true; \
     c.theme='dark'; fs.writeFileSync(f,JSON.stringify(c,null,2));"
 
-# Keep a pristine copy of the finished config. Remote Control needs a full-scope login, and a login
-# only survives the container if CLAUDE_CONFIG_DIR is a volume — which mounts empty and hides
-# everything above it. The entrypoint seeds the volume from here on first run.
+# Keep a pristine copy of the finished config. The transcript store points CLAUDE_CONFIG_DIR at a
+# per-thread directory on the workspaces volume, which starts empty and would hide everything
+# above it. The entrypoint seeds that directory from here on first run.
 RUN cp -a /home/node/.claude/. /opt/claude-home/
 
 # The installs above run as root, and node creates /tmp/node-compile-cache while they run. It

@@ -48,7 +48,7 @@ const craft = async (
     shape: {
         root?: string;
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         command?: string;
         createdMinutesAgo?: number;
         finishedMinutesAgo?: number;
