@@ -29,7 +29,7 @@ check() { # check <name> <expected substring> <docker args...>
 }
 
 echo "building $IMAGE"
-docker build -q -t "$IMAGE" "$HERE" >/dev/null || { echo "build failed"; exit 1; }
+docker build -q --build-context skills="$HERE/../skills" -t "$IMAGE" "$HERE" >/dev/null || { echo "build failed"; exit 1; }
 
 run() { docker run --rm -v "$REPO:/workspace" "$@"; }
 

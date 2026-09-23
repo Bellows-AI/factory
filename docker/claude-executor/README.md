@@ -16,12 +16,13 @@ checkout; it does not build or run this repo's application.
 | `claude-home/` | `/home/node/.claude` inside the image, via `CLAUDE_CONFIG_DIR` |
 | `claude-home/settings.json` | telemetry configuration and the git-guard hook wiring |
 | `claude-home/CLAUDE.md` | the global instructions every session loads |
-| `claude-home/skills/` | `github`, `jira`, `backend-fix`, `gates` — loaded on demand, not every session |
+| `../skills/` | `/home/node/.claude/skills` — `github`, `jira`, `backend-fix`, `gates`, shared with opencode-executor; loaded on demand, not every session |
 
 `claude-home/` is the predefined configuration folder. Whatever you drop in it ships in the image —
-add `agents/`, `commands/` or `hooks/` and they need no Dockerfile change.
+add `agents/`, `commands/` or `hooks/` and they need no Dockerfile change. Skills do not go here:
+they live in `docker/skills/`, so opencode-executor bakes the same set.
 
-Tool-specific guidance lives in `skills/`, not in `CLAUDE.md`: `CLAUDE.md` is read in full at the
+Tool-specific guidance lives in skills, not in `CLAUDE.md`: `CLAUDE.md` is read in full at the
 start of every session, while a skill costs only its description until something actually invokes
 it. Anything that applies to a subset of tasks belongs in a skill. It is a
 deliberate copy rather than a mount of the host's `~/.claude` — that directory holds
@@ -57,13 +58,16 @@ has — instructions for an absent binary cost tokens every session and end in
 ## Build
 
 ```bash
-docker build -t claude-executor docker/claude-executor
+docker build --build-context skills=docker/skills -t claude-executor docker/claude-executor
 
 # Pin the CLI instead of tracking latest:
-docker build --build-arg CLAUDE_CODE_VERSION=2.0.0 -t claude-executor docker/claude-executor
+docker build --build-context skills=docker/skills --build-arg CLAUDE_CODE_VERSION=2.0.0 \
+    -t claude-executor docker/claude-executor
 ```
 
-The build context is this directory, not the repo root.
+The build context is this directory, not the repo root. The skills are the exception: they live in
+`docker/skills/`, shared with the other executor image, and arrive as the named `skills` context —
+leave the flag off and the build fails trying to pull an image called `skills`.
 
 ## Test
 

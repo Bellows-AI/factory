@@ -20,7 +20,7 @@ TARGET="$(cd "${TARGET:-$PWD}" && pwd)"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "building $IMAGE"
-    docker build -q -t "$IMAGE" "$HERE" >/dev/null
+    docker build -q --build-context skills="$HERE/../skills" -t "$IMAGE" "$HERE" >/dev/null
 fi
 
 # The volume holds the credential and the account record. Both live under CLAUDE_CONFIG_DIR, so the

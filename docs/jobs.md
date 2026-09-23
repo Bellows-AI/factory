@@ -82,8 +82,7 @@ A fourth workspace, with no dependency on `core` and none at run time at all. It
 HTTP board, never of the database — which is what lets it run anywhere the board is reachable.
 
 ```bash
-docker build -t claude-executor docker/claude-executor     # the claude-code runner image, once
-docker build -t opencode-executor docker/opencode-executor # the opencode runner image, once
+make runners                                               # both runner images, once
 npm run driver                                             # against a board on 127.0.0.1:8080
 
 docker compose up -d driver                              # or in the stack, with everything else

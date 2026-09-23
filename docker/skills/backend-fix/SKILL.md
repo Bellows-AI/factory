@@ -300,7 +300,7 @@ loop:
 **Use the merge-base form before the first push.** A fixed `HEAD~N` offset silently drops the
 earliest commits, and by then the branch may carry harness, repro, fix and gate commits.
 
-Run the review as a subagent (`code-reviewer`, else `general-purpose`) with the diff, or through a
-headless CLI if the environment has one. Skip pure style nitpicks the linter already owns. If the
-review raises something that genuinely contradicts the ticket or a hard rule, treat it as Step 7
-rather than degrading the fix to comply.
+Run the review as a subagent (Claude Code: `code-reviewer`, else `general-purpose`; OpenCode:
+`general`) with the diff, or through a headless CLI if the environment has one. Skip pure style
+nitpicks the linter already owns. If the review raises something that genuinely contradicts the
+ticket or a hard rule, treat it as Step 7 rather than degrading the fix to comply.

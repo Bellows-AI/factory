@@ -68,9 +68,9 @@ npm start              # node --env-file-if-exists=.env server/dist/index.js (re
 
 # The job driver: claims jobs from the board and spawns the runner selected by each task's executor
 # profile (claude-executor or opencode-executor). Needs a docker daemon and the runner image or
-# images (`docker build -t claude-executor docker/claude-executor`, `docker build -t
-# opencode-executor docker/opencode-executor`). It talks to the board over HTTP only — never to the
-# database — so JOB_BOARD_URL is all it needs to find.
+# images (`make runners` builds both, passing the `skills=docker/skills` build context the two
+# share). It talks to the board over HTTP only — never to the database — so JOB_BOARD_URL is all it
+# needs to find.
 npm run driver
 
 npm test               # vitest run — offline, no token, no quota, no database, no docker
