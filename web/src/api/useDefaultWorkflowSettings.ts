@@ -151,21 +151,30 @@ export function useDefaultWorkflowSettings(): UseDefaultWorkflowSettings {
         };
     }, [start]);
 
-    const save = useCallback(async (pair: { reviewReconciliation: boolean; mergeConflictAutofix: boolean }) => {
-        setSaving(true);
-        try {
-            const result = await putDefaultWorkflowSettings(pair);
-            if (result.ok) {
-                setData(result.data);
-                setUnavailable(false);
-            } else {
-                setUnavailable(result.unavailable);
+    const save = useCallback(
+        async (pair: { reviewReconciliation: boolean; mergeConflictAutofix: boolean }) => {
+            setSaving(true);
+            try {
+                const result = await putDefaultWorkflowSettings(pair);
+                if (result.ok) {
+                    setData(result.data);
+                    setUnavailable(false);
+                    setError(null);
+                    // A poll already in flight when the PUT was sent can still land after it, its
+                    // abort signal untouched, and overwrite this write with what it read before
+                    // the write committed — restarting the chain aborts that stale generation and
+                    // starts the next GET only after the write is known to have landed.
+                    start();
+                } else {
+                    setUnavailable(result.unavailable);
+                }
+                return result;
+            } finally {
+                setSaving(false);
             }
-            return result;
-        } finally {
-            setSaving(false);
-        }
-    }, []);
+        },
+        [start]
+    );
 
     return { data, loading, unavailable, error, saving, refresh, save };
 }

@@ -250,10 +250,15 @@ export function TaskComposer({
     // button, never a bypass. An invalid keyboard submission owes the member the same screen a
     // tab-through would have left: every field marked, the first invalid one focused, and no
     // request sent. An empty prompt is the missing task itself; the visible blocker says so.
+    // Launching Default workflow before the saved step settings answer would silently omit the
+    // member's saved pair from the submitted JSON — only meaningful where the checkboxes
+    // themselves would render (the workflow section is visible, and no custom workflow is chosen).
+    const defaultsUnresolved = workflows !== null && workflow === '' && effectiveDefaultWorkflowSteps === null;
     const blocker = startBlocker({
         sending,
         executorMissing: executor === '',
         promptEmpty: draft.trim() === '',
+        defaultsUnresolved,
         paramsInvalid: !paramsReady,
     });
     const attemptStart = () => {
@@ -274,9 +279,11 @@ export function TaskComposer({
               ? 'Configure an executor in Settings to continue.'
               : blocker === 'empty-prompt'
                 ? 'Describe the task to continue.'
-                : blocker === 'invalid-params'
-                  ? 'Complete the required workflow details to continue.'
-                  : null;
+                : blocker === 'defaults-unresolved'
+                  ? 'Loading your saved workflow defaults…'
+                  : blocker === 'invalid-params'
+                    ? 'Complete the required workflow details to continue.'
+                    : null;
     const preflight = preflightSentence({
         repo: repo === '' ? null : repo,
         executor: executor === '' ? null : executor,

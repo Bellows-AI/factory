@@ -463,7 +463,7 @@ describe('TaskComposer', () => {
                 defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: false },
             });
             expect(html).toContain(
-                'Will run the default workflow: prompt, gates, publish, plus iterate on PR review comments.'
+                'Default workflow selected: prompt, gates, publish, plus iterate on PR review comments.'
             );
         });
     });
@@ -2418,7 +2418,7 @@ describe('preflightSentence — what will actually run, before it runs', () => {
                 defaultSteps: { reviewReconciliation: true, mergeConflictAutofix: false },
             })
         ).toBe(
-            'Will run in acme/web using main executor. Will run the default workflow: prompt, gates, publish, plus iterate on PR review comments.'
+            'Will run in acme/web using main executor. Default workflow selected: prompt, gates, publish, plus iterate on PR review comments.'
         );
     });
 
@@ -2510,6 +2510,39 @@ describe('startBlocker — the one reason Start is dark, in precedence order', (
         expect(startBlocker({ sending: false, executorMissing: false, promptEmpty: true, paramsInvalid: true })).toBe(
             'empty-prompt'
         );
+        expect(startBlocker({ sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: true })).toBe(
+            'invalid-params'
+        );
+    });
+
+    it('blocks Start while Default workflow is chosen and the saved settings have not answered yet (#208 review)', () => {
+        // A member must not be able to launch a Default-workflow task before the saved step
+        // settings load — that silently omits the member's saved pair from the submitted JSON,
+        // a real report from the PR review, not a hypothetical.
+        expect(
+            startBlocker({
+                sending: false,
+                executorMissing: false,
+                promptEmpty: false,
+                defaultsUnresolved: true,
+                paramsInvalid: false,
+            })
+        ).toBe('defaults-unresolved');
+        // Ranks after the prompt (an empty prompt is the missing task itself) and before a named
+        // workflow's own field validation — the two can never actually co-occur (one requires the
+        // unchosen '' workflow, the other a chosen one), but the order is still deterministic.
+        expect(
+            startBlocker({
+                sending: false,
+                executorMissing: false,
+                promptEmpty: true,
+                defaultsUnresolved: true,
+                paramsInvalid: false,
+            })
+        ).toBe('empty-prompt');
+    });
+
+    it('omitting defaultsUnresolved answers exactly as before (#208 review) — no change for a named workflow', () => {
         expect(startBlocker({ sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: true })).toBe(
             'invalid-params'
         );

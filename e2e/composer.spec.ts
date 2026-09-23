@@ -110,7 +110,7 @@ test.describe('the guided task composer', () => {
         // whole command, and the preflight says exactly that.
         await page.getByLabel('What should the agent do?').fill('fix the login crash');
         await expect(start).toBeEnabled();
-        await expect(composer.getByText(/Will run the default workflow: prompt, gates, publish/)).toBeVisible();
+        await expect(composer.getByText(/Default workflow selected: prompt, gates, publish/)).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });

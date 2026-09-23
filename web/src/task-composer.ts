@@ -255,29 +255,39 @@ export function preflightSentence(input: {
     const what =
         input.workflow !== null
             ? `, with the ${input.workflow} workflow.`
-            : defaultSteps !== null
-              ? `. Will run the default workflow: ${defaultWorkflowStepSummary(defaultSteps)}.`
+            : // "Selected", never "will run": the mandatory spine already runs for every task (the
+              // driver's own checkout/gates/publish machinery, workflow or not), but the board
+              // reads no job behavior from the optional steps yet (docs/workflows.md) — a launch
+              // claim here would be false the moment a member turned one on.
+              defaultSteps !== null
+              ? `. Default workflow selected: ${defaultWorkflowStepSummary(defaultSteps)}.`
               : '. Your prompt will run as written.';
     return `${where} ${who}${what}`;
 }
 
-/** The one reason Start is dark, in precedence order: in flight, executor, prompt, workflow params. */
-export type StartBlocker = 'in-flight' | 'missing-executor' | 'empty-prompt' | 'invalid-params';
+/** The one reason Start is dark, in precedence order: in flight, executor, prompt, defaults, workflow params. */
+export type StartBlocker = 'in-flight' | 'missing-executor' | 'empty-prompt' | 'defaults-unresolved' | 'invalid-params';
 
 /**
  * Why Start cannot start, or null when it can. The order is the message the member needs: an
  * in-flight queue must not be re-entered, a task cannot run without an executor profile, an empty
- * prompt is the missing task itself, and workflow details come last.
+ * prompt is the missing task itself, an unresolved Default workflow choice comes next — launching
+ * before the saved settings answer would silently omit the member's saved step pair from the
+ * submitted JSON — and a named workflow's own field validation comes last. `defaultsUnresolved`
+ * defaults to false: it means nothing beside a named custom workflow, which supplies its own
+ * `paramsInvalid` instead.
  */
 export function startBlocker(input: {
     sending: boolean;
     executorMissing: boolean;
     promptEmpty: boolean;
+    defaultsUnresolved?: boolean;
     paramsInvalid: boolean;
 }): StartBlocker | null {
     if (input.sending) return 'in-flight';
     if (input.executorMissing) return 'missing-executor';
     if (input.promptEmpty) return 'empty-prompt';
+    if (input.defaultsUnresolved) return 'defaults-unresolved';
     if (input.paramsInvalid) return 'invalid-params';
     return null;
 }
