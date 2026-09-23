@@ -1,6 +1,6 @@
 import type { BoardJob, HeartbeatVerdict, RuntimeReport } from './board.js';
-import { currentActivity } from './docker.js';
-import type { RunSession, RuntimeSample } from './docker.js';
+import { currentActivity } from './runner.js';
+import type { RunSession, RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
 
 /** The bridge connects a few seconds in; two minutes of looking is generous and bounded. */

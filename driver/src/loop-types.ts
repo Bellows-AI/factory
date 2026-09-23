@@ -1,6 +1,6 @@
 import type { Board, BoardJob, LeaseState } from './board.js';
 import type { DriverConfig } from './config.js';
-import type { Runner } from './docker.js';
+import type { Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
 
 /**

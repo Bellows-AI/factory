@@ -1,17 +1,9 @@
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import {
-    UUID,
-    opencodeCacheProbeScript,
-    opencodeDbPath,
-    opencodeReadoutScript,
-    claudeTurnsScript,
-    runWorkingDir,
-    transcriptDir,
-    workspacePath,
-    workspacesMountArgs,
-    type RunSession,
-} from './docker.js';
+import { workspacesMountArgs } from './docker.js';
+import { UUID, opencodeDbPath, runWorkingDir, transcriptDir, workspacePath } from './claim.js';
+import { opencodeCacheProbeScript, opencodeReadoutScript, claudeTurnsScript } from './container-scripts.js';
+import type { RunSession } from './runner.js';
 
 /**
  * The opencode and claude-code close-time reads and the live cache-health probe — the argv

@@ -175,7 +175,7 @@ lines, `es5` trailing commas; `core/test/biome.test.ts` pins all of it. Recommen
 deliberate carve-outs in `biome.json`, added because they fire on existing code that the
 enablement PR chose not to churn: non-null assertions are the house style under
 `noUncheckedIndexedAccess`, index keys drive chart ticks, bracket access preserves raw-JSON
-contracts (`otlp.ts` reads OTEL payloads field by field), `stripAnsi` in `driver/src/docker.ts`
+contracts (`otlp.ts` reads OTEL payloads field by field), `stripAnsi` in `driver/src/runner.ts`
 matches control characters on purpose, and the `.cjs` container scripts carry their own quirks.
 Every carve-out is a re-enable candidate: turn a rule back on only with the
 source change that retires its hits. Import sorting (assist) and CSS formatting are off; neither

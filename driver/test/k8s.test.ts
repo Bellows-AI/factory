@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claudeTurnsScript } from '../src/docker.js';
+import { claudeTurnsScript } from '../src/container-scripts.js';
 import { CONTAINER_GONE } from '../src/exec-codes.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { POLL_MAX_CONSECUTIVE_FAILURES, parseServicePods, parsePodMetrics } from '../src/k8s-transport.js';

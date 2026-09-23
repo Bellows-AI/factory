@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
-import { envFileBody, tailBytes } from './docker.js';
+import { envFileBody } from './claim.js';
+import { tailBytes } from './runner.js';
 import type { GateRun } from './gates.js';
 import { down } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';

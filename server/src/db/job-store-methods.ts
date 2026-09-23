@@ -355,7 +355,7 @@ async function claimNextCandidate(
             // guard answers 503, the driver retries the claim, and a job is never handed
             // out with half an environment. The minted installation token goes under it
             // as the base layer, and its failure rolls back exactly the same way. A Remote
-            // Control claim never sees claimEnv at all (driver/src/docker.ts) — like every
+            // Control claim never sees claimEnv at all (driver/src/claim.ts) — like every
             // other claim env value, a claude-code row's config does not reach a Remote
             // Control runner, which gets only the baked settings.json and the mounted auth
             // volume.

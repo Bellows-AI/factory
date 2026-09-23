@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Board, BoardJob, HeartbeatVerdict, LeaseState, Reclaim, RuntimeReport } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
-import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/docker.js';
+import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateServer } from '../src/gates.js';
 import type { PublishResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';

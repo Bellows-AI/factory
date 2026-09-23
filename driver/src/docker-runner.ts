@@ -22,26 +22,25 @@ import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBel
 import type { ServiceSpec } from './services.js';
 import {
     CLOSE_READ_DEADLINE_MS,
-    claimCarriesGithubToken,
-    claimContinuesSession,
-    claimEnv,
-    composeRuntimeSample,
     containerName,
     dockerArgs,
-    envFileBody,
     envFilePath,
     opencodeSessionReadoutArgs,
     parseDockerServicePs,
     parseDockerStats,
     parseRemoteSessionId,
     remoteSessionArgs,
-    reportTail,
-    workspacePath,
     workspacesMountArgs,
+} from './docker.js';
+import { claimCarriesGithubToken, claimContinuesSession, claimEnv, envFileBody, workspacePath } from './claim.js';
+import {
+    composeRuntimeSample,
+    reportTail,
     type RunOutcome,
     type Runner,
     type RunSession,
-} from './docker.js';
+    type RuntimeSample,
+} from './runner.js';
 import {
     cacheCollapse,
     claudeTurnsArgs,
@@ -395,10 +394,7 @@ async function dockerRemoteSessionId(job: BoardJob, sessionId: string): Promise<
 // The service fleet is read in the same sampling round, scoped by the same label pair the
 // teardown tears down with and requiring the `factory.service` key, so the runner and
 // gate containers never answer it; a failed read costs the fleet, not the sample.
-async function dockerSampleRuntime(
-    deps: RunnerDeps,
-    job: BoardJob
-): Promise<Omit<import('./docker.js').RuntimeSample, 'sampledAt'> | null> {
+async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null> {
     const { config, execDocker } = deps;
     const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
         () => null

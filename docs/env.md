@@ -46,7 +46,7 @@ real value.
   hands the value to git as a program), so a member value there would be member-controlled code
   running in the sync container — reserving the name is what makes the driver's own helper the
   only possible one. `FACTORY_TRANSCRIPT_DIR` is reserved because the driver composes it
-  (`transcriptDir` in driver/src/docker.ts): it is where the headless transcript store lives, and
+  (`transcriptDir` in driver/src/claim.ts): it is where the headless transcript store lives, and
   the runner entrypoint redirects `CLAUDE_CONFIG_DIR` onto it — a member value would steer
   transcripts, and with them the CLI's whole configuration directory, somewhere else
    ([jobs.md](jobs.md)). `FACTORY_STATS_URL`, `RUNNER_JOB_ID`, `RUNNER_LEASE_TOKEN` and

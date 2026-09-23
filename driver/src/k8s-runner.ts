@@ -1,8 +1,9 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { claimContinuesSession, composeRuntimeSample, envFileBody } from './docker.js';
+import { claimContinuesSession, envFileBody } from './claim.js';
+import { composeRuntimeSample } from './runner.js';
 import { parseClaudeCloseRead, parseOpencodeRunOutcome } from './docker-close-read.js';
-import type { RunOutcome, RunSession, Runner } from './docker.js';
+import type { RunOutcome, RunSession, Runner } from './runner.js';
 import type { OpencodeRunOutcome } from './docker-close-read.js';
 import {
     jobPath,

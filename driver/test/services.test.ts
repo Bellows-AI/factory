@@ -469,7 +469,7 @@ describe('the bellows readout arguments', () => {
     });
 
     it('refuses a workspace path that is not <org>/<uuid>', () => {
-        // COPIED from docker.ts, which states the full why: the board is not something this
+        // COPIED from claim.ts, which states the full why: the board is not something this
         // process trusts with a fragment of a command, and here it becomes an env value the
         // readout script globs under — a container this process spawns.
         expect(() => readBellowsArgs(loadDriverConfig({}), { ...job, workspacePath: `bellows/../../etc` })).toThrow(

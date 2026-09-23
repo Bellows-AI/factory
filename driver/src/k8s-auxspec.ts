@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimContinuesSession } from './docker.js';
+import { claimCarriesGithubToken, claimContinuesSession } from './claim.js';
 import { hash16, jobsPath, type AuxJobSpec, workspaceSubPathOf } from './k8s-podspec.js';
 import { JOB_ID, TTL_SECONDS } from './k8s-transport.js';
 import {

@@ -22,26 +22,18 @@ import { collectServices, networkName, readBellowsArgs, serviceRunArgs, splitBel
 import type { ServiceSpec } from './services.js';
 import {
     CLOSE_READ_DEADLINE_MS,
-    claimCarriesGithubToken,
-    claimContinuesSession,
-    claimEnv,
-    composeRuntimeSample,
     containerName,
     dockerArgs,
-    envFileBody,
     envFilePath,
     opencodeSessionReadoutArgs,
     parseDockerServicePs,
     parseDockerStats,
     parseRemoteSessionId,
     remoteSessionArgs,
-    reportTail,
-    workspacePath,
     workspacesMountArgs,
-    type RunOutcome,
-    type Runner,
-    type RunSession,
 } from './docker.js';
+import { claimCarriesGithubToken, claimContinuesSession, claimEnv, envFileBody, workspacePath } from './claim.js';
+import { composeRuntimeSample, reportTail, type RunOutcome, type Runner, type RunSession } from './runner.js';
 import {
     cacheCollapse,
     claudeTurnsArgs,

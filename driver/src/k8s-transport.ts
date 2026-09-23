@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import type { DriverConfig } from './config.js';
-import { OUTPUT_LIMIT } from './docker.js';
-import type { RuntimeSample, ServiceStatus } from './docker.js';
+import { OUTPUT_LIMIT } from './runner.js';
+import type { ServiceStatus } from './board.js';
+import type { RuntimeSample } from './runner.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,

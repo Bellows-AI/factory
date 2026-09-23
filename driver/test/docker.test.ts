@@ -6,11 +6,8 @@ import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import {
-    claimEnv,
     containerName,
-    currentActivity,
     dockerArgs,
-    envFileBody,
     envFilePath,
     gateEnvArgs,
     gateEnvContainerName,
@@ -20,11 +17,9 @@ import {
     parseDockerStats,
     parseRemoteSessionId,
     remoteSessionArgs,
-    reportTail,
-    stripAnsi,
-    tailBytes,
-    transcriptDir,
 } from '../src/docker.js';
+import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
+import { currentActivity, reportTail, stripAnsi, tailBytes } from '../src/runner.js';
 import {
     CACHE_WATCH_TURNS,
     cacheCollapse,

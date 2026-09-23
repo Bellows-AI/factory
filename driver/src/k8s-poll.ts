@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
-import { claimContinuesSession, envFileBody, reportTail } from './docker.js';
+import { claimContinuesSession, envFileBody } from './claim.js';
+import { reportTail } from './runner.js';
 import {
     jobPath,
     podsPath,

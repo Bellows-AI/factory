@@ -11,10 +11,16 @@ factory, and an **operator for runners** — which, deliberately, is not a CRD c
 ## The executor
 
 `EXECUTOR` selects the platform runners run on: `docker` (the default, the original path) or
-`kubernetes`. The seam is the `Runner` interface in `driver/src/docker.ts` — `run`, `kill`,
+`kubernetes`. The seam is the `Runner` interface in `driver/src/runner.ts` — `run`, `kill`,
 `remoteSessionId` — which `driver/src/k8s-runner.ts` implements a second time. **The loop, the
 board contract and the server change not at all**: `loop.ts` cannot tell which executor is under
 it, and that is the point. A third platform would add a third `Runner`, nothing else.
+
+What both executors share lives in executor-neutral files: `runner.ts` (the `Runner` contract,
+`RunOutcome`/`RunSession`/`RuntimeSample`, output tails), `claim.ts` (workspace and working-dir
+paths, transcript and opencode-db locations, gate identity, claim env) and `container-scripts.ts`
+(the script loader and the run-time scripts). `docker.ts` and `docker-*.ts` are docker-only; a
+`k8s-*.ts` file importing from them is a parity smell — move the shared name to a neutral file.
 
 The kubernetes executor is split across `driver/src/k8s-*.ts`; import from the file that owns a
 name, there is no barrel:

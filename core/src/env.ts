@@ -2,7 +2,7 @@
  * The env-var rules the server's PUT enforces and the web editors check before Save. One list
  * both render from — the editors used to carry hand-kept copies, and the reserved-name copy had
  * already drifted (it lacked CLAUDE_CODE_CONFIG_CONTENT). The driver keeps its own
- * RESERVED_ENV_NAMES in driver/src/docker.ts, copied rather than imported per that package's
+ * RESERVED_ENV_NAMES in driver/src/claim.ts, copied rather than imported per that package's
  * zero-dependency rule, and deliberately different (see below).
  */
 
@@ -20,7 +20,7 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * attempt it speaks for, and which session it claims — and a member value in any of them is a
  * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the headless
  * transcript store lives: the driver composes it from the claim (transcriptDir in
- * driver/src/docker.ts), and a member value would steer transcripts — and, through the runner
+ * driver/src/claim.ts), and a member value would steer transcripts — and, through the runner
  * entrypoint's redirect, the CLI's whole config dir — somewhere else. `OPENCODE_CONFIG_CONTENT` and
  * `CLAUDE_CODE_CONFIG_CONTENT` are not the driver's names to reserve but the BOARD's: the claim
  * synthesizes each from the author's own executor row (docs/workspace.md), and a member env var of

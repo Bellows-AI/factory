@@ -3,7 +3,7 @@ import type { readFileSync } from 'node:fs';
 import type { request as httpsRequest } from 'node:https';
 import type { RequestOptions } from 'node:https';
 import { describe, expect, it, vi } from 'vitest';
-import { OUTPUT_LIMIT } from '../src/docker.js';
+import { OUTPUT_LIMIT } from '../src/runner.js';
 import { inClusterRequest } from '../src/k8s-transport.js';
 
 interface TransportCall {

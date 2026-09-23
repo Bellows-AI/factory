@@ -1,5 +1,5 @@
 import type { BoardJob } from './board.js';
-import type { RunOutcome } from './docker.js';
+import type { RunOutcome } from './runner.js';
 import {
     jobPath,
     podsByLeasePath,

@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { readFileSync } from 'node:fs';
+import { containerScript as script } from './container-scripts.js';
 
 /**
  * Publishing the work a run produced. The policy lives in the loop — a successful run, gates
@@ -15,16 +15,6 @@ import { readFileSync } from 'node:fs';
  * run that "succeeded" while leaving its work uncommitted in a local checkout did not land
  * anywhere, and nobody was asked.
  */
-
-/**
- * The container scripts this module ships: real files under `driver/src/scripts/`, read at load
- * time and passed to the container by content (`node -e`, `sh -c`, a git credential helper) —
- * never inline template strings in TS, and never by mounting a path (the driver talks to a
- * remote daemon and has no host path into the volumes it names). Under tsx and vitest this
- * resolves into `src/scripts/`; in the built driver into `dist/scripts/`, where the build copies
- * the directory — forgetting THAT copy fails only in the container, the server/migrations trap.
- */
-const script = (name: string): string => readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
 
 /** The probe's node script: see scripts/git-probe.cjs. */
 export const gitProbeScript = script('git-probe.cjs');
