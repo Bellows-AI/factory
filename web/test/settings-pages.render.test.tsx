@@ -395,6 +395,16 @@ describe('Settings repositories page', () => {
         expect(html).not.toContain('Environment for');
         expect(html).not.toContain('Choose a repository…');
     });
+
+    it('keeps the list full width before a repository is configured — no split reserved for nothing', () => {
+        // has-detail is what turns the master/detail split on at ≥1100px (issue 223): reserving
+        // that column's width unconditionally is what left Configure clipped at ordinary desktop
+        // widths before this fix. Nothing here can click Configure (a static SSR render never
+        // fires effects or events), so this pins the cold-render case only.
+        const html = render('/settings/repos');
+        expect(html).toContain('class="repo-columns"');
+        expect(html).not.toContain('has-detail');
+    });
 });
 
 describe('settings scope context (issue 182 invariants)', () => {
