@@ -287,7 +287,7 @@ export function SettingsRepositoriesPage() {
                 the whole story. With data, the summary carries the stale marker instead. */}
             {!workspace.data && workspace.error ? <p className="status">{workspace.error}</p> : null}
             {env.error ? <p className="status">{env.error}</p> : null}
-            <div className="repo-columns">
+            <div className={configured ? 'repo-columns has-detail' : 'repo-columns'}>
                 <div>
                     <RepositorySetupSummary
                         counts={view.countsValue}
@@ -296,13 +296,7 @@ export function SettingsRepositoriesPage() {
                         fetchedAt={repos.data?.meta.fetchedAt ?? null}
                         listNotice={view.reposNotice}
                         rootNull={view.rootNull}
-                        dirty={dirty}
-                        saveState={{ disabled: view.saveDisabled, reason: view.saveState.reason }}
-                        saving={workspace.saving}
-                        savedNote={savedNote}
-                        failure={failure}
                         staleError={workspace.data ? workspace.error : null}
-                        onSave={() => void saveSelection()}
                     />
                     <RepositorySetupList
                         repos={view.reported}
@@ -321,6 +315,11 @@ export function SettingsRepositoriesPage() {
                         absent={view.absent}
                         onDeselectAbsent={onDeselectAbsent}
                         loaded={view.loaded}
+                        dirty={dirty}
+                        saveState={{ disabled: view.saveDisabled, reason: view.saveState.reason }}
+                        savedNote={savedNote}
+                        failure={failure}
+                        onSave={() => void saveSelection()}
                     />
                 </div>
                 <div>

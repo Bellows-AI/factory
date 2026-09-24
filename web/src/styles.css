@@ -2001,7 +2001,11 @@
         .composer-start button,
         .composer-param-input,
         .settings-toggle,
-        .legend-button {
+        .legend-button,
+        .repo-search input,
+        .repo-search button,
+        .repo-table button,
+        .repo-save {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
@@ -2177,15 +2181,16 @@
         font-size: 12px;
     }
 
-    /* The repository setup page (issue 181): a labeled search row above the list, and the
-       summary/list/detail stack that becomes master/detail beside itself once a wide window can
-       hold both — below 1100px the DOM order (summary, list, detail) is the reading order. */
+    /* The repository setup page (issue 181, compacted by issue 223): a labeled search row above
+       the list, and the summary/list/detail stack that becomes master/detail beside itself once
+       a wide window can hold both — below 1100px the DOM order (summary, list, detail) is the
+       reading order. */
     .repo-search {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin: 12px 0;
+        margin: 8px 0;
     }
 
     .repo-search label {
@@ -2204,6 +2209,14 @@
         padding: 6px 10px;
     }
 
+    /* The availability summary's one line of counts plus installation context (issue 223):
+       both spans wrap onto their own line rather than crowding together on narrow panels. */
+    .repo-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+    }
+
     .repo-columns {
         display: grid;
         gap: 16px;
@@ -2214,10 +2227,132 @@
         grid-template-columns: minmax(0, 1fr);
     }
 
+    /* The list stays full width until a repository is actually opened — `has-detail` only
+       applies once `RepositoryConfigDetail` has something to render. Splitting unconditionally
+       reserved the detail column's share even when it was empty, which is what left Configure
+       clipped at ordinary desktop widths (issue 223). */
     @media (min-width: 1100px) {
-        .repo-columns {
+        .repo-columns.has-detail {
             align-items: start;
             grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+        }
+    }
+
+    /* The repository table (issue 223): fixed, sized columns so Repository, Checkout status and
+       Configure all fit at common desktop widths instead of the shared `.data` nowrap pushing
+       Configure past the panel edge. Column order mirrors the <thead> in RepositorySetup.tsx:
+       Enabled, Repository, Checkout status, Branch, Last commit, Size, Configure. */
+    table.repo-table {
+        min-width: 800px;
+        table-layout: fixed;
+    }
+
+    table.repo-table td {
+        overflow-wrap: anywhere;
+        vertical-align: middle;
+        white-space: normal;
+    }
+
+    table.repo-table th {
+        white-space: normal;
+    }
+
+    table.repo-table th:nth-child(1),
+    table.repo-table td:nth-child(1) {
+        width: 76px;
+    }
+
+    table.repo-table th:nth-child(3),
+    table.repo-table td:nth-child(3) {
+        width: 150px;
+    }
+
+    table.repo-table th:nth-child(4),
+    table.repo-table td:nth-child(4) {
+        width: 110px;
+    }
+
+    table.repo-table th:nth-child(5),
+    table.repo-table td:nth-child(5) {
+        width: 110px;
+    }
+
+    table.repo-table th:nth-child(6),
+    table.repo-table td:nth-child(6) {
+        width: 70px;
+    }
+
+    /* Configure stays reachable without hunting for it: pinned to the wrap's trailing edge, with
+       a hairline that visibly rides over scrolled content underneath — the discoverable "this
+       still scrolls" cue the old plain cut-off column gave none of. */
+    table.repo-table th:last-child,
+    table.repo-table td:last-child {
+        background: var(--surface-raised);
+        box-shadow: inset 1px 0 0 var(--line-strong);
+        position: sticky;
+        right: 0;
+        width: 96px;
+    }
+
+    /* Narrow widths stack rows as cards, mirroring the environment editor's pattern (issue 222):
+       the header row steps aside and each cell names itself via data-label. The sticky Configure
+       column has nothing to stick to once cells are block-level, so it resets to a plain
+       trailing action. */
+    @media (max-width: 640px) {
+        table.repo-table {
+            min-width: 0;
+            table-layout: auto;
+        }
+
+        table.repo-table thead {
+            display: none;
+        }
+
+        table.repo-table tbody,
+        table.repo-table tr {
+            display: block;
+        }
+
+        table.repo-table tr {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            margin-bottom: 8px;
+            padding: 10px;
+        }
+
+        table.repo-table td {
+            border-bottom: none;
+            display: block;
+            padding: 2px 0;
+            width: auto;
+        }
+
+        /* Same specificity as the desktop `:nth-child` column pins (a pseudo-class weighs the
+           same as a class), so the cascade's source order — this rule comes later — decides
+           instead of the pins winning on specificity alone, same trap the env editor's own
+           narrow-width reset already avoids for its first/last-child pins. */
+        table.repo-table td:nth-child(1),
+        table.repo-table td:nth-child(3),
+        table.repo-table td:nth-child(4),
+        table.repo-table td:nth-child(5),
+        table.repo-table td:nth-child(6) {
+            width: auto;
+        }
+
+        table.repo-table td:last-child {
+            background: none;
+            box-shadow: none;
+            padding-top: 8px;
+            position: static;
+            width: auto;
+        }
+
+        table.repo-table td[data-label]::before {
+            color: var(--ink-muted);
+            content: attr(data-label);
+            display: block;
+            font-size: 12px;
         }
     }
 
