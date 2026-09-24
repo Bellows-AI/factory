@@ -2906,11 +2906,98 @@
         margin-bottom: 8px;
     }
 
+    .env-tab {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        padding: 4px 10px;
+    }
+
+    .env-tab:hover {
+        background: var(--surface-raised);
+    }
+
     /* The selected tab is the one carrying aria-selected — the attribute the roving focus moves
         with the keyboard, so state and semantics cannot drift apart. */
     .env-tab[aria-selected='true'] {
-        border-color: var(--accent);
+        background: var(--surface-raised);
+        border-color: var(--line);
         color: var(--accent);
+    }
+
+    /* Aligned Name/Value/Actions columns, bounded rows: the Value column absorbs the width the
+        fixed Name and Actions columns leave, so a long value wraps instead of clipping. */
+    .env-vars {
+        border-collapse: collapse;
+        table-layout: fixed;
+        width: 100%;
+    }
+
+    .env-vars th {
+        border-bottom: 1px solid var(--line-strong);
+        color: var(--ink-muted);
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        padding: 6px 10px;
+        text-align: left;
+        text-transform: uppercase;
+    }
+
+    .env-vars td {
+        border-bottom: 1px solid var(--line);
+        padding: 8px 10px;
+        vertical-align: top;
+    }
+
+    .env-vars th:first-child,
+    .env-vars td:first-child {
+        width: 30%;
+    }
+
+    .env-vars th:last-child,
+    .env-vars td:last-child {
+        text-align: center;
+        width: 56px;
+    }
+
+    .env-vars input[aria-invalid='true'] {
+        border-color: var(--lamp-stop);
+    }
+
+    /* The compact row beneath the table: Add stays a quiet outline, the .env disclosure trigger
+        stays plain text — neither competes with the panel's one `.primary` Save action. */
+    .env-row-actions {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+    }
+
+    .env-add {
+        background: transparent;
+        border: 1px solid var(--line);
+        color: var(--accent);
+        font-size: 13px;
+        padding: 4px 10px;
+    }
+
+    .env-advanced-toggle {
+        background: transparent;
+        border: none;
+        color: var(--ink-muted);
+        font-size: 13px;
+        padding: 6px 4px;
+        text-decoration: underline;
+    }
+
+    .env-row-remove {
+        align-items: center;
+        display: inline-flex;
+        justify-content: center;
+        padding: 0;
+        width: 36px;
     }
 
     /* A pending removal stays visible until the save that deletes it: compact, warning-edged,
@@ -2952,6 +3039,7 @@
     }
 
     .env-errors {
+        font-size: 12px;
         white-space: pre-wrap;
     }
 
@@ -2965,19 +3053,38 @@
     /* Narrow widths reflow an env row into a labeled group instead of compressing Name/Value
         unusably: the header row steps aside and each cell names itself via data-label. */
     @media (max-width: 640px) {
+        .env-vars tbody {
+            display: block;
+        }
+
         .env-vars thead {
             display: none;
         }
 
         .env-vars tr {
-            border-bottom: 1px solid var(--line);
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
             display: block;
-            padding: 8px 0;
+            margin-bottom: 8px;
+            padding: 10px;
         }
 
         .env-vars td {
+            border-bottom: none;
             display: block;
             padding: 2px 0;
+            text-align: left;
+            width: auto;
+        }
+
+        /* Same specificity as the desktop `:first-child`/`:last-child` column pins, so the
+            cascade's source order — this rule comes later — decides instead of the pins winning
+            on specificity alone. */
+        .env-vars td:first-child,
+        .env-vars td:last-child {
+            text-align: left;
+            width: auto;
         }
 
         .env-vars td[data-label]::before {

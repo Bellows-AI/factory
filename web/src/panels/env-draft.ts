@@ -114,20 +114,27 @@ function valueErrors(row: EnvRowState): string[] {
     return list;
 }
 
+export interface RowFieldErrors {
+    name: string[];
+    value: string[];
+}
+
 /**
- * One message per broken rule, keyed by row id. Pending-removed rows are never flagged — they
- * are on their way out and a red error under a row the user is deleting reads as a second
- * opinion they did not ask for. Mirrors parseVars in server/src/routes/env.ts.
+ * Broken rules per row, split by the field each one belongs to — a name problem must render
+ * under the name input, not the value one. Pending-removed rows are never flagged — they are on
+ * their way out and a red error under a row the user is deleting reads as a second opinion they
+ * did not ask for. Mirrors parseVars in server/src/routes/env.ts.
  */
-export function rowErrors(rows: readonly EnvRowState[]): Map<string, string[]> {
+export function rowFieldErrors(rows: readonly EnvRowState[]): Map<string, RowFieldErrors> {
     const active = rows.filter((row) => !row.pendingRemove);
     const nameCounts = new Map<string, number>();
     for (const row of active) nameCounts.set(row.name.trim(), (nameCounts.get(row.name.trim()) ?? 0) + 1);
 
-    const errors = new Map<string, string[]>();
+    const errors = new Map<string, RowFieldErrors>();
     for (const row of active) {
-        const list = [...nameErrors(row.name.trim(), nameCounts), ...valueErrors(row)];
-        if (list.length > 0) errors.set(row.id, list);
+        const name = nameErrors(row.name.trim(), nameCounts);
+        const value = valueErrors(row);
+        if (name.length > 0 || value.length > 0) errors.set(row.id, { name, value });
     }
     return errors;
 }
@@ -141,7 +148,7 @@ export function scopeError(rows: readonly EnvRowState[]): string | null {
     return null;
 }
 
-export function hasErrors(errors: Map<string, string[]>, scope: string | null): boolean {
+export function hasErrors(errors: ReadonlyMap<string, RowFieldErrors>, scope: string | null): boolean {
     return scope !== null || errors.size > 0;
 }
 

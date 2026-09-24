@@ -5,7 +5,7 @@ import {
     isDirty,
     nextTabIndex,
     payloadEquals,
-    rowErrors,
+    rowFieldErrors,
     scopeError,
     SECRET_STATE_LABEL,
     secretState,
@@ -85,41 +85,51 @@ describe('canonical dirty comparison', () => {
 
 describe('row validation — the server rules, mirrored for early feedback', () => {
     it('requires a non-empty legal name', () => {
-        const errors = rowErrors([{ ...storedVar('', '', 'r1'), isNew: true }]);
-        expect(errors.get('r1')).toContain('Name is required.');
-        const bad = rowErrors([storedVar('has space')]);
-        expect(bad.get('has space')?.[0]).toMatch(/not a legal environment variable name/);
+        const errors = rowFieldErrors([{ ...storedVar('', '', 'r1'), isNew: true }]);
+        expect(errors.get('r1')?.name).toContain('Name is required.');
+        const bad = rowFieldErrors([storedVar('has space')]);
+        expect(bad.get('has space')?.name[0]).toMatch(/not a legal environment variable name/);
     });
 
     it('refuses over-limit and reserved names', () => {
         const OVER_NAME_LIMIT = 256;
-        const long = rowErrors([storedVar('A'.repeat(OVER_NAME_LIMIT))]);
-        expect(long.get('A'.repeat(OVER_NAME_LIMIT))?.[0]).toMatch(/255 characters/);
-        const reserved = rowErrors([storedVar('WORKDIR')]);
-        expect(reserved.get('WORKDIR')?.[0]).toMatch(/reserved by the runner/);
+        const long = rowFieldErrors([storedVar('A'.repeat(OVER_NAME_LIMIT))]);
+        expect(long.get('A'.repeat(OVER_NAME_LIMIT))?.name[0]).toMatch(/255 characters/);
+        const reserved = rowFieldErrors([storedVar('WORKDIR')]);
+        expect(reserved.get('WORKDIR')?.name[0]).toMatch(/reserved by the runner/);
     });
 
     it('flags every member of a duplicate pair, on the trimmed name', () => {
-        const errors = rowErrors([storedVar('A', '1', 'r1'), storedVar('A', '2', 'r2')]);
-        expect(errors.get('r1')?.[0]).toMatch(/Duplicate name "A"/);
-        expect(errors.get('r2')?.[0]).toMatch(/Duplicate name "A"/);
+        const errors = rowFieldErrors([storedVar('A', '1', 'r1'), storedVar('A', '2', 'r2')]);
+        expect(errors.get('r1')?.name[0]).toMatch(/Duplicate name "A"/);
+        expect(errors.get('r2')?.name[0]).toMatch(/Duplicate name "A"/);
     });
 
     it('refuses a value with a newline or past the value limit', () => {
-        expect(rowErrors([storedVar('A', 'one\ntwo')]).get('A')?.[0]).toMatch(/newline/);
+        expect(rowFieldErrors([storedVar('A', 'one\ntwo')]).get('A')?.value[0]).toMatch(/newline/);
         const OVER_VALUE_LIMIT = 32_769;
-        expect(rowErrors([storedVar('A', 'x'.repeat(OVER_VALUE_LIMIT))]).get('A')?.[0]).toMatch(/32.*768 characters/);
+        expect(rowFieldErrors([storedVar('A', 'x'.repeat(OVER_VALUE_LIMIT))]).get('A')?.value[0]).toMatch(
+            /32.*768 characters/
+        );
     });
 
     it('marks a new secret with no value Not set, and a stored blank secret is the keep marker', () => {
-        const fresh = rowErrors([{ ...storedSecret('NEW', 'r1'), isNew: true, value: '' }]);
-        expect(fresh.get('r1')?.[0]).toMatch(/Enter a value or remove the row/);
-        expect(rowErrors([storedSecret('OLD', 'r2')]).get('r2')).toBeUndefined();
+        const fresh = rowFieldErrors([{ ...storedSecret('NEW', 'r1'), isNew: true, value: '' }]);
+        expect(fresh.get('r1')?.value[0]).toMatch(/Enter a value or remove the row/);
+        expect(rowFieldErrors([storedSecret('OLD', 'r2')]).get('r2')).toBeUndefined();
     });
 
     it('never flags a pending-removed row, whatever its name', () => {
-        const errors = rowErrors([{ ...storedVar('has space', 'x', 'r1'), pendingRemove: true }]);
+        const errors = rowFieldErrors([{ ...storedVar('has space', 'x', 'r1'), pendingRemove: true }]);
         expect(errors.get('r1')).toBeUndefined();
+    });
+
+    it('splits errors by field, so a name problem never renders as a value error and vice versa', () => {
+        const nameOnly = rowFieldErrors([{ ...storedVar('', 'debug', 'r1'), isNew: true }]);
+        expect(nameOnly.get('r1')).toEqual({ name: ['Name is required.'], value: [] });
+
+        const valueOnly = rowFieldErrors([storedVar('GOOD_NAME', 'one\ntwo', 'r2')]);
+        expect(valueOnly.get('r2')).toEqual({ name: [], value: ['Value contains a newline.'] });
     });
 
     it('caps the scope at one hundred active rows, counting pending-removed rows as gone', () => {

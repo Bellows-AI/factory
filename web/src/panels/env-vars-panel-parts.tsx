@@ -1,6 +1,6 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { countActive, SECRET_STATE_LABEL, secretState } from './env-draft.js';
-import type { EnvRowState } from './env-draft.js';
+import type { EnvRowState, RowFieldErrors } from './env-draft.js';
 
 /**
  * The presentational half of `EnvVarsPanel.tsx`: the tablist, the .env disclosure, the panel
@@ -68,7 +68,7 @@ export function EnvEditableRow({
     row,
     kind,
     ordinal,
-    errorList,
+    fieldErrors,
     locked,
     onUpdate,
     onRemove,
@@ -77,14 +77,16 @@ export function EnvEditableRow({
     row: EnvRowState;
     kind: EnvRowKind;
     ordinal: number;
-    errorList: string[];
+    fieldErrors: RowFieldErrors;
     locked: boolean;
     onUpdate: (id: string, patch: Partial<EnvRowState>) => void;
     onRemove: () => void;
     nameRef: (el: HTMLInputElement | null) => void;
 }) {
-    const invalid = errorList.length > 0;
-    const errorsId = `${row.id}-errors`;
+    const nameInvalid = fieldErrors.name.length > 0;
+    const valueInvalid = fieldErrors.value.length > 0;
+    const nameErrorsId = `${row.id}-name-errors`;
+    const valueErrorsId = `${row.id}-value-errors`;
     const label = kind === 'variable' ? 'Variable' : 'Secret';
     return (
         <tr>
@@ -93,11 +95,16 @@ export function EnvEditableRow({
                     aria-label={`${label} ${ordinal} name`}
                     value={row.name}
                     disabled={locked}
-                    aria-invalid={invalid}
-                    aria-describedby={invalid ? errorsId : undefined}
+                    aria-invalid={nameInvalid}
+                    aria-describedby={nameInvalid ? nameErrorsId : undefined}
                     ref={nameRef}
                     onChange={(event) => onUpdate(row.id, { name: event.target.value })}
                 />
+                {nameInvalid ? (
+                    <p id={nameErrorsId} className="env-errors error">
+                        {fieldErrors.name.join(' ')}
+                    </p>
+                ) : null}
             </td>
             <td data-label={kind === 'variable' ? 'Value' : 'State / new value'}>
                 <input
@@ -107,20 +114,21 @@ export function EnvEditableRow({
                     value={row.value ?? ''}
                     placeholder={kind === 'secret' ? 'Leave blank to keep the current secret' : undefined}
                     disabled={locked}
-                    aria-invalid={invalid}
-                    aria-describedby={invalid ? errorsId : undefined}
+                    aria-invalid={valueInvalid}
+                    aria-describedby={valueInvalid ? valueErrorsId : undefined}
                     onChange={(event) => onUpdate(row.id, { value: event.target.value })}
                 />
                 {kind === 'secret' ? <p className="muted">{SECRET_STATE_LABEL[secretState(row)]}</p> : null}
-                {invalid ? (
-                    <p id={errorsId} className="env-errors">
-                        {errorList.join(' ')}
+                {valueInvalid ? (
+                    <p id={valueErrorsId} className="env-errors error">
+                        {fieldErrors.value.join(' ')}
                     </p>
                 ) : null}
             </td>
             <td data-label="Actions">
                 <button
                     type="button"
+                    className="env-row-remove"
                     onClick={onRemove}
                     disabled={locked}
                     aria-label={`Remove ${row.name.trim() || kind}`}
@@ -137,6 +145,8 @@ export function EnvEditableRow({
  * removals included — their strip is still a row), or the table with one row per entry. Split
  * out of `EnvVarsPanel` for the same reason as `EnvEditableRow`.
  */
+const NO_FIELD_ERRORS: RowFieldErrors = { name: [], value: [] };
+
 export function EnvTable({
     rows,
     kind,
@@ -150,7 +160,7 @@ export function EnvTable({
 }: {
     rows: readonly EnvRowState[];
     kind: EnvRowKind;
-    errors: Map<string, string[]>;
+    errors: Map<string, RowFieldErrors>;
     locked: boolean;
     onUpdate: (id: string, patch: Partial<EnvRowState>) => void;
     onRemove: (row: EnvRowState) => void;
@@ -187,7 +197,7 @@ export function EnvTable({
                             row={row}
                             kind={kind}
                             ordinal={ordinal}
-                            errorList={errors.get(row.id) ?? []}
+                            fieldErrors={errors.get(row.id) ?? NO_FIELD_ERRORS}
                             locked={locked}
                             onUpdate={onUpdate}
                             onRemove={() => onRemove(row)}
@@ -281,12 +291,12 @@ export function AdvancedEnvEditor({
             />
             <p className="muted">Strict parser: one NAME=value per line, surrounding quotes stripped, no escapes.</p>
             {errors.length > 0 ? (
-                <p className="status env-errors" role="alert">
+                <p className="status env-errors error" role="alert">
                     {errors.join('\n')}
                 </p>
             ) : null}
             <div className="panel-actions">
-                <button type="button" className="primary" onClick={onApply} disabled={locked}>
+                <button type="button" onClick={onApply} disabled={locked}>
                     Apply .env draft
                 </button>
                 <button type="button" onClick={onCancel} disabled={locked}>
@@ -332,12 +342,12 @@ export function EnvPanelBanner({
             </div>
             {hint ? <p className="muted">{hint}</p> : null}
             {scopeMsg ? (
-                <p className="status env-errors" role="alert">
+                <p className="status env-errors error" role="alert">
                     {scopeMsg}
                 </p>
             ) : null}
             {saveError ? (
-                <p ref={saveErrorRef} tabIndex={-1} className="status env-errors" role="alert">
+                <p ref={saveErrorRef} tabIndex={-1} className="status env-errors error" role="alert">
                     {saveError}
                 </p>
             ) : null}
@@ -378,7 +388,7 @@ export function VariablesTabPanel({
     uid: string;
     tab: TabKey;
     rows: readonly EnvRowState[];
-    errors: Map<string, string[]>;
+    errors: Map<string, RowFieldErrors>;
     locked: boolean;
     onAdd: () => void;
     addButtonRef: (el: HTMLButtonElement | null) => void;
@@ -404,12 +414,27 @@ export function VariablesTabPanel({
             aria-labelledby={`${uid}-tab-variables`}
             hidden={tab !== 'variables'}
         >
-            <div className="panel-actions">
-                <button type="button" className="primary" onClick={onAdd} disabled={locked} ref={addButtonRef}>
+            {/* The table holds the pending-removal strips too, so it renders while ANY row of
+                this type exists — removing the last active row must leave its strip and Undo
+                visible, not an empty scope claiming nothing is configured. */}
+            <EnvTable
+                rows={rows}
+                kind="variable"
+                errors={errors}
+                locked={locked}
+                onUpdate={onUpdate}
+                onRemove={onRemove}
+                onUndoRemove={onUndoRemove}
+                nameRefs={nameRefs}
+                undoRefs={undoRefs}
+            />
+            <div className="env-row-actions">
+                <button type="button" className="env-add" onClick={onAdd} disabled={locked} ref={addButtonRef}>
                     Add variable
                 </button>
                 <button
                     type="button"
+                    className="env-advanced-toggle"
                     aria-expanded={advancedOpen}
                     aria-controls={`${uid}-advanced`}
                     onClick={onToggleAdvanced}
@@ -431,20 +456,6 @@ export function VariablesTabPanel({
                     containerRef={advancedContainerRef}
                 />
             ) : null}
-            {/* The table holds the pending-removal strips too, so it renders while ANY row of
-                this type exists — removing the last active row must leave its strip and Undo
-                visible, not an empty scope claiming nothing is configured. */}
-            <EnvTable
-                rows={rows}
-                kind="variable"
-                errors={errors}
-                locked={locked}
-                onUpdate={onUpdate}
-                onRemove={onRemove}
-                onUndoRemove={onUndoRemove}
-                nameRefs={nameRefs}
-                undoRefs={undoRefs}
-            />
         </div>
     );
 }
@@ -470,7 +481,7 @@ export function SecretsTabPanel({
     uid: string;
     tab: TabKey;
     rows: readonly EnvRowState[];
-    errors: Map<string, string[]>;
+    errors: Map<string, RowFieldErrors>;
     locked: boolean;
     onAdd: () => void;
     addButtonRef: (el: HTMLButtonElement | null) => void;
@@ -487,11 +498,6 @@ export function SecretsTabPanel({
             aria-labelledby={`${uid}-tab-secrets`}
             hidden={tab !== 'secrets'}
         >
-            <div className="panel-actions">
-                <button type="button" className="primary" onClick={onAdd} disabled={locked} ref={addButtonRef}>
-                    Add secret
-                </button>
-            </div>
             <EnvTable
                 rows={rows}
                 kind="secret"
@@ -503,6 +509,11 @@ export function SecretsTabPanel({
                 nameRefs={nameRefs}
                 undoRefs={undoRefs}
             />
+            <div className="env-row-actions">
+                <button type="button" className="env-add" onClick={onAdd} disabled={locked} ref={addButtonRef}>
+                    Add secret
+                </button>
+            </div>
         </div>
     );
 }
