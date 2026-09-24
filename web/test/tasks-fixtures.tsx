@@ -52,7 +52,7 @@ export function job(overrides: Partial<Job> = {}): Job {
 export interface ComposerArgs {
     repos?: { owner: string; name: string }[] | null;
     workspaceError?: string | null;
-    executors?: { name: string; type: string }[];
+    executors?: { name: string; type: string; isDefault?: boolean }[];
     /** The workflow choices for the repo context; null hides the select (no workflows served). */
     workflows?:
         | readonly {

@@ -1,9 +1,10 @@
 import type { WorkspaceExecutor } from '../api/useWorkspace.js';
 import { commitDate } from '../format.js';
-import { executorTypeLabel } from '../workspace/executors.js';
+import { defaultExecutorName, executorTypeLabel } from '../workspace/executors.js';
 
 /**
- * One row per configured executor — each with the Edit action that reopens the dialog on it — and
+ * One row per configured executor — each with the Edit action that reopens the dialog on it, and
+ * the Make default action that flags it as the one new task drafts autoselect (issue 215) — and
  * the empty state that makes "none" a sentence rather than a blank panel. The section's heading
  * and its Add action are the page header's; this panel is the list plus its scope context
  * (issue 183): "My workspace", and the guidance that explains the task-scoped runner choice.
@@ -13,13 +14,27 @@ import { executorTypeLabel } from '../workspace/executors.js';
 export const EXECUTOR_GUIDANCE =
     'Each task runs with its selected executor. The executor type chooses Claude Code or OpenCode, and its JSON config is applied to that runner.';
 
+/** The row action that flags an executor as the default (issue 215). */
+export const MAKE_DEFAULT_LABEL = 'Make default';
+
+/** The flagged row's caption, replacing the pre-215 "Selected first on new tasks" fallback. */
+export const DEFAULT_CAPTION = 'Default — selected on new tasks';
+
+/** The fallback caption when no row is flagged: describes the composer, not a stored preference. */
+export const FIRST_ROW_CAPTION = 'Selected first on new tasks';
+
 export function WorkspaceExecutorsPanel({
     executors,
     onEdit,
+    onMakeDefault,
+    saving,
 }: {
     executors: readonly WorkspaceExecutor[];
     onEdit: (name: string) => void;
+    onMakeDefault: (name: string) => void;
+    saving: boolean;
 }) {
+    const defaultName = defaultExecutorName(executors);
     return (
         <section className="panel">
             <h2>My workspace</h2>
@@ -41,17 +56,21 @@ export function WorkspaceExecutorsPanel({
                             </tr>
                         </thead>
                         <tbody>
-                            {executors.map((executor, index) => (
+                            {executors.map((executor) => (
                                 <tr key={executor.name}>
                                     <td>
                                         {executor.name}
                                         {/*
-                                            Describes what the task composer already does — its draft
-                                            autoselects the first row of the list — not a stored
-                                            preference: there is no default, no ordering UI, no make-
-                                            default action (issue 183).
+                                            The flagged row names itself; with none flagged, the
+                                            first row keeps the pre-215 caption describing what the
+                                            composer's autoselect already does, not a stored
+                                            preference (issue 183).
                                         */}
-                                        {index === 0 ? <p className="muted">Selected first on new tasks</p> : null}
+                                        {executor.name === defaultName ? (
+                                            <p className="muted">
+                                                {executor.isDefault ? DEFAULT_CAPTION : FIRST_ROW_CAPTION}
+                                            </p>
+                                        ) : null}
                                     </td>
                                     <td>
                                         <span className="pill">{executorTypeLabel(executor.type)}</span>
@@ -61,6 +80,15 @@ export function WorkspaceExecutorsPanel({
                                         <button type="button" onClick={() => onEdit(executor.name)}>
                                             Edit
                                         </button>
+                                        {!executor.isDefault ? (
+                                            <button
+                                                type="button"
+                                                disabled={saving}
+                                                onClick={() => onMakeDefault(executor.name)}
+                                            >
+                                                {MAKE_DEFAULT_LABEL}
+                                            </button>
+                                        ) : null}
                                     </td>
                                 </tr>
                             ))}

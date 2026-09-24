@@ -118,6 +118,7 @@ export type ExecutorRow = {
     name: string;
     type: string;
     config: object;
+    isDefault: boolean;
 };
 
 /**
@@ -137,13 +138,37 @@ export function mergeExecutors(
     const clash = existing.some((row) => row.name === next.name && row.name !== editing);
     if (clash) return { ok: false, error: `An executor named "${next.name}" already exists.` };
 
-    if (editing === null) return { ok: true, value: [...existing, next] };
+    if (editing === null) return { ok: true, value: [...existing, { ...next, isDefault: false }] };
 
     const index = existing.findIndex((row) => row.name === editing);
     if (index === -1) {
         return { ok: false, error: `"${editing}" no longer exists — refresh and try again.` };
     }
     const value = existing.slice();
-    value[index] = next;
+    value[index] = { ...next, isDefault: existing[index]!.isDefault };
     return { ok: true, value };
+}
+
+/**
+ * Flags exactly the named row as the default and clears every other — the "Make default" action's
+ * whole effect, folded back into the list the PUT takes. Re-flagging the current default is a
+ * no-op rather than an error: a stale click on a row that is already the default must not fail.
+ */
+export function withDefault(
+    existing: readonly ExecutorRow[],
+    name: string
+): { ok: true; value: ExecutorRow[] } | { ok: false; error: string } {
+    if (!existing.some((row) => row.name === name)) {
+        return { ok: false, error: `"${name}" no longer exists — refresh and try again.` };
+    }
+    return { ok: true, value: existing.map((row) => ({ ...row, isDefault: row.name === name })) };
+}
+
+/**
+ * The executor a new task draft autoselects: the flagged default, or the first row when none is
+ * flagged — the fallback issue 183 shipped before this default existed. `''` when the list is
+ * empty, the composer's own "nothing configured" sentinel.
+ */
+export function defaultExecutorName(executors: readonly { name: string; isDefault?: boolean }[]): string {
+    return executors.find((executor) => executor.isDefault)?.name ?? executors[0]?.name ?? '';
 }

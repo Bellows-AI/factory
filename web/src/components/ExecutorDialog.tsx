@@ -46,7 +46,7 @@ export interface ExecutorDialogProps {
     /** The name of the row being edited, matched as it was when the dialog opened; null to add. */
     editing: string | null;
     onClose: () => void;
-    onSave: (executors: { name: string; type: string; config: object }[]) => Promise<string | null>;
+    onSave: (executors: { name: string; type: string; config: object; isDefault: boolean }[]) => Promise<string | null>;
     saving: boolean;
 }
 

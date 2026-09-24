@@ -24,6 +24,7 @@ import {
     type StartBlocker,
     type WorkflowParamChoice,
 } from '../task-composer.js';
+import { defaultExecutorName } from '../workspace/executors.js';
 import type { DefaultWorkflowSteps } from '../api/useDefaultWorkflowSettings.js';
 import type { DefaultStepOverrides } from '../task-composer.js';
 
@@ -75,7 +76,7 @@ interface ComposerDraft {
 
 function useComposerDraft(input: {
     repos: readonly { owner: string; name: string }[] | null;
-    executors: readonly { name: string; type: string }[];
+    executors: readonly { name: string; type: string; isDefault?: boolean }[];
     workflows: readonly ComposerWorkflowOption[] | null;
     /**
      * The member's saved default-workflow step settings (issues 203/208), or null while they have
@@ -89,7 +90,7 @@ function useComposerDraft(input: {
 }): ComposerDraft {
     const { repos, executors, workflows, defaultWorkflowSettings, onRepoChange, sending, onSend } = input;
     const [draft, setDraft] = useState('');
-    const [executor, setExecutor] = useState(() => executors[0]?.name ?? '');
+    const [executor, setExecutor] = useState(() => defaultExecutorName(executors));
     const [repo, setRepo] = useState(() => firstRepo(repos));
     const [repoTouched, setRepoTouched] = useState(false);
     // The workflow starts UNCHOSEN — '', meaning no process: the raw prompt runs. And, unlike
@@ -133,20 +134,22 @@ function useComposerDraft(input: {
         }
     }, [repos, repo, repoTouched]);
 
-    // The FIRST configured executor is selected when the async workspace poll lands. There is no
-    // deployment fallback: the selected profile type is the task's runner choice.
+    // The persisted default executor (issue 215), or the FIRST configured one when none is
+    // flagged, is selected when the async workspace poll lands. There is no deployment fallback:
+    // the selected profile type is the task's runner choice.
     useEffect(() => {
         if (executor === '' && executors.length > 0) {
-            setExecutor(executors[0]!.name);
+            setExecutor(defaultExecutorName(executors));
         }
     }, [executors, executor]);
 
     // A configured executor can be deleted on the Workspace page while a draft sits here; the
     // select would go blank while `send` still submitted the stale name. Clamp to what exists —
-    // back to the first executor, or an explicit blocked state when the list is empty.
+    // back to the default (or first) executor, or an explicit blocked state when the list is
+    // empty.
     useEffect(() => {
         if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
-            setExecutor(executors.length > 0 ? executors[0]!.name : '');
+            setExecutor(defaultExecutorName(executors));
         }
     }, [executors, executor]);
 
@@ -278,7 +281,7 @@ function ComposerContextRow({
     repo: string;
     setRepo: (value: string) => void;
     setRepoTouched: (value: boolean) => void;
-    executors: readonly { name: string; type: string }[];
+    executors: readonly { name: string; type: string; isDefault?: boolean }[];
     executor: string;
     setExecutor: (value: string) => void;
     workflows: readonly ComposerWorkflowOption[] | null;
@@ -572,7 +575,7 @@ export function TaskComposer({
     /** Why `repos` is null, when it is. */
     workspaceError: string | null;
     onRetryWorkspace: () => void;
-    executors: readonly { name: string; type: string }[];
+    executors: readonly { name: string; type: string; isDefault?: boolean }[];
     /**
      * The workflow choices for the selected repository's context, or null when the list has not
      * answered (or this board serves no workflows at all). Null HIDES the section: a board
