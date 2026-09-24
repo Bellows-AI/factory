@@ -2925,6 +2925,15 @@ describe('publishing the produced work', () => {
         });
     });
 
+    it("closes the thread root's issue when a follow-up publishes", () => {
+        // `/fix 122` failed its gates; the follow-up `both OK` is the run that publishes.
+        const followUp = { ...job, command: 'both OK', rootCommand: '/fix 122' };
+        expect(publishPlan(followUp, NOW).issueNumber).toBe(122);
+        // A root that names no issue leaves the follow-up's own command to name one.
+        expect(publishPlan({ ...job, command: 'now /fix 9', rootCommand: 'tidy' }, NOW).issueNumber).toBe(9);
+        expect(publishPlan({ ...job, command: 'both OK', rootCommand: 'tidy' }, NOW).issueNumber).toBeNull();
+    });
+
     it('prefers the /fix target over an incidental #mention', () => {
         expect(publishPlan({ ...job, command: '/fix 44 but really #9' }, NOW)).toEqual({
             branch: 'fix/44',

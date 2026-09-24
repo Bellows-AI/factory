@@ -272,6 +272,12 @@ export interface Claim {
      */
     rootJobId: string;
     /**
+     * The ROOT job's command — `command` itself unless this is a follow-up. The driver's publisher
+     * closes the issue it names: the run that publishes is often a follow-up whose own command
+     * ("both OK") names none.
+     */
+    rootCommand: string;
+    /**
      * Set only when this claim is a follow-up resuming the parent's session: the worker restores
      * that session instead of starting a new one.
      */

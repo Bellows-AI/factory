@@ -160,6 +160,27 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(grandClaim?.rootJobId).toBe(root);
     });
 
+    /*
+     * The publisher closes the issue the TASK names, and the task is named by its first command:
+     * a follow-up that publishes ("both OK") must still close the root's `/fix 122`.
+     */
+    it("claims with the thread root's command, the job's own when it is the root", async () => {
+        const root = await finishWithSession('/fix 122', { repo: 'acme/web', executor: null });
+        const child = await mustFollowUp(root, 'both OK', null);
+
+        const claim = await store.claim('w1', LEASE_SECONDS);
+
+        expect(claim?.id).toBe(child.id);
+        expect(claim?.command).toBe('both OK');
+        expect(claim?.rootCommand).toBe('/fix 122');
+
+        const { id } = await queue('echo hi');
+        await store.complete(child.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const own = await store.claim('w2', LEASE_SECONDS);
+        expect(own?.id).toBe(id);
+        expect(own?.rootCommand).toBe('echo hi');
+    });
+
     // A moving job belongs to its worker and its run is not over; a follow-up on one would race it.
     it('refuses a follow-up on a job that is still moving', async () => {
         const { id } = await queue('echo hi');

@@ -1422,6 +1422,7 @@ describe('the poll loop', () => {
                 userId: null,
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,
+                rootCommand: '',
                 repo: 'Bellows-AI/factory',
                 executorType: 'claude-code',
             },

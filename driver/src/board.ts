@@ -67,6 +67,12 @@ export interface BoardJob {
      */
     rootJobId?: string | null;
     /**
+     * The thread ROOT job's command — the job's own, unless it is a follow-up. The publisher reads
+     * the task's issue from it: the run that publishes is often a follow-up ("both OK") whose own
+     * command names nothing.
+     */
+    rootCommand: string;
+    /**
      * The environment the board resolved for this job — org < workspace < repo, secrets included.
      * Read defensively (`?? {}` at claim): a board that predates the field omits it, and the
      * runner's environment is then exactly what this process's own configuration forwards.

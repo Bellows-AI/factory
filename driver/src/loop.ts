@@ -171,6 +171,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
             userId: null,
             workspacePath: reclaim.workspacePath,
             rootJobId: reclaim.rootJobId,
+            rootCommand: '',
             repo: reclaim.repo,
             // Removed-thread reclamation runs only the bundled git maintenance script. It is
             // not task execution and the deleted rows no longer carry an executor selection.

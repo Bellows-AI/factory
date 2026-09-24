@@ -33,6 +33,7 @@ export interface ClaimCandidateRow {
     executor: string | null;
     follow_up: boolean;
     workflow_node: string | null;
+    root_command: string;
 }
 
 /**
@@ -129,6 +130,7 @@ async function claimNextCandidate(
                     executor: string | null;
                     follow_up: boolean;
                     workflow_node: string | null;
+                    root_command: string;
                 }[]
             >`
                 update job set
@@ -177,7 +179,9 @@ async function claimNextCandidate(
                 -- stopped, and is never claimed again.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
                           session_id, repo, parent_job_id, executor, workflow_node,
-                          (parent_job_id is not null and command_delivered_at is null) as follow_up
+                          (parent_job_id is not null and command_delivered_at is null) as follow_up,
+                          (select r.command from job r
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
             `;
 
             const row = rows[0];
@@ -510,6 +514,7 @@ export function buildClaimResult(
         // workspace root, where no directory exists to point at.
         workspacePath: claimPath,
         rootJobId,
+        rootCommand: row.root_command,
         // Survived the case above, so this claim is a resume.
         resumeSessionId: row.session_id,
         followUp: row.follow_up,
