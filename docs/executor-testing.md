@@ -50,6 +50,14 @@ same; the consecutive Kubernetes polling/Secret cleanup cases are the reference 
 4. Neither real-agent image can emit telemetry offline without the vendor binary/plugin runtime.
    Keep artifact contract tests fast, and reserve image-level emission for a pinned smoke job rather
    than making every unit run depend on external credentials.
+5. The `test:k8s --cluster` phase (`scripts/test-k8s.sh`) has no case for an allowlisted block
+   helper (`merge-conflict-autofix`, `github-review-reconcile`) — only the bare echo-executor happy
+   path. Deferred (issue #210): both real blocks need a "GitHub" to talk to (a git remote to probe/
+   rebase against, or `gh`-shaped HTTP responses and a recorded PR publication), and there is no
+   agreed shape yet for faking that inside a kind cluster without live GitHub — a fake local git
+   remote in the test's own scaffolding and a stub of the helper script's HTTP/`gh` calls inside the
+   executor image are the two candidates. Picking one is a test-harness design decision, not an
+   integration fix, so it is left open here rather than decided unilaterally.
 
 ## Efficiency rules
 

@@ -28,6 +28,7 @@ const PAGES: ReadonlyArray<[string, string]> = [
     ['/settings/repos', 'page-settings-repos'],
     ['/settings/executors', 'page-settings-executors'],
     ['/settings/organization', 'page-settings-organization'],
+    ['/settings/workflows', 'page-settings-workflows'],
     ['/account', 'page-account'],
 ];
 
