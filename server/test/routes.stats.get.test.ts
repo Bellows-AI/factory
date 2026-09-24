@@ -163,7 +163,7 @@ describe('GET /api/stats: range filtering and TTL', () => {
     });
 });
 
-describe('GET /api/stats: failure handling and refresh', () => {
+describe('GET /api/stats: failure handling', () => {
     const PAST_TTL_MS = 31_000;
     const JUST_PAST_TTL_MS = 30_001;
 
@@ -231,23 +231,6 @@ describe('GET /api/stats: failure handling and refresh', () => {
         await h.settle();
         const EXPECTED_RETRY_CALLS = 2;
         expect(telemetry.rollupCalls).toBe(EXPECTED_RETRY_CALLS);
-    });
-
-    it('retries immediately when a refresh is asked for explicitly', async () => {
-        const telemetry = stubTelemetryClient({
-            rollups: async () => {
-                throw new Error('connection refused');
-            },
-        });
-        const h = await harness({ telemetry });
-        app = h.app;
-
-        await app.inject({ method: 'GET', url: '/api/stats' });
-        await h.settle();
-        await app.inject({ method: 'POST', url: '/api/refresh' });
-        await h.settle();
-        const EXPECTED_REFRESH_CALLS = 2;
-        expect(telemetry.rollupCalls).toBe(EXPECTED_REFRESH_CALLS);
     });
 
     it('collapses concurrent cold requests into one read', async () => {

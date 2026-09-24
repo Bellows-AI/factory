@@ -365,9 +365,7 @@ test.describe('the organization selector', () => {
         await expect(select).toHaveText('default');
         await expect(select).toHaveAttribute('aria-label', 'Organization: default');
 
-        // Fitting on one line with the account menu is a layout fact no assertion covers; the
-        // Refresh action itself lives on the dashboard now, not in the bar.
-        await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
+        // Fitting on one line with the account menu is a layout fact no assertion covers.
         await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-org.png` });
     });
 });

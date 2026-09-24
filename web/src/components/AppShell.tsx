@@ -28,10 +28,8 @@ export interface ShellContext {
     setScope: (scope: ScopeSelection) => void;
     /** The signed-in member, when there is one — what makes the org/my toggle exist at all. */
     session: Session | null;
-    refreshing: boolean;
     progress: FetchState | null;
     error: string | null;
-    refresh: () => void;
     /** The one task-overview poll, shared by the tasks pages the way the stats poll is. */
     tasks: UseTasks;
 }
@@ -65,7 +63,7 @@ export function AppShell() {
     // query string, so changing either re-polls with both values and nothing is reconciled.
     const [scope, setScope] = useState<ScopeSelection>(DEFAULT_SCOPE);
     const query = useMemo(() => statsQuery(range, scope), [range, scope]);
-    const { data, refreshing, progress, error, refresh } = useStats(query);
+    const { data, progress, error } = useStats(query);
 
     // The task overview is the same decision as the stats poll above — one instance, above the
     // Outlet — with one difference: it is gated to the tasks area. The sidenav's own comment
@@ -95,10 +93,8 @@ export function AppShell() {
         scope,
         setScope,
         session,
-        refreshing,
         progress,
         error,
-        refresh,
         tasks,
     };
 

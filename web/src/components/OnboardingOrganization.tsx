@@ -1,4 +1,5 @@
 import type { Ref } from 'react';
+import { PRODUCT_NAME } from '../brand.js';
 import { needsListing, type OrgDraft, type RepoMode } from '../onboarding.js';
 
 /** What the disclosure reads while collapsed: the org's repository mode, and the count only once
@@ -50,7 +51,7 @@ function RepositoryListingBody({
             <>
                 <p className="status">
                     {draft.mode === 'all'
-                        ? 'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
+                        ? `Repository choices are temporarily unavailable. ${PRODUCT_NAME} will track repositories this installation reports.`
                         : 'Your existing specific selection is preserved, but it cannot be reviewed right now. Try again before changing repository scope.'}
                 </p>
                 <button type="button" onClick={onRetryListing}>

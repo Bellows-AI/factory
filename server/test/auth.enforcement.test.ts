@@ -140,7 +140,6 @@ describe('the route table', () => {
         // wall is on /api/* rather than on the document — see docs/auth.md.
         ['/settings/workspace', 'open'],
         ['/api/stats', 'user'],
-        ['/api/refresh', 'user'],
         ['/api/jobs', 'user'],
         // The task read model (#157): a person's inbox view over the same board. It falls through
         // to `user` by the safe default rather than being listed anywhere — pinned here because a

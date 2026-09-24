@@ -96,7 +96,6 @@ export interface StatsService {
     current(range?: DateRange, scope?: StatsScope, orgMeta?: OrganizationMeta): StatsPayload | null;
     /** Kicks off a refresh if one is warranted. Single-flight. */
     ensureFresh(): void;
-    refresh(): void;
     fetchState(): FetchState;
 }
 
@@ -122,8 +121,7 @@ function idleState(): FetchState {
 
 /**
  * After a failed fetch, hold off before trying again. Without this every incoming request
- * restarts the fetch, so a dead database socket turns into a request loop. An explicit
- * POST /api/refresh bypasses it.
+ * restarts the fetch, so a dead database socket turns into a request loop. There is no bypass.
  */
 const ERROR_COOLDOWN_MS = 30_000;
 const MS_PER_SECOND = 1000;
@@ -318,11 +316,6 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             // A rejected read must not become a request loop against the database.
             if (telemetryFailure !== null && now() - telemetryFailure.at < ERROR_COOLDOWN_MS) return;
             start();
-        },
-
-        refresh() {
-            if (config.telemetrySource === 'off') return;
-            if (!cache.inFlight()) start();
         },
 
         fetchState: () => fetchState,

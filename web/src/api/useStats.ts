@@ -58,10 +58,8 @@ export interface UseStats {
     data: StatsPayload | null;
     /** True only before anything has ever rendered. */
     loading: boolean;
-    refreshing: boolean;
     progress: FetchState | null;
     error: string | null;
-    refresh: () => void;
 }
 
 const POLL_MS = 2000;
@@ -134,23 +132,10 @@ export function useStats(query = 'range=all'): UseStats {
         };
     }, [poll]);
 
-    const refresh = useCallback(() => {
-        const controller = new AbortController();
-        setPending(true);
-        void fetch('/api/refresh', { method: 'POST' })
-            .then(() => poll(controller.signal))
-            .catch((e: Error) => {
-                setError(e.message);
-                setPending(false);
-            });
-    }, [poll]);
-
     return {
         data,
         loading: pending && data === null,
-        refreshing: pending && data !== null,
         progress,
         error,
-        refresh,
     };
 }

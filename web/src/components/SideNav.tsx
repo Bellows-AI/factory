@@ -1,5 +1,6 @@
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import type { TaskNavigation, TaskSummary } from '../api/useTasks.js';
+import { PRODUCT_NAME } from '../brand.js';
 import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor } from '../nav-model.js';
 import { sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree.js';
 
@@ -98,7 +99,7 @@ export function SideNav({
 
     return (
         <nav className="sidenav" aria-label="Primary">
-            <div className="sidenav-brand">Factory</div>
+            <div className="sidenav-brand">{PRODUCT_NAME}</div>
             <ul className="sidenav-items">
                 {NAV_ITEMS.map((item) => (
                     <li key={item.to}>

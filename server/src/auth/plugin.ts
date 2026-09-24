@@ -59,13 +59,12 @@ const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
 /**
  * What an organization token may reach, and nothing else — an allowlist, because a refusal list
  * would silently admit every route added after it. Each entry names no person: board and repo
- * reads, and the cache poke. Everything a route needs a `callerOf` for — queueing a job above all,
+ * reads. Everything a route needs a `callerOf` for — queueing a job above all,
  * whose `created_by` must stay a person — is outside it, and gets a 403 rather than a 401: the
  * token did authenticate, the route just needs a human behind it.
  */
 const ORG_TOKEN_ROUTES: readonly (readonly [string, RegExp])[] = [
     ['GET', /^\/api\/stats$/],
-    ['POST', /^\/api\/refresh$/],
     ['GET', /^\/api\/repos$/],
     ['GET', /^\/api\/jobs$/],
     ['GET', /^\/api\/jobs\/[^/]+$/],

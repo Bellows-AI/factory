@@ -93,23 +93,23 @@ function AnalyticsPanels({ data, state }: { data: StatsPayload; state: Analytics
 const CLOCK_TICK_MS = 60_000;
 
 /**
- * The dashboard. The page header owns the telemetry chrome — exact repo coverage, the freshness
- * stamp and the one Refresh action — because those describe THIS page's figures, not the app;
- * the app bar stays chrome-only. The analytics toolbar carries the labeled Range / Scope /
- * Repositories groups and the rendered-data summary. The scope toggle renders ONLY when the
- * session reports a signed-in MEMBER: under AUTH_MODE=none there is no "me" — the session hook
- * still resolves the deployment's `__local__` stand-in, and a toggle for it would advertise a
- * filter the server answers with SCOPE_REQUIRES_USER. `session.mode` is the tell; open mode gets
- * the read-only Organization value inside the toolbar instead.
+ * The dashboard. The page header owns the telemetry chrome — exact repo coverage and the
+ * freshness stamp — because those describe THIS page's figures, not the app; the app bar stays
+ * chrome-only. The analytics toolbar carries the labeled Range / Scope / Repositories groups and
+ * the rendered-data summary. The scope toggle renders ONLY when the session reports a signed-in
+ * MEMBER: under AUTH_MODE=none there is no "me" — the session hook still resolves the
+ * deployment's `__local__` stand-in, and a toggle for it would advertise a filter the server
+ * answers with SCOPE_REQUIRES_USER. `session.mode` is the tell; open mode gets the read-only
+ * Organization value inside the toolbar instead.
  *
- * The state model is decided ONCE here, above the panels: loading, refresh-in-place,
- * updating-to, error-without-data, error-with-last-good-data, the one empty analytics state,
- * the partial task-measurements state, and telemetry-disabled are each an explicit branch —
- * no panel invents its own zero/dash shell for a page-level condition.
+ * The state model is decided ONCE here, above the panels: loading, updating-to,
+ * error-without-data, error-with-last-good-data, the one empty analytics state, the partial
+ * task-measurements state, and telemetry-disabled are each an explicit branch — no panel invents
+ * its own zero/dash shell for a page-level condition.
  */
 
 export function DashboardPage() {
-    const { data, range, setRange, scope, setScope, session, refreshing, refresh, progress, error } = useShell();
+    const { data, range, setRange, scope, setScope, session, progress, error } = useShell();
     // The board's own completed runs — a poll beside the stats one, not part of the stats
     // payload: this is jobs data, and the dashboard renders it even while telemetry is down.
     const completed = useCompletedJobs();
@@ -132,14 +132,8 @@ export function DashboardPage() {
                 stays visible, not tooltip-buried. */}
             <PageHeader
                 title="Usage overview"
-                description={data ? `${describeRepos(data.meta.repos)} — AI usage telemetry` : 'AI usage telemetry'}
+                description={data ? describeRepos(data.meta.repos) : undefined}
                 meta={<DashboardFreshness data={data} now={now} />}
-                actions={
-                    // The only action on the stats read.
-                    <button type="button" onClick={refresh} disabled={refreshing}>
-                        {refreshing ? 'Refreshing…' : 'Refresh'}
-                    </button>
-                }
             />
             <div className="dashboard-controls">
                 <AnalyticsToolbar

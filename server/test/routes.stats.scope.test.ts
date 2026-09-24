@@ -1,31 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { TEST_REPO, githubAuth, harness, memoryAuthStore, signedIn, stubTelemetryClient } from './helpers.js';
-const HTTP_ACCEPTED = 202;
 const HTTP_BAD_REQUEST = 400;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
     app = null;
-});
-
-describe('POST /api/refresh', () => {
-    it('is single-flight when called twice', async () => {
-        const telemetry = stubTelemetryClient();
-        const h = await harness({ telemetry });
-        app = h.app;
-
-        const [a, b] = await Promise.all([
-            app.inject({ method: 'POST', url: '/api/refresh' }),
-            app.inject({ method: 'POST', url: '/api/refresh' }),
-        ]);
-        await h.settle();
-
-        expect(a.statusCode).toBe(HTTP_ACCEPTED);
-        expect(b.statusCode).toBe(HTTP_ACCEPTED);
-        expect(telemetry.rollupCalls).toBe(1);
-    });
 });
 
 describe('GET /api/stats scope: rejections', () => {

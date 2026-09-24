@@ -612,8 +612,8 @@
         outline-offset: 2px;
     }
 
-    /* The dashboard's control row (issue 160): the analytics toolbar, then the freshness and
-       Refresh cluster that moved here from the old global topbar. */
+    /* The dashboard's control row (issue 160): the analytics toolbar, which moved here from the
+       old global topbar. */
     .dashboard-controls {
         align-items: center;
         display: flex;
@@ -1317,7 +1317,7 @@
     /* Both screens live outside the shell, so the `.page` container never wraps them: they carry
         the page gutters themselves, which the old global `main` rule used to supply. */
 
-    /* The public-page header (issue 187): Factory brand, one context word, and the actions cell,
+    /* The public-page header (issue 187): the brand, one context word, and the actions cell,
        which carries the theme control (issue 188). Shared by the gate and onboarding — the one
        chrome a page renders before any session exists. */
     .public-header {

@@ -107,7 +107,7 @@ Required GitHub App installation permissions:
 - A stale snapshot is still served with 200. A failed read keeps the last good render on screen
   and explains itself rather than blanking the dashboard.
 - After a failed read the server waits 30s before retrying, so a dead database cannot turn into
-  a request loop. `POST /api/refresh` bypasses that.
+  a request loop. There is no bypass.
 
 ## API
 
@@ -115,7 +115,6 @@ Required GitHub App installation permissions:
 | --- | --- |
 | `GET /api/health` | Never calls GitHub, so a token-less or rate-limited container still reports healthy. |
 | `GET /api/stats` | `200` with `{ telemetry, meta }`, `202` while the first read runs, `503` if telemetry is disabled or the first read failed. |
-| `POST /api/refresh` | `202`. Single-flight. |
 
 ## Tests
 
