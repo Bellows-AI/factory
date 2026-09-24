@@ -8,7 +8,7 @@ import {
     hasErrors,
     isDirty,
     nextTabIndex,
-    rowErrors,
+    rowFieldErrors,
     scopeError,
     seedRows,
 } from './env-draft.js';
@@ -368,7 +368,7 @@ export function EnvVarsPanel({
         closeAdvanced: advanced.closeAdvanced,
     });
 
-    const errors = useMemo(() => rowErrors(rowsState.rows), [rowsState.rows]);
+    const errors = useMemo(() => rowFieldErrors(rowsState.rows), [rowsState.rows]);
     const scopeMsg = useMemo(() => scopeError(rowsState.rows), [rowsState.rows]);
     const invalid = hasErrors(errors, scopeMsg);
     const locked = disabled || saveState.saving;
@@ -463,7 +463,7 @@ export function EnvVarsPanel({
                 undoRefs={rowsState.undoRefs}
             />
 
-            {invalid && !scopeMsg ? <p className="env-errors">Fix the highlighted rows to save.</p> : null}
+            {invalid && !scopeMsg ? <p className="env-errors error">Fix the highlighted rows to save.</p> : null}
         </section>
     );
 }

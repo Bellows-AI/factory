@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { EnvVarsPanel } from '../src/panels/EnvVarsPanel.js';
+import { AdvancedEnvEditor } from '../src/panels/env-vars-panel-parts.js';
 
 /**
  * The env draft editor, server-render-tested by markup assertions — the repo's suite has no DOM,
@@ -104,6 +105,59 @@ describe('the env draft editor', () => {
         expect(html).not.toContain('<textarea');
         // Opening alone never changes the draft, so the warning is only true once it is open.
         expect(html).not.toContain('This replaces the variable draft');
+    });
+
+    it('attaches a name error to the name input only, never the value input beside it', () => {
+        const html = renderToStaticMarkup(
+            <EnvVarsPanel
+                title="Core"
+                hint=""
+                initialVars={[{ name: '', value: 'debug', isSecret: false, updatedAt: '2026-09-01T00:00:00.000Z' }]}
+                onSave={noop}
+            />
+        );
+        const nameAt = html.indexOf('Variable 1 name');
+        const valueAt = html.indexOf('Variable 1 value');
+        expect(nameAt).toBeGreaterThanOrEqual(0);
+        expect(valueAt).toBeGreaterThan(nameAt);
+        const nameField = html.slice(nameAt, valueAt);
+        const valueField = html.slice(valueAt, html.indexOf('</tr>', valueAt));
+        expect(nameField).toContain('aria-invalid="true"');
+        expect(nameField).toContain('Name is required.');
+        expect(valueField).not.toContain('aria-invalid="true"');
+        expect(valueField).not.toContain('Name is required.');
+    });
+
+    it('keeps Save the panel’s only primary action — Add and the .env toggle stay secondary', () => {
+        const html = renderToStaticMarkup(
+            <EnvVarsPanel title="Core" hint="" initialVars={[...oneVar, ...oneSecret]} onSave={noop} />
+        );
+        const primaryButtons = html.match(/class="[^"]*\bprimary\b[^"]*"/g) ?? [];
+        expect(primaryButtons).toHaveLength(1);
+    });
+
+    it('never gives the open .env disclosure its own primary button, even beside the real Save', () => {
+        // AdvancedEnvEditor renders whenever its parent mounts it (the open/closed decision lives
+        // in EnvVarsPanel's state, out of this static suite's reach) — so this pins the disclosure's
+        // OWN markup directly: Apply must never compete with the panel's one Save action.
+        const html = renderToStaticMarkup(
+            <AdvancedEnvEditor
+                uid="t"
+                text=""
+                errors={[]}
+                locked={false}
+                onTextChange={() => {}}
+                onApply={() => {}}
+                onCancel={() => {}}
+                containerRef={() => {}}
+            />
+        );
+        expect(html).not.toMatch(/class="[^"]*\bprimary\b[^"]*"/);
+    });
+
+    it('renders the add control and the .env toggle after the table, near the rows', () => {
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneVar} onSave={noop} />);
+        expect(html.indexOf('env-vars')).toBeLessThan(html.indexOf('Add variable'));
     });
 
     it('renders a read-only scope with the tabs intact and every control disabled', () => {
