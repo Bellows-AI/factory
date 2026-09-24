@@ -37,7 +37,7 @@ export interface PublishPlan {
      * read (issue #82): the command's first line, with the issue reference appended.
      */
     title: string;
-    /** The issue the command names, when it names one — the PR body closes it. */
+    /** The issue the thread's root command (else the job's own) names — the PR body closes it. */
     issueNumber: number | null;
 }
 
@@ -68,7 +68,9 @@ const commandIssue = (command: string): number | null => {
 const COMMIT_TITLE_MAX_CHARS = 144;
 
 export function publishPlan(job: BoardJob, now: Date = new Date()): PublishPlan {
-    const issue = commandIssue(job.command);
+    // The task's issue is the one its FIRST command names: the publishing run is often a
+    // follow-up whose own command ("both OK") names nothing, and its PR must still close it.
+    const issue = commandIssue(job.rootCommand ?? job.command) ?? commandIssue(job.command);
     const firstLine = (job.command.trim().split('\n')[0] ?? '').trim().slice(0, COMMIT_TITLE_MAX_CHARS);
     const title = issue ? `${firstLine} (#${issue})` : firstLine;
     const branch = issue ? `fix/${issue}` : `task/${now.toISOString().slice(0, 10).replace(/-/g, '')}`;
