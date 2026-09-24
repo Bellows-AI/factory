@@ -18,6 +18,7 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
+const HTTP_SERVICE_UNAVAILABLE = 503;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -53,10 +54,12 @@ const record: WorkflowRecord = {
 function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean } = {}): WorkflowStore & {
     created: { name: string; scope: string; createdBy: string | null }[];
     removed: string[];
+    updated: { id: string; name: string; definition: unknown }[];
 } {
     const stub = {
         created: [] as { name: string; scope: string; createdBy: string | null }[],
         removed: [] as string[],
+        updated: [] as { id: string; name: string; definition: unknown }[],
         async create(input: { name: string; scope: { kind: string }; createdBy: string | null }) {
             stub.created.push({
                 name: input.name,
@@ -64,6 +67,10 @@ function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean 
                 createdBy: input.createdBy,
             });
             return { id: WF_ID };
+        },
+        async update(id: string, input: { name: string; definition: unknown }) {
+            stub.updated.push({ id, name: input.name, definition: input.definition });
+            return { id };
         },
         async listVisible() {
             return [record];
@@ -293,6 +300,252 @@ describe('GET /api/workflow-blocks', () => {
         // github-review-reconcile (issue #133).
         expect(blocks.find((b: { id: string }) => b.id === 'builtin/github-review-reconcile')?.available).toBe(true);
         expect(blocks.find((b: { id: string }) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
+    });
+});
+
+describe('GET /api/workflows/:id', () => {
+    it('needs a session', async () => {
+        const workflows = stubWorkflows();
+        const { instance } = await boot(workflows);
+        const response = await instance.inject({ method: 'GET', url: `/api/workflows/${WF_ID}` });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('refuses a non-uuid id', async () => {
+        const workflows = stubWorkflows();
+        const { instance, memberCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'GET',
+            url: '/api/workflows/not-a-uuid',
+            headers: { cookie: memberCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+
+    it('serves the full record, definition included, for an org-scope workflow', async () => {
+        const workflows = stubWorkflows();
+        const { instance, memberCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'GET',
+            url: `/api/workflows/${WF_ID}`,
+            headers: { cookie: memberCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual(record);
+    });
+
+    it('answers 404 for an id that resolves nothing', async () => {
+        const workflows = stubWorkflows({ get: null });
+        const { instance, memberCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'GET',
+            url: `/api/workflows/${WF_ID}`,
+            headers: { cookie: memberCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it('serves a user-scope workflow to its own owner, and 404s it for another member — never leaking that it exists', async () => {
+        // The stub's `get` closes over a mutable box so the record's `userId` can name the
+        // caller `boot()` mints, which is only known once it resolves.
+        let ownerId = '';
+        const workflows = stubWorkflows();
+        workflows.get = (async () => ({ ...record, scope: 'user', userId: ownerId })) as never;
+        const { instance, member, admin, memberCookie, adminCookie } = await boot(workflows);
+        ownerId = member.user.id;
+
+        const owner = await instance.inject({
+            method: 'GET',
+            url: `/api/workflows/${WF_ID}`,
+            headers: { cookie: memberCookie },
+        });
+        expect(owner.statusCode).toBe(HTTP_OK);
+        expect(owner.json()).toMatchObject({ scope: 'user', userId: member.user.id });
+
+        // Requested by a DIFFERENT account than the one the record names — a plain admin role
+        // grants no visibility into another member's own-scope workflow either.
+        expect(admin.user.id).not.toBe(member.user.id);
+        const foreign = await instance.inject({
+            method: 'GET',
+            url: `/api/workflows/${WF_ID}`,
+            headers: { cookie: adminCookie },
+        });
+        expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+});
+
+describe('PUT /api/workflows/:id', () => {
+    it('needs a session', async () => {
+        const workflows = stubWorkflows();
+        const { instance } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'x', definition },
+        });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('refuses a non-uuid id', async () => {
+        const workflows = stubWorkflows();
+        const { instance, memberCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'PUT',
+            url: '/api/workflows/not-a-uuid',
+            payload: { name: 'x', definition },
+            headers: { cookie: memberCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+
+    it('refuses a non-string name at the route, before the store is ever touched', async () => {
+        const workflows = stubWorkflows();
+        const { instance, adminCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 42, definition },
+            headers: { cookie: adminCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_NAME');
+        expect(workflows.updated).toEqual([]);
+    });
+
+    it('answers 503 when the organization has no workflow store', async () => {
+        const config = testConfig({ auth: githubAuth() });
+        const auth = memoryAuthStore();
+        const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
+        const instance = await buildApp({ config, orgs: staticRegistry({ config }), auth });
+        app = instance;
+        const response = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'x', definition },
+            headers: { cookie: await signedIn(auth, admin) },
+        });
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(response.json().code).toBe('WORKFLOWS_UNAVAILABLE');
+    });
+
+    it('refuses a scope field in the body — scope is immutable after create', async () => {
+        const workflows = stubWorkflows();
+        const { instance, adminCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'fix-issue', scope: 'user', definition },
+            headers: { cookie: adminCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_SCOPE');
+        expect(workflows.updated).toEqual([]);
+    });
+
+    it('gates org-level edits to an admin, same as DELETE', async () => {
+        const workflows = stubWorkflows();
+        const { instance, memberCookie, adminCookie } = await boot(workflows);
+        const memberPut = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'fix-issue', definition },
+            headers: { cookie: memberCookie },
+        });
+        expect(memberPut.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(workflows.updated).toEqual([]);
+
+        const adminPut = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'fix-issue', definition },
+            headers: { cookie: adminCookie },
+        });
+        expect(adminPut.statusCode).toBe(HTTP_OK);
+        expect(workflows.updated).toEqual([{ id: WF_ID, name: 'fix-issue', definition }]);
+    });
+
+    it('lets a member edit their own user-scope workflow, and refuses another member editing it', async () => {
+        let ownerId = '';
+        const workflows = stubWorkflows();
+        workflows.get = (async () => ({ ...record, scope: 'user', userId: ownerId })) as never;
+        const { instance, member, admin, memberCookie, adminCookie } = await boot(workflows);
+        ownerId = member.user.id;
+
+        const ownerPut = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'renamed', definition },
+            headers: { cookie: memberCookie },
+        });
+        expect(ownerPut.statusCode).toBe(HTTP_OK);
+
+        expect(admin.user.id).not.toBe(member.user.id);
+        const foreignPut = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'renamed', definition },
+            headers: { cookie: adminCookie },
+        });
+        // Not visible to a different account at all — 404, never a leaked 403.
+        expect(foreignPut.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it('lets any member edit a repo-scope workflow', async () => {
+        const workflows = stubWorkflows({ get: { ...record, scope: 'repo', repo: 'acme/web' } });
+        const { instance, memberCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'renamed', definition },
+            headers: { cookie: memberCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it('answers 404 for an id that resolves nothing', async () => {
+        const workflows = stubWorkflows({ get: null });
+        const { instance, adminCookie } = await boot(workflows);
+        const response = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'x', definition },
+            headers: { cookie: adminCookie },
+        });
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it("serves the validator's named refusals as 400 and a rename collision as 409", async () => {
+        const workflows = stubWorkflows();
+        const { instance, adminCookie } = await boot(workflows);
+        workflows.update = (async () => ({
+            refused: true as const,
+            code: 'UNKNOWN_KEY' as const,
+            message: 'unknown definition key "trigger"',
+        })) as never;
+        const badPut = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'x', definition: { trigger: true } },
+            headers: { cookie: adminCookie },
+        });
+        expect(badPut.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(badPut.json().code).toBe('UNKNOWN_KEY');
+
+        workflows.update = (async () => ({
+            refused: true as const,
+            code: 'NAME_TAKEN' as const,
+            message: 'a workflow named "taken" already exists in this scope',
+        })) as never;
+        const takenPut = await instance.inject({
+            method: 'PUT',
+            url: `/api/workflows/${WF_ID}`,
+            payload: { name: 'taken', definition },
+            headers: { cookie: adminCookie },
+        });
+        expect(takenPut.statusCode).toBe(HTTP_CONFLICT);
+        expect(takenPut.json().code).toBe('NAME_TAKEN');
     });
 });
 

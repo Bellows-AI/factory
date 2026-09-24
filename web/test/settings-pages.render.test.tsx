@@ -324,7 +324,7 @@ describe('Settings workflows page', () => {
     it('says it is loading until the default-workflow poll answers', () => {
         const html = render('/settings/workflows');
         expect(html.match(/<h1/g)?.length).toBe(1);
-        expect(html).toContain('<h1>Default workflow</h1>');
+        expect(html).toContain('<h1>Workflows</h1>');
         expect(html).toContain('page-header-eyebrow');
         expect(html).toContain('status');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
@@ -454,7 +454,7 @@ describe('settings page headers', () => {
         ['/settings/workspace', 'Workspace'],
         ['/settings/repos', 'Repositories'],
         ['/settings/executors', 'Executors'],
-        ['/settings/workflows', 'Default workflow'],
+        ['/settings/workflows', 'Workflows'],
     ])('%s carries one h1 naming the section, under the Settings eyebrow', (path, title) => {
         const html = render(path);
         expect(html.match(/<h1/g)?.length).toBe(1);
