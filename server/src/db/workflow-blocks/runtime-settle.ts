@@ -25,6 +25,23 @@ function scopeOf(nodeName: string): string | null {
     return separator === -1 ? null : nodeName.slice(0, separator);
 }
 
+/**
+ * Whether a transition is an INSERT that enters a block's own helper-driven node from OUTSIDE that
+ * block's scope — a fresh entry from a bare node, or from another block use entirely, never the
+ * block's own internal round-trip (issue #209: `job-store-worker.ts`'s `runWorkflowTransition` rests
+ * instead of inserting such a transition with no recorded publication, since every declared helper
+ * plan is handed `{publication}` generically — `resolveClaimHelperPlans` — and a null publication is
+ * nothing a helper script can act on). Block-agnostic, like the rest of this file: it reads only
+ * `helperPlans`/scope, never a block's own id or policy.
+ */
+export function entersBlockHelperNode(from: string | null, transition: Transition): boolean {
+    if (transition.action !== 'insert') return false;
+    if (!transition.node.helperPlans?.length) return false;
+    const targetScope = scopeOf(transition.node.name);
+    if (targetScope === null) return false;
+    return scopeOf(from ?? '') !== targetScope;
+}
+
 export interface SettleBlockWaitsInput {
     rootJobId: string;
     /** The snapshot's own definition — where every node's `runtime` (if any) is read from. */

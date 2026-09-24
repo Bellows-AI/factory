@@ -15,6 +15,7 @@ import type {
     StopResult,
 } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
+import { DEFAULT_ENTRY_NODE, DEFAULT_WORKFLOW_NAME, compileDefaultWorkflow } from '../src/db/default-workflow.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -38,7 +39,14 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
     /** The workflow triple the create was handed, when one resolved — null when none did. */
-    workflowTargets: { id: string; name: string; node: string; snapshot: unknown }[];
+    workflowTargets: {
+        id: string | null;
+        name: string;
+        node: string;
+        snapshot: unknown;
+        params?: unknown;
+        defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean };
+    }[];
     listed: { status?: JobStatus | 'terminal'; repo?: string | undefined; limit: number }[];
     completed: {
         id: string;
@@ -468,11 +476,12 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(jobs.created).toEqual([]);
     });
 
-    // The no-workflow identity: a body without a workflow field names no process, so the member's
-    // words ARE the command and the workflow store is not read at all — no resolution, no default
-    // to fall back to. The row and claim carry no workflow triple; the claim's own shape is
-    // pinned by the db suite, which asserts `publish` is ABSENT on a workflow-less claim.
-    it('runs the raw prompt, reading no workflows, when the body names none', async () => {
+    // The code-owned default identity (issue #209): a body without a workflow field names no
+    // CUSTOM process, so the named-workflow store is not read at all — but it is no longer
+    // workflow-less: the default workflow resolves instead, with no saved-settings store
+    // configured here, both optional blocks default on (`BOTH_ENABLED`). The entry's prompt is
+    // exactly `{{command}}`, so the root command still reads as the member's raw words.
+    it("runs the raw prompt as the default workflow's entry, reading no NAMED workflows, when the body names none", async () => {
         const jobs = stubStore();
         const workflows = stubWorkflows();
         const instance = await harnessWith(jobs, workflows);
@@ -481,7 +490,16 @@ describe('POST /api/jobs workflow resolution', () => {
 
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual([]);
-        expect(jobs.workflowTargets).toEqual([]);
+        expect(jobs.workflowTargets).toEqual([
+            {
+                id: null,
+                name: DEFAULT_WORKFLOW_NAME,
+                node: DEFAULT_ENTRY_NODE,
+                snapshot: compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }),
+                params: {},
+                defaultOptions: { reviewReconciliation: true, mergeConflictAutofix: true },
+            },
+        ]);
         expect(jobs.commands).toEqual(['echo hi']);
     });
 });
@@ -569,10 +587,12 @@ describe('POST /api/jobs workflow parameters', () => {
         // The name came off the record the store resolved, never off the body.
         expect(jobs.workflowTargets[0]!.name).toBe('fix-issue');
 
-        // A body naming no workflow ignores the field entirely: no resolution, no workflow triple.
+        // A body naming no CUSTOM workflow ignores a client-supplied workflowName entirely — but
+        // it is no longer workflow-less: it resolves the code-owned default instead (issue #209).
         const ghost = await post(instance, '/api/jobs', { command: 'echo hi', workflowName: 'ghost' });
         expect(ghost.statusCode).toBe(201);
-        expect(jobs.workflowTargets).toHaveLength(1);
+        expect(jobs.workflowTargets).toHaveLength(2);
+        expect(jobs.workflowTargets[1]!.name).toBe(DEFAULT_WORKFLOW_NAME);
     });
 
     it('refuses an interpolated root command over the cap with BAD_COMMAND', async () => {

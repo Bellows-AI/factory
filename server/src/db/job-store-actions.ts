@@ -18,20 +18,29 @@ export async function createJobRow(
     const { sql, orgId } = ctx;
     // id and root_job_id are the SAME uuid, computed once in the select so the column can
     // be not null from insert — the root's root is itself (022). The workflow triple rides
-    // the same insert when a workflow resolved: workflow_id names what the task walks,
+    // the same insert when a workflow resolved: workflow_id names what the task walks (null
+    // for the code-owned default, issue #209 — it is never a row in `workflow`),
     // workflow_name freezes the resolved record's NAME on the row (033), workflow_node is
     // the entry the first run carries, the snapshot freezes the graph onto
     // the root — where every transition decision reads it — and workflow_params freezes the
-    // validated launch values beside it (030). All null on a workflow-less create,
-    // byte-identical to the pre-027 insert.
+    // validated launch values beside it (030). default_review_reconciliation/
+    // default_merge_conflict_autofix (039) freeze the selected optional-block pair, root-only
+    // like the snapshot, and stay null on every other create — a named workflow, or the
+    // pre-209 workflow-less create this insert has always supported.
     const rows = await sql<{ id: string }[]>`
-        insert into job (org_id, command, created_by, repo, executor, id, root_job_id, workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params)
+        insert into job (
+            org_id, command, created_by, repo, executor, id, root_job_id,
+            workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params,
+            default_review_reconciliation, default_merge_conflict_autofix
+        )
         select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
                ${target.workflow?.id ?? null},
                ${target.workflow?.name ?? null},
                ${target.workflow?.node ?? null},
                ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
-               ${target.workflow ? sql.json(target.workflow.params as never) : null}
+               ${target.workflow ? sql.json(target.workflow.params as never) : null},
+               ${target.workflow?.defaultOptions?.reviewReconciliation ?? null},
+               ${target.workflow?.defaultOptions?.mergeConflictAutofix ?? null}
         from (select gen_random_uuid() as x) s
         returning id
     `;

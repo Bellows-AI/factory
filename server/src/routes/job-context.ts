@@ -39,6 +39,15 @@ export async function workflowsFor(orgs: OrgRegistry, request: FastifyRequest) {
     return rt?.workflows ?? null;
 }
 
+/**
+ * The caller's saved default-workflow settings (#203) — read at launch when an unnamed task names
+ * no `defaultWorkflow` override, mirroring `workflowsFor`'s org lookup.
+ */
+export async function workflowDefaultsFor(orgs: OrgRegistry, request: FastifyRequest) {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.workflowDefaults ?? null;
+}
+
 export type BoardScanner = <T>(
     boards: readonly JobStore[],
     log: (e: Error) => void,
