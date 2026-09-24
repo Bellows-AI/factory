@@ -44,6 +44,11 @@ import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
+/** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
+ *  presence matters to this file's own tests, none of which assert its exact text. */
+const MASTER_PROMPT =
+    'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
+
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
@@ -51,6 +56,7 @@ const job: BoardJob = {
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
     userId: USER,
@@ -84,15 +90,28 @@ describe('the runner job spec', () => {
         expect(spec().spec.template.spec.containers[0].args).toEqual([
             '--session-id',
             SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
             '-p',
             'fix the failing build',
         ]);
     });
 
     // The command is delivered once. On a resume it is already in the transcript, and sending it
-    // again would re-run the work somebody has been driving by hand.
+    // again would re-run the work somebody has been driving by hand — the Factory execution
+    // context still rides every claim, delivered or not, so a resumed conversation always rebuilds
+    // it fresh (issue #244).
     it('restores a resumed session without re-sending the command', () => {
-        expect(resumedSpec().spec.template.spec.containers[0].args).toEqual(['--resume', SESSION]);
+        expect(resumedSpec().spec.template.spec.containers[0].args).toEqual([
+            '--resume',
+            SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+        ]);
     });
 
     // The docker runner's follow-up rule, unchanged on this platform: a follow-up restores the
@@ -106,6 +125,10 @@ describe('the runner job spec', () => {
         expect(followUpSpec.spec.template.spec.containers[0].args).toEqual([
             '--resume',
             SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
             '-p',
             'fix the failing build',
         ]);
@@ -1862,6 +1885,32 @@ describe('the kubernetes runner', () => {
         // The Secret is never empty now: the runner's own branch-ingest credential is always in it.
         expect(secretPost?.body).toMatchObject({
             stringData: { RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken },
+        });
+    });
+
+    // Issue #244: the per-attempt Secret and the pod spec's env NAMES must agree on
+    // OPENCODE_CONFIG_CONTENT — one merge (runnerClaimEnv), never two, or the two could drift the
+    // way `secretEnv`/`runnerEnv` used `claimEnv` independently before this change.
+    it('merges the reserved factory agent into the runner Secret and references it by name in the pod spec', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).run(opencodeJob, null);
+
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
+        expect(JSON.parse(stringData.OPENCODE_CONFIG_CONTENT ?? '{}')).toEqual({
+            agent: { factory: { mode: 'primary', prompt: MASTER_PROMPT, disable: false } },
+        });
+
+        const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        const env = (jobPost?.body as { spec?: { template?: { spec?: { containers?: { env?: unknown[] }[] } } } })?.spec
+            ?.template?.spec?.containers?.[0]?.env as {
+            name: string;
+            valueFrom?: { secretKeyRef?: { key: string } };
+        }[];
+        expect(env).toContainEqual({
+            name: 'OPENCODE_CONFIG_CONTENT',
+            valueFrom: { secretKeyRef: { name: secretName(opencodeJob), key: 'OPENCODE_CONFIG_CONTENT' } },
         });
     });
 
@@ -5242,13 +5291,20 @@ describe('the runner job spec under opencode', () => {
     it('runs a fresh job headless, with no session argv at all', () => {
         const spec = runnerJobSpec(ocConfig, opencodeJob, null);
         const container = spec.spec.template.spec.containers[0];
-        expect(container.args).toEqual(['run', 'fix the failing build']);
+        expect(container.args).toEqual(['run', '--agent', 'factory', 'fix the failing build']);
     });
 
     it('restores a follow-up session with run --session, the id the CLI itself minted', () => {
         const spec = runnerJobSpec(ocConfig, { ...opencodeJob, followUp: true }, { id: 'ses_abc123', resume: true });
         const container = spec.spec.template.spec.containers[0];
-        expect(container.args).toEqual(['run', '--session', 'ses_abc123', 'fix the failing build']);
+        expect(container.args).toEqual([
+            'run',
+            '--agent',
+            'factory',
+            '--session',
+            'ses_abc123',
+            'fix the failing build',
+        ]);
     });
 
     it('persists the session database on the workspaces volume, under the member tree', () => {

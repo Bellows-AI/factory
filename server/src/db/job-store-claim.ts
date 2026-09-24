@@ -17,6 +17,7 @@ import type {
     ClaimHelperPlan,
     JobStorePrs,
 } from './job-store-types.js';
+import { resolveMasterPrompt } from './master-prompt.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
 
@@ -33,6 +34,7 @@ export interface ClaimCandidateRow {
     executor: string | null;
     follow_up: boolean;
     workflow_node: string | null;
+    workflow_name: string | null;
     root_command: string;
 }
 
@@ -130,6 +132,7 @@ async function claimNextCandidate(
                     executor: string | null;
                     follow_up: boolean;
                     workflow_node: string | null;
+                    workflow_name: string | null;
                     root_command: string;
                 }[]
             >`
@@ -178,7 +181,7 @@ async function claimNextCandidate(
                 -- never been parked, so its command still has to go out; a suspended one settles
                 -- stopped, and is never claimed again.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                          session_id, repo, parent_job_id, executor, workflow_node,
+                          session_id, repo, parent_job_id, executor, workflow_node, workflow_name,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
@@ -225,15 +228,8 @@ async function claimNextCandidate(
                 row
             );
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
-            const snapshot = row.workflow_node === null ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
-            const published = resolveClaimPublish(snapshot, row.workflow_node, gates);
-            const helperPlans = await resolveClaimHelperPlans(tx, {
-                rootJobId,
-                workflowNode: row.workflow_node,
-                snapshot,
-                prs,
-            });
-            return buildClaimResult(row, rootJobId, { claimEnv, executorType, ...gates, ...published, helperPlans });
+            const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
+            return buildClaimResult(row, rootJobId, { claimEnv, executorType, ...gates, ...workflow });
         }
     });
 }
@@ -492,15 +488,52 @@ export async function resolveClaimHelperPlans(
     }));
 }
 
+/**
+ * claim()'s one bundle of every workflow-shaped decision: the snapshot read, the publish flag, the
+ * declared helper plans, and the master prompt they all feed (issue #244) — pulled out of
+ * `claimNextCandidate` purely to keep that function's own complexity readable, no behavior change.
+ * Reads the snapshot for a member follow-up too (workflow_node null, workflow_name not): the
+ * master prompt's graph-wide capabilities (publish path, review/merge-conflict blocks) still apply
+ * to that turn, even though it carries no node of its own — `resolveClaimPublish` and
+ * `resolveClaimHelperPlans` both branch on workflowNode first, so this widening changes neither of
+ * their answers.
+ */
+async function resolveClaimWorkflow(
+    tx: TransactionSql,
+    ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
+    row: { workflow_node: string | null; workflow_name: string | null },
+    gates: { claimGates: BellowsConfig | null; gateError: string | null }
+): Promise<ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined; masterPrompt: string | null }> {
+    const { orgId, rootJobId, prs } = ctx;
+    const snapshot =
+        row.workflow_node === null && row.workflow_name === null
+            ? null
+            : await readWorkflowSnapshot(tx, orgId, rootJobId);
+    const published = resolveClaimPublish(snapshot, row.workflow_node, gates);
+    const helperPlans = await resolveClaimHelperPlans(tx, {
+        rootJobId,
+        workflowNode: row.workflow_node,
+        snapshot,
+        prs,
+    });
+    const masterPrompt = resolveMasterPrompt({
+        workflowNode: row.workflow_node,
+        workflowName: row.workflow_name,
+        snapshot,
+        helperPlans,
+    });
+    return { ...published, helperPlans, masterPrompt };
+}
+
 /** claim()'s answer, assembled from the claimed row plus its resolved env/gates/workflow halves. */
 export function buildClaimResult(
     row: ClaimCandidateRow,
     rootJobId: string,
     resolved: ResolvedClaimExecutor &
         ResolvedClaimGates &
-        ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined }
+        ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined; masterPrompt: string | null }
 ): Claim {
-    const { claimEnv, executorType, claimPath, claimGates, gateError, publish, helperPlans } = resolved;
+    const { claimEnv, executorType, claimPath, claimGates, gateError, publish, helperPlans, masterPrompt } = resolved;
     return {
         id: row.id,
         command: row.command,
@@ -509,6 +542,7 @@ export function buildClaimResult(
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
         userId: row.created_by,
+        masterPrompt,
         // Built here rather than in the route, because this is where the org is bound. Null for
         // an unattributed job — no member, so no workspace — and null when this deployment has no
         // workspace root, where no directory exists to point at.

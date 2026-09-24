@@ -26,6 +26,33 @@ export interface LoopDeps {
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
+ * A `BoardJob` synthesised from a claimed reclaim row, for the same runner call a terminal
+ * thread's report() uses: the thread's identity — its root id, repo label and workspace path — is
+ * all the tree is filed under. The row's own id rides as the lease token, which is exactly what
+ * makes the removal hold the checkout against a live attempt's startup sync under kubernetes (the
+ * claim ConfigMap is keyed by the job id, and its holder data carries the lease token). No agent
+ * is ever spawned for a reclaim, so it carries no executor selection worth naming and no prompt.
+ */
+function reclaimJob(reclaim: Reclaim): BoardJob {
+    return {
+        id: reclaim.rootJobId,
+        command: '',
+        attempts: 1,
+        leaseToken: reclaim.id,
+        leaseExpiresAt: reclaim.leaseExpiresAt,
+        resumeSessionId: null,
+        followUp: false,
+        userId: null,
+        workspacePath: reclaim.workspacePath,
+        rootJobId: reclaim.rootJobId,
+        rootCommand: '',
+        repo: reclaim.repo,
+        executorType: CLAUDE_CODE,
+        masterPrompt: null,
+    };
+}
+
+/**
  * A claimed job this loop refuses to run as claimed — no workspace, no resolvable task worktree,
  * or a resume claim its selected executor cannot restore — answered as a failure report rather
  * than dropped, so the job reaches a terminal state somebody can see instead of being reclaimed
@@ -160,23 +187,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * exactly as a refused terminal reclaim leaves it.
      */
     async function processReclaim(reclaim: Reclaim): Promise<void> {
-        const removed: BoardJob = {
-            id: reclaim.rootJobId,
-            command: '',
-            attempts: 1,
-            leaseToken: reclaim.id,
-            leaseExpiresAt: reclaim.leaseExpiresAt,
-            resumeSessionId: null,
-            followUp: false,
-            userId: null,
-            workspacePath: reclaim.workspacePath,
-            rootJobId: reclaim.rootJobId,
-            rootCommand: '',
-            repo: reclaim.repo,
-            // Removed-thread reclamation runs only the bundled git maintenance script. It is
-            // not task execution and the deleted rows no longer carry an executor selection.
-            executorType: CLAUDE_CODE,
-        };
+        const removed = reclaimJob(reclaim);
         let outcome: ReclaimResult;
         try {
             outcome = await runner.reclaimWorktree(removed);

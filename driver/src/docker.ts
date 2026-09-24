@@ -11,7 +11,7 @@ import {
     opencodeDbPath,
     workspacePath,
     runWorkingDir,
-    claimEnv,
+    runnerClaimEnv,
     SESSION_ID,
     transcriptDir,
 } from './claim.js';
@@ -20,6 +20,7 @@ import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, type RuntimeSample, type RunSession } from './runner.js';
 import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
 import { OPENCODE } from './executors.js';
+import { claudeSystemPromptArgs, opencodeAgentArgs } from './master-prompt.js';
 
 /**
  * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
@@ -326,8 +327,11 @@ function pushRunnerCredentialArgs(args: string[], config: DriverConfig, job: Boa
     // --env-file (written and removed by createDockerRunner), the values never touching this
     // process's environment at all. Reserved names are already gone (claimEnv); docker gives
     // `-e` precedence over `--env-file`, so a name the claim also carries is dropped from
-    // passEnv — the claim must win.
-    const claim = claimEnv(job);
+    // passEnv — the claim must win. `runnerClaimEnv`, not `claimEnv`: this argv always builds the
+    // REAL runner (dockerArgs is never called for an aux container), so an operator who lists
+    // `OPENCODE_CONFIG_CONTENT` in RUNNER_ENV must not win a collision against the reserved
+    // agent's own merged value the same way any other claim name would.
+    const claim = runnerClaimEnv(job);
     // The file is not optional any more, even for a claim that resolves to nothing: the
     // runner's own branch-ingest credential — this attempt's job id + lease token pair —
     // rides it (envFileBody appends it after the claim's and gate lines), and a runner
@@ -459,7 +463,7 @@ function pushOpencodeArgs(args: string[], config: DriverConfig, job: BoardJob, s
         }
         args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
     }
-    args.push(executorImage(config, job.executorType), 'run');
+    args.push(executorImage(config, job.executorType), 'run', ...opencodeAgentArgs());
     if (session) args.push('--session', session.id);
     args.push(job.command);
     return args;
@@ -483,6 +487,12 @@ function pushClaudeCodeArgs(args: string[], config: DriverConfig, job: BoardJob,
     // separate flag — which is what keeps a follow-up in its parent's conversation.
     args.push(executorImage(config, job.executorType), session.resume ? '--resume' : '--session-id', session.id);
     if (config.skipPermissions) args.push('--dangerously-skip-permissions');
+
+    // The board-owned Factory execution context (issue #244), through Claude Code's own
+    // system-instruction channel — additive to its built-in system prompt, never a replacement.
+    // Snapshotting off is what makes a resumed conversation rebuild THIS claim's workflow/node
+    // context rather than retaining whichever node's prompt rode the thread's first turn.
+    args.push(...claudeSystemPromptArgs(job));
 
     // The command is the prompt. On a follow-up it is the NEW adjustment, and the restored
     // transcript is the conversation it continues. It goes last, so a command that looks like a

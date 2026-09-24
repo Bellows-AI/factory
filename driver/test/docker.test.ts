@@ -47,6 +47,11 @@ import {
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
+/** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
+ *  presence matters to this file's own tests, none of which assert its exact text. */
+const MASTER_PROMPT =
+    'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
+
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
@@ -54,6 +59,7 @@ const job: BoardJob = {
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
     userId: USER,
@@ -87,7 +93,17 @@ const resumed = (env: NodeJS.ProcessEnv = {}) =>
 
 describe('the docker run arguments', () => {
     it('runs the command as a prompt, after the image', () => {
-        expect(args().slice(-5)).toEqual(['claude-executor', '--session-id', SESSION, '-p', 'fix the failing build']);
+        expect(args().slice(-9)).toEqual([
+            'claude-executor',
+            '--session-id',
+            SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+            '-p',
+            'fix the failing build',
+        ]);
     });
 
     // The link the UI shows is built from this, so it has to be the id the runner actually uses —
@@ -333,6 +349,24 @@ describe("the board's environment", () => {
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 
+    // Issue #244: the collision check must read the SAME env the file is actually written from
+    // (`runnerClaimEnv`), or an operator who names OPENCODE_CONFIG_CONTENT in RUNNER_ENV could
+    // have `-e` (driver-process value, almost always unset) win over the reserved-agent merge —
+    // docker gives `-e` precedence over `--env-file`.
+    it('never forwards OPENCODE_CONFIG_CONTENT as -e for an opencode job — the merged value must win', () => {
+        const configured = loadDriverConfig({ RUNNER_ENV: 'OPENCODE_CONFIG_CONTENT' });
+        const line = dockerArgs(configured, opencodeJob, null, { envFile: '/tmp/env-file' });
+        expect(line).not.toEqual(expect.arrayContaining(['-e', 'OPENCODE_CONFIG_CONTENT']));
+    });
+
+    it('still forwards OPENCODE_CONFIG_CONTENT as -e for a claude-code job with no claim env', () => {
+        // Pins that runnerClaimEnv passes non-opencode claims through unchanged: this name is
+        // ordinary for any other executor, and the collision rule must still apply to it.
+        const configured = loadDriverConfig({ RUNNER_ENV: 'OPENCODE_CONFIG_CONTENT' });
+        const line = dockerArgs(configured, job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
+        expect(line).toEqual(expect.arrayContaining(['-e', 'OPENCODE_CONFIG_CONTENT']));
+    });
+
     it('refuses to run a claim that carries env with no env file to put it in', () => {
         // A silent drop would run the job without the credentials it was queued against.
         expect(() => dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false })).toThrow(/no env file/);
@@ -481,7 +515,17 @@ describe('a follow-up run', () => {
             { id: SESSION, resume: true },
             { envFile: '/tmp/env-file' }
         );
-        expect(line.slice(-5)).toEqual(['claude-executor', '--resume', SESSION, '-p', 'fix the failing build']);
+        expect(line.slice(-9)).toEqual([
+            'claude-executor',
+            '--resume',
+            SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+            '-p',
+            'fix the failing build',
+        ]);
         expect(line).not.toContain('--session-id');
     });
 });
@@ -571,7 +615,7 @@ describe('an opencode runner', () => {
     // `run <command>` — the id it uses is scraped after the run and reported then.
     it('runs the command headless, with no session id at all', () => {
         const line = oc();
-        expect(line.slice(-3)).toEqual(['opencode-executor', 'run', 'fix the failing build']);
+        expect(line.slice(-5)).toEqual(['opencode-executor', 'run', '--agent', 'factory', 'fix the failing build']);
         expect(line).not.toContain('--session-id');
         expect(line).not.toContain('--resume');
         expect(line).not.toContain(SESSION);
@@ -582,6 +626,37 @@ describe('an opencode runner', () => {
     // the workspaces volume.
     it('persists the session database under the member’s own workspace tree', () => {
         expect(oc()).toEqual(expect.arrayContaining(['-e', `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`]));
+    });
+
+    // Issue #244: the real runner's env file carries the reserved `factory` agent merged into
+    // OPENCODE_CONFIG_CONTENT — the one place this happens, so a swap back to `claimEnv` here
+    // would silently drop the master prompt from every OpenCode run.
+    describe('the master prompt reaches the real runner only', () => {
+        it('merges the reserved factory agent into the runner env file', () => {
+            const body = envFileBody(opencodeJob, loadDriverConfig({}));
+            expect(body).toContain(
+                `OPENCODE_CONFIG_CONTENT={"agent":{"factory":{"mode":"primary","prompt":${JSON.stringify(MASTER_PROMPT)},"disable":false}}}`
+            );
+        });
+
+        it('preserves the member’s own executor config alongside the reserved agent', () => {
+            const withMemberConfig: BoardJob = {
+                ...opencodeJob,
+                env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: 'anthropic/claude-sonnet' }) },
+            };
+            const body = envFileBody(withMemberConfig, loadDriverConfig({}));
+            const line = body.split('\n').find((l) => l.startsWith('OPENCODE_CONFIG_CONTENT='));
+            const merged = JSON.parse(line!.slice('OPENCODE_CONFIG_CONTENT='.length));
+            expect(merged.model).toBe('anthropic/claude-sonnet');
+            expect(merged.agent.factory).toEqual({ mode: 'primary', prompt: MASTER_PROMPT, disable: false });
+        });
+
+        it('never merges into an aux container’s env (no config argument)', () => {
+            // Sync, gates, publish and block-helper containers never run the agent CLI, so they
+            // must never carry the reserved agent — and calling with no `config` must not throw
+            // even though the claim's masterPrompt-dependent merge would otherwise need one.
+            expect(envFileBody(opencodeJob)).not.toContain('OPENCODE_CONFIG_CONTENT');
+        });
     });
 
     /**
@@ -601,9 +676,11 @@ describe('an opencode runner', () => {
         );
         // The BELLOWS_SESSION_ID env rides before the image (it is a container env, not a CLI
         // flag), naming the SAME conversation the `--session` below restores.
-        expect(line.slice(-5)).toEqual([
+        expect(line.slice(-7)).toEqual([
             'opencode-executor',
             'run',
+            '--agent',
+            'factory',
             '--session',
             'ses_f86188c3dffeZGYO4yZq4atba9',
             'fix the failing build',
@@ -748,7 +825,12 @@ describe('an opencode runner', () => {
     });
 
     it('uses the image configured for its selected executor type', () => {
-        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-2)).toEqual(['run', 'fix the failing build']);
+        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-4)).toEqual([
+            'run',
+            '--agent',
+            'factory',
+            'fix the failing build',
+        ]);
     });
 
     // The claude pins hold unchanged, because nothing about the docker-level posture depends on

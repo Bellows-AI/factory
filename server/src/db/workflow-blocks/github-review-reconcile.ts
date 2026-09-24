@@ -48,8 +48,11 @@
  */
 import type { BlockDescriptor, BlockExpansion } from './types.js';
 
-const COLLECT_HELPER_ID = 'review-collect-probe';
-const REPLY_HELPER_ID = 'review-reply-probe';
+// Exported for master-prompt.ts, which names this block's capability generically from a claim's
+// snapshot by recognizing its own helper ids — registry-unaware code stays that way; only this
+// specific renderer reads them, the same carve-out REVIEW_MARKERS already gets below.
+export const COLLECT_HELPER_ID = 'review-collect-probe';
+export const REPLY_HELPER_ID = 'review-reply-probe';
 
 const CLEAN_MARKER = 'REVIEW-CLEAN';
 const WAIT_MARKER = 'REVIEW-WAIT';

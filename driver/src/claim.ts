@@ -7,6 +7,8 @@
 
 import type { DriverConfig } from './config.js';
 import type { BoardJob } from './board.js';
+import { OPENCODE } from './executors.js';
+import { opencodeConfigContent } from './master-prompt.js';
 import { UUID, WORKSPACE_PATH, worktreeDir } from './publish.js';
 
 export { UUID };
@@ -153,6 +155,20 @@ export function claimEnv(job: BoardJob): Record<string, string> {
 }
 
 /**
+ * `claimEnv`, plus the reserved OpenCode `factory` agent merged into `OPENCODE_CONFIG_CONTENT`
+ * (issue #244) — the one place this overlay happens, so the real runner Secret/env-file and the
+ * pod spec's key names (kubernetes) can never drift onto two different merges. Never applied to
+ * an aux container (sync, gates, publish, helpers): none of them runs the agent CLI, so none of
+ * them needs the reserved agent at all. Claude-code claims pass through untouched — the master
+ * prompt reaches that CLI as an argv flag, never through env.
+ */
+export function runnerClaimEnv(job: BoardJob): Record<string, string> {
+    const env = claimEnv(job);
+    if (job.executorType !== OPENCODE) return env;
+    return { ...env, OPENCODE_CONFIG_CONTENT: opencodeConfigContent(job, env.OPENCODE_CONFIG_CONTENT) };
+}
+
+/**
  * Whether the claim env carries a NON-EMPTY GITHUB_TOKEN — the condition under which the startup
  * sync's fetch is handed the credential-helper CODE. Git reads no token from the environment, and
  * the executor images ship no helper, so a private-repo fetch needs one; a public repo with no
@@ -200,7 +216,11 @@ const envLine = (job: BoardJob, name: string, value: string): string => {
  * none of them reports telemetry.
  */
 export function envFileBody(job: BoardJob, config?: DriverConfig): string {
-    const lines = Object.entries(claimEnv(job)).map(([name, value]) => envLine(job, name, value));
+    // The reserved-agent overlay only ever applies to the real runner — every aux container
+    // (sync, gates, publish, block-helpers) calls this with no config and gets the plain claim env.
+    const lines = Object.entries(config ? runnerClaimEnv(job) : claimEnv(job)).map(([name, value]) =>
+        envLine(job, name, value)
+    );
     // The driver's own gate credentials go LAST. Docker's --env-file is last-duplicate-wins, so
     // the order is the precedence rule: a `BELLOWS_GATE_TOKEN` a member configured in any env
     // scope was already dropped from the claim lines (reserved names), and the lines here are the

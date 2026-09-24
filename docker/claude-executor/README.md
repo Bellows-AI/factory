@@ -121,6 +121,27 @@ It also marks the checkout `safe.directory` when one is mounted. A bind mount ke
 which is rarely the container's 1000, and git otherwise refuses the repository outright with a
 "dubious ownership" error that never mentions uids.
 
+## Master prompt
+
+Every claim carries a board-rendered `masterPrompt` (issue #244) — a short, versioned Factory
+execution context (mode, workflow/node, and which capabilities Factory itself runs around this
+turn) — which the driver passes with `--append-system-prompt` and `--system-prompt-snapshot off`,
+right before `-p`. Four things can shape one run's behavior, and they are not the same thing:
+
+- **The Factory master prompt** — code-owned, board-rendered, delivered fresh on every claim. Never
+  authorable by a workflow or task; it is the one thing this repo's own automation cannot override.
+- **The current node's prompt** — the task's own command, or a workflow node's authored template
+  (docs/workflows.md). What THIS turn is asked to do.
+- **This checkout's `AGENTS.md`** — read by the agent like any other file in the worktree, at its
+  own discretion; not injected by the driver at all.
+- **Claude Code's own built-in system prompt** — untouched. `--append-system-prompt` adds to it,
+  never replaces it.
+
+`--system-prompt-snapshot off` is what keeps a resumed conversation honest: without it, Claude Code
+would record the FIRST turn's system prompt and keep re-sending it on every later `--resume`, even
+though the board's own text changes (a new node, a follow-up, an updated capability list) on every
+claim.
+
 ## Transcript store
 
 When the driver starts a run it sets `FACTORY_TRANSCRIPT_DIR` to a per-task-thread

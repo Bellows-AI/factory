@@ -3,11 +3,11 @@ import { createHash } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import {
-    claimEnv,
     GATE_GID,
     GATE_HOME,
     GATE_UID,
     opencodeDbPath,
+    runnerClaimEnv,
     runWorkingDir,
     SESSION_ID,
     transcriptDir,
@@ -19,6 +19,7 @@ import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
 import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
 import { bellowsReadEnv, bellowsReadScript } from './services.js';
 import { OPENCODE } from './executors.js';
+import { claudeSystemPromptArgs, opencodeAgentArgs } from './master-prompt.js';
 
 /**
  * The kubernetes executor's pure Job/pod spec builders — the `dockerArgs` analogue for every
@@ -126,7 +127,7 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
     // credentials. NOT optional: this driver created this exact Secret moments earlier under
     // this attempt's own lease token, so a missing key is a bug and must fail loud
     // (CreateContainerConfigError) rather than start the pod silently without its env.
-    const secretEnv = { ...claimEnv(job), ...(job.gateEnv ?? {}) };
+    const secretEnv = { ...runnerClaimEnv(job), ...(job.gateEnv ?? {}) };
     for (const name of Object.keys(secretEnv)) {
         env.push({ name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } });
     }
@@ -176,7 +177,7 @@ function opencodeRunnerPlan(
         throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
     }
     const env: EnvVar[] = [{ name: 'XDG_DATA_HOME', value: `${config.workspaceMount}/${path}/.opencode` }];
-    const args = ['run'];
+    const args = ['run', ...opencodeAgentArgs()];
     if (session) {
         if (!SESSION_ID.test(session.id)) {
             throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
@@ -219,6 +220,9 @@ function claudeRunnerPlan(
     const deliver = !session.resume || job.followUp;
     const args = [session.resume ? '--resume' : '--session-id', session.id];
     if (config.skipPermissions) args.push('--dangerously-skip-permissions');
+    // The board-owned Factory execution context (issue #244) — the docker runner's identical
+    // twin, so both platforms make the same provider-specific argv decision.
+    args.push(...claudeSystemPromptArgs(job));
     if (deliver) args.push('-p', job.command);
     return { env, args };
 }

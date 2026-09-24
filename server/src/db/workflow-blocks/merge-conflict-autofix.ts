@@ -36,7 +36,9 @@
  */
 import type { BlockDescriptor, BlockExpansion } from './types.js';
 
-const PROBE_HELPER_ID = 'merge-conflict-probe';
+// Exported for master-prompt.ts's generic capability naming — see the same note in
+// github-review-reconcile.ts.
+export const PROBE_HELPER_ID = 'merge-conflict-probe';
 const PROBE_STATE_PATH = '.factory/merge-conflict-probe.json';
 
 const UP_TO_DATE_MARKER = 'MERGE-UP-TO-DATE';
