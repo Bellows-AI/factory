@@ -50,8 +50,12 @@ export interface CompletedRun {
  * - `loop_bound`        the matching edge is exhausted: the thread already holds `max` rows for
  *                       its target, dead rows included.
  * - `command_too_large` the interpolated prompt exceeded the command cap even with bounded tails.
+ * - `no_publication`     the transition would enter a block's own helper-driven node from outside
+ *                       its scope with no recorded publication to hand the helper (issue #209) —
+ *                       never a runnable claim with a null publication, which the helper itself
+ *                       cannot act on (`job-store-worker.ts`'s `runWorkflowTransition`).
  */
-export type RestReason = 'off_graph' | 'no_edge' | 'loop_bound' | 'command_too_large';
+export type RestReason = 'off_graph' | 'no_edge' | 'loop_bound' | 'command_too_large' | 'no_publication';
 
 export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }

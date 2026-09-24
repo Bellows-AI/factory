@@ -370,12 +370,12 @@ force is C(512, 3) ≈ 2×10⁷ cheap steps — bounded, and honest shapes never
 
 The values travel on the `POST /api/jobs` body as `workflowParams` — an object keyed by parameter
 name. The route validates them against the resolved definition's declarations BEFORE anything
-queues: a missing, empty, over-length or non-matching value is a `400 BAD_WORKFLOW_PARAMS`, and
-`workflowParams` sent beside a task that names no workflow is the same refusal. This is
-code-enforced, not prompt-discipline: the composer renders one explicit input per declared
-parameter of the workflow the member CHOSE, and the launch button stays disabled until every
-value validates. An unnamed task names no workflow, resolves none, and runs the member's words
-verbatim — parameters are never demanded by anything the member did not pick.
+queues: a missing, empty, over-length or non-matching value is a `400 BAD_WORKFLOW_PARAMS`. The
+code-owned default workflow (issue #209) declares no parameters at all, so `workflowParams` sent
+beside an unnamed task is the same refusal — this is code-enforced, not prompt-discipline: the
+composer renders one explicit input per declared parameter of the workflow the member CHOSE, and
+the launch button stays disabled until every value validates. Parameters are never demanded by
+anything the member did not pick.
 
 The validated values freeze on the thread's root row (`job.workflow_params`, beside the snapshot)
 and every row's transition interpolates `{{param.NAME}}` from them — a follow-up's completion
@@ -499,11 +499,12 @@ repo-level definitions. Names are unique per scope (a coalesced unique index, th
 Resolution for a task, in `POST /api/jobs`:
 
 1. an explicit `workflow` name, within the caller's visible scopes — repo over user over org when
-   the name exists in several;
-2. unnamed: NO workflow. The member's words are the whole command, and the row and claim are
-   byte-identical to pre-027. There are no default workflows: a process walks a task only when a
-   body names it, so nothing the member did not choose can demand parameters or reshape their
-   prompt.
+   the name exists in several; a `defaultWorkflow` field alongside it refuses `400
+   BAD_DEFAULT_WORKFLOW` before either is ever resolved — a named workflow has no optional-block
+   options to select;
+2. unnamed: the code-owned DEFAULT workflow (issue #209) — never a row in `workflow`, never
+   editable/deletable through generic CRUD, and outside the repo/user/org name-scope precedence
+   above. See "The code-owned default workflow" below.
 
 The resolved definition is SNAPSHOT-FROZEN onto the thread's root row at creation, beside
 `workflow_id` — and the resolved record's NAME is frozen with them (`job.workflow_name`, 033): the
@@ -513,7 +514,55 @@ the snapshot. Editing or deleting a workflow mid-flight changes later tasks, nev
 thread — the task view can always show the exact graph walked. `job.workflow_id` carries no foreign
 key on purpose: job is an audit record, and deleting a definition must not touch the threads that
 walked it. The frozen name is held to the same doctrine — a rename or delete rewrites later tasks,
-never existing task history, and a task that never named a workflow keeps null.
+never existing task history, and a task launched before issue #209 (the one era with no workflow at
+all) keeps null.
+
+## The code-owned default workflow (issue #209)
+
+Every unnamed task now walks a process instead of none: `server/src/db/default-workflow.ts`
+assembles it IN-PROCESS at launch time — never stored in `workflow`, never a candidate `workflow:
+"default"` resolves to (that name is an ordinary, unreserved one a member may still create; the two
+are told apart by `workflow_id` being null only on the code-owned one). The mandatory spine is a
+single `agent` node (`task`) whose prompt is exactly `{{command}}`, `session: resume`, `publish:
+true` — the same "prompt/skill -> gates -> publish" shape an unnamed task always ran. Then, in
+order, only the caller's SELECTED optional blocks chain onto it: `builtin/github-review-reconcile`
+(`maxRounds: 3`) and `builtin/merge-conflict-autofix`, referenced exactly as a custom workflow's
+authored JSON would via a `block` node (docs/workflows.md, "Built-in blocks") and compiled through
+the same `workflow-blocks/index.ts` pipeline `workflow-store.ts`'s `create()` uses. With both
+excluded, the compiled graph is `nodes: [task], edges: []` — byte-identical to today's unnamed path.
+
+**The selected pair**, in order:
+
+1. a complete `defaultWorkflow: { reviewReconciliation, mergeConflictAutofix }` on the create body —
+   both keys, both booleans, no partial update, no unknown key, matching #203's own `PUT
+   /api/workflows/default-settings` strictness (malformed refuses `400 BAD_DEFAULT_WORKFLOW`, no row
+   inserted);
+2. otherwise the caller's saved settings (#203's `DefaultWorkflowSettingsStore`) — a missing row, no
+   store, or no authenticated caller (open auth mode, a route test) all mean both blocks on, the
+   same `BOTH_ENABLED` answer a missing settings row gives.
+
+The name (`'default'`), the selected pair, and the exact expanded snapshot freeze on the root row
+(039's `default_review_reconciliation`/`default_merge_conflict_autofix`, alongside 027/030/033's
+existing columns) — a later settings change or block update can never affect an already-launched
+thread, the same frozen-snapshot doctrine every other workflow gets. A follow-up inherits it exactly
+like any other workflow thread.
+
+**No repository or nothing publishable rests the thread instead of entering a selected block.**
+Every declared block helper is handed `{publication}` generically at claim time
+(`resolveClaimHelperPlans`) — a task with no repo, or whose entry never actually published, has none
+to give, and a helper script cannot act on a null one. `workflow-blocks/runtime-settle.ts`'s
+`entersBlockHelperNode`, called from `job-store-worker.ts`'s `runWorkflowTransition` right after
+`nextTransition` decides (before `settleBlockWaits`, so it sees the final rest), detects exactly
+this: a transition INSERTING a block's own helper-driven node from OUTSIDE that block's scope (a
+fresh entry, never the block's internal round-trip). With no recorded publication (or no `prs`
+configured at all — the same defensive posture `enterRuntimeBoundary` already takes for a durable
+wait), the transition is replaced with `{ action: 'rest', reason: 'no_publication' }` instead of
+inserting — never a runnable claim the helper would only fail against. Publish failure (the
+mandatory spine's own `task` node reporting `failed`) never reaches this at all: no edge out of
+`task` matches a failed verdict, so the thread simply rests `no_edge`, before any block is ever
+considered. A PR closing or merging cancels the review-reconciliation block's durable wait exactly
+like any other workflow (docs/workflows.md, "Durable block waits") — the cancellation fence still
+applies, since it is generic to every `workflow_round`/`workflow_wait` pair.
 
 ## The blocks and the base workflow
 
@@ -529,8 +578,9 @@ issue instead of improvising. The bare form keeps its `#` so the reference survi
 command the driver parses and the branch/commit messages cite. Each block carries only its agentic
 content plus the output contract an edge needs; the loop limits live on the edges, enforced by the
 board, no longer model discipline. The board seeds it at boot (idempotent by name, org-level) as
-one choosable process among the list — never a default that unnamed tasks resolve; the row is the
-board's, so it tracks the shipped template — a definition an older boot seeded refreshes to the
+one choosable process among the list — a member picks it by name like any other; it never resolves
+from an unnamed task, which walks the separate code-owned default workflow instead (issue #209,
+above). The row is the board's, so it tracks the shipped template — a definition an older boot seeded refreshes to the
 current shape, because a stale row would serve a process the code no longer ships with no way for
 a member to fix it (no workflow edit UI exists). A member's own same-named definition in another
 scope is never touched. Running threads are safe regardless — they froze their snapshot at
@@ -567,8 +617,11 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The driver's one publish gate | `driver/src/loop.ts` |
 | CRUD routes and `POST /api/jobs` resolution | `server/src/routes/workflows.ts`, `routes/jobs.ts` |
 | The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/task-composer.ts`, `web/src/api/useWorkflows.ts` |
-| A member's saved default-step switches (035, #203) — no job behavior yet reads them | `server/src/db/default-workflow-settings-store.ts`, `server/src/routes/workflow-settings.ts` |
-| The settings page and composer checkboxes that read/write that API (#208) — still no job behavior reads the submitted `defaultWorkflow` field | `web/src/pages/SettingsWorkflowsPage.tsx`, `web/src/panels/DefaultWorkflowPanel.tsx`, `web/src/api/useDefaultWorkflowSettings.ts` |
+| A member's saved default-step switches (035, #203) — read by `POST /api/jobs` for an unnamed task with no `defaultWorkflow` override | `server/src/db/default-workflow-settings-store.ts`, `server/src/routes/workflow-settings.ts` |
+| The settings page and composer checkboxes that read/write that API (#208) | `web/src/pages/SettingsWorkflowsPage.tsx`, `web/src/panels/DefaultWorkflowPanel.tsx`, `web/src/api/useDefaultWorkflowSettings.ts` |
+| The code-owned default workflow: the assembler, the selected pair, the launch resolution (issue #209) | `server/src/db/default-workflow.ts`, `server/src/routes/job-workflow-resolution.ts` |
+| The frozen selected-pair columns (issue #209) | `server/migrations/039_default_workflow_snapshot.sql` |
+| The no-publication block-entry guard (issue #209) | `server/src/db/workflow-blocks/runtime-settle.ts` `entersBlockHelperNode()` |
 
 ## Tests
 
@@ -603,9 +656,25 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
   included) stays byte-identical.
 - Offline units (extended): `server/test/workflow-schema.test.ts` — `runtime` refuses `UNKNOWN_KEY`
   on both an authored agent node and a block node (issue #231's "never authorable" guarantee).
+- Offline units: `server/test/default-workflow.test.ts` (issue #209) — every selectable pair
+  compiles to the promised graph shape, `compileDefaultWorkflow` deep-equals compiling the authored
+  graph directly, an arbitrary prompt/skill invocation/literal `{{x}}` interpolates untouched, and a
+  pure orchestration walk through the real `nextTransition` (both excluded rests `no_edge`, a gate
+  failure never reaches a block, the selected block's entry inserts on `succeeded`, and
+  `REVIEW-CLEAN` hands off to merge-conflict-autofix only when both are selected).
+- Offline units (extended): `server/test/workflow-block-runtime-settle.test.ts` — `entersBlockHelperNode`
+  (issue #209): true entering a helper-plan node from a bare node, a different block's scope, or the
+  graph's own entry (`from: null`); false for a same-scope move, a rest, or a node with no declared
+  helper plans.
 - HTTP contracts: `server/test/routes.workflows.test.ts` (including `GET /api/workflow-blocks` and
   the compiler's refusal codes surfacing the same way a schema refusal does), the
-  workflow-resolution block of `routes.jobs.test.ts`.
+  workflow-resolution block of `routes.jobs.test.ts`, and `server/test/routes.jobs.default-workflow.test.ts`
+  (issue #209) — the full `workflow`/`defaultWorkflow` body matrix, every refusal's no-row
+  guarantee, and that the stored pair and snapshot agree with the request.
+- Against a real database (`npm run test:db`): `server/test-db/job-store.workflow.default.test.ts`
+  (issue #209) — the frozen name/null-id/node/snapshot/pair, the claim's `publish: true`, entering a
+  selected block only with a recorded publication, both-excluded leaving one row, follow-up
+  inheritance, and the check constraint's own refusals.
 - Against a real database (`npm run test:db`): `server/test-db/workflow-store.test.ts` and
   `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds; the
   former also covers `create()` compiling `builtin/github-review-reconcile` and storing its

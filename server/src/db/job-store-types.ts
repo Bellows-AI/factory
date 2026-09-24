@@ -441,11 +441,14 @@ export interface JobStore {
              * is the ordinary create and behaves exactly as it did before 027.
              */
             workflow?: {
-                id: string;
+                /** Null for the code-owned default (issue #209): never a row in `workflow`. */
+                id: string | null;
                 name: string;
                 node: string;
                 snapshot: WorkflowDefinition;
                 params: ParamValues;
+                /** The selected optional-block pair, only for the code-owned default (039). */
+                defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean };
             } | null;
         }
     ): Promise<{ id: string }>;

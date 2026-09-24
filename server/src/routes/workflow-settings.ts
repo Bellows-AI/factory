@@ -1,38 +1,18 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
+import { parseDefaultWorkflowSelection } from '../db/default-workflow.js';
 import type { OrgRegistry } from '../orgs.js';
-import { bad, body, guard } from './helpers.js';
+import { bad, guard } from './helpers.js';
 
 export interface WorkflowSettingsRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's, like workflowRoutes. */
     orgs: OrgRegistry;
 }
 
-const FIELDS = ['reviewReconciliation', 'mergeConflictAutofix'] as const;
-
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_UNAVAILABLE = 503;
-
-/**
- * PUT requires EXACTLY the complete boolean pair — no partial update, no unknown key. One refusal
- * code for every way a body can be wrong, per the issue's contract.
- */
-function parsePair(raw: unknown): { reviewReconciliation: boolean; mergeConflictAutofix: boolean } | string {
-    const fields = body(raw);
-    const keys = Object.keys(fields);
-    if (keys.length !== FIELDS.length || keys.some((key) => !(FIELDS as readonly string[]).includes(key))) {
-        return `body must be exactly { ${FIELDS.join(', ')} }`;
-    }
-    for (const field of FIELDS) {
-        if (typeof fields[field] !== 'boolean') return `${field} must be a boolean`;
-    }
-    return {
-        reviewReconciliation: fields.reviewReconciliation as boolean,
-        mergeConflictAutofix: fields.mergeConflictAutofix as boolean,
-    };
-}
 
 /**
  * A member's saved defaults for the two optional default-workflow steps (#203, parent #36). Own
@@ -84,13 +64,13 @@ export const workflowSettingsRoutes =
             const caller = callerOf(request);
             if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
 
-            const pair = parsePair(request.body);
-            if (typeof pair === 'string') return bad(reply, ERROR_CODES.BAD_DEFAULT_WORKFLOW, pair);
+            const pair = parseDefaultWorkflowSelection(request.body);
+            if (!pair.ok) return bad(reply, ERROR_CODES.BAD_DEFAULT_WORKFLOW, pair.message);
 
             const saved = await guard(
                 reply,
                 (e) => request.log.error({ err: e }),
-                () => store.put(caller.user.id, pair)
+                () => store.put(caller.user.id, pair.value)
             );
             if (!saved.ok) return reply;
 

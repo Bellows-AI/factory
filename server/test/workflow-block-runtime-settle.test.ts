@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionSql } from 'postgres';
-import { settleBlockWaits } from '../src/db/workflow-blocks/runtime-settle.js';
+import { entersBlockHelperNode, settleBlockWaits } from '../src/db/workflow-blocks/runtime-settle.js';
 import type { JobStorePrs } from '../src/db/job-store-types.js';
 import type { Transition } from '../src/db/workflow-engine.js';
 import type { WorkflowDefinition, WorkflowNode } from '../src/db/workflow-schema.js';
@@ -28,13 +28,19 @@ const node = (name: string, overrides: Partial<WorkflowNode> = {}): WorkflowNode
 const SNAPSHOT: WorkflowDefinition = {
     entry: 'review--collect',
     nodes: [
-        node('review--collect'),
+        node('review--collect', {
+            helperPlans: [{ helperId: 'review-collect-probe', phase: 'pre', githubWriting: true }],
+        }),
         node('review--wait', {
             runtime: { runtime: 'pr-delivery-wait', block: 'builtin/github-review-reconcile', params: {} },
+            helperPlans: [{ helperId: 'review-collect-probe', phase: 'pre', githubWriting: true }],
         }),
         node('review--repair'),
         node('review--reply'),
         node('ship', { publish: true }),
+        node('other--collect', {
+            helperPlans: [{ helperId: 'review-collect-probe', phase: 'pre', githubWriting: true }],
+        }),
     ],
     edges: [],
 };
@@ -165,5 +171,35 @@ describe('settleBlockWaits', () => {
             transition: REST,
         });
         expect(spy).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('entersBlockHelperNode', () => {
+    it('is true entering a helper-plan node from a bare (non-block) node', () => {
+        expect(entersBlockHelperNode('ship', INSERT_TO('review--collect'))).toBe(true);
+    });
+
+    it("is true entering a helper-plan node from a DIFFERENT block's scope", () => {
+        expect(entersBlockHelperNode('other--collect', INSERT_TO('review--collect'))).toBe(true);
+    });
+
+    it("is true for the graph entry itself (from: null), a fresh thread's first row", () => {
+        expect(entersBlockHelperNode(null, INSERT_TO('review--collect'))).toBe(true);
+    });
+
+    it('is false for a move that stays inside the same block (collect -> wait)', () => {
+        expect(entersBlockHelperNode('review--collect', INSERT_TO('review--wait'))).toBe(false);
+    });
+
+    it('is false entering a node with no declared helperPlans', () => {
+        expect(entersBlockHelperNode('ship', INSERT_TO('review--repair'))).toBe(false);
+    });
+
+    it('is false for a rest — nothing is being entered', () => {
+        expect(entersBlockHelperNode('ship', REST)).toBe(false);
+    });
+
+    it('is false entering a bare node with helperPlans-free shape from another bare node', () => {
+        expect(entersBlockHelperNode('review--repair', INSERT_TO('ship'))).toBe(false);
     });
 });

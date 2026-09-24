@@ -2,10 +2,10 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { type BoardScanner, boardsFor, storeFor, workflowsFor } from './job-context.js';
+import { type BoardScanner, boardsFor, storeFor, workflowDefaultsFor, workflowsFor } from './job-context.js';
+import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import {
     type ResolvedWorkflow,
-    buildWorkflowSelection,
     validateClaimBody,
     validateCommandField,
     validateExecutorField,
@@ -16,7 +16,6 @@ import { bad, body, guard } from './helpers.js';
 import { UUID } from '../config.js';
 import {
     HTTP_CREATED,
-    HTTP_NOT_FOUND,
     HTTP_NO_CONTENT,
     HTTP_OK,
     LEASE_SECONDS_MAX,
@@ -28,48 +27,6 @@ import {
     notFoundJob,
     runtimeVitals,
 } from './job-limits.js';
-
-type NamedWorkflowStore = NonNullable<Awaited<ReturnType<typeof workflowsFor>>>;
-
-/**
- * Resolves the `workflow` field the create body named, within the caller's visible scopes — repo
- * over user over org when the name exists in several. `handled: true` means a refusal already
- * landed on `reply` and the caller must stop; otherwise the selection and the (possibly
- * interpolated) command are ready to create with.
- */
-async function resolveNamedWorkflow(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    opts: {
-        workflowsStore: NamedWorkflowStore;
-        fields: Record<string, unknown>;
-        repo: string | null;
-        createdBy: string | null;
-        command: string;
-    }
-): Promise<{ handled: true } | { handled: false; workflow: ResolvedWorkflow; command: string }> {
-    const { workflowsStore, fields, repo, createdBy, command } = opts;
-    if (typeof fields.workflow !== 'string' || !fields.workflow.trim()) {
-        bad(reply, ERROR_CODES.BAD_WORKFLOW, 'workflow must be a non-empty string');
-        return { handled: true };
-    }
-    const found = await guard(
-        reply,
-        (e) => request.log.error({ err: e }, 'workflow resolution failed'),
-        () => workflowsStore.findByName(fields.workflow as string, { userId: createdBy, repo })
-    );
-    if (!found.ok) return { handled: true };
-    if (found.value === null) {
-        bad(reply, ERROR_CODES.UNKNOWN_WORKFLOW, `"${fields.workflow}" is not a workflow you can use`, HTTP_NOT_FOUND);
-        return { handled: true };
-    }
-    const selection = buildWorkflowSelection(found.value, fields.workflowParams, command);
-    if (!selection.ok) {
-        bad(reply, selection.code, selection.message);
-        return { handled: true };
-    }
-    return { handled: false, workflow: selection.value, command: selection.command };
-}
 
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeFor(orgs, request);
@@ -94,28 +51,30 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const createdBy = callerOf(request)?.user.id ?? null;
 
     /*
-     * The workflow the task walks: exactly the name the body carries, within the caller's visible
-     * scopes. An unnamed task resolves NO workflow: the member's words are the whole command, the
-     * row and claim byte-identical to pre-027. Naming one is what freezes the snapshot: the
-     * store's create stamps the resolved definition onto the root row, and a later edit of the
-     * workflow never moves a running thread.
+     * The workflow the task walks (issue #209's launch contract): an explicit `workflow` name
+     * resolves the caller's visible scopes exactly as before; an unnamed task now resolves the
+     * code-owned DEFAULT workflow instead of none at all — the mandatory `{{command}}` spine plus
+     * whichever optional blocks the caller selected. Naming one, named or default, is what freezes
+     * the snapshot: the store's create stamps the resolved definition onto the root row, and a
+     * later edit (a custom workflow, or the caller's saved settings) never moves a running thread.
      */
     const workflowsStore = await workflowsFor(orgs, request);
-    let workflow: ResolvedWorkflow | null = null;
-    if (workflowsStore && fields.workflow !== undefined && fields.workflow !== null) {
-        const resolved = await resolveNamedWorkflow(request, reply, {
-            workflowsStore,
-            fields,
-            repo,
-            createdBy,
-            command,
-        });
-        if (resolved.handled) return reply;
-        workflow = resolved.workflow;
-        command = resolved.command;
-    }
-    // Parameters are workflow-bound: sent beside a task that resolves no workflow, they are a
-    // client bug — refused, never silently dropped.
+    const defaultsStore = await workflowDefaultsFor(orgs, request);
+    const resolved = await resolveLaunchWorkflow(request, reply, {
+        workflowsStore,
+        defaultsStore,
+        fields,
+        repo,
+        createdBy,
+        command,
+    });
+    if (resolved.handled) return reply;
+    const workflow: ResolvedWorkflow | null = resolved.workflow;
+    command = resolved.command;
+    // Parameters are workflow-bound: sent beside a task that resolves no workflow at all (the
+    // degenerate no-workflows-store branch `resolveLaunchWorkflow` preserves), they are a client
+    // bug — refused, never silently dropped. Every OTHER path (named, or the default) already
+    // validated `workflowParams` against its own definition's declarations before returning here.
     if (fields.workflowParams !== undefined && fields.workflowParams !== null && workflow === null) {
         return bad(reply, ERROR_CODES.BAD_WORKFLOW_PARAMS, 'workflowParams requires a resolved workflow');
     }
