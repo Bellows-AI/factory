@@ -239,7 +239,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | User menu | `select-trigger`, `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover`, `popover-separator` | The app bar's identity disclosure (Headless UI Menu): Account, a separator, then Sign out |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
 | Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox executor picker; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay`. The `dialog-*` shell is shared with the dialogs below |
-| Repository setup | `repo-search`, `repo-columns` | The repositories page's visibly labeled search row, and the summary/list/detail stack that becomes master/detail at ≥1100px; below that the DOM order — summary, list, detail — is the reading order (issue 181) |
+| Repository setup | `repo-search`, `repo-columns`, `repo-summary`, `repo-table`, `repo-save` | The repositories page (issue 181, compacted by issue 223): a visibly labeled search row carrying the selection-ceiling sentence, a `repo-summary` one-liner folding the enabled counts and installation context, and the summary/list/detail stack that becomes master/detail (`repo-columns.has-detail`) at ≥1100px only once a repository is actually configured — below that width, or with nothing configured, the DOM order (summary, list, detail) is the reading order. The Save action (`repo-save`) sits in the list panel's `panel-head` beside the table it saves, `primary` only while a dirty, unblocked selection is worth prompting for. `repo-table` is a fixed-layout `data` table with sized secondary columns and a sticky Configure column that stays reachable while scrolled; at ≤640px it stacks into `data-label` cards like `env-vars` |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
 | Keyboard mark | `kbd` (element) | The shortcut text beside the composer's launch button — documentation of the button, never an affordance |
 
@@ -338,7 +338,7 @@ Components:
 | `RangeSelector.tsx` | analytics toolbar, range, range-draft |
 | `ConfigurationScope.tsx` | scope-context |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
-| `RepositorySetup.tsx` | panel, panel-head, table-wrap, data, pill, repo-search, scope-context, status, muted, primary |
+| `RepositorySetup.tsx` | panel, panel-head, panel-actions, table-wrap, data, pill, repo-search, repo-summary, repo-table, repo-save, scope-context, status, muted, primary |
 | `repository-setup.ts` | helper — no markup |
 | `ScopeToggle.tsx` | analytics toolbar, range-presets |
 | `SideNav.tsx` | sidenav |
@@ -386,7 +386,7 @@ Pages:
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
 | `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |
-| `SettingsRepositoriesPage.tsx` | page-header, repo-columns, scope-context, status, muted |
+| `SettingsRepositoriesPage.tsx` | page-header, repo-columns, repo-columns.has-detail, scope-context, status, muted |
 | `SettingsWorkflowsPage.tsx` | page-header, status |
 | `SettingsWorkspacePage.tsx` | page-header, scope-context, panel, status, muted |
 | `TaskComposerPage.tsx` | page-header, status |
