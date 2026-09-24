@@ -195,6 +195,16 @@ describe('the stylesheet', () => {
             readFileSync(join(webSrc, 'styles.css'), 'utf8') + readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
+
+    it('stacks each Token usage measure in its own column so figures never collide (#246)', () => {
+        // .usage-measure had no display rule of its own, so its figure/label/cache lines were
+        // inline elements that flowed onto one line and wrapped wherever they happened to break
+        // — the bug #246 reported. This pins the fix so it cannot silently regress.
+        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const body = rules(css).find(([prelude]) => prelude.trim() === '.usage-measure')?.[1] ?? '';
+        expect(body).toMatch(/display:\s*flex/);
+        expect(body).toMatch(/flex-direction:\s*column/);
+    });
 });
 
 describe('the stylesheet — sizing and motion (#189)', () => {
@@ -274,7 +284,6 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.mobile-nav .sidenav-sublink',
             '.mobile-nav .sidenav-newtask',
             '.select-trigger',
-            '.range-option',
             '.range-draft input',
             '.range-draft-actions button',
             '.page-header-actions button',

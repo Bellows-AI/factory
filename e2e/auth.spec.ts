@@ -357,22 +357,25 @@ test('the returnTo path survives the round trip', async ({ page }) => {
     expect(new URL(page.url()).pathname).toBe('/');
 });
 
-test('the org/my toggle scopes the figures to the signed-in member', async ({ page }) => {
+test('the scope dropdown scopes the figures to the signed-in member', async ({ page }) => {
     await throughSignIn(page);
 
-    // The toggle exists only behind a session — this board signs in, so it is here. The
-    // RadioGroup's aria-label is its accessible name, and each choice is a radio.
-    const toggle = page.getByRole('radiogroup', { name: 'Scope' });
-    await expect(toggle).toBeVisible();
-    await expect(toggle.getByRole('radio', { name: 'Org' })).toHaveAttribute('aria-checked', 'true');
+    // The dropdown exists only behind a session — this board signs in, so it is here.
+    const trigger = page.locator('#scope-select');
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toHaveText('Organization');
 
     const [response] = await Promise.all([
         page.waitForResponse((r) => r.url().includes('scope=mine') && r.status() === 200),
-        toggle.getByRole('radio', { name: 'Me' }).click(),
+        (async () => {
+            await trigger.click();
+            await page.getByRole('option', { name: 'Personal', exact: true }).click();
+        })(),
     ]);
     const body = (await response.json()) as { meta: { scope: string; scopeLogin: string | null } };
     expect(body.meta.scope).toBe('mine');
     expect(body.meta.scopeLogin).toBe('e2e-user');
+    await expect(trigger).toHaveText('Personal');
 
     // This member's org holds no seeded rows (the seed plants under the local org only), so the
     // analytics render the ONE empty state — not zeros, not dash cards — and no per-task figures
@@ -388,8 +391,11 @@ test('the org/my toggle scopes the figures to the signed-in member', async ({ pa
         page.waitForResponse(
             (r) => r.url().includes('/api/stats?') && !r.url().includes('scope=mine') && r.status() === 200
         ),
-        toggle.getByRole('radio', { name: 'Org' }).click(),
+        (async () => {
+            await trigger.click();
+            await page.getByRole('option', { name: 'Organization', exact: true }).click();
+        })(),
     ]);
     expect(((await orgResponse.json()) as { meta: { scope: string } }).meta.scope).toBe('org');
-    await expect(toggle.getByRole('radio', { name: 'Org' })).toHaveAttribute('aria-checked', 'true');
+    await expect(trigger).toHaveText('Organization');
 });
