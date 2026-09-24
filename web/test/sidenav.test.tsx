@@ -62,6 +62,12 @@ const navigation = (
 });
 
 describe('SideNav', () => {
+    it('carries the Bellows brand in the sidenav-brand slot, ahead of the items', () => {
+        const html = render('/');
+        expect(html).toContain('<div class="sidenav-brand">Bellows</div>');
+        expect(html.indexOf('sidenav-brand')).toBeLessThan(html.indexOf('sidenav-items'));
+    });
+
     it('links to every section', () => {
         const html = render('/');
         expect(html).toContain('href="/"');

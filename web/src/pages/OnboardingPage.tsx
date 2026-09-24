@@ -21,6 +21,7 @@ import {
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
 import { ThemeSelector } from '../components/ThemeSelector.js';
+import { PRODUCT_NAME } from '../brand.js';
 import { ERROR_CODES, JSON_HEADERS } from '@factory-ai/core';
 
 /** The board's session-expired status — the same recovery (Start again) as everywhere on this
@@ -223,7 +224,7 @@ function OnboardingMainContent({
             </ul>
             <p className="onboarding-note">
                 GitHub sign-in provides your identity and organization membership. Repository names come from the
-                installed GitHub App. This choice changes what Factory tracks, not your GitHub permissions.
+                installed GitHub App. This choice changes what {PRODUCT_NAME} tracks, not your GitHub permissions.
             </p>
             <section className="onboarding-summary" aria-label="Your selection">
                 <h2>Your selection</h2>
@@ -234,15 +235,15 @@ function OnboardingMainContent({
                             <span>{row.account}</span>
                             <span>{row.label}</span>
                             {row.active ? (
-                                <span className="muted">You will enter Factory in this organization.</span>
+                                <span className="muted">You will enter {PRODUCT_NAME} in this organization.</span>
                             ) : null}
                         </li>
                     ))}
                 </ul>
                 {payload.reselect ? (
                     <p className="muted">
-                        This replaces which organizations you enter Factory with. Repository modes change only where
-                        shown above.
+                        This replaces which organizations you enter {PRODUCT_NAME} with. Repository modes change only
+                        where shown above.
                     </p>
                 ) : null}
             </section>
@@ -257,7 +258,7 @@ function OnboardingMainContent({
                     draft is receivable, and the attempt is what moves focus to the first invalid
                     group. The handler no-ops the network while a draft stands unready. */}
                 <button type="button" className="primary" aria-disabled={!ready || submitting} onClick={onAttempt}>
-                    {submitting ? 'Setting up Factory…' : 'Continue'}
+                    {submitting ? `Setting up ${PRODUCT_NAME}…` : 'Continue'}
                 </button>
             </div>
         </>
@@ -530,7 +531,7 @@ function NoInstallationsPanel({ returnTo }: { returnTo: string }) {
 
 /**
  * The setup screen (issue 125, recomposed by issue 187): the one-page decision between the
- * OAuth round trip and the session. It explains what Factory does, names the signed-in person,
+ * OAuth round trip and the session. It explains what Bellows does, names the signed-in person,
  * and makes each selected organization state its repository mode explicitly — all current and
  * future repositories, or a specific list. The mode is a choice the person makes with the
  * radios; nothing about it is inferred from how many checkboxes happen to read checked, and

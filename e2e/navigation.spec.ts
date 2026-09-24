@@ -241,14 +241,12 @@ test.describe('the desktop shell', () => {
 
     test('dashboard telemetry lives only on the dashboard', async ({ page }) => {
         await page.goto('/');
-        await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
         // The freshness stamp — relative copy with the precise timestamp on reveal — rides the
         // dashboard, not the chrome.
         await expect(page.locator('.updated-at')).toBeVisible();
 
         for (const path of ['/tasks', '/settings/workspace']) {
             await page.goto(path);
-            await expect(page.getByRole('button', { name: 'Refresh' })).toHaveCount(0);
             await expect(page.locator('.updated-at')).toHaveCount(0);
         }
     });
@@ -336,7 +334,7 @@ test.describe('the responsive shell', () => {
                 if (t) document.documentElement.setAttribute('data-theme', t);
                 else document.documentElement.removeAttribute('data-theme');
             }, theme);
-            for (const target of [page.locator('.sidenav-link').first(), page.getByRole('button', { name: 'Refresh' })]) {
+            for (const target of [page.locator('.sidenav-link').first(), page.locator('.range-option').first()]) {
                 await target.focus();
                 const outline = await target.evaluate((el) => {
                     const style = getComputedStyle(el);

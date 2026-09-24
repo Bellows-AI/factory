@@ -138,7 +138,7 @@ test.describe('polish (issue 189)', () => {
             await page.goto('/');
             await setTheme(page, theme);
             await assertRing(page.locator('.sidenav-link').first(), 'sidenav link');
-            await assertRing(page.locator('.page-header-actions button', { hasText: 'Refresh' }), 'refresh button');
+            await assertRing(page.locator('.range-option').first(), 'range preset button');
             await page.goto('/tasks');
             await setTheme(page, theme);
             await assertRing(page.locator('#inbox-q'), 'inbox search input');
@@ -173,13 +173,8 @@ test.describe('polish (issue 189)', () => {
             expect(box?.height ?? 0, `${label} touch target`).toBeGreaterThanOrEqual(44);
         }
         await page.goto('/');
-        for (const [label, target] of [
-            ['range preset', page.locator('.range-option').first()],
-            ['refresh button', page.locator('.page-header-actions button', { hasText: 'Refresh' })],
-        ] as const) {
-            const box = await target.boundingBox();
-            expect(box?.height ?? 0, `${label} touch target`).toBeGreaterThanOrEqual(44);
-        }
+        const rangePresetBox = await page.locator('.range-option').first().boundingBox();
+        expect(rangePresetBox?.height ?? 0, 'range preset touch target').toBeGreaterThanOrEqual(44);
     });
 
     test('forced colors keep keyboard focus visible', async ({ page }) => {
@@ -187,7 +182,7 @@ test.describe('polish (issue 189)', () => {
         await page.goto('/');
         // The system repaint recolors the tokens; the ring is pinned to the system highlight so
         // it survives, and the control kinds the shared rule serves keep an outline.
-        await assertRing(page.locator('.page-header-actions button', { hasText: 'Refresh' }), 'refresh button');
+        await assertRing(page.locator('.range-option').first(), 'range preset button');
         await page.goto('/tasks');
         await assertRing(page.locator('#inbox-repo'), 'inbox repository select');
     });

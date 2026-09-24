@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
+import { PRODUCT_NAME } from '../brand.js';
 import { taskTitleFromCommand } from '../task-tree.js';
 
 /**
@@ -15,7 +16,7 @@ export function removeDialogTitle(command: string): string {
 
 export function removeDialogBody(runCount: number): string {
     return (
-        `This permanently deletes all ${runCount} runs and their transcript from Factory. ` +
+        `This permanently deletes all ${runCount} runs and their transcript from ${PRODUCT_NAME}. ` +
         `Its worktree will be queued for deletion. Published branches and pull requests are not ` +
         `deleted. This cannot be undone.`
     );

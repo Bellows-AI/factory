@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 import type { StatsPayload } from '../api/useStats.js';
 import type { Session } from '../api/useSession.js';
 import { switchOrg } from '../api/org.js';
+import { PRODUCT_NAME } from '../brand.js';
 import { OrgSelector } from './OrgSelector.js';
 import { ThemeSelector } from './ThemeSelector.js';
 import { UserMenu } from './UserMenu.js';
@@ -10,12 +11,12 @@ import { UserMenu } from './UserMenu.js';
  * The global app bar (issue 160): chrome, and nothing but chrome.
  *
  * The desktop bar carries the organization selector and the user menu, aligned to the end — no
- * `h1`, no telemetry. The dashboard's figures describe the dashboard, so its repo coverage,
- * timestamp and Refresh live on the dashboard page; a heading would answer "where am I" with the
- * app's name instead of the page's, which is the routed page's job.
+ * `h1`, no telemetry. The dashboard's figures describe the dashboard, so its repo coverage and
+ * timestamp live on the dashboard page; a heading would answer "where am I" with the app's name
+ * instead of the page's, which is the routed page's job.
  *
  * The mobile bar (at most 900px, see the stylesheet) reveals the navigation trigger and the
- * Factory brand: the trigger's state is OWNED HERE IN THE SHELL — `navOpen`/`onOpenNav` are the
+ * brand: the trigger's state is OWNED HERE IN THE SHELL — `navOpen`/`onOpenNav` are the
  * drawer's props arriving from AppShell, which renders the dialog the `aria-controls` names.
  * Until the first stats payload lands there is no selector: an empty control would flash, and a
  * placeholder would advertise a choice the payload has not confirmed.
@@ -44,7 +45,7 @@ export function AppBar({
                 Open navigation
             </button>
             <NavLink to="/" className="appbar-brand">
-                Factory
+                {PRODUCT_NAME}
             </NavLink>
             <div className="appbar-actions">
                 {/* The appearance preference (issue 188) leads the actions: it has no async state,

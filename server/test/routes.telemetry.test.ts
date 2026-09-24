@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { loadConfig } from '../src/config.js';
 import { EMPTY_TELEMETRY, harness, stubTelemetryClient } from './helpers.js';
 
+const HTTP_NOT_FOUND = 404;
+
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
@@ -106,14 +108,15 @@ describe('GET /api/health', () => {
 });
 
 describe('POST /api/refresh', () => {
-    it('refreshes the cache', async () => {
+    it('is gone: 404, and no read is triggered', async () => {
         const telemetry = stubTelemetryClient();
         const h = await harness({ telemetry });
         app = h.app;
 
-        await app.inject({ method: 'POST', url: '/api/refresh' });
+        const res = await app.inject({ method: 'POST', url: '/api/refresh' });
         await h.settle();
-        expect(telemetry.rollupCalls).toBe(1);
+        expect(res.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(telemetry.rollupCalls).toBe(0);
     });
 });
 

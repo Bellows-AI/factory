@@ -66,6 +66,8 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     await page.goto('/');
 
     await expect(gate(page)).toBeVisible();
+    await expect(gate(page).getByRole('heading', { level: 1, name: 'Bellows' })).toBeVisible();
+    await expect(page).toHaveTitle('Bellows');
     await expect(signIn(page)).toBeVisible();
     // The point of gating above App rather than inside it: the panels are never mounted, so no
     // request for data is ever made by somebody who could not read the answer.
@@ -244,7 +246,7 @@ test('an unavailable repository listing says so and keeps the choice completable
     await first.locator('summary').click();
     await expect(
         first.getByText(
-            'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
+            'Repository choices are temporarily unavailable. Bellows will track repositories this installation reports.'
         )
     ).toBeVisible();
     await expect(first.getByRole('button', { name: 'Retry' })).toBeVisible();

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
+import { PRODUCT_NAME } from '../brand.js';
 import { PublicPageHeader } from './PublicPageHeader.js';
 import { ThemeSelector } from './ThemeSelector.js';
 
@@ -46,7 +47,7 @@ export function LoginGate({ children }: { children: ReactNode }) {
                 absorbed it. */}
             <PublicPageHeader actions={<ThemeSelector />} />
             <main className="login-gate">
-                <h1>Factory Stats</h1>
+                <h1>{PRODUCT_NAME}</h1>
                 {error ? (
                     <p className="login-error">{error}</p>
                 ) : (

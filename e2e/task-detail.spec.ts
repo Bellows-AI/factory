@@ -167,7 +167,7 @@ test.describe('the task detail actions', () => {
         await expect(dialog).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Remove \u201Cseed task\u201D?' })).toBeVisible();
         await expect(dialog.getByText(new RegExp(`This permanently deletes all ${runs} runs`))).toBeVisible();
-        await expect(dialog.getByText(/their transcript from Factory/)).toBeVisible();
+        await expect(dialog.getByText(/their transcript from Bellows/)).toBeVisible();
         await expect(dialog.getByText(/worktree will be queued for deletion/)).toBeVisible();
         await expect(dialog.getByText(/Published branches and pull requests are not deleted/)).toBeVisible();
         await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();

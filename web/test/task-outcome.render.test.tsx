@@ -32,7 +32,7 @@ describe('TaskOutcome', () => {
         expect(html).toContain('exit 0');
     });
 
-    it('explains an open PR-review wait: what Factory is waiting for, since when, and that no executor is occupied', () => {
+    it('explains an open PR-review wait: what Bellows is waiting for, since when, and that no executor is occupied', () => {
         const html = renderDetail({
             jobs: [
                 job({
@@ -49,6 +49,8 @@ describe('TaskOutcome', () => {
         // conversation below is a different component and legitimately still says "queued".
         expect(html).toContain('<span class="pill">Waiting for review</span>');
         expect(html).toMatch(/no executor|not occupied/i);
+        expect(html).toContain('Bellows is waiting for review');
+        expect(html).not.toContain('Factory');
     });
 
     it('shows the terminal wait reason once the review wait has ended, beside the ordinary result', () => {

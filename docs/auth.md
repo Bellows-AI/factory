@@ -282,8 +282,8 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 - **`POST /api/jobs` keeps a real author.** A personal token carries its user's id through
   `callerOf` untouched, so `created_by` stays populated on the route that runs shell commands.
 - **An organization token names no person, so it stays off every route that needs one.** What an
-  `oat_` may reach is an allowlist (`ORG_TOKEN_ROUTES` in `plugin.ts`): the board reads, the repo
-  list and the cache poke — routes that consult no `callerOf`. Everything else answers **403
+  `oat_` may reach is an allowlist (`ORG_TOKEN_ROUTES` in `plugin.ts`): the board reads and the repo
+  list — routes that consult no `callerOf`. Everything else answers **403
   FORBIDDEN, not 401**: the token did authenticate, the route needs a human behind it. An allowlist,
   because a refusal list would silently admit every route added after it. And no synthetic user
   stands behind an org token — a fake `app_user` row would flow into membership joins, workspace
@@ -310,7 +310,7 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 | `GET /api/health` | **open** — must answer while migrations retry, and the compose healthcheck carries none. Authenticating it restarts the container that was about to succeed. |
 | `/api/auth/*` | open. `/me` answers `200 {authenticated: false}` on its own — being what *tells* the SPA it is unauthenticated is its purpose, and a 401 there would be logged as a console error by the browser of everybody who has not signed in yet. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
-| `/api/stats`, `/api/refresh`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove`, `/api/tokens` with its org and revoke variants | session cookie, or `Bearer fat_…` — an `oat_` bearer passes on this row's reads plus the `POST /api/refresh` cache poke, and is `403` on the rest (see [Access tokens](#access-tokens)) |
+| `/api/stats`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread]`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove`, `/api/tokens` with its org and revoke variants | session cookie, or `Bearer fat_…` — an `oat_` bearer passes on this row's reads, and is `403` on the rest (see [Access tokens](#access-tokens)) |
 | `/api/jobs/claim`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `/publish-token`, `/api/reclaims/claim`, `/api/reclaims/:id/ack` | `Bearer $JOB_BOARD_TOKEN` — the shared board secret |
 | OTLP | optional `X-Factory-Ingest-Token` |
 | `POST /api/sessions/branch` | github mode: the runner's attempt pair (`x-factory-job-id` + `x-factory-job-lease-token`) or `Bearer fat_…`; none mode: open. The deployment-wide ingest token does **not** authorize this write — see the ingest bullet below. |

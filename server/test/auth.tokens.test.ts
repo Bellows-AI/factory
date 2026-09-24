@@ -266,7 +266,6 @@ describe('organization access tokens: allowlist and reads', () => {
         const allowed: [string, string, number][] = [
             // The cold cache answers 202 — a fetch-pending poll, not an auth refusal.
             ['GET', '/api/stats?range=all', HTTP_ACCEPTED],
-            ['POST', '/api/refresh', HTTP_ACCEPTED],
             ['GET', '/api/repos', HTTP_OK],
             ['GET', '/api/jobs', HTTP_OK],
             // The stub board holds no such job, so the read itself 404s — the point is the wall.
@@ -278,10 +277,12 @@ describe('organization access tokens: allowlist and reads', () => {
             expect(response.statusCode, `${method} ${url}`).toBe(expected);
         }
 
-        // Off the list — a person route and a management route — is 403, before the route runs.
+        // Off the list — a person route, a management route, and the retired cache poke — is 403,
+        // before the route runs (or, for /api/refresh, before there is a route to run at all).
         const refused: [string, string][] = [
             ['POST', '/api/jobs'],
             ['GET', '/api/tokens'],
+            ['POST', '/api/refresh'],
         ];
         for (const [method, url] of refused) {
             const response = await server.inject({ method, url, headers: bearer(token) });

@@ -112,16 +112,8 @@ interface RenderOpts {
     progress?: FetchState | null;
 }
 
-/** The shell context with the dashboard's range/scope/refresh wiring handed over. */
-function ShellStub({
-    data,
-    refreshing = false,
-    opts = {},
-}: {
-    data: StatsPayload | null;
-    refreshing?: boolean;
-    opts?: RenderOpts;
-}) {
+/** The shell context with the dashboard's range/scope wiring handed over. */
+function ShellStub({ data, opts = {} }: { data: StatsPayload | null; opts?: RenderOpts }) {
     return (
         <Outlet
             context={{
@@ -131,21 +123,19 @@ function ShellStub({
                 scope: opts.scope ?? DEFAULT_SCOPE,
                 setScope: () => {},
                 session: opts.session ?? null,
-                refreshing,
                 progress: opts.progress ?? null,
                 error: opts.error ?? null,
-                refresh: () => {},
                 tasks: fakeTasks,
             }}
         />
     );
 }
 
-const render = (data: StatsPayload | null, opts: RenderOpts & { refreshing?: boolean } = {}) =>
+const render = (data: StatsPayload | null, opts: RenderOpts = {}) =>
     renderToStaticMarkup(
         <MemoryRouter initialEntries={['/']}>
             <Routes>
-                <Route element={<ShellStub data={data} refreshing={opts.refreshing ?? false} opts={opts} />}>
+                <Route element={<ShellStub data={data} opts={opts} />}>
                     <Route path="*" element={<DashboardPage />} />
                 </Route>
             </Routes>
@@ -183,16 +173,17 @@ describe('page header', () => {
         expect(html).toContain('<h1>Usage overview</h1>');
         expect(html).toContain('page-header-description');
         expect(html).toContain('page-header-meta');
-        expect(html).toContain('page-header-actions');
+        expect(html).not.toContain('page-header-actions');
         expect(html).toContain('bellows.ai');
-        expect(html).toContain('AI usage telemetry');
-        expect(html).toContain('>Refresh</button>');
+        expect(html).not.toContain('AI usage telemetry');
+        expect(html).not.toContain('Refresh');
     });
 
     it('keeps the h1 and drops the loading text while the first read is cold', () => {
         const html = render(null);
         expect(html.match(/<h1/g)).toHaveLength(1);
-        expect(html).toContain('AI usage telemetry');
+        expect(html).not.toContain('page-header-description');
+        expect(html).not.toContain('AI usage telemetry');
         expect(html).not.toContain('loading…');
     });
 });
@@ -234,7 +225,7 @@ describe('rendered-data summary', () => {
     });
 });
 
-describe('last updated and Refresh', () => {
+describe('last updated', () => {
     it('renders relative copy with the precise stamp exposed through a time element', () => {
         const html = render(READY);
         expect(html).toContain('Updated');
@@ -245,12 +236,6 @@ describe('last updated and Refresh', () => {
 
     it('says Not updated yet before any successful read', () => {
         expect(render(null)).toContain('Not updated yet');
-    });
-
-    it('disables Refresh and names the in-flight state while refreshing', () => {
-        const html = render(READY, { refreshing: true });
-        expect(html).toContain('Refreshing…');
-        expect(html).toContain('disabled=""');
     });
 });
 
@@ -267,6 +252,8 @@ describe('the shared state model', () => {
         expect(html).toContain('connection refused');
         expect(html).not.toContain('usage-summary');
         expect(html).not.toContain('class="card"');
+        // The Refresh control is gone; the error copy must not instruct the reader to use it.
+        expect(html).not.toContain('Refresh');
     });
 
     it('keeps the last good data visible and names it when a later read fails', () => {

@@ -1,7 +1,7 @@
 import { ERROR_CODES, isRangePreset, resolveRange } from '@factory-ai/core';
 import type { DateRange, Organization, OrganizationMeta } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
-import { callerOf, orgOf } from '../auth/plugin.js';
+import { callerOf } from '../auth/plugin.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from '../auth/store.js';
 import { LOCAL_ORG_ID, type AppConfig } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -284,12 +284,5 @@ export const statsRoutes =
 
             const fallback = noPayloadResponse(config, service);
             return reply.code(fallback.status).send(fallback.body);
-        });
-
-        app.post('/api/refresh', async (request, reply) => {
-            // The caller's own org cache. An oat_ names its org the same way a session does.
-            const rt = await orgs.for(orgOf(request));
-            rt?.service.refresh();
-            return reply.code(HTTP_ACCEPTED).send({ fetch: rt?.service.fetchState() ?? null });
         });
     };

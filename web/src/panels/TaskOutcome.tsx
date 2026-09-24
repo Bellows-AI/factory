@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { wallClock } from '../format.js';
+import { PRODUCT_NAME } from '../brand.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import type { AuthorRef, Job } from '../api/useJobs.js';
@@ -53,7 +54,7 @@ function ResultSection({
             </p>
             {waiting ? (
                 <p className="muted">
-                    Factory is waiting for review — no executor is occupied while it waits. Waiting since{' '}
+                    {PRODUCT_NAME} is waiting for review — no executor is occupied while it waits. Waiting since{' '}
                     <RelativeTime at={latest.waitingSince} />.
                 </p>
             ) : null}
