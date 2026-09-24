@@ -199,14 +199,15 @@ describe('the claimed job', () => {
         expect(job?.resumeSessionId).toBe('session-1');
     });
 
-    it("carries the thread root's command, reading a missing one as null", async () => {
+    it("passes the thread root's command through as the board sent it, with no fallback", async () => {
         const { fetch } = recorder(() => claimed({ rootCommand: '/fix 122' }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
         expect((await board.claim('driver-1'))?.rootCommand).toBe('/fix 122');
 
+        // The board always sends it; nothing papers over a payload that lacks it.
         const { fetch: bare } = recorder(() => claimed());
         const bareBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
-        expect((await bareBoard.claim('driver-1'))?.rootCommand).toBeNull();
+        expect((await bareBoard.claim('driver-1'))?.rootCommand).toBeUndefined();
     });
 
     it('carries the environment the board resolved, reading a missing one as empty', async () => {
