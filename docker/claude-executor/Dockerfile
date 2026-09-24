@@ -18,6 +18,10 @@ FROM node:24-bookworm
 # No --ignore-scripts here, deliberately. The postinstall is what places the native binary, and
 # without it the CLI installs cleanly and then fails at run time with
 # "Error: claude native binary not installed."
+# This floor also carries the board's master prompt (issue #244): `--append-system-prompt` and
+# `--system-prompt-snapshot off` are both present from 2.1.280 on. The driver never falls back to
+# prefixing the prompt onto the user message on an older CLI — a build below this floor fails an
+# unknown-flag argv rather than silently losing the Factory execution context.
 ARG CLAUDE_CODE_VERSION=2.1.280
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
     && npm cache clean --force

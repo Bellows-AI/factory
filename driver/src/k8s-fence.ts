@@ -1,5 +1,5 @@
 import type { BoardJob } from './board.js';
-import { claimEnv } from './claim.js';
+import { runnerClaimEnv } from './claim.js';
 import {
     claimBody,
     claimPath,
@@ -46,7 +46,7 @@ export interface RunCleanup {
  * authenticates at all.
  */
 const runnerEnv = (job: BoardJob): Record<string, string> => ({
-    ...claimEnv(job),
+    ...runnerClaimEnv(job),
     ...(job.gateEnv ?? {}),
     RUNNER_JOB_ID: job.id,
     RUNNER_LEASE_TOKEN: job.leaseToken,

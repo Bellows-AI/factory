@@ -27,6 +27,14 @@ export interface BoardJob {
      */
     executorType: ExecutorType | null;
     /**
+     * The board-owned Factory execution context (issue #244) — the master-prompt.ts renderer's
+     * text, delivered through the executor's own system-instruction channel, never concatenated
+     * into `command`. Read defensively as `?? null`, like every board field: a board that predates
+     * the feature, or a render failure, both mean the loop must refuse the launch explicitly
+     * rather than run the agent with no Factory execution context (see loop-run.ts).
+     */
+    masterPrompt: string | null;
+    /**
      * Set when this claim is a follow-up resuming its parent's session: the runner restores that
      * session rather than starting one. Read defensively as `?? null`.
      */
@@ -339,6 +347,7 @@ export function createBoard({
             return {
                 ...(claimed as BoardJob),
                 ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
+                masterPrompt: typeof claimed.masterPrompt === 'string' ? claimed.masterPrompt : null,
                 resumeSessionId: claimed.resumeSessionId ?? null,
                 followUp: claimed.followUp ?? false,
                 userId: claimed.userId ?? null,

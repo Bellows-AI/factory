@@ -10,6 +10,7 @@ import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { PublishResult, SyncResult } from './publish.js';
 import { OPENCODE } from './executors.js';
+import { masterPromptRefusalReason } from './master-prompt.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -479,6 +480,20 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         log(`job ${job.id}: executor selection is not runnable, failing`);
         await report(rt, job, { status: 'failed', exitCode: null, output: executorRefusal }).catch((e: Error) =>
             log(`job ${job.id}: could not report the executor failure: ${e.message}`)
+        );
+        return;
+    }
+
+    // The board always renders a master prompt for every agent claim (server/src/db/master-prompt.ts);
+    // a missing, oversized or malformed one is a contract violation, never a reason to run the
+    // agent with no Factory execution context. Checked before any setup — including a helper-only
+    // node's pre-helper, which might otherwise conclude the job without ever spawning an agent —
+    // because the board cannot know ahead of a run whether a pre-helper will conclude it.
+    const promptRefusal = masterPromptRefusalReason(job);
+    if (promptRefusal) {
+        log(`job ${job.id}: master prompt is not runnable, failing`);
+        await report(rt, job, { status: 'failed', exitCode: null, output: promptRefusal }).catch((e: Error) =>
+            log(`job ${job.id}: could not report the master-prompt failure: ${e.message}`)
         );
         return;
     }

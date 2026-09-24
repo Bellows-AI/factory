@@ -249,6 +249,15 @@ export interface Claim {
      */
     userId: string | null;
     /**
+     * The board-owned Factory execution context (issue #244), rendered by `master-prompt.ts` from
+     * trusted claim metadata alone — never from `job.command`, a node's own prompt text, or any
+     * other author-supplied content. Delivered through the executor's native system-instruction
+     * channel, never concatenated into the command. Null only when the trusted metadata could not
+     * produce a valid, bounded prompt (a workflow node claim whose snapshot is missing or does not
+     * contain it) — the driver refuses the launch explicitly rather than running with no contract.
+     */
+    masterPrompt: string | null;
+    /**
      * Where that person's checkouts are, RELATIVE to the workspace root: `<orgId>/<userId>`.
      *
      * Ready-made rather than a raw id, because each side owns what it knows. The server owns the

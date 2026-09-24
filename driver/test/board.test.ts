@@ -239,6 +239,28 @@ describe('the claimed job', () => {
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
         expect((await board.claim('driver-1'))?.helperPlans).toBeUndefined();
     });
+
+    // Issue #244: the board-owned Factory execution context. Read defensively like every other
+    // field added after launch — a board that predates it, or a malformed value, both read as
+    // null, which the loop refuses the launch for explicitly (loop-run.test.ts) rather than
+    // running the agent with no contract.
+    it('carries the master prompt the board rendered', async () => {
+        const { fetch } = recorder(() => claimed({ masterPrompt: 'Factory execution contract (v1)' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.masterPrompt).toBe('Factory execution contract (v1)');
+    });
+
+    it('reads a missing masterPrompt as null rather than undefined', async () => {
+        const { fetch } = recorder(() => claimed());
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.masterPrompt).toBeNull();
+    });
+
+    it('reads a malformed (non-string) masterPrompt as null rather than passing it through', async () => {
+        const { fetch } = recorder(() => claimed({ masterPrompt: 42 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.masterPrompt).toBeNull();
+    });
 });
 
 describe('rereading the gates after the startup sync', () => {

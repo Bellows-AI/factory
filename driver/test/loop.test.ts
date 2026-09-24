@@ -10,6 +10,11 @@ import type { GateStack } from '../src/loop-types.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
+/** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
+ *  presence matters to this file's own tests, none of which assert its exact text. */
+const MASTER_PROMPT =
+    'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
+
 const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     id: `0000000${n}-1111-4111-8111-111111111111`,
     command: `job ${n}`,
@@ -17,6 +22,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    masterPrompt: MASTER_PROMPT,
     resumeSessionId,
     followUp: false,
     userId: USER,
@@ -699,6 +705,22 @@ describe('the poll loop', () => {
         expect(runner.synced).toHaveLength(0);
         expect(board.board.completed[0]?.status).toBe('failed');
         expect(board.board.completed[0]?.output).toContain('selected executor no longer exists');
+    });
+
+    // Issue #244: the board always renders a master prompt for every agent claim, so a missing
+    // one is a contract violation the driver refuses explicitly, before any setup — never a run
+    // with no Factory execution context.
+    it('fails a task with no master prompt, before anything runs', async () => {
+        const board = stubBoard([{ ...job(1), masterPrompt: null }]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('no Factory execution context');
     });
 
     // The same no-fallback rule the null workspacePath refusal applies, extended to the task
@@ -1425,6 +1447,7 @@ describe('the poll loop', () => {
                 rootCommand: '',
                 repo: 'Bellows-AI/factory',
                 executorType: 'claude-code',
+                masterPrompt: null,
             },
         ]);
         expect(board.board.reclaimAcks).toEqual([rowId]);

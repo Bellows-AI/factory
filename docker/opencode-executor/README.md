@@ -130,6 +130,40 @@ whole baked config, the plugin references included: mount an `opencode.json` tha
 `"plugin": ["/usr/local/lib/node_modules/@gcornut/opencode-otel", "/usr/local/lib/node_modules/context-mode"]`
 if you still want telemetry and context mode.
 
+## Master prompt
+
+Every claim carries a board-rendered `masterPrompt` (issue #244) — a short, versioned Factory
+execution context naming the mode, the workflow/node, and which capabilities Factory itself runs
+around this turn. Delivered through a reserved PRIMARY agent, `factory`, merged into
+`OPENCODE_CONFIG_CONTENT` by the driver as `{"agent": {"factory": {"mode": "primary", "prompt":
+"<the board's text>", "disable": false}}}` — layered over whatever `agent`/`model`/`permission` keys
+the member's own executor config already carries, never dropping them. Every run, fresh or resumed, is launched
+`opencode run --agent factory ...`, and the driver replaces a member-declared `agent.factory`
+wholesale rather than merging it, within `OPENCODE_CONFIG_CONTENT`: a value pasted there cannot
+rename, disable, or rewrite the reserved agent's `mode`/`prompt`. This is distinct from three other
+things that can also shape a run: the current
+task's own command (the node's authored prompt, or a workflow node's template — docs/workflows.md),
+this checkout's `AGENTS.md` (read by the agent at its own discretion, never injected), and
+opencode's own provider-default system prompt, which the `factory` agent's `prompt` field replaces
+for THIS run, exactly like any other opencode agent definition.
+
+Two consequences of `--agent factory` being a REPLACEMENT rather than the additive
+`--append-system-prompt` Claude Code gets: this is opencode's own native primary-agent surface (the
+issue this shipped under asks for exactly this mechanism, unlike Claude Code's explicit
+"never replace the built-in prompt"), and a member whose executor config sets `model` only under
+some OTHER named agent (never at the top level, and never under `factory` itself) sees that
+preference silently not apply, because every run now launches as `factory` regardless of which
+agent the member had been using before. A top-level `model` key is preserved and still applies.
+The legacy top-level `mode` map some opencode builds still fold into `agent` gets the same
+`factory`-key stripping `agent` does, for the same reason. This merge only ever touches ONE config
+layer, `OPENCODE_CONFIG_CONTENT` — opencode itself deep-merges several (a project `opencode.json`,
+any file named by `OPENCODE_CONFIG`, a project checkout's own `.opencode/agent/*.md`, this image's
+baked config), and any key our reserved entry does not itself set — `permission`, `tools`, other
+provider-specific fields a later opencode version adds — still comes from whichever OTHER layer
+declares it. Stripping the name from `OPENCODE_CONFIG_CONTENT`'s own `agent`/`mode` closes the one
+channel a member's executor config reaches this driver through; a checkout's own committed
+`.opencode/agent/factory.md` is a different, file-based surface this merge cannot see or refuse.
+
 ## Context mode
 
 The [`context-mode` plugin](https://github.com/mksglu/context-mode) (sandboxed `ctx_*` tools,

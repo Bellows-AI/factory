@@ -53,9 +53,7 @@ Do not implement anything in this run. End your FINAL message with the issue's n
 full body (comments summarized) — later steps are handed exactly that text, so it must be complete
 and last.`;
 
-const implementPrompt = `Implement the issue below, end to end. This is the implementation step of a larger
-process — worktree, gates and publishing are handled for you; do not create branches, do not push,
-do not open a PR.
+const implementPrompt = `Implement the issue below, end to end.
 
 --- ISSUE ---
 {{fetch-issue.output}}
@@ -104,8 +102,7 @@ Under VERDICT: BLOCKERS, precede the marker with the numbered list of blockers �
 each with the file, the defect, and what a fix must do.`;
 
 const fixPrompt = `A reviewer found blockers in your earlier implementation of this task. Resume that
-implementation conversation and fix them — nothing else. This is the fix step of a larger process:
-gates and publishing are handled for you; do not push, do not open a PR.
+implementation conversation and fix them — nothing else.
 
 --- REVIEWER FINDINGS ---
 {{review.output}}
@@ -135,7 +132,7 @@ work is otherwise done.
 End your final message with the cause and the fix, then the gate command's passing output.`;
 
 const publishPrompt = `The review loop has cleared this task. This is the final pre-flight before the board commits
-and publishes your work — verify, then stop; do not push or open a PR yourself.
+and publishes your work — verify, then stop.
 
 1. git status must show only files your change touched. Anything else was made during the run —
    revert it; never mix it into the PR.

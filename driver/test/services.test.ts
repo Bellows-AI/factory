@@ -20,6 +20,8 @@ const job: BoardJob = {
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
+    masterPrompt:
+        'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone',
     resumeSessionId: null,
     followUp: false,
     userId: USER,

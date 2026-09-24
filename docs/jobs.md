@@ -21,7 +21,7 @@ one-row pipeline every task still shares, workflow or not.
 ## The driver contract
 
 ```
-POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
+POST /api/jobs/claim {worker}   -> 200 {id, command, masterPrompt, leaseToken, leaseExpiresAt,
                                         executorType, userId, workspacePath, resumeSessionId, followUp,
                                         env} | 204
   every request carries `authorization: Bearer $JOB_BOARD_TOKEN`, when the board requires one
@@ -73,6 +73,51 @@ can do nothing but pass the message, and the run dies the same way a 409 does �
 driver `suspend`s the row, and the board lands the park as a terminal
 `stopped`. There is no separate endpoint and no third state:
 `cancel_requested_at` is a timestamp on the moving row that the beat reads.
+
+## The master prompt (issue #244)
+
+**Read this before touching** `server/src/db/master-prompt.ts`, `driver/src/master-prompt.ts`, the
+`masterPrompt` field on the claim, or the two argv builders it feeds
+(`driver/src/docker.ts`'s `pushClaudeCodeArgs`/`pushOpencodeArgs`,
+`driver/src/k8s-podspec.ts`'s `claudeRunnerPlan`/`opencodeRunnerPlan`). Every agent claim carries a
+board-owned, board-rendered text — never authorable by a workflow or task prompt — that tells the
+agent it is one turn inside a Factory-run process and names exactly what Factory itself does around
+it: declared gates, publish/reuse-PR, any declared pre/post helper steps, and (scanned off the
+thread's frozen workflow snapshot, when it has one) review reconciliation, merge-conflict repair,
+and durable GitHub waits. `server/src/db/master-prompt.ts`'s `resolveMasterPrompt` is pure — it
+reads only trusted claim metadata (the row's `workflow_node`/`workflow_name`, the root's frozen
+snapshot, this claim's resolved `helperPlans`) and never `job.command`, a node's own prompt text,
+prior output, env values, or credentials. It fails CLOSED: a node claim whose snapshot is missing
+or does not contain the claimed node renders null, and a null `masterPrompt` on the wire is refused
+by the driver before any setup step runs (`loop-run.ts`'s `masterPromptRefusalReason`, checked
+beside the executor-selection refusal) — the same "never run with half a contract" posture the
+workspace-path and executor-type refusals already take. `job.command` is untouched: it remains the
+audit record, the workflow interpolation input, the issue reference source, and the commit/PR-title
+fallback, exactly as before this field existed.
+
+**Delivery is provider-native, never a prefix on the command.** Claude Code gets it through
+`--append-system-prompt` (additive to the CLI's own built-in system prompt, never a replacement)
+plus `--system-prompt-snapshot off`, so a resumed conversation rebuilds the CURRENT claim's
+workflow/node context instead of retaining whichever node's text rode the thread's first turn —
+docker and kubernetes build the identical flag pair, right before `-p`/the delivered command.
+OpenCode gets it through a reserved PRIMARY agent named `factory`
+(`driver/src/master-prompt.ts`'s `opencodeConfigContent`), merged into whatever
+`OPENCODE_CONFIG_CONTENT` the claim already carries from the member's own executor config: every
+other key — model, permissions, plugins, any other declared agent — survives untouched, and a
+member-declared `agent.factory` is replaced wholesale rather than merged field-by-field, so a
+member cannot rename, disable, or rewrite the reserved agent's prompt. Both fresh and resumed
+OpenCode runs launch `run --agent factory ...`. The merge happens once, in
+`driver/src/claim.ts`'s `runnerClaimEnv` — the one place the real runner's env is built, never an
+aux container's (sync, gates, publish, block-helpers), none of which run the agent CLI and none of
+which needs the reserved agent at all.
+
+Four things can shape one run's behavior, and conflating them is the mistake this feature exists to
+prevent: the Factory master prompt (this section — code-owned, immutable, refreshed every claim),
+the current node's own prompt (the task's command, or a workflow node's authored template,
+docs/workflows.md), a checkout's own `AGENTS.md` (read by the agent at its own discretion, never
+injected by the driver), and the provider's own default system prompt (untouched by Claude Code,
+replaced for the `factory` agent's own scope by OpenCode — see the executor image READMEs for the
+provider-specific detail).
 
 ## The driver (`driver/`)
 

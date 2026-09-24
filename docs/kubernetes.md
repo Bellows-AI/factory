@@ -54,6 +54,7 @@ The two implementations decide the same things and are pinned the same way:
 | What a runner must never hold | the docker socket (it does not) | a ServiceAccount token (`automountServiceAccountToken: false`) |
 | Publish | sibling containers over the workspaces volume, one per step | aux Jobs over the workspaces PVC, one per step — the same `publishCheckout` workflow over both |
 | Runner vitals | `docker stats --no-stream` | the metrics API (`metrics.k8s.io`), read from the runner's pod; null when the cluster runs no metrics-server |
+| Master prompt (issue #244) | Claude: `--append-system-prompt`/`--system-prompt-snapshot off` in `dockerArgs`. OpenCode: reserved `factory` agent merged into `OPENCODE_CONFIG_CONTENT` by `envFileBody(job, config)` | identical: `claudeRunnerPlan`/`opencodeRunnerPlan` build the same argv, and `runnerCredentialEnv` merges the same `OPENCODE_CONFIG_CONTENT` through the shared `driver/src/claim.ts` `runnerClaimEnv` — one merge function, never two |
 
 Two decisions in that table deserve their own paragraph:
 

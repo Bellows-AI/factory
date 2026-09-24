@@ -622,6 +622,7 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The code-owned default workflow: the assembler, the selected pair, the launch resolution (issue #209) | `server/src/db/default-workflow.ts`, `server/src/routes/job-workflow-resolution.ts` |
 | The frozen selected-pair columns (issue #209) | `server/migrations/039_default_workflow_snapshot.sql` |
 | The no-publication block-entry guard (issue #209) | `server/src/db/workflow-blocks/runtime-settle.ts` `entersBlockHelperNode()` |
+| The board-owned master prompt (issue #244): the renderer, and its claim-time capability read of the frozen snapshot | `server/src/db/master-prompt.ts` (docs/jobs.md, "The master prompt") |
 
 ## Tests
 
