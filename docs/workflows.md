@@ -625,8 +625,15 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 
 ## Tests
 
-- Offline units: `server/test/workflow-engine.test.ts` — the edge vocabulary, first-match order,
-  loop bounds, dead-row counting, halt rules, bounded interpolation, the seeded definition.
+- Offline units: `server/test/workflow-engine.next-transition.test.ts` — the edge vocabulary,
+  first-match order, loop bounds, dead-row counting, off-graph halt/re-entry, bounded
+  interpolation, and `primarySessionId`.
+- Offline units: `server/test/workflow-engine.walkthrough.test.ts` — the base workflow end to
+  end and the seeded issue parameter.
+- Offline units: `server/test/workflow-engine.params.test.ts` — parameter guidance metadata, the
+  parameter pattern grammar, `checkWorkflowParams`, and parameter interpolation.
+- Offline units: `server/test/workflow-engine.validation.test.ts` — `validateDefinition` and
+  workflow parameter validation.
 - Offline units: `server/test/workflow-schema.test.ts` — the `block` node grammar (`uses`/`with`
   shape, the two node kinds never mixing, a block as an opaque reachability/publish-path hop, the
   `sizeLimit` override) — registry-unaware, matching `workflow-schema.ts` itself.

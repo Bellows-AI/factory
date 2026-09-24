@@ -5691,6 +5691,14 @@ describe('the block-helper transport (issue #207)', () => {
         expect(calls.some((c) => c.method === 'DELETE' && c.path === `${secretsPathFor}/${secretName}`)).toBe(true);
     });
 
+    it('never puts the token in the Job container command/args — only ever in the Secret', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        await runner(request).runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
+        const jobPost = calls.find((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(jobPost).toBeDefined();
+        expect(JSON.stringify(jobPost!.body)).not.toContain('super-secret-token');
+    });
+
     it('mints a fresh Job/Secret name on every call, even for the identical plan run twice in a row', async () => {
         const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
         await runner(request).runHelper!(job, plan());
