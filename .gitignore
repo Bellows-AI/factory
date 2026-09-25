@@ -9,3 +9,6 @@ playwright-report/
 .env.local
 .DS_Store
 graphify-out/
+# Agent worktrees live inside the checkout; each holds a full copy of the tree, biome.json
+# included, and biome refuses to run when it finds a second root config below the first.
+.claude/worktrees/
