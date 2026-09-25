@@ -4,9 +4,11 @@ Every pod this release's driver specs — runners, gates, aux Jobs, declared ser
 `factory.job` and this release's `app.kubernetes.io/instance` (the driver's K8S_RELEASE), and none
 carries `app.kubernetes.io/name`, so this selects them and no chart pod. They run agent-written
 code, so they reach only what a run needs:
-  - DNS on port 53, to any destination: kube-dns is a pod, but NodeLocal DNSCache answers on a
-    host-network link-local address (169.254.20.10) no pod selector matches and blockedCidrs
-    covers;
+  - DNS on port 53, only to the resolvers: kube-dns pods (`k8s-app: kube-dns` in kube-system) and
+    isolation.dnsCidrs — NodeLocal DNSCache answers on a host-network link-local address
+    (169.254.20.10) no pod selector matches and blockedCidrs covers. Port 53 is not open to any
+    other address, so a private host listening on 53 stays behind blockedCidrs. A cluster whose
+    DNS carries other labels must list its resolver in dnsCidrs, or runners lose DNS;
   - this release's dashboard (the branch reporter posts to FACTORY_STATS_URL), collector (OTLP)
     and driver (the gate endpoint, on an ephemeral port — hence no port list);
   - each other, for the declared services a run starts beside itself;
@@ -39,7 +41,18 @@ spec:
                         - key: factory.job
                           operator: Exists
     egress:
-        - ports:
+        - to:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+                podSelector:
+                    matchLabels:
+                        k8s-app: kube-dns
+              {{- range .Values.isolation.dnsCidrs }}
+              - ipBlock:
+                    cidr: {{ . }}
+              {{- end }}
+          ports:
               - protocol: UDP
                 port: 53
               - protocol: TCP

@@ -382,10 +382,25 @@ expect_contains 'the admission policy names the per-attempt Secret pattern' "$ad
 expect_contains 'the admission policy fences deletes by label' "$admission" "'factory.job' in variables.target.metadata.labels"
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
+expect_contains 'the admission policy scopes workspace mounts to a member subPath' "$admission" \
+    "m.subPath.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\$')"
+expect_contains 'the admission policy refuses subPathExpr on workspace mounts' "$admission" '!has(m.subPathExpr)'
+# A pull secret is for the kubelet only: it may appear under imagePullSecrets, never where a
+# container can read it (volumes, env, envFrom).
+pulled="$(gh_render --set 'imagePullSecrets={probe-regcred}' |
+    awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/')"
+expect_contains 'the admission policy lets pods pull with a configured pull secret' \
+    "$(grep -A1 'name: pullSecrets' <<<"$pulled")" 'probe-regcred'
+expect_not_contains 'the admission policy never lets a container read a pull secret' \
+    "$(grep -A1 'name: allowed' <<<"$pulled")" 'probe-regcred'
 netpol="$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains 'the runner policy selects this release only' "$netpol" "app.kubernetes.io/instance: $RELEASE"
 expect_contains 'the runner policy blocks the metadata endpoint' "$netpol" '169.254.0.0/16'
 expect_contains 'the runner policy is both directions' "$netpol" 'policyTypes: [Ingress, Egress]'
+expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpol" \
+    $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
+expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
+expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
 
 # --- Phase two: the cluster -------------------------------------------------------------------
 
@@ -683,6 +698,15 @@ expect_contains 'the policy refuses a pod mounting the dashboard Secret' "$mount
 host="$(probe_pod host '    containers: [{name: c, image: alpine}]
     volumes: [{name: h, hostPath: {path: /}}]' | as_driver)"
 expect_contains 'the policy refuses a hostPath pod' "$host" 'may mount only the workspaces claim'
+member="$(probe_pod member "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w, subPath: probe/44444444-4444-4444-8444-444444444444}]}]
+    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
+expect_contains 'the policy admits a pod mounting a member workspace subPath' "$member" 'created (server dry run)'
+root="$(probe_pod root "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w}]}]
+    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
+expect_contains 'the policy refuses a pod mounting the workspaces claim root' "$root" 'only at a member subPath'
+expr="$(probe_pod expr "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w, subPathExpr: '\$(HOME)'}]}]
+    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
+expect_contains 'the policy refuses a subPathExpr workspace mount' "$expr" 'only at a member subPath'
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
 expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
 

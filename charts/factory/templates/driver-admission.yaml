@@ -7,11 +7,14 @@ the API fails the install loudly rather than installing an unfenced driver.
 
 `-pods` fences what a pod the driver specs may hold — the runner, every aux Job, every service
 pod — because `create pods` would otherwise be `read every Secret`:
-  - Secrets by reference only when they are the driver's own per-attempt ones
-    (factory-{job,sync,publish,helper,gate}-…-env, docs/kubernetes.md), the runner credentials,
-    or the chart's pull secrets. The dashboard Secret is none of these.
+  - Secrets a container can read (volumes, env, envFrom) only when they are the driver's own
+    per-attempt ones (factory-{job,sync,publish,helper,gate}-…-env, docs/kubernetes.md) or the
+    runner credentials. The chart's pull secrets only under imagePullSecrets — the kubelet reads
+    those, a container never does. The dashboard Secret is none of these.
   - volumes: the workspaces claim, emptyDir, and such Secrets — no hostPath, no other claim, no
     projected ServiceAccount token, no CSI driver.
+  - every mount of the workspaces claim carries a subPath of the driver's WORKSPACE_PATH shape
+    (`<org>/<user id>`, driver/src/publish.ts) and no subPathExpr, so no pod mounts the claim root.
   - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
     added capabilities.
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
@@ -21,7 +24,8 @@ Secret would mint credentials); Services only headless, never an exposure.
 
 Limits, stated: the per-attempt Secret names do not carry the release, so in a namespace shared by
 two releases one driver can still reach the other's per-attempt objects — install one release per
-namespace. A mutating sidecar injector (a service mesh) adds volumes this policy refuses on service
+namespace. Admission sees no job, so the workspace subPath is fenced by shape, not by owner: a
+compromised driver can still name another member's `<org>/<user id>` subtree. A mutating sidecar injector (a service mesh) adds volumes this policy refuses on service
 pods; exclude the namespace from injection. Seccomp/AppArmor/sysctls are left to Pod Security
 Admission — label the namespace `pod-security.kubernetes.io/enforce: baseline` for those.
 */}}
@@ -32,8 +36,8 @@ Admission — label the namespace `pod-security.kubernetes.io/enforce: baseline`
 {{- if include "factory.runnerSecretEnabled" . }}
 {{- $allowed = append $allowed (include "factory.runnerSecretName" .) }}
 {{- end }}
-{{- $allowed = concat $allowed .Values.imagePullSecrets }}
 {{- $secretName := "^factory-(job|sync|publish|helper|gate)-[a-z0-9-]+-env$" }}
+{{- $workspaceSubPath := "^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -62,6 +66,13 @@ spec:
           expression: "variables.spec.containers + (has(variables.spec.initContainers) ? variables.spec.initContainers : [])"
         - name: allowed
           expression: {{ toJson $allowed | quote }}
+        - name: pullSecrets
+          expression: {{ toJson .Values.imagePullSecrets | quote }}
+        - name: workspaceVolumes
+          expression: >-
+              has(variables.spec.volumes) ? variables.spec.volumes.filter(v,
+                has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ include "factory.workspaceClaim" . | squote }}
+              ).map(v, v.name) : []
     validations:
         - expression: "has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false"
           message: 'a driver-specced pod must set automountServiceAccountToken: false'
@@ -85,8 +96,13 @@ spec:
                   (v.secret.secretName.matches({{ squote $secretName }}) || v.secret.secretName in variables.allowed)))
           message: 'a driver-specced pod may mount only the workspaces claim, emptyDir, and its own per-attempt Secrets'
         - expression: >-
+              variables.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m,
+                !(m.name in variables.workspaceVolumes) ||
+                (!has(m.subPathExpr) && has(m.subPath) && m.subPath.matches({{ squote $workspaceSubPath }}))))
+          message: 'a driver-specced pod may mount the workspaces claim only at a member subPath (<org>/<user id>)'
+        - expression: >-
               !has(variables.spec.imagePullSecrets) ||
-              variables.spec.imagePullSecrets.all(p, has(p.name) && p.name in variables.allowed)
+              variables.spec.imagePullSecrets.all(p, has(p.name) && p.name in variables.pullSecrets)
           message: 'a driver-specced pod may pull only with the chart imagePullSecrets'
         - expression: >-
               variables.containers.all(c,

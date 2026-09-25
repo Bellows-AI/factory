@@ -186,10 +186,16 @@ isolation:
     # driver labelled `factory.job`. Off only for a cluster that enforces the same some other way.
     admissionPolicy: true
     # A NetworkPolicy on every runner pod (the `factory.job` label). Ingress only from other runner
-    # pods (declared services); egress to DNS, this release's dashboard, collector and driver, other
-    # runner pods, and anywhere outside `blockedCidrs`. Needs a CNI that enforces NetworkPolicy —
-    # without one the object is inert, never an outage.
+    # pods (declared services); egress to DNS (kube-dns and `dnsCidrs` only), this release's
+    # dashboard, collector and driver, other runner pods, and anywhere outside `blockedCidrs`. Needs
+    # a CNI that enforces NetworkPolicy — without one the object is inert, never an outage.
     networkPolicy: true
+    # The only addresses runner pods may reach on port 53 besides the `k8s-app: kube-dns` pods in
+    # kube-system. The default is NodeLocal DNSCache's link-local address, which no pod selector
+    # matches. A cluster whose DNS carries other labels (or listens elsewhere) must list its
+    # resolver here, or runners lose DNS.
+    dnsCidrs:
+        - 169.254.20.10/32
     # Private and link-local ranges runner pods may not reach: the cluster's own pod and service
     # networks, a database on a private address, the cloud metadata endpoint (169.254.169.254)
     # that hands out node credentials. Trim it when runners legitimately need a private host (an

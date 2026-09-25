@@ -238,23 +238,29 @@ kind walkthrough. Decisions that look like cruft and are not:
   would be "mount any Secret here" and its `delete secrets` would reach the dashboard's. Two
   `ValidatingAdmissionPolicy` objects bound to the driver's ServiceAccount (`templates/driver-admission.yaml`,
   `isolation.admissionPolicy`, Kubernetes ≥ 1.30) close that: a pod spec the driver submits
-  (runner, aux Job, service pod) may reference only the per-attempt Secrets —
-  `factory-{job,sync,publish,helper,gate}-…-env`, the naming every `*SecretName` in
-  `driver/src/k8s-*.ts` follows — the runner credentials and the chart's pull secrets; may mount
-  only the workspaces claim, emptyDir and those Secrets; and carries no ServiceAccount token, host
-  namespace, privilege or added capability. Creates and deletes reach only objects labelled
-  `factory.job`; Secrets only Opaque, Services only headless. **A new driver-owned Secret must
-  follow the naming, and every new driver-owned object must carry `factory.job`**, or the
+  (runner, aux Job, service pod) may let a container read (volume, env, envFrom) only the
+  per-attempt Secrets — `factory-{job,sync,publish,helper,gate}-…-env`, the naming every
+  `*SecretName` in `driver/src/k8s-*.ts` follows — and the runner credentials; the chart's pull
+  secrets only under `imagePullSecrets`, where the kubelet and never a container reads them; may
+  mount only the workspaces claim, emptyDir and those Secrets, and the claim only with a `subPath`
+  of the `WORKSPACE_PATH` shape (`<org>/<user id>`, no `subPathExpr`), never its root; and carries
+  no ServiceAccount token, host namespace, privilege or added capability. Creates and deletes reach
+  only objects labelled `factory.job`; Secrets only Opaque, Services only headless. **A new
+  driver-owned Secret must follow the naming, every new driver-owned object must carry
+  `factory.job`, and every workspace mount must use `workspaceMount()`'s subPath**, or the
   apiserver refuses it. `driver/test/k8s-admission.test.ts` pins every `*SecretName` builder
-  against the policy's own pattern, read from the template. Limits, stated in the template: the
-  names carry no release (one release per namespace), and a mesh sidecar injector's volumes are
-  refused on service pods.
+  against the policy's own pattern, and the subPath pattern against `WORKSPACE_PATH`, both read
+  from the template. Limits, stated in the template: the names carry no release (one release per
+  namespace), the subPath is fenced by shape and not by owner (a compromised driver can still name
+  another member's subtree), and a mesh sidecar injector's volumes are refused on service pods.
 - **Runner pods are confined by a NetworkPolicy** (`templates/runner-networkpolicy.yaml`,
   `isolation.networkPolicy`), selected by `factory.job` plus the release label — every pod the
   driver specs carries `app.kubernetes.io/instance: <K8S_RELEASE>` for exactly this, so one
   release's policy never confines a neighbor's runners. Ingress only from each other (declared
-  services); egress to DNS, this release's dashboard, collector and driver, each other, and
-  anything outside `isolation.blockedCidrs` (the private ranges and 169.254.0.0/16, the cloud
+  services); egress to DNS (port 53 only to the `k8s-app: kube-dns` pods in kube-system and
+  `isolation.dnsCidrs`, default the NodeLocal DNSCache address 169.254.20.10/32 — a cluster whose
+  DNS carries other labels must list its resolver there, or runners lose DNS), this release's
+  dashboard, collector and driver, each other, and anything outside `isolation.blockedCidrs` (the private ranges and 169.254.0.0/16, the cloud
   metadata endpoint). IPv4 only; inert without an enforcing CNI.
 - **The gate endpoint is advertised at the driver pod's IP.** `GATE_ADVERTISE_URL=http://$(POD_IP)`
   from the downward API: a Service name would resolve to every driver replica — and to the old and

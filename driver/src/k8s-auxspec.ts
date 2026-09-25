@@ -281,6 +281,7 @@ export function servicePodSpec(
     spec: {
         restartPolicy: 'Never';
         automountServiceAccountToken: false;
+        imagePullSecrets?: { name: string }[];
         containers: {
             name: string;
             image: string;
