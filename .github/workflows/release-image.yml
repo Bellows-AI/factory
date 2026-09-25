@@ -8,7 +8,8 @@ permissions:
     contents: read
 
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
+    # Must differ from ci.yml's group; the called workflow would otherwise wait on this run.
+    group: release-image-${{ github.ref }}
     cancel-in-progress: false
 
 jobs:

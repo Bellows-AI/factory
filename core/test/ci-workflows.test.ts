@@ -13,14 +13,15 @@ interface Step {
 
 interface Job {
     uses?: string;
-    needs?: string[];
+    // A single dependency is written as a scalar, several as a sequence.
+    needs?: string | string[];
     if?: string;
     steps?: Step[];
     services?: Record<string, { image: string }>;
 }
 
 interface Workflow {
-    on?: Record<string, { branches?: string[]; tags?: string[] }>;
+    on: Record<string, { branches?: string[]; tags?: string[] }>;
     permissions?: unknown;
     concurrency?: { group: string; 'cancel-in-progress': unknown };
     jobs: Record<string, Job>;
@@ -34,9 +35,10 @@ const workflow = (path: string) => load<Workflow>(path);
 const CI = '.github/workflows/ci.yml';
 const RELEASE = '.github/workflows/release-image.yml';
 
-// yaml parses with the 1.2 core schema, so the `on:` key stays the string 'on'. A parser on the
-// 1.1 schema would fold it to the boolean true; read both rather than depend on which one ships.
-const triggers = (doc: Workflow) => doc.on ?? (doc as unknown as Record<string, Workflow['on']>).true!;
+// yaml parses with the 1.2 core schema, so the `on:` key stays the string 'on' rather than
+// folding to the boolean true the way a 1.1 parser would.
+const triggers = (doc: Workflow) => doc.on;
+const needs = (job: Job) => [job.needs ?? []].flat();
 // A job that reuses another workflow (`uses:`) carries no steps at all.
 const runSteps = (job: Job) => (job.steps ?? []).filter((step): step is Step & { run: string } => !!step.run);
 const runs = (job: Job) => runSteps(job).map((step) => step.run.trim());
@@ -95,7 +97,7 @@ describe('ci workflows', () => {
 
     it('runs the browser suite only on merges to main', () => {
         const e2e = workflow(CI).jobs.e2e!;
-        expect(e2e.needs).toContain('validate');
+        expect(needs(e2e)).toContain('validate');
         expect(e2e.if).toContain('refs/heads/main');
         expect(e2e.if).toContain('push');
     });
@@ -117,7 +119,7 @@ describe('ci workflows', () => {
         const called = Object.entries(doc.jobs).find(([, job]) => job.uses === './.github/workflows/ci.yml');
         expect(called, 'the release workflow does not reuse the validation workflow').toBeTruthy();
         const image = doc.jobs.image!;
-        expect(image.needs).toContain(called![0]);
+        expect(needs(image)).toContain(called![0]);
         const commands = runs(image).join('\n');
         expect(commands).toContain('-f docker/Dockerfile');
         expect(commands).toContain('--target runtime');
@@ -147,6 +149,15 @@ describe('ci workflows', () => {
         const concurrency = workflow(CI).concurrency!;
         expect(concurrency.group).toContain('github.ref');
         expect(String(concurrency['cancel-in-progress'])).toContain('pull_request');
+    });
+
+    // Inside a called workflow the github context is the CALLER's, so a group built from
+    // ${{ github.workflow }} would resolve to the same string in both files and the tag run would
+    // queue behind itself forever. Neither group may name github.workflow, and the two must differ.
+    it('does not make the called workflow wait on its own caller', () => {
+        const groups = [CI, RELEASE].map((path) => workflow(path).concurrency!.group);
+        for (const group of groups) expect(group).not.toContain('github.workflow');
+        expect(new Set(groups).size).toBe(groups.length);
     });
 
     it('pins every action to a major version', () => {

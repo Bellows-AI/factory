@@ -12,7 +12,10 @@ permissions:
     contents: read
 
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
+    # A literal prefix, not ${{ github.workflow }}: inside a called workflow the github context is
+    # the CALLER's, so `${{ github.workflow }}-${{ github.ref }}` would resolve to the group the
+    # release workflow already holds and the tag run would deadlock waiting on itself.
+    group: ci-${{ github.ref }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -75,7 +78,7 @@ jobs:
               run: |
                   psql -h 127.0.0.1 -U factory -d postgres -c 'create database factory_e2e'
                   psql -h 127.0.0.1 -U factory -d postgres -c 'create database factory_auth_e2e'
-            - name: npx playwright install chromium
+            - name: npx playwright install --with-deps chromium
               run: npx playwright install --with-deps chromium
             # Builds, resets, seeds and serves on its own (playwright.config.ts webServer). Every
             # credential it uses is a literal stub in that file; no repository secret is read.
