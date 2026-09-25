@@ -18,7 +18,8 @@ or {
         r".*/driver/src/http\.ts$",
         r".*/driver/src/labels\.ts$",
         r".*/test/.*",
-        r".*/test-db/.*"
+        r".*/test-db/.*",
+        r".*/e2e/.*"
     },
     $lit <: or {
         r"^['\"]claude-code['\"]$",

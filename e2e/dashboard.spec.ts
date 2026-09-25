@@ -42,9 +42,7 @@ async function open(page: Page) {
  */
 async function selectPreset(page: Page, label: string, preset: string) {
     const [response] = await Promise.all([
-        page.waitForResponse(
-            (r) => r.url().includes(`range=${preset}`) && r.status() === 200,
-        ),
+        page.waitForResponse((r) => r.url().includes(`range=${preset}`) && r.status() === 200),
         (async () => {
             await page.locator('#range-select').click();
             await page.getByRole('option', { name: label, exact: true }).click();
@@ -105,14 +103,10 @@ test.describe('date range selector', () => {
         // A sparse day may render the one empty state instead of the summary — that is a
         // different screen, not the same numbers, and both satisfy "changed". The poll rides
         // out the gap between the response reaching the test and React committing the payload.
-        await expect
-            .poll(async () => page.locator('.usage-summary strong').allInnerTexts())
-            .not.toEqual(allTime);
+        await expect.poll(async () => page.locator('.usage-summary strong').allInnerTexts()).not.toEqual(allTime);
     });
 
-    test('the custom picker commits once through Apply, and a draft never requests', async ({
-        page,
-    }) => {
+    test('the custom picker commits once through Apply, and a draft never requests', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
 
@@ -241,9 +235,7 @@ test.describe('date range selector', () => {
         expect(text).not.toMatch(/merged into/i);
     });
 
-    test('month buckets daily, all-time falls back to weeks, and the per-task figures render', async ({
-        page,
-    }) => {
+    test('month buckets daily, all-time falls back to weeks, and the per-task figures render', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
 
@@ -341,9 +333,7 @@ test.describe('the supporting tables and the task board', () => {
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 900 });
-            const overflow = await page.evaluate(
-                () => document.body.scrollWidth - document.body.clientWidth
-            );
+            const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
             expect(overflow, `${width}px: body wider than the viewport`).toBeLessThanOrEqual(0);
             await page.screenshot({ path: `${SHOTS}/width-${width}.png`, fullPage: true });
         }

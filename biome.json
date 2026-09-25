@@ -11,6 +11,7 @@
             "server/**",
             "web/**",
             "driver/**",
+            "e2e/**",
             "*.ts",
             "package.json",
             "tsconfig.json",
@@ -190,7 +191,14 @@
             "linter": { "rules": { "correctness": { "useImportExtensions": "off" } } }
         },
         {
-            "includes": ["core/test/**", "server/test/**", "server/test-db/**", "driver/test/**", "web/test/**"],
+            "includes": [
+                "core/test/**",
+                "server/test/**",
+                "server/test-db/**",
+                "driver/test/**",
+                "web/test/**",
+                "e2e/**"
+            ],
             "linter": {
                 "rules": {
                     "complexity": {

@@ -78,8 +78,11 @@ npm test               # vitest run — offline, no token, no quota, no database
 npm run test:executors # focused offline board/driver/runner/telemetry suites
 npm run test:coverage:executors # the same surface with executor-specific coverage thresholds
 npm run typecheck      # tsc -b across all four project references (plus server/tsconfig.test.json,
-                       # which typechecks server/test-db and its harness — the suites drift quietly otherwise)
-npm run lint           # biome check — lint + format verification over the four packages, offline
+                       # which typechecks server/test-db and its harness — the suites drift quietly otherwise,
+                       # and e2e/tsconfig.json, which covers the Playwright specs and playwright.config.ts:
+                       # nothing else compiles them, and `verify:ui` needs a browser and two databases to
+                       # find out)
+npm run lint           # biome check — lint + format verification over the four packages and e2e/, offline
 npm run format         # biome format --write — fixes format drift
 npm run lint:fix       # biome check --write — fixes what lint flags
 
@@ -169,7 +172,8 @@ Prefer watching one package (`npx vitest watch core/test`) over the whole suite.
 again, look for orphaned `node (vitest N)` workers (parent = 1) left by a killed session —
 `pkill -f 'node (vitest'` clears them.
 
-Biome is the linter and formatter: `biome.json` at the root, covering the four packages and the
+Biome is the linter and formatter: `biome.json` at the root, covering the four packages, `e2e/`
+(which shares the test override — magic numbers and function length are not a spec's problem) and the
 root config files. `npm run lint` is `biome check .` — lint and format verification in one offline
 pass — and `npm run format` is the fixer. The enforced style is the one the tree was already
 written in: 4-space indent, single quotes (double in JSX attributes), semicolons, 120-column

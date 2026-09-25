@@ -5,6 +5,7 @@ import {
     EXECUTOR_TYPE_META,
     executorTypeLabel,
     mergeExecutors,
+    TYPE_CONFIG_NOTE,
     validateExecutorConfig,
     validateExecutorPayload,
     type ExecutorRow,
@@ -35,9 +36,6 @@ import {
 /** The save action's copy — "Add executor" on add, "Save executor" on edit (issue 183). */
 export const ADD_LABEL = 'Add executor';
 export const SAVE_LABEL = 'Save executor';
-
-/** What choosing a Type does; tied to the select with aria-describedby. */
-export const TYPE_CONFIG_NOTE = 'Tasks using this executor run with the selected type: Claude Code or OpenCode.';
 
 export interface ExecutorDialogProps {
     open: boolean;
