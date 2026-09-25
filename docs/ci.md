@@ -14,8 +14,7 @@ is named after the command it runs, so a red job names the gate that broke witho
 **`npm run build` precedes `npm test` on purpose.** `server` and `web` resolve `@factory-ai/core`
 to `core/dist`, not `core/src`; `package.json`'s `pretest` builds core so the suite stands alone,
 but only `npm run build` also builds server, web and driver. Running it first means a broken build
-reports as a broken build rather than as 74 suites failing to collect with "Failed to resolve entry
-for package @factory-ai/core" — a message that reads like a source bug and is not one.
+reports as a broken build, rather than as a `pretest` failure buried in the test step.
 
 `npm run typecheck` is deliberately not a step. `npm run build` fails on a type error in `src`;
 `typecheck` additionally covers `server/tsconfig.test.json`, which the build does not — that gap is

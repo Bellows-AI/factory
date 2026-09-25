@@ -9,6 +9,7 @@ interface Step {
     run?: string;
     uses?: string;
     with?: Record<string, string>;
+    env?: Record<string, string>;
 }
 
 interface Job {
@@ -123,8 +124,19 @@ describe('ci workflows', () => {
         const commands = runs(image).join('\n');
         expect(commands).toContain('-f docker/Dockerfile');
         expect(commands).toContain('--target runtime');
-        // `github.ref_name` on a tag push is the bare tag, so the image carries the release name.
-        expect(commands).toMatch(/-t factory-ai:\$\{\{ github\.ref_name \}\}/);
+        // `github.ref_name` on a tag push is the bare tag, so the image carries the release name —
+        // bound as an env value, because a ref name may contain shell metacharacters.
+        expect(commands).toMatch(/-t "factory-ai:\$TAG"/);
+        const build = runSteps(image).find((step) => step.run.includes('docker build'))!;
+        expect(build.env!.TAG).toMatch(/^\$\{\{ github\.ref_name \}\}$/);
+    });
+
+    it('never interpolates a ref name into shell text', () => {
+        for (const job of Object.values(workflow(RELEASE).jobs)) {
+            for (const step of runSteps(job)) {
+                expect(step.run, `${step.name} interpolates an expression into its script`).not.toMatch(/\$\{\{/);
+            }
+        }
     });
 
     it('retains the release image as a workflow artifact', () => {

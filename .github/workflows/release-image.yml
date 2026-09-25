@@ -25,10 +25,16 @@ jobs:
             - uses: actions/checkout@v4
             # The command AGENTS.md documents, plus the tag. No registry, no credential and no
             # build arg — the runtime stage takes none, and .dockerignore keeps .env out.
+            # The tag travels as an env value, never interpolated into the shell text: a ref name
+            # may legally contain a backtick or a $, and `run:` would execute it.
             - name: docker build --target runtime
-              run: docker build -f docker/Dockerfile --target runtime -t factory-ai:${{ github.ref_name }} .
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: docker build -f docker/Dockerfile --target runtime -t "factory-ai:$TAG" .
             - name: docker save
-              run: docker save factory-ai:${{ github.ref_name }} -o factory-ai-${{ github.ref_name }}.tar
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: docker save "factory-ai:$TAG" -o "factory-ai-$TAG.tar"
             - uses: actions/upload-artifact@v4
               with:
                   name: factory-ai-image-${{ github.ref_name }}
