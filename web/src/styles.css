@@ -621,17 +621,6 @@
         gap: 16px;
     }
 
-    .range-presets {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-    }
-
-    .range-option.active {
-        border-color: var(--accent);
-        color: var(--accent);
-    }
-
     /* The analytics toolbar (issue 166): visibly labeled groups — Range, Scope, Repositories —
        a label above each control, read-only values sunken like the inputs they echo. */
     .toolbar-group {
@@ -640,8 +629,11 @@
         gap: 4px;
     }
 
-    /* The Repositories group is a real fieldset; the browser's fieldset chrome gives way to the
-       same shape every toolbar group wears. */
+    /* Range, Scope and Repositories are real fieldsets, each with a legend rather than a bare
+       label — grouping the trigger under its caption without the caption stealing the
+       trigger's own accessible name (a `<label for>` would, since button is a labelable
+       element). The browser's fieldset chrome gives way to the same shape every toolbar group
+       wears. */
     fieldset.toolbar-group {
         border: 0;
         margin: 0;
@@ -669,60 +661,71 @@
         padding: 5px 10px;
     }
 
-    /* The range presets and the Custom popover trigger on one line inside the group. */
-    .range-picker {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-    }
-
-    /* The custom dates live in a popover anchored to the Custom trigger: floating surfaces sit
-       above the page on the picker-dialog edge (--line-strong), never an inline expansion. */
-    .range-popover-root {
-        position: relative;
-    }
-
-    .range-popover {
+    /* Custom opens this dialog (issue 246) rather than an inline expansion: the Range trigger
+       stays a single control, and the draft form floats over the dimmed page on the picker's
+       harder hairline, like the task-remove and unsaved-changes confirmations. */
+    .range-dialog {
         background: var(--surface-raised);
         border: 1px solid var(--line-strong);
         border-radius: var(--radius-lg);
-        left: 0;
-        padding: 12px;
-        position: absolute;
-        top: calc(100% + 6px);
-        z-index: 30;
+        color: var(--ink);
+        max-width: 440px;
+        padding: 16px;
+        width: 90vw;
+    }
+
+    .range-dialog-title {
+        font-size: 15px;
+        margin: 0 0 12px;
     }
 
     .range-draft {
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 12px;
+    }
+
+    /* Start date and End date side by side where there is room, stacked below it — no media
+       query needed, the same self-wrapping shape the toolbar itself uses. */
+    .range-draft-fields {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     }
 
     .range-draft label {
-        align-items: center;
         color: var(--ink-muted);
         display: flex;
+        flex-direction: column;
         font-size: 12px;
         gap: 6px;
     }
 
     /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
-       renders in the page's theme without this rule carrying one. */
+       renders in the page's theme without this rule carrying one. `font: inherit` would
+       otherwise pull the 12px label size onto the input text; `font-size` after it restates the
+       14px control floor. */
     .range-draft input {
         background: var(--surface-sunken);
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
         color: var(--ink);
         font: inherit;
+        font-size: 14px;
         padding: 5px 8px;
+        width: 100%;
     }
 
     .range-draft-actions {
         display: flex;
         gap: 8px;
         justify-content: flex-end;
+    }
+
+    /* Clear is a way out, not an answer: pushed to the opposite edge from Cancel/Apply so the
+       row reads as one dismissal plus one decision, not three equal buttons. */
+    .range-draft-actions button:first-child {
+        margin-right: auto;
     }
 
     /* The rendered-data summary: one mono line in the status line's voice, describing the
@@ -807,6 +810,13 @@
         display: grid;
         gap: 12px;
         grid-template-columns: 1fr 1fr;
+    }
+
+    .usage-measure {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
     }
 
     .usage-measure strong {
@@ -1985,7 +1995,6 @@
         .mobile-nav .sidenav-sublink,
         .mobile-nav .sidenav-newtask,
         .select-trigger,
-        .range-option,
         .range-draft input,
         .range-draft-actions button,
         .page-header-actions button,

@@ -45,7 +45,10 @@ async function selectPreset(page: Page, label: string, preset: string) {
         page.waitForResponse(
             (r) => r.url().includes(`range=${preset}`) && r.status() === 200,
         ),
-        page.getByRole('radio', { name: label, exact: true }).click(),
+        (async () => {
+            await page.locator('#range-select').click();
+            await page.getByRole('option', { name: label, exact: true }).click();
+        })(),
     ]);
     const body = (await response.json()) as {
         meta: { range: { preset: string; from: string | null; to: string | null } };
@@ -73,10 +76,7 @@ test.describe('date range selector', () => {
 
         // 'All time' is the default, so it is selected last: clicking it first would change no
         // query and fire no request.
-        await expect(page.getByRole('radio', { name: 'All time', exact: true })).toHaveAttribute(
-            'aria-checked',
-            'true',
-        );
+        await expect(page.locator('#range-select')).toHaveText('All time');
 
         for (const [label, preset] of [
             ['Today', 'day'],
@@ -88,10 +88,7 @@ test.describe('date range selector', () => {
             const { url, range } = await selectPreset(page, label, preset);
             expect(url.searchParams.get('range'), label).toBe(preset);
             expect(range.preset, label).toBe(preset);
-            await expect(page.getByRole('radio', { name: label, exact: true })).toHaveAttribute(
-                'aria-checked',
-                'true',
-            );
+            await expect(page.locator('#range-select')).toHaveText(label);
             await assertRendersCleanly(page, preset);
         }
 
@@ -124,23 +121,35 @@ test.describe('date range selector', () => {
             if (r.url().includes('/api/stats?')) requests.push(r.url());
         });
 
-        // Custom opens the popover; opening it is not a selection and issues no request.
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        const openCustom = async () => {
+            await page.locator('#range-select').click();
+            await page.getByRole('option', { name: 'Custom', exact: true }).click();
+        };
+
+        // Custom opens the dialog; opening it is not a selection and issues no request.
+        await openCustom();
         const from = page.locator('.range-draft input').first();
         const to = page.locator('.range-draft input').last();
         await expect(from).toHaveValue('');
         await from.fill('2026-07-01');
-        // Typing is a draft: no stats request may fire for it. Escape discards the draft.
+        // Typing is a draft: no stats request may fire for it. Cancel discards the draft.
         expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
-        await page.keyboard.press('Escape');
-        await expect(page.locator('.range-draft')).toHaveCount(0);
+        await page.getByRole('button', { name: 'Cancel' }).click();
+        await expect(page.locator('.range-dialog')).toHaveCount(0);
         expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
+        await expect(page.locator('#range-select')).toHaveText('All time');
 
         // Reopening starts from the committed values — all time here — not the abandoned draft.
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        // Escape discards a draft exactly like Cancel does.
+        await openCustom();
         await expect(from).toHaveValue('');
+        await from.fill('2026-07-15');
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.range-dialog')).toHaveCount(0);
+        expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
 
         // Apply commits both bounds exactly once.
+        await openCustom();
         await from.fill('2026-07-01');
         await to.fill('2026-08-01');
         const [response] = await Promise.all([
@@ -151,44 +160,42 @@ test.describe('date range selector', () => {
         expect(body.meta.range.from).toBe('2026-07-01T00:00:00.000Z');
         // `to` is exclusive, so the picked day is widened to the start of the next one.
         expect(body.meta.range.to).toBe('2026-08-02T00:00:00.000Z');
+        await expect(page.locator('#range-select')).toHaveText('Jul 1 – Aug 1');
 
-        // Clear returns to All time from the same popover.
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        // Clear returns to All time from the same dialog.
+        await openCustom();
         const [cleared] = await Promise.all([
             page.waitForResponse((r) => r.url().includes('range=all') && r.status() === 200),
             page.getByRole('button', { name: 'Clear' }).click(),
         ]);
         expect(new URL(cleared.url()).searchParams.get('range')).toBe('all');
-        await expect(page.getByRole('radio', { name: 'All time', exact: true })).toHaveAttribute(
-            'aria-checked',
-            'true',
-        );
+        await expect(page.locator('#range-select')).toHaveText('All time');
 
         await assertRendersCleanly(page, 'custom-jul');
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the custom range popover stays inside the viewport and restores its trigger on a narrow phone', async ({
+    test('the custom range dialog stays inside the viewport and restores focus to the trigger on a narrow phone', async ({
         page,
     }) => {
         await open(page);
         await page.setViewportSize({ width: 360, height: 844 });
 
-        // The popover anchors left of its trigger with no flip logic; a trigger sitting in the
-        // wrapped toolbar's right half would push the dates off-screen — the containment the
-        // closeout audit (issue 190) demands of every floating surface.
-        const custom = page.getByRole('button', { name: 'Custom', exact: true });
-        await custom.click();
-        const popover = page.locator('.range-popover');
-        await expect(popover).toBeVisible();
-        const box = (await popover.boundingBox())!;
-        expect(box.x, 'range popover left edge').toBeGreaterThanOrEqual(0);
-        expect(box.x + box.width, 'range popover right edge').toBeLessThanOrEqual(361);
-        await page.screenshot({ path: `${SHOTS}/matrix/dashboard_range-popover-open_dark_360.png` });
+        // The dialog centers over the dimmed page rather than anchoring to the trigger, so it
+        // never has to flip or clip — the containment the closeout audit (issue 190) demands of
+        // every floating surface still holds, just by a different mechanism.
+        await page.locator('#range-select').click();
+        await page.getByRole('option', { name: 'Custom', exact: true }).click();
+        const dialog = page.locator('.range-dialog');
+        await expect(dialog).toBeVisible();
+        const box = (await dialog.boundingBox())!;
+        expect(box.x, 'range dialog left edge').toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, 'range dialog right edge').toBeLessThanOrEqual(361);
+        await page.screenshot({ path: `${SHOTS}/matrix/dashboard_range-dialog-open_dark_360.png` });
 
         await page.keyboard.press('Escape');
-        await expect(popover).toHaveCount(0);
-        await expect(custom, 'escape hands focus back to the Custom trigger').toBeFocused();
+        await expect(dialog).toHaveCount(0);
+        await expect(page.locator('#range-select'), 'escape hands focus back to the Range trigger').toBeFocused();
     });
 
     test('the chart tooltip stays inside the viewport when a bucket is focused', async ({ page }) => {
