@@ -1,7 +1,10 @@
-# A single-node local Kubernetes stack, end to end and offline: no GitHub App, no OAuth
-# registration, no Claude credential. The executor image is a stub whose entrypoint echoes — the
-# same trick scripts/test-jobs.sh uses — so a queued job runs a real pod, reports a real exit code
-# and output, and proves the whole board -> driver -> runner path without a model call.
+# A single-node local Kubernetes stack: the real board behind real GitHub sign-in, with a stub
+# executor whose entrypoint echoes — the same trick scripts/test-jobs.sh uses — so a queued job
+# runs a real pod and reports a real exit code without a model call.
+#
+# This file holds no credential. The auth and App values come from the repo-root .env, rendered by
+# scripts/k8s-local-values.mjs and piped to helm on stdin, so no secret lands in a file or on a
+# command line:
 #
 #   kind create cluster --name factory
 #   docker build -f docker/Dockerfile --target runtime -t factory-ai .
@@ -11,9 +14,9 @@
 #   kind load docker-image factory-driver --name factory
 #   kind load docker-image echo-executor --name factory
 #   helm install factory-state charts/factory-local-state
-#   helm install dev charts/factory -f charts/factory/values-local.yaml
+#   node scripts/k8s-local-values.mjs | helm install dev charts/factory -f charts/factory/values-local.yaml -f -
 #
-# See charts/factory/README.md for the walkthrough and scripts/test-k8s.sh for the scripted version.
+# `make start` is the same sequence as one command. See charts/factory/README.md for the walkthrough.
 
 # Local builds are tagged `latest` (the commands above), not the chart's appVersion.
 dashboard:
@@ -21,17 +24,6 @@ dashboard:
         repository: factory-ai
         tag: latest
     workspaceRoot: /workspaces
-    # The offline profile: the code-only no-fetch entry. There is no GitHub App credential in this
-    # cluster, so the dashboard serves whatever the database holds and clones nothing.
-    offline: true
-
-auth:
-    # Open, because the cluster is local and the perimeter is the ClusterIP — the k8s analogue of
-    # the 127.0.0.1 bind every open stack in this repository runs behind. The chart's own default stays
-    # `github`; turning it off here is a decision this file makes once, in one place.
-    mode: none
-    # The bind is 0.0.0.0 inside the container, so loadConfig demands this hatch for an open mode.
-    allowPublicBind: '1'
 
 # The database and the checkouts live in the `factory-state` release (charts/factory-local-state),
 # not this one, so uninstalling this release keeps both. These two values are that release's
@@ -43,14 +35,6 @@ database:
 
 workspaces:
     existingClaim: factory-state-workspaces
-
-secret:
-    # No board secret: the local board runs AUTH_MODE=none, where the worker routes are open and
-    # the driver omits the header entirely. The key still renders — empty, and optional in both
-    # pod specs — so the chart renders unchanged between profiles. The key must be spelled out:
-    # a mapping of only comments parses as null, and a null override nils the whole `secret:`
-    # block out of the merge, which breaks every template that reads one of its keys.
-    jobBoardToken: ''
 
 driver:
     image:

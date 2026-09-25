@@ -8,29 +8,21 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}
-{{- if not (has .Values.auth.mode (list "github" "none")) }}
-{{- fail (printf "auth.mode must be \"github\" or \"none\", got %q" .Values.auth.mode) }}
-{{- end }}
-{{- if and (eq .Values.auth.mode "none") (not .Values.auth.allowPublicBind) }}
-{{- fail "auth.mode=none on a 0.0.0.0 bind needs auth.allowPublicBind='1': every route, POST /api/jobs included, is open to whatever reaches the Service" }}
-{{- end }}
-{{- if eq .Values.auth.mode "github" }}
 {{- if not .Values.auth.publicUrl }}
-{{- fail "auth.mode=github requires auth.publicUrl: the origin GitHub redirects back to" }}
+{{- fail "auth.publicUrl is required: the origin GitHub redirects back to" }}
 {{- end }}
 {{- if not .Values.auth.oauthClientId }}
-{{- fail "auth.mode=github requires auth.oauthClientId" }}
+{{- fail "auth.oauthClientId is required" }}
 {{- end }}
 {{- if .Values.secret.create }}
 {{- if not .Values.secret.oauthClientSecret }}
-{{- fail "auth.mode=github requires secret.oauthClientSecret" }}
+{{- fail "secret.oauthClientSecret is required" }}
 {{- end }}
 {{- if lt (len .Values.secret.sessionSecret) 32 }}
-{{- fail "auth.mode=github requires secret.sessionSecret of at least 32 characters (openssl rand -hex 32)" }}
+{{- fail "secret.sessionSecret of at least 32 characters is required (openssl rand -hex 32)" }}
 {{- end }}
 {{- if lt (len .Values.secret.jobBoardToken) 32 }}
-{{- fail "auth.mode=github requires secret.jobBoardToken of at least 32 characters (openssl rand -hex 32): the driver's credential on the worker routes" }}
-{{- end }}
+{{- fail "secret.jobBoardToken of at least 32 characters is required (openssl rand -hex 32): the driver's credential on the worker routes" }}
 {{- end }}
 {{- end }}
 {{- if not .Values.dashboard.offline }}

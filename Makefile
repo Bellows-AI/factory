@@ -2,8 +2,8 @@
 # (compose binds the working tree instead). `make baked` builds it and serves it against the
 # compose TimescaleDB, the same factory_dev the dev stack uses, via the OFFLINE entry — the same
 # server, built with the code-only no-fetch arm, so two processes never sync one database;
-# AUTH_MODE=none + AUTH_ALLOW_PUBLIC_BIND=1 is the chart's values-local profile — the image bakes
-# HOST=0.0.0.0, so the loopback port publish is the perimeter. BAKED_PORT defaults to 8081 so it
+# AUTH_MODE=none + AUTH_ALLOW_PUBLIC_BIND=1 because the image bakes HOST=0.0.0.0, so the loopback
+# port publish is the perimeter. BAKED_PORT defaults to 8081 so it
 # can sit beside a running dev stack on 8080.
 
 IMAGE ?= factory-ai
@@ -58,9 +58,10 @@ runners: runners-build
 
 # The Kubernetes stack, end to end on a local kind cluster — the chart walkthrough
 # (charts/factory/README.md) as one command. Builds the images, loads them into the cluster and
-# installs the chart with charts/factory/values-local.yaml, the offline profile: AUTH_MODE=none +
-# the code-only no-fetch dashboard entry, stub echo executor — no GitHub App, no Claude credential.
-# Re-runs upgrade the release in place, keeping its data. Once everything is up the port-forward
+# installs the chart with charts/factory/values-local.yaml: GitHub sign-in and the GitHub App, as
+# everywhere the chart runs, with a stub echo executor — no Claude credential. The auth and App
+# values come from .env through scripts/k8s-local-values.mjs, which names any that are missing;
+# sign in at the forwarded port. Re-runs upgrade the release in place, keeping its data. Once everything is up the port-forward
 # takes the foreground; Ctrl-C detaches it and leaves the stack running. `make build` is the hot
 # half against a running stack — rebuild the code images, load them into the node, restart the
 # workloads — no install, no port-forward, release and data kept. K8S_PORT defaults to 8081
@@ -81,8 +82,10 @@ K8S_STATE_RELEASE := factory-state
 K8S_PORT ?= 8081
 DRIVER_IMAGE ?= factory-driver
 STUB_IMAGE ?= echo-executor
+# The credential values for the local release, on stdout: `$(LOCAL_VALUES) | helm ... -f -`.
+LOCAL_VALUES = K8S_PORT=$(K8S_PORT) node scripts/k8s-local-values.mjs
 # Whatever the chart pins — read from the render, so the image loaded is the image the pod names.
-COLLECTOR_IMAGE ?= $(shell helm template x charts/factory -f charts/factory/values-local.yaml --show-only templates/collector.yaml 2>/dev/null | awk '$$1 == "image:" { print $$2; exit }')
+COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/factory -f charts/factory/values-local.yaml -f - --show-only templates/collector.yaml 2>/dev/null | awk '$$1 == "image:" { print $$2; exit }')
 
 .PHONY: build start stop reset
 
@@ -105,9 +108,11 @@ build:
 	fi
 
 start:
-	@for tool in docker kind helm kubectl; do \
+	@for tool in docker kind helm kubectl node; do \
 		command -v $$tool >/dev/null || { echo "make start: $$tool is required"; exit 1; }; \
 	done
+	@# Before any build: a missing credential should cost a second, not an image build.
+	@$(LOCAL_VALUES) >/dev/null
 	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --name $(CLUSTER)
 	@kubectl config use-context kind-$(CLUSTER)
 	@echo 'building the images on the host daemon'
@@ -121,7 +126,7 @@ start:
 	done
 	@echo "installing the releases $(K8S_STATE_RELEASE) and $(K8S_RELEASE)"
 	helm upgrade --install $(K8S_STATE_RELEASE) charts/factory-local-state
-	helm upgrade --install $(K8S_RELEASE) charts/factory -f charts/factory/values-local.yaml
+	$(LOCAL_VALUES) | helm upgrade --install $(K8S_RELEASE) charts/factory -f charts/factory/values-local.yaml -f -
 	# The images are side-loaded under one tag and read with IfNotPresent, so an upgrade whose
 	# values did not change rolls nothing out and a re-run would keep the stale pods. Restart both
 	# workloads so every start runs what the build above just loaded.
@@ -132,10 +137,8 @@ start:
 		deployment/$(K8S_STATE_RELEASE)-timescale deployment/$(K8S_RELEASE)-factory-collector \
 		--timeout=600s
 	@echo
-	@echo "board on http://127.0.0.1:$(K8S_PORT) — queue a job and watch it run through a pod:"
-	@echo "  curl -s -X PUT localhost:$(K8S_PORT)/api/workspace/executors -H 'content-type: application/json' -d '{\"executors\":[{\"name\":\"claude\",\"type\":\"claude-code\",\"config\":{},\"isDefault\":true}]}'"
-	@echo "  curl -s -X POST localhost:$(K8S_PORT)/api/jobs -H 'content-type: application/json' -d '{\"command\":\"hello from the cluster\",\"executor\":\"claude\"}'"
-	@echo '  curl -s localhost:$(K8S_PORT)/api/jobs/<id>'
+	@echo "board on http://127.0.0.1:$(K8S_PORT) — sign in with GitHub, then queue a job and watch it"
+	@echo 'run through a pod (the executor is the echo stub).'
 	@echo
 	# The forward lands on one ready endpoint of the service, and a restart — this start's own
 	# rollout, or any future one — can take that pod out from under it ("lost connection to

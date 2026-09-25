@@ -56,16 +56,14 @@ spec:
                       # with nothing but this URL and its namespace.
                       - name: JOB_BOARD_URL
                         value: http://{{ include "factory.fullname" $ }}:{{ $.Values.dashboard.port }}
-                      # The shared board secret — the dashboard validates the same value. Optional
-                      # so a bring-your-own Secret without this key still boots: against an open
-                      # board (AUTH_MODE=none, the local profile) the driver omits the header
-                      # rather than sending it blank.
+                      # The shared board secret — the dashboard validates the same value. Not
+                      # optional: the board always requires it, and a driver started without it
+                      # would poll into 401s forever, where a missing key fails the pod visibly.
                       - name: JOB_BOARD_TOKEN
                         valueFrom:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" $ }}
                                 key: job-board-token
-                                optional: true
                       # Runners are Jobs in THIS namespace, discovered from the pod's own identity
                       # rather than pinned in values — the chart cannot know where the release lands.
                       - name: K8S_NAMESPACE

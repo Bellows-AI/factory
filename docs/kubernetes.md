@@ -217,14 +217,28 @@ kind walkthrough. Decisions that look like cruft and are not:
   `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
   and the checkouts that database records — the two are kept together, since rows describing a
   worktree that is gone are worse than no rows. `make reset` removes the state release too.
-- **`AUTH_MODE` defaults to `github` in the chart**, as compose pins it, because the chart's
-  dashboard holds checkouts and serves a route that runs shell commands. The local values file
-  turns it off explicitly (`none` + `AUTH_ALLOW_PUBLIC_BIND=1`, the ClusterIP being the perimeter —
-  the k8s analogue of the loopback bind). Under `github`, `auth.publicUrl` is required; the server
-  refuses to boot without it, by design.
+- **The chart renders `AUTH_MODE=github` as a literal, and has no `auth.mode` value.** The chart's
+  dashboard holds checkouts and serves a route that runs shell commands, so there is no open mode
+  to select — not even locally, where "the ClusterIP is the perimeter" once justified one. There is
+  no `AUTH_ALLOW_PUBLIC_BIND` either: it exists only to except an open mode. `auth.publicUrl`,
+  `auth.oauthClientId`, the OAuth client secret, a 32-character session secret and a 32-character
+  `secret.jobBoardToken` are refused at render time when missing; the driver's `JOB_BOARD_TOKEN`
+  reference is not `optional`, because a driver without it would poll into 401s forever.
+- **The local profile carries no credentials; `.env` does.** `values-local.yaml` holds only the
+  local shape (image tags, the state release's objects, the stub executor);
+  `scripts/k8s-local-values.mjs` reads the repo-root `.env` — the App, the OAuth client, the
+  session secret, the board token — and prints them as a values document that `make start` pipes
+  to `helm -f -`, so no secret lands in a file or on a command line. It exits naming anything
+  missing before an image is built. `.env`'s `PUBLIC_URL` is not read (it is the dev stack's);
+  the origin is `K8S_PUBLIC_URL`, defaulting to `http://127.0.0.1:$K8S_PORT` — GitHub accepts any
+  port on a loopback redirect, so the dev stack's OAuth App serves the cluster too.
 - **`values-local.yaml` points the executor at a stub echo image**, the same trick
   `scripts/test-jobs.sh` uses: a queued job runs a real pod that echoes its prompt, which proves
-  the whole board → driver → Job → pod → complete path offline, with no Claude and no credential.
+  the board → driver → Job → pod → complete path with no Claude credential.
+- **`dashboard.offline` survives only for `scripts/test-k8s.sh --cluster`.** It boots the
+  code-only no-fetch entry under the same auth wall; with no App nobody can sign in, so the
+  cluster test mints a personal access token straight into the database and queues through it.
+  That is also what makes the test exercise the driver's board token end to end.
 - **The dashboard pod waits for the database before starting.** The server's migration retry
   gives up after ~55s — and then keeps serving with no tables, every DB-backed route a 500 no
   client can poll away. A cold local node pulls the database image for minutes and a managed

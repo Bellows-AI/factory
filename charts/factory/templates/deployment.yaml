@@ -80,17 +80,16 @@ spec:
                   image: {{ include "factory.image" (list . .Values.dashboard.image) }}
                   imagePullPolicy: {{ .Values.dashboard.imagePullPolicy }}
                   {{- if .Values.dashboard.offline }}
-                  # The offline profile: the code-only no-fetch entry. Same image, same routes;
-                  # nothing is fetched or cloned, and the App credential is not needed.
+                  # The code-only no-fetch entry. Same image, same routes, same auth wall; nothing
+                  # is fetched or cloned, and the App credential is not needed.
                   command: ['node', 'server/dist/offline.js']
                   {{- end }}
                   ports:
                       - name: http
                         containerPort: {{ .Values.dashboard.port }}
-                  # Every Secret key but database-url is optional: which ones are required depends
-                  # on auth.mode and dashboard.offline, templates/validate.yaml refuses what it can
-                  # see, and for a bring-your-own Secret the server's boot error names what is
-                  # missing — clearer than a CreateContainerConfigError naming only a key.
+                  # Every Secret key but database-url is optional: templates/validate.yaml refuses
+                  # what it can see, and for a bring-your-own Secret the server's boot error names
+                  # what is missing — clearer than a CreateContainerConfigError naming only a key.
                   env:
                       # The repo-read credential AND the repo list, both from one GitHub App
                       # installation. Required unless offline.
@@ -118,15 +117,10 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: database-url
-                      # The wall. Chart default `github`, as compose pins it — this deployment holds
-                      # checkouts and serves a route that runs shell commands.
+                      # The wall, and not a value: this deployment holds checkouts and serves a
+                      # route that runs shell commands, so the chart has no open mode to select.
                       - name: AUTH_MODE
-                        value: {{ .Values.auth.mode | quote }}
-                      {{- if .Values.auth.allowPublicBind }}
-                      # Only set when asked for: it excepts an open AUTH_MODE from the loopback rule.
-                      - name: AUTH_ALLOW_PUBLIC_BIND
-                        value: {{ .Values.auth.allowPublicBind | quote }}
-                      {{- end }}
+                        value: github
                       - name: GITHUB_OAUTH_CLIENT_ID
                         value: {{ .Values.auth.oauthClientId | quote }}
                       - name: GITHUB_OAUTH_CLIENT_SECRET
@@ -141,8 +135,8 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: session-secret
                                 optional: true
-                      # Under mode=github this is required — loadConfig refuses to boot without an
-                      # origin GitHub can redirect back to.
+                      # Required — loadConfig refuses to boot github auth without an origin GitHub
+                      # can redirect back to.
                       - name: PUBLIC_URL
                         value: {{ .Values.auth.publicUrl | quote }}
                       - name: COOKIE_SECURE

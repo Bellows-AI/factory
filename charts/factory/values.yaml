@@ -34,7 +34,8 @@ dashboard:
     # chart sets both.
     workspaceRoot: /workspaces
     # The code-only no-fetch entry (server/dist/offline.js): nothing is fetched or cloned and the
-    # GitHub App credential is not needed. The local profile turns it on.
+    # GitHub App credential is not needed. The auth wall stays up, and with no App nobody can sign
+    # in — it exists for scripts/test-k8s.sh --cluster, which mints its own access token.
     offline: false
     # Requests only: a limit on the process that clones every member's checkouts would turn a big
     # repository into an OOM kill mid-clone.
@@ -44,16 +45,13 @@ dashboard:
             memory: 256Mi
 
 auth:
-    # `github` is the chart default, exactly as compose pins it: this deployment holds checkouts and
-    # serves POST /api/jobs, which runs shell commands. `none` needs allowPublicBind on the 0.0.0.0
-    # bind — see loadConfig, which refuses an unauthenticated non-loopback port without it.
-    mode: github
-    # REQUIRED under mode=github: the origin GitHub redirects back to. loadConfig makes it fatal to
-    # boot github auth without one on a non-loopback host.
+    # GitHub sign-in, always: this deployment holds checkouts and serves POST /api/jobs, which runs
+    # shell commands, so the chart renders AUTH_MODE=github and has no open mode to select.
+    # REQUIRED: the origin GitHub redirects back to. loadConfig makes it fatal to boot github auth
+    # without one on a non-loopback host.
     publicUrl: ''
     cookieSecure: ''
-    allowPublicBind: ''
-    # Not a secret: GitHub's OAuth App client id is public by design. REQUIRED under mode=github.
+    # Not a secret: GitHub's OAuth App client id is public by design. REQUIRED.
     oauthClientId: ''
 
 github:
@@ -96,21 +94,20 @@ workspaces:
 secret:
     # Creates the dashboard Secret from the values below. With existingSecret set, the chart
     # creates nothing and references that one — for a Secret managed by external-secrets or
-    # sealed-secrets. Every key but `database-url` is optional in the pod spec, so a managed Secret
-    # carries only the keys its auth mode needs and the server names any it still misses.
+    # sealed-secrets. In the dashboard's pod spec every key but `database-url` is optional, so the
+    # server names any a managed Secret misses; the driver requires `job-board-token`.
     create: true
     existingSecret: ''
-    # REQUIRED under mode=github.
+    # REQUIRED.
     oauthClientSecret: ''
-    # REQUIRED under mode=github, at least 32 characters.
+    # REQUIRED, at least 32 characters.
     sessionSecret: ''
     # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route
     # does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     githubWebhookSecret: ''
     # The shared board secret: the dashboard validates `Bearer $JOB_BOARD_TOKEN` on the worker
     # routes against it and the driver presents it. One value, both sides — generate with
-    # `openssl rand -hex 32`. REQUIRED under mode=github (at least 32 characters); empty is fine for
-    # the AUTH_MODE=none local profile, where the worker routes are open.
+    # `openssl rand -hex 32`. REQUIRED, at least 32 characters.
     jobBoardToken: ''
 
 driver:

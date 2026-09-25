@@ -37,6 +37,10 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   checkouts and serves `POST /api/jobs`, so it identifies its callers — while `none` stays the
   default everywhere else, because the four things in the bullet above need it. Turning the port
   open is now an edit to that line, and the hatch has to come back with it.
+- **The Helm chart goes further: it has no open mode at all.** `AUTH_MODE=github` is a literal in
+  its template with no value behind it, and neither `auth.mode` nor `auth.allowPublicBind` exists —
+  the local kind profile included, which takes its credentials from `.env`. See
+  [kubernetes.md](kubernetes.md).
 - **`none` synthesises a caller rather than skipping the auth path.** `migrate()` seeds a stand-in
   account — `github_user_id = 0`, a value GitHub never issues, under the login `__local__`, which is
   unrepresentable as a real GitHub login because underscores are not permitted in one — and the hook

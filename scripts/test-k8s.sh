@@ -6,9 +6,13 @@
 #
 # Phase one is offline: helm lint, and helm template assertions that the rendered manifests carry
 # the security-relevant decisions — credentials by secretKeyRef and never by value, a
-# namespace-scoped Role, a runner pod with no service account. Phase two installs the chart into
-# the local cluster with the stub executor image, queues a job, and watches it come back succeeded
-# — real pods, no Claude, no credential.
+# namespace-scoped Role, a runner pod with no service account, and an auth wall that no value can
+# take down (the chart always renders AUTH_MODE=github). Phase two installs the chart into the
+# local cluster with the stub executor image and the code-only no-fetch entry (dashboard.offline)
+# behind that same wall, mints a member's personal access token straight into the database, queues
+# a job through it, and watches it come back succeeded — real pods, no Claude, no GitHub, and the
+# driver authenticating with its board token all the way. Every credential it uses is throwaway,
+# generated per run; it never reads the repo's .env.
 #
 # Everything it creates it removes: two helm releases — the app and the local state it runs against
 # (charts/factory-local-state: the database and the workspaces claim) — and the state's claims.
@@ -26,6 +30,23 @@ STATE_SETS=(
     --set "database.url=postgres://factory:factory@$STATE_RELEASE-timescale:5432/factory_dev"
     --set "workspaces.existingClaim=$STATE_RELEASE-workspaces"
 )
+# The chart refuses to render without its auth values, and values-local.yaml carries none (they come
+# from .env through scripts/k8s-local-values.mjs, which this script deliberately never runs). These
+# are throwaway: fake OAuth client, no App. Phase one renders with fixed ones; the cluster phase
+# refills AUTH_SETS with per-run random secrets.
+SECRET32="$(printf '%032d' 0)"
+auth_sets() { # auth_sets <publicUrl> <sessionSecret> <jobBoardToken> — (re)fills AUTH_SETS
+    AUTH_SETS=(
+        --set "auth.publicUrl=$1"
+        --set auth.oauthClientId=client
+        --set secret.oauthClientSecret=secret
+        --set "secret.sessionSecret=$2"
+        --set "secret.jobBoardToken=$3"
+    )
+}
+auth_sets https://factory.example "$SECRET32" "$SECRET32"
+# The local profile as the cluster phase installs it: no App, so the code-only no-fetch entry.
+LOCAL_SETS=(-f charts/factory/values-local.yaml "${STATE_SETS[@]}" --set dashboard.offline=true)
 NAMESPACE="${NAMESPACE:-default}"
 DASH_IMAGE="${DASH_IMAGE:-factory-ai}"
 DRIVER_IMAGE="${DRIVER_IMAGE:-factory-driver}"
@@ -91,17 +112,17 @@ command -v helm >/dev/null || {
 
 echo '# chart'
 
-# Linted with the local profile: the app chart's defaults carry no database.url, which is required.
-helm lint charts/factory -f charts/factory/values-local.yaml >/dev/null 2>&1 && ok 'helm lint passes' ||
-    bad 'helm lint passes' 'lint failed'
+# Linted with the local profile: the app chart's defaults carry no database.url, which is required,
+# and no auth values, which are too.
+helm lint charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" >/dev/null 2>&1 && ok 'helm lint passes' ||
+    bad 'helm lint passes' "$(helm lint charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" 2>&1 | tail -3)"
 helm lint charts/factory-local-state >/dev/null 2>&1 && ok 'helm lint passes on the local state chart' ||
     bad 'helm lint passes on the local state chart' 'lint failed'
 
-# Rendered with the local profile, which is the shape the cluster phase installs: offline auth,
-# the state release's database and claim, stub executor.
+# Rendered with the local profile, which is the shape the cluster phase installs: the no-fetch
+# entry behind github auth, the state release's database and claim, stub executor.
 render() {
-    helm template "$RELEASE" charts/factory -f charts/factory/values-local.yaml "${STATE_SETS[@]}" \
-        --namespace "$NAMESPACE"
+    helm template "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --namespace "$NAMESPACE" "$@"
 }
 render >"$work/rendered.yaml" || {
     echo 'test-k8s: helm template failed'
@@ -236,6 +257,31 @@ else
     ok 'the driver forwards no ingest token'
 fi
 
+# The auth wall is a literal, not a value: the dashboard holds checkouts and serves a route that
+# runs shell commands, so there is no open mode to select and no public-bind hatch to except one.
+auth_mode_of() { grep -A1 -- '- name: AUTH_MODE$' | sed -n '2p' | tr -d ' '; }
+mode="$(auth_mode_of <"$work/rendered.yaml")"
+[ "$mode" = 'value:github' ] && ok 'the dashboard renders AUTH_MODE=github' ||
+    bad 'the dashboard renders AUTH_MODE=github' "next line after AUTH_MODE: '$mode'"
+expect_not_contains 'no AUTH_ALLOW_PUBLIC_BIND renders' "$(cat "$work/rendered.yaml")" 'AUTH_ALLOW_PUBLIC_BIND'
+# The removed values are inert: a stale override cannot reopen the board.
+if reopened="$(render --set auth.mode=none --set auth.allowPublicBind=true 2>&1)"; then
+    mode="$(auth_mode_of <<<"$reopened")"
+    [ "$mode" = 'value:github' ] && ok '--set auth.mode=none has no effect' ||
+        bad '--set auth.mode=none has no effect' "next line after AUTH_MODE: '$mode'"
+    expect_not_contains '--set auth.allowPublicBind=true has no effect' "$reopened" 'AUTH_ALLOW_PUBLIC_BIND'
+else
+    bad '--set auth.mode=none has no effect' "render failed: ${reopened:0:200}"
+fi
+# The driver's board token is required: a driver started without it would poll into 401s forever,
+# where a missing key fails the pod visibly.
+board_ref="$(grep -A1 -- 'key: job-board-token' <<<"$driver")"
+if [ -z "$board_ref" ]; then
+    bad "the driver's board token ref is not optional" 'no job-board-token ref in the driver deployment'
+else
+    expect_not_contains "the driver's board token ref is not optional" "$(sed -n '2p' <<<"$board_ref")" 'optional'
+fi
+
 # The dashboard pod must not start its server until the database accepts connections: the server's
 # migration retry gives up after ~45s and then serves every DB-backed route as a 500 forever — a
 # state no amount of client-side polling recovers. On a cold cluster the database image pulls for
@@ -264,15 +310,10 @@ expect_contains 'the state database never runs two writers'   "$state" 'type: Re
 
 # --- The review hardening: every item pinned so a revert fails here, not in production ---------
 
-# A complete github-mode value set: the chart's own defaults, which is what production renders.
-SECRET32="$(printf '%032d' 0)"
+# A complete value set on the chart's own defaults, App included, which is what production renders.
 GH_SETS=(
     --set database.url=postgres://u:p@db:5432/factory
-    --set auth.publicUrl=https://factory.example
-    --set auth.oauthClientId=client
-    --set secret.oauthClientSecret=secret
-    --set "secret.sessionSecret=$SECRET32"
-    --set "secret.jobBoardToken=$SECRET32"
+    "${AUTH_SETS[@]}"
     --set github.appId=1
     --set github.appPrivateKey=pem
 )
@@ -335,8 +376,9 @@ byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set s
     --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 2>&1)"
 expect_contains 'the collector sends the ingest header with a managed Secret' "$byo" \
     'X-Factory-Ingest-Token: ${env:INGEST_TOKEN}'
-# Every key but database-url is optional, so a managed Secret carries only what its mode needs.
-[ "$(grep -c 'optional: true' <<<"$byo")" -ge 8 ] && ok 'managed-Secret keys are optional' ||
+# Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
+# message; the driver's job-board-token is the exception (pinned above), so 7 rather than 8.
+[ "$(grep -c 'optional: true' <<<"$byo")" -ge 7 ] && ok 'managed-Secret keys are optional' ||
     bad 'managed-Secret keys are optional' "$(grep -c 'optional: true' <<<"$byo") optional refs"
 
 # Render-time refusals: half-configured values fail here, not as a crash loop.
@@ -350,12 +392,22 @@ refuses() { # refuses <name> <needle> <helm args...>
         expect_contains "$name" "$out" "$needle"
     fi
 }
-refuses 'github mode refuses a missing publicUrl' 'auth.publicUrl' "${GH_SETS[@]}" --set auth.publicUrl=
-refuses 'github mode refuses a short session secret' 'secret.sessionSecret' "${GH_SETS[@]}" --set secret.sessionSecret=short
-refuses 'github mode refuses a missing board token' 'secret.jobBoardToken' "${GH_SETS[@]}" --set secret.jobBoardToken=
-refuses 'a missing App id is refused unless offline' 'github.appId' "${GH_SETS[@]}" --set github.appId=
-refuses 'an open board needs the public-bind hatch' 'allowPublicBind' "${GH_SETS[@]}" --set auth.mode=none
-refuses 'no Secret at all is refused' 'secret.existingSecret' "${GH_SETS[@]}" --set secret.create=false
+refuses 'a missing publicUrl is refused' 'auth.publicUrl is required' "${GH_SETS[@]}" --set auth.publicUrl=
+refuses 'a missing OAuth client id is refused' 'auth.oauthClientId is required' \
+    "${GH_SETS[@]}" --set auth.oauthClientId=
+refuses 'a missing OAuth client secret is refused' 'secret.oauthClientSecret is required' \
+    "${GH_SETS[@]}" --set secret.oauthClientSecret=
+refuses 'a short session secret is refused' 'secret.sessionSecret of at least 32 characters is required' \
+    "${GH_SETS[@]}" --set secret.sessionSecret=short
+refuses 'a missing board token is refused' 'secret.jobBoardToken of at least 32 characters is required' \
+    "${GH_SETS[@]}" --set secret.jobBoardToken=
+refuses 'a missing App id is refused unless offline' 'github.appId is required' "${GH_SETS[@]}" --set github.appId=
+# Offline waives the App, never the wall: the no-fetch entry still needs every auth value.
+refuses 'offline still refuses a missing OAuth client id' 'auth.oauthClientId is required' \
+    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set auth.oauthClientId=
+refuses 'offline still refuses a missing board token' 'secret.jobBoardToken of at least 32 characters is required' \
+    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set secret.jobBoardToken=
+refuses 'no Secret at all is refused' 'secret.existingSecret is empty' "${GH_SETS[@]}" --set secret.create=false
 
 # Names stay valid DNS labels however long the release name: truncation leaves room for suffixes.
 long="$(helm template "release-name-that-is-deliberately-far-too-long-for-a-dns-label" charts/factory \
@@ -410,7 +462,7 @@ if [ "${1:-}" != '--cluster' ]; then
     exit
 fi
 
-for tool in kubectl docker; do
+for tool in kubectl docker openssl; do
     command -v "$tool" >/dev/null || {
         echo "test-k8s: $tool is required for the cluster phase"
         exit 1
@@ -522,7 +574,12 @@ helm install "$STATE_RELEASE" charts/factory-local-state -n "$NAMESPACE" >/dev/n
     exit 1
 }
 state_installed=1
-helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml "${STATE_SETS[@]}" \
+# Fresh throwaway secrets per run; the board token is what the driver presents on every claim, so a
+# job that comes back succeeded proves it end to end. The origin is the port-forward's below.
+PORT=18080
+BASE="http://127.0.0.1:$PORT"
+auth_sets "$BASE" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)"
+helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "dashboard.image.repository=$DASH_IMAGE" \
     --set "driver.image.repository=$DRIVER_IMAGE" \
     --set "driver.executorImages.claudeCode=$STUB_IMAGE" \
@@ -548,13 +605,30 @@ kubectl wait --for=condition=available \
 
 # Through the dashboard, so the assertion is the user's own path: queue, then poll the board.
 PF_LOG="$work/portforward.log"
-kubectl port-forward "svc/$RELEASE-factory" 18080:8080 -n "$NAMESPACE" >"$PF_LOG" 2>&1 &
+kubectl port-forward "svc/$RELEASE-factory" "$PORT:8080" -n "$NAMESPACE" >"$PF_LOG" 2>&1 &
 pf_pid=$!
-BASE="http://127.0.0.1:18080"
+
+# Every human route needs a member behind it. The node calls below read the member's personal
+# access token from FACTORY_TOKEN — the environment, not argv, so it never shows in a process
+# listing — and send it as a bearer when it is set.
+JS_HEADERS='const headers = { "content-type": "application/json" };
+if (process.env.FACTORY_TOKEN) headers.authorization = "Bearer " + process.env.FACTORY_TOKEN;'
+http_status() { # http_status <method> <url> [json body] — the status code, 000 when nothing answered
+    node -e "$JS_HEADERS"'
+fetch(process.argv[2], { method: process.argv[1], headers, body: process.argv[3] })
+    .then((r) => process.stdout.write(String(r.status)))
+    .catch(() => process.stdout.write("000"));
+' "$@"
+}
+give_up() {
+    kill "$pf_pid" 2>/dev/null
+    printf '\n%d passed, %d failed\n' "$pass" "$fail"
+    exit 1
+}
 
 up=""
 for _ in $(seq 1 30); do
-    [ "$(node -e 'fetch(process.argv[1]).then(r=>process.stdout.write(String(r.status))).catch(()=>process.stdout.write("000"))' "$BASE/api/health")" = '200' ] && {
+    [ "$(http_status GET "$BASE/api/health")" = '200' ] && {
         up=1
         break
     }
@@ -562,22 +636,70 @@ for _ in $(seq 1 30); do
 done
 [ -n "$up" ] && ok 'the board answers through the service' || {
     bad 'the board answers through the service' "$(cat "$PF_LOG")"
-    kill "$pf_pid" 2>/dev/null
-    printf '\n%d passed, %d failed\n' "$pass" "$fail"
-    exit 1
+    give_up
 }
 
+# The rows below go straight into the tables the migrations create, so wait for them: /api/ready
+# answers 200 only once every migration has landed.
+ready=""
+for _ in $(seq 1 120); do
+    [ "$(http_status GET "$BASE/api/ready")" = '200' ] && {
+        ready=1
+        break
+    }
+    sleep 1
+done
+[ -n "$ready" ] && ok 'the board reports its migrations applied' || {
+    bad 'the board reports its migrations applied' 'GET /api/ready never answered 200'
+    give_up
+}
+
+JOB_BODY='{"command":"hello from the cluster","executor":"claude"}'
+# The wall is up: no credential, no job.
+anon="$(http_status POST "$BASE/api/jobs" "$JOB_BODY")"
+[ "$anon" = '401' ] && ok 'an unauthenticated POST /api/jobs is refused 401' ||
+    bad 'an unauthenticated POST /api/jobs is refused 401' "got $anon"
+
+# A member, minted where sign-in would have put one. With no App nobody can sign in, so the rows go
+# in directly: an organization, a user, the membership that binds them, and a personal access token
+# — `fat_` + 32 CSPRNG bytes base64url, stored only as the sha-256 of the whole token
+# (server/src/auth/access-token.ts, hashToken in session.ts). Every id is generated here or by the
+# database; psql variables carry the values, so nothing is spliced into the SQL text.
+read -r FACTORY_TOKEN token_hash < <(node -e '
+const c = require("node:crypto");
+const t = "fat_" + c.randomBytes(32).toString("base64url");
+process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
+')
+member="k8s-test-$(openssl rand -hex 6)"
+minted="$(kubectl exec -i -n "$NAMESPACE" "deployment/$STATE_RELEASE-timescale" -- \
+    psql -q -v ON_ERROR_STOP=1 -v "member=$member" -v "hash=$token_hash" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+with o as (
+    insert into organization (id, name) values (:'member', :'member') returning id
+), u as (
+    insert into app_user (github_user_id, github_login)
+    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'member') returning id
+), m as (
+    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
+    select o.id, :'member', u.id, 'member', now() from o, u
+)
+insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+select o.id, 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from o, u;
+SQL
+)" && ok 'a member and a personal access token are minted' || {
+    bad 'a member and a personal access token are minted' "$minted"
+    give_up
+}
+export FACTORY_TOKEN
+
 # A task runs only under an executor from its author's own list — there is no global fallback, and
-# a claim whose label matches nothing is failed by the driver — so the fresh database needs one
+# a claim whose label matches nothing is failed by the driver — so the fresh member needs one
 # before anything is queued. The PUT replaces the whole list, so repeating it is harmless: it
-# retries through the same migration grace the queue loop below allows.
+# retries through the same grace the queue loop below allows.
 configured=""
 for _ in $(seq 1 60); do
-    [ "$(node -e '
-fetch(process.argv[1], { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }] }) })
-    .then((r) => process.stdout.write(String(r.status)))
-    .catch(() => process.stdout.write("000"));
-' "$BASE/api/workspace/executors")" = '200' ] && {
+    [ "$(http_status PUT "$BASE/api/workspace/executors" \
+        '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')" = '200' ] && {
         configured=1
         break
     }
@@ -605,11 +727,11 @@ id=""
 reconcile=0
 for _ in $(seq 1 60); do
     if [ "$reconcile" = '0' ]; then
-        response="$(node -e '
-fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster", executor: "claude" }) })
+        response="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: process.argv[2] })
     .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id); })
     .catch(() => process.stdout.write("000|"));
-' "$BASE/api/jobs")"
+' "$BASE/api/jobs" "$JOB_BODY")"
         status="${response%%|*}"
         id="${response#*|}"
         case "$status" in
@@ -617,8 +739,8 @@ fetch(process.argv[1], { method: "POST", headers: { "content-type": "application
         *) break ;;
         esac
     else
-        adopted="$(node -e '
-fetch(process.argv[1])
+        adopted="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
     .then(async (r) => {
         if (r.status !== 200) { process.stdout.write("no"); return; }
         const b = await r.json().catch(() => null);
@@ -640,10 +762,8 @@ fetch(process.argv[1])
 done
 case "$id" in
 *-*) ok 'a job was queued' ;;
-*) bad 'a job was queued' "no id came back"
-    kill "$pf_pid" 2>/dev/null
-    printf '\n%d passed, %d failed\n' "$pass" "$fail"
-    exit 1
+*) bad 'a job was queued' "no id came back (last status: ${status:-none})"
+    give_up
     ;;
 esac
 
@@ -651,8 +771,8 @@ esac
 # same assertion scripts/test-jobs.sh makes against docker.
 result=""
 for _ in $(seq 1 120); do
-    result="$(node -e '
-fetch(process.argv[1])
+    result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
     .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.exitCode ?? "") + "\t" + String(j.output ?? "")); })
     .catch(() => process.stdout.write("queued\t\t"));
 ' "$BASE/api/jobs/$id")"
