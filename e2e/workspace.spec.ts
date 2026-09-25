@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
 import { throughSignIn } from './signin.js';
+// The copy under assertion, imported from the module the app renders it from — see the note on
+// EXECUTOR_GUIDANCE in web/src/workspace/executors.ts for why these live in a React-free module.
+import { EXECUTOR_GUIDANCE, EXECUTOR_TYPE_META, TYPE_CONFIG_NOTE } from '../web/src/workspace/executors.js';
 
 /**
  * The workspace section of Settings, the repositories section its selection moved to (#181), the
@@ -134,7 +138,9 @@ test('the repositories page carries the selection surface, and its draft meets t
     await expect(page).toHaveURL(/\/$/);
 
     await page.goto('/settings/repos');
-    await expect(page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' })).not.toBeChecked();
+    await expect(
+        page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' })
+    ).not.toBeChecked();
 
     // Configuration is independent of personal checkout enablement: the editor mounts behind
     // Configure with the checkbox still off, and a clean area raises no dialog.
@@ -151,29 +157,52 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     await page.goto('/settings/executors');
 
     // The panel is scoped by its scope heading now — "My workspace" — with the guidance sentence
-    // that separates what the row stores from what the deployment controls (#183).
+    // that says what an executor decides for a task (#183). Asserted against the constant the
+    // panel renders, not a copy of it: this assertion held a sentence the product had stopped
+    // saying, and nothing noticed, because verify:ui needs Playwright and two databases to run.
     const panel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'My workspace' }) });
-    await expect(panel).toContainText('The deployment chooses the runner CLI and image');
+    await expect(panel).toContainText(EXECUTOR_GUIDANCE);
 
     await page.getByRole('button', { name: 'Add executor' }).click();
-    const dialog = page.locator('[role="dialog"][aria-labelledby="executor-title"]');
+    // Named by its title through aria-labelledby, not by a literal id: the dialog mints its ids
+    // with useId so two open dialogs cannot collide, which means no id here is stable across a
+    // render. The accessible name and the describedby links are the contract worth selecting on —
+    // they are what a screen reader follows.
+    // Either title: the same dialog is "Add executor" opened from the panel and "Edit executor"
+    // opened from a row, and this spec drives both. The id-based selector this replaced matched
+    // them without saying so, which is how naming only the Add case slipped through.
+    const dialog = page.getByRole('dialog', { name: /^(Add|Edit) executor$/ });
     const dialogPanel = dialog.locator('.picker');
     await expect(dialogPanel).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
 
-    // The Type note says what the field does NOT do — choosing a type describes the config, it
-    // does not switch the deployment's runner CLI — and the config help opens on the Claude Code
-    // truth: stored with the executor, not consumed by the current runner.
-    await expect(dialog.locator('#executor-type-help')).toContainText("does not change the deployment's runner CLI");
-    await expect(dialog.locator('#executor-config-help')).toContainText('not consumed by the current Claude Code runner');
+    /**
+     * The help a field points at with aria-describedby — resolved live, since the id is minted.
+     * The config textarea names two targets once its JSON fails to parse (help, then error), and
+     * the help is always first, so `.first()` is the help in both states.
+     */
+    const describedBy = async (field: Locator) => {
+        const ids = (await field.getAttribute('aria-describedby'))?.split(/\s+/).filter(Boolean) ?? [];
+        expect(ids.length, 'the field names no describedby target').toBeGreaterThan(0);
+        return dialog.locator(ids.map((id) => `[id="${id}"]`).join(', ')).first();
+    };
+
+    const typeField = dialog.getByRole('combobox');
+    const configField = dialog.getByRole('textbox', { name: /config/i });
+
+    // Each field's help is the constant the dialog renders. What is under test here is the WIRING
+    // — that aria-describedby reaches the right paragraph, and that switching type swaps the
+    // config help — not the wording, which belongs to whoever edits the constant.
+    await expect(await describedBy(typeField)).toContainText(TYPE_CONFIG_NOTE);
+    await expect(await describedBy(configField)).toContainText(EXECUTOR_TYPE_META[CLAUDE_CODE].configHelp);
     await page.screenshot({ path: `${SHOTS}/settings-executor-help.png` });
 
-    // Switching type swaps the help for the OpenCode truth: the deployment's CLI merges the
-    // object over its baked configuration, and the permission fence holds.
-    await dialog.getByRole('combobox').selectOption({ label: 'OpenCode' });
-    await expect(dialog.locator('#executor-config-help')).toContainText('merged over its baked configuration');
-    await expect(dialog.locator('#executor-config-help')).toContainText('permission rules are ignored');
-    await dialog.getByRole('combobox').selectOption({ label: 'Claude Code' });
+    // Switching type swaps the help for the OpenCode one — the swap is the behavior under test,
+    // so the two helps must also differ, or this would still pass if the select stopped driving it.
+    await typeField.selectOption({ label: 'OpenCode' });
+    await expect(await describedBy(configField)).toContainText(EXECUTOR_TYPE_META[OPENCODE].configHelp);
+    expect(EXECUTOR_TYPE_META[OPENCODE].configHelp).not.toBe(EXECUTOR_TYPE_META[CLAUDE_CODE].configHelp);
+    await typeField.selectOption({ label: 'Claude Code' });
 
     // Not valid JSON: the message appears under the field, Save stays disabled, and what was
     // typed is still there — an error never costs the member their paste.

@@ -12,15 +12,12 @@ import {
     workspacePath,
     runWorkingDir,
     runnerClaimEnv,
-    SESSION_ID,
-    transcriptDir,
 } from './claim.js';
 import { opencodeReadoutScript } from './container-scripts.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, type RuntimeSample, type RunSession } from './runner.js';
-import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
-import { OPENCODE } from './executors.js';
-import { claudeSystemPromptArgs, opencodeAgentArgs } from './master-prompt.js';
+import { GATE_IMAGE, GATE_KEY } from './publish.js';
+import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 
 /**
  * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
@@ -303,11 +300,10 @@ export const envFilePath = (job: BoardJob): string => {
     if (!UUID.test(job.id)) {
         throw new Error(`refusing to write an env file for a job id that is not a uuid: ${job.id}`);
     }
-    if (job.leaseToken !== undefined && !UUID.test(job.leaseToken)) {
+    if (!UUID.test(job.leaseToken)) {
         throw new Error(`refusing to write an env file for a lease token that is not a uuid: ${job.leaseToken}`);
     }
-    const token = UUID.test(job.leaseToken ?? '') ? `-${job.leaseToken}` : '';
-    return join(tmpdir(), `factory-env-${job.id}${token}.env`);
+    return join(tmpdir(), `factory-env-${job.id}-${job.leaseToken}.env`);
 };
 
 /**
@@ -339,7 +335,7 @@ function pushRunnerCredentialArgs(args: string[], config: DriverConfig, job: Boa
     if (!envFile) {
         throw new Error(`refusing to run job ${job.id}: no env file was given`);
     }
-    for (const name of config.passEnv.filter((n) => !Object.prototype.hasOwnProperty.call(claim, n))) {
+    for (const name of config.passEnv.filter((n) => !Object.hasOwn(claim, n))) {
         args.push('-e', name);
     }
     args.push('--env-file', envFile);
@@ -356,14 +352,10 @@ export function dockerArgs(
      * The run happens in the job's task worktree (issue #35) — one per task thread, branched off
      * the remote default — when the job names a repository, and at the member root when it does
      * not (a command-only job names no repo, so no worktree exists; the root is where it always
-     * started, and the argv stays byte-identical for it).
+     * started, and the argv stays byte-identical for it). Asserted from the same line the
+     * kubernetes runner asserts it from.
      */
-    const worktree = job.repo ? worktreeDir(config, job) : null;
-    if (job.repo && !worktree) {
-        throw new Error(
-            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`
-        );
-    }
+    assertWorktreeResolvable(config, job);
     const args = [
         'run',
         '--name',
@@ -427,76 +419,14 @@ export function dockerArgs(
     // refused at boot; the default names the board JOB_BOARD_URL names.
     args.push('-e', `FACTORY_STATS_URL=${config.statsUrl}`);
 
-    if (job.executorType === OPENCODE) {
-        return pushOpencodeArgs(args, config, job, session);
-    }
-    return pushClaudeCodeArgs(args, config, job, session);
-}
-
-/**
- * Appends the opencode invocation to the argv, and answers it. No permissions flag here (the
- * image's baked opencode.json decides them).
- *
- * Sessions: opencode mints its own (`ses_…`) and cannot adopt one minted in advance, so a fresh
- * run is given none — the runner scrapes the id the run actually used after it ends and the loop
- * reports it. A follow-up is the exception to "cannot adopt": its claim carries the session
- * opencode ITSELF created (persisted via XDG_DATA_HOME below), and `run --session <id> <command>`
- * continues that conversation with the new adjustment.
- */
-function pushOpencodeArgs(args: string[], config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
-    if (session && !session.resume) {
-        throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
-    }
-    // The session database has to outlive the container or there is nothing to resume into:
-    // a fresh container starts with an empty one. Pointing XDG_DATA_HOME at the member's own
-    // tree on the workspaces volume persists it per member, next to their checkouts — a
-    // dot-directory the workspace reconcile never mistakes for a checkout (it clones only
-    // rows it selected, and its naming rules refuse a leading dot).
-    args.push('-e', `XDG_DATA_HOME=${config.workspaceMount}/${workspacePath(job)}/.opencode`);
-    // Only a follow-up has a session here, and the reporter must name it: the follow-up's
-    // tokens belong to the SAME conversation the parent ran. A fresh run is discovered live
-    // by the reporter from the session database this argv's XDG_DATA_HOME keeps. BEFORE the
-    // image name — docker stops option parsing there, and an `-e` past it is the CLI's argv.
-    if (session) {
-        if (!SESSION_ID.test(session.id)) {
-            throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
-        }
-        args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
-    }
-    args.push(executorImage(config, job.executorType), 'run', ...opencodeAgentArgs());
-    if (session) args.push('--session', session.id);
-    args.push(job.command);
-    return args;
-}
-
-/** Appends the claude-code invocation to the argv, and answers it. Every job runs as a session. */
-function pushClaudeCodeArgs(args: string[], config: DriverConfig, job: BoardJob, session: RunSession | null): string[] {
-    if (!session) {
-        throw new Error(`refusing to run job ${job.id}: the claude-code runner runs every job as a session`);
-    }
-    // The transcript store — fresh runs and resumes alike, because the resume is the run that
-    // needs the thread's earlier transcripts sitting in its config dir. A path literal like
-    // WORKDIR and XDG_DATA_HOME, never a credential.
-    args.push('-e', `FACTORY_TRANSCRIPT_DIR=${transcriptDir(config, job)}`);
-    // The session id the reporter claims. It is safe by construction — minted here as a uuid, or
-    // arriving on the claim only after the board's own token check — which is the same guarantee
-    // `--session-id` below has always ridden on.
-    args.push('-e', `BELLOWS_SESSION_ID=${session.id}`);
-
-    // Restoring a session versus starting one. `--resume` keeps the original id — forking it is a
-    // separate flag — which is what keeps a follow-up in its parent's conversation.
-    args.push(executorImage(config, job.executorType), session.resume ? '--resume' : '--session-id', session.id);
-    if (config.skipPermissions) args.push('--dangerously-skip-permissions');
-
-    // The board-owned Factory execution context (issue #244), through Claude Code's own
-    // system-instruction channel — additive to its built-in system prompt, never a replacement.
-    // Snapshotting off is what makes a resumed conversation rebuild THIS claim's workflow/node
-    // context rather than retaining whichever node's prompt rode the thread's first turn.
-    args.push(...claudeSystemPromptArgs(job));
-
-    // The command is the prompt. On a follow-up it is the NEW adjustment, and the restored
-    // transcript is the conversation it continues. It goes last, so a command that looks like a
-    // flag is still read as a prompt.
-    args.push('-p', job.command);
+    // What the executor is asked to do, decided once for both platforms (runner-plan.ts) and
+    // RENDERED here in docker's own vocabulary: every env pair as a `-e NAME=value` BEFORE the
+    // image name — docker stops option parsing there, and an `-e` past it would be the CLI's own
+    // argv — and the plan's cliArgs after it, which is exactly what the image's ENTRYPOINT
+    // receives. The values are paths and session ids, never credentials; member-scoped values
+    // travel in the --env-file above.
+    const plan = runnerPlan(config, job, session);
+    for (const [name, value] of plan.envPairs) args.push('-e', `${name}=${value}`);
+    args.push(executorImage(config, job.executorType), ...plan.cliArgs);
     return args;
 }

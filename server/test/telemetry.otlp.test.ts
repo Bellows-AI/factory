@@ -107,7 +107,7 @@ describe('the OTLP wire format', () => {
         });
         // arrayValue has no scalar reading, so it is dropped rather than stringified into
         // something nobody can query.
-        expect(rows[0]?.attrs['model']).toBeUndefined();
+        expect(rows[0]?.attrs.model).toBeUndefined();
     });
 
     it('promotes resource attributes onto the datapoint', () => {

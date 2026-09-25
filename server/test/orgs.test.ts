@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import { LOCAL_ORG_ID, type AppConfig } from '../src/config.js';
 import { createOrgRegistry, type OrgRegistry } from '../src/orgs.js';
 import { testConfig } from './helpers.js';

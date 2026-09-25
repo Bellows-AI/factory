@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { InstallationRepo } from '../github/app-client.js';
-import { SESSION_COOKIE, hashToken, mintToken, sessionCookieOptions, sign } from '../auth/session.js';
+import { SESSION_COOKIE, hashToken, mintToken, type sessionCookieOptions, sign } from '../auth/session.js';
 import type { AuthStore, Caller } from '../auth/store.js';
 import { ensureUserWorkspace } from '../workspace/provision.js';
 
@@ -16,6 +16,7 @@ export const HTTP_BAD_REQUEST = 400;
 export const HTTP_UNAUTHORIZED = 401;
 export const HTTP_FORBIDDEN = 403;
 export const HTTP_SERVER_ERROR = 500;
+export const HTTP_UNAVAILABLE = 503;
 
 export const MS_PER_SECOND = 1000;
 

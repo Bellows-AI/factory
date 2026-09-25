@@ -8,7 +8,7 @@
  * node's own prompt text, prior output, env values, or credentials — the whole point is that a
  * workflow or task author cannot supply, append, or interpolate a single byte of this text.
  */
-import { type ClaimHelperPlan } from './job-store-types.js';
+import type { ClaimHelperPlan } from './job-store-types.js';
 import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from './workflow-blocks/github-review-reconcile.js';
 import { PROBE_HELPER_ID } from './workflow-blocks/merge-conflict-autofix.js';
 import { nodeOf, type WorkflowDefinition } from './workflow-schema.js';

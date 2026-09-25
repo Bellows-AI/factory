@@ -1,7 +1,7 @@
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimContinuesSession } from './claim.js';
+import { claimCarriesGithubToken, claimContinuesSession, workspacePath } from './claim.js';
 import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
 import type { HelperDescriptor, HelperPlan } from './helpers.js';
 import {
@@ -12,7 +12,6 @@ import {
     releaseLabel,
     workspaceMount,
     type AuxJobSpec,
-    workspaceSubPathOf,
 } from './k8s-podspec.js';
 import { JOB_ID, LOG_TAIL_LINES, MS_PER_SECOND } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
@@ -93,7 +92,7 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                     : []),
             ],
             ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
-            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
+            volumeMounts: [workspaceMount(config, workspacePath(job))],
         },
     });
 }
@@ -135,7 +134,7 @@ export function reclaimJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
                 { name: 'REPO', value: clone },
                 { name: 'WORKTREE', value: worktree },
             ],
-            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
+            volumeMounts: [workspaceMount(config, workspacePath(job))],
         },
     });
 }
@@ -194,7 +193,7 @@ export function publishStepJobSpec(config: DriverConfig, job: BoardJob, input: P
             ...(publish.env && envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
             // Read-write: add/commit write the tree the run edited. Scoped to the job's own
             // subtree like every other mount — asserted before the spec.
-            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
+            volumeMounts: [workspaceMount(config, workspacePath(job))],
         },
     });
 }
@@ -251,7 +250,7 @@ export function helperJobSpec(config: DriverConfig, job: BoardJob, input: Helper
             env: [{ name: 'HELPER_INPUT', value: helperInputValue(plan) }],
             ...(envSecret ? { envFrom: [{ secretRef: { name: envSecret } }] } : {}),
             ...(worktree ? { workingDir: worktree } : {}),
-            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
+            volumeMounts: [workspaceMount(config, workspacePath(job))],
         },
     });
 }

@@ -5,7 +5,7 @@ import { callerOf } from '../auth/plugin.js';
 import { hashToken } from '../auth/session.js';
 import type { AuthStore } from '../auth/store.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
-import { UUID } from '../config.js';
+import { resolveCallerRoute } from './route-guards.js';
 
 /**
  * Access-token management for the settings page (#70): a member's personal tokens (`fat_`), and
@@ -97,10 +97,9 @@ export const tokenRoutes =
         });
 
         app.post('/api/tokens/:id/revoke', async (request, reply) => {
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-            const { id } = request.params as { id: string };
-            if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+            const route = resolveCallerRoute(request, reply);
+            if (!route) return reply;
+            const { caller, id } = route;
 
             const revoked = await guard(
                 reply,
@@ -154,10 +153,9 @@ export const tokenRoutes =
         });
 
         app.post('/api/tokens/org/:id/revoke', async (request, reply) => {
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-            const { id } = request.params as { id: string };
-            if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+            const route = resolveCallerRoute(request, reply);
+            if (!route) return reply;
+            const { id } = route;
 
             const revoked = await guard(
                 reply,

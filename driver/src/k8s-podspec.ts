@@ -9,17 +9,15 @@ import {
     opencodeDbPath,
     runnerClaimEnv,
     runWorkingDir,
-    SESSION_ID,
     transcriptDir,
-    workspacePathOf,
+    workspacePath,
 } from './claim.js';
 import { claudeTurnsScript, opencodeReadoutScript } from './container-scripts.js';
 import type { RunSession } from './runner.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
-import { GATE_IMAGE, GATE_KEY, worktreeDir } from './publish.js';
-import { bellowsReadEnv, bellowsReadScript } from './services.js';
-import { OPENCODE } from './executors.js';
-import { claudeSystemPromptArgs, opencodeAgentArgs } from './master-prompt.js';
+import { GATE_IMAGE, GATE_KEY } from './publish.js';
+import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
+import { assertedWorkspacePath, bellowsReadEnv, bellowsReadScript } from './services.js';
 
 /**
  * The kubernetes executor's pure Job/pod spec builders — the `dockerArgs` analogue for every
@@ -73,25 +71,6 @@ export interface RunnerJobSpec {
         };
     };
 }
-
-/**
- * The volumeMount's `subPath`: the claim's `<orgId>/<userId>` subtree, asserted before it
- * becomes part of any pod spec — the same refusal the docker runner makes before the same value
- * joins its `volume-subpath` (D4 of the mount-scoping design: a malformed `workspacePath` is
- * refused before any container exists, never mounted somewhere unintended). Every workspaces
- * mount this file emits carries it, which is what makes "mounted broader" a shape the spec
- * cannot express: the kubelet fails a pod whose subPath is missing, loudly, rather than falling
- * back to the whole volume.
- */
-export const workspaceSubPathOf = (job: BoardJob): string => {
-    const path = workspacePathOf(job);
-    if (!path) {
-        throw new Error(
-            `refusing to run job ${job.id}: the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
-        );
-    }
-    return path;
-};
 
 /**
  * The board's stacked environment plus every credential the pod carries by reference: the
@@ -160,75 +139,6 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 }
 
 /**
- * opencode's own env and argv: headless only, and opencode mints its own session ids — a fresh
- * run is `run <command>` with no session at all, and a follow-up is `run --session <id> <command>`
- * with the session opencode ITSELF created on the earlier run, persisted via XDG_DATA_HOME (the
- * same tree the docker runner's env points at). Restoring a session for anything but a follow-up
- * would deliver nothing into the run and idle it to the deadline; the loop refuses that state
- * first, and this is the runner asserting it too, exactly as dockerArgs does. Pulled out of
- * `runnerJobSpec` purely to keep that function's complexity readable.
- */
-function opencodeRunnerPlan(
-    config: DriverConfig,
-    job: BoardJob,
-    session: RunSession | null,
-    path: string
-): { env: EnvVar[]; args: string[] } {
-    if (session && !job.followUp) {
-        throw new Error(`refusing to run job ${job.id}: the opencode runner restores a session only for a follow-up`);
-    }
-    const env: EnvVar[] = [{ name: 'XDG_DATA_HOME', value: `${config.workspaceMount}/${path}/.opencode` }];
-    const args = ['run', ...opencodeAgentArgs()];
-    if (session) {
-        if (!SESSION_ID.test(session.id)) {
-            throw new Error(`refusing to run job ${job.id}: a session id that is not a safe token: ${session.id}`);
-        }
-        args.push('--session', session.id);
-        // Only a follow-up has a session here, and the reporter must name it — the follow-up's
-        // tokens belong to the SAME conversation the parent ran. A fresh run is discovered
-        // live by the reporter from the session database XDG_DATA_HOME above keeps.
-        env.push({ name: 'BELLOWS_SESSION_ID', value: session.id });
-    }
-    args.push(job.command);
-    return { env, args };
-}
-
-/**
- * The claude-code argv and env: `--resume` keeps the original session id, and the command is NOT
- * re-delivered — it is already in the transcript. A follow-up is the exception, on this platform
- * exactly as on docker: its command is the new adjustment, and it goes into the restored
- * transcript, last, so a command that looks like a flag is still read as a prompt. Pulled out of
- * `runnerJobSpec` purely to keep that function's complexity readable.
- */
-function claudeRunnerPlan(
-    config: DriverConfig,
-    job: BoardJob,
-    session: RunSession | null
-): { env: EnvVar[]; args: string[] } {
-    if (!session) {
-        throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
-    }
-    // The transcript store for claude-code (opencode persists through its own database). The
-    // same name the docker argv carries for the same claim, so transcript persistence does not
-    // depend on which executor ran the job — the entrypoint redirects CLAUDE_CONFIG_DIR onto the
-    // workspaces PVC. A path literal like WORKDIR, never a credential.
-    // The session id the reporter claims — asserted above as a safe token before it lands in
-    // a spec, the same rule the argv below is held to.
-    const env: EnvVar[] = [
-        { name: 'FACTORY_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
-        { name: 'BELLOWS_SESSION_ID', value: session.id },
-    ];
-    const deliver = !session.resume || job.followUp;
-    const args = [session.resume ? '--resume' : '--session-id', session.id];
-    if (config.skipPermissions) args.push('--dangerously-skip-permissions');
-    // The board-owned Factory execution context (issue #244) — the docker runner's identical
-    // twin, so both platforms make the same provider-specific argv decision.
-    args.push(...claudeSystemPromptArgs(job));
-    if (deliver) args.push('-p', job.command);
-    return { env, args };
-}
-
-/**
  * The full Job object. Pure, and exported, because it is the part worth pinning in a test:
  * everything security-relevant about a runner is decided here, exactly as everything about the
  * docker runner is decided in `dockerArgs`.
@@ -243,12 +153,14 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     if (!JOB_ID.test(job.id)) {
         throw new Error(`refusing to run job ${job.id}: a job id must be a uuid`);
     }
-    const path = workspacePathOf(job);
-    if (!path) {
-        throw new Error(
-            `refusing to run job ${job.id}: the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
-        );
-    }
+    // The volumeMount's `subPath`: the claim's `<orgId>/<userId>` subtree, asserted before it
+    // becomes part of any pod spec — by the same function, so the same refusal the docker runner
+    // makes before the same value joins its `volume-subpath` (D4 of the mount-scoping design: a
+    // malformed `workspacePath` is refused before any container exists, never mounted somewhere
+    // unintended). Every workspaces mount this file emits carries it, which is what makes
+    // "mounted broader" a shape the spec cannot express: the kubelet fails a pod whose subPath is
+    // missing, loudly, rather than falling back to the whole volume.
+    const path = workspacePath(job);
 
     // WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a
     // NAME only — the value lives in a Secret the cluster already holds, and `valueFrom` is what
@@ -257,26 +169,20 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // A repo job starts in its task worktree (issue #35), the same tree the docker runner's
     // WORKDIR names; a command-only job starts at the member root, where it always did. One
     // expression with docker's (runWorkingDir), because the close-time readout scopes the session
-    // scrape by this exact string — a scope key that drifted from the runner's would answer nothing.
-    const worktree = job.repo ? worktreeDir(config, job) : null;
-    if (job.repo && !worktree) {
-        throw new Error(
-            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`
-        );
-    }
+    // scrape by this exact string — a scope key that drifted from the runner's would answer
+    // nothing. Asserted from the same line dockerArgs asserts it from.
+    assertWorktreeResolvable(config, job);
     const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }, ...runnerCredentialEnv(config, job)];
 
     // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
-    // database path, or claude-code's transcript store and session id). The docker runner
-    // composes the same two shapes in dockerArgs — the ENTRYPOINT of either executor image
-    // receives exactly these arguments after the image name, so the platform below the
-    // container is the only difference.
-    const plan =
-        job.executorType === OPENCODE
-            ? opencodeRunnerPlan(config, job, session, path)
-            : claudeRunnerPlan(config, job, session);
-    env.push(...plan.env);
-    const args = plan.args;
+    // database path, or claude-code's transcript store and session id) — decided once, for both
+    // platforms, in runner-plan.ts, and RENDERED here as pod env and container args. The docker
+    // runner renders the SAME plan as `-e NAME=value` plus the argv after the image name, so the
+    // ENTRYPOINT of either executor image receives exactly these arguments and the platform below
+    // the container is the only difference.
+    const plan = runnerPlan(config, job, session);
+    env.push(...plan.envPairs.map(([name, value]) => ({ name, value })));
+    const args = plan.cliArgs;
 
     return {
         apiVersion: 'batch/v1',
@@ -366,12 +272,20 @@ export const secretName = (job: BoardJob): string => {
     return `factory-job-${job.id}-${job.leaseToken}-env`;
 };
 
-/** The Secret object the claim env becomes. Values ride in stringData, nowhere else. */
-export const secretBody = (job: BoardJob, env: Record<string, string>) => ({
+/**
+ * The Secret object an attempt-scoped env becomes — the ONE shape for every Secret this driver
+ * creates: the runner's claim env, the publish credential, a helper's, the sync's and the gate
+ * environment's. Values ride in stringData, nowhere else. The name is the caller's because each
+ * of those has its own (secretName, publishEnvSecretName, helperEnvSecretName,
+ * syncEnvSecretName, gateEnvSecretName); everything else — the labels above all — is identical
+ * by construction rather than by five copies agreeing. `factory.job` is what the re-claim fence
+ * sweeps by; `factory.lease` is what scopes a reap to the attempt that created it.
+ */
+export const secretBody = (job: BoardJob, name: string, env: Record<string, string>) => ({
     apiVersion: 'v1',
     kind: 'Secret',
     type: 'Opaque',
-    metadata: { name: secretName(job), labels: { [JOB_LABEL]: job.id } },
+    metadata: { name, labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken } },
     stringData: env,
 });
 
@@ -671,12 +585,9 @@ export const runnerName = (job: BoardJob): string => {
 };
 
 export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec {
-    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
-        throw new Error(
-            `refusing to read .bellows.yaml for job ${job.id}: ` +
-                `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
-        );
-    }
+    // One home for the `.bellows.yaml` refusal: services.ts composes the readout's env from the
+    // same assertion, so the docker readout and this Job cannot drift on which paths they accept.
+    const path = assertedWorkspacePath(job);
     return auxJobSpec(config, job, {
         name: bellowsJobName(job),
         deadlineSeconds: BELLOWS_READ_DEADLINE_SECONDS,
@@ -689,7 +600,7 @@ export function bellowsJobSpec(config: DriverConfig, job: BoardJob): AuxJobSpec 
             // with the splitter, never a credential (the same justification the sync's
             // REPO/WORKTREE/BRANCH literals give).
             env: Object.entries(bellowsReadEnv(config, job)).map(([name, value]) => ({ name, value })),
-            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job), true)],
+            volumeMounts: [workspaceMount(config, path, true)],
         },
     });
 }
@@ -751,7 +662,7 @@ export function claudeTurnsJobSpec(
                 // The per-run delta bound, exactly as docker passes it.
                 { name: 'RUN_STARTED_AT', value: startedAt },
             ],
-            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
+            volumeMounts: [workspaceMount(config, workspacePath(job))],
         },
     });
 }
@@ -782,7 +693,7 @@ export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, star
                 // root conversation, and only the cycles this run wrote may count as its turns.
                 { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
             ],
-            volumeMounts: [workspaceMount(config, workspaceSubPathOf(job))],
+            volumeMounts: [workspaceMount(config, workspacePath(job))],
         },
     });
 }

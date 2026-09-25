@@ -279,20 +279,25 @@ function buildIdentityMethods(
 
             // One installation = one organization (#99). The id IS the installation id, so the row
             // is stable across account renames; the name is a label, re-derived on every sign-in.
-            for (const org of installations) {
-                await sql`
-                    insert into organization (id, name, installation_id)
-                    values (${org.id}, ${org.name}, ${org.id}::bigint)
-                    on conflict (id) do update set
-                        name = excluded.name,
-                        installation_id = excluded.installation_id
-                `;
-                await sql`
-                    insert into org_membership (org_id, github_login, user_id, claimed_at)
-                    values (${org.id}, ${login}, ${userId}, now())
-                    on conflict (org_id, user_id) do update set github_login = excluded.github_login
-                `;
-            }
+            //
+            // One multi-row statement each, not two per installation: this runs on EVERY sign-in,
+            // not only the first, and an account in a dozen installations paid two dozen round
+            // trips for it. Still two statements, in this order — `org_membership.org_id` is a FK
+            // onto `organization`, so the orgs have to land first.
+            const orgIds = installations.map((org) => org.id);
+            const orgNames = installations.map((org) => org.name);
+            await sql`
+                insert into organization (id, name, installation_id)
+                select id, name, id::bigint from unnest(${orgIds}::text[], ${orgNames}::text[]) as t(id, name)
+                on conflict (id) do update set
+                    name = excluded.name,
+                    installation_id = excluded.installation_id
+            `;
+            await sql`
+                insert into org_membership (org_id, github_login, user_id, claimed_at)
+                select id, ${login}, ${userId}::uuid, now() from unnest(${orgIds}::text[]) as t(id)
+                on conflict (org_id, user_id) do update set github_login = excluded.github_login
+            `;
 
             // The materialized fact, re-synced at every sign-in: a membership of an organization
             // GitHub does not report is gone, and with it — through the joins the reads run —

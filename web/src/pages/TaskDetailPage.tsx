@@ -161,7 +161,9 @@ function useTaskRemoval(id: string | null, tasks: UseTasks, latest: Job | null, 
                 setRemoveError(message);
                 return;
             }
-            navigate('/tasks');
+            // Discarded on purpose: the route change is the last thing this does, and the
+            // `finally` below must not wait on the transition to clear the pending flag.
+            void navigate('/tasks');
         } finally {
             if (generation.current === atStart) setRemovingId(null);
         }

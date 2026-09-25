@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Job } from './useJobs.js';
+import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 const LIST_LIMIT = 8;
@@ -33,8 +34,7 @@ export async function pollCompletedJobs(
         }
         if (!response.ok) {
             if (signal.aborted) return;
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
-            fail(body.error ?? `Request failed (${response.status})`);
+            fail((await refusalOf(response)).error);
             rearm(hiddenDelay());
             return;
         }

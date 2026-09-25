@@ -45,6 +45,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `web/src/styles.css`, tokens and primitives, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
+| `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
 | Bind addresses, headers, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
 | Reporting a number as measured | [docs/limits.md](docs/limits.md) |
 
@@ -78,8 +79,11 @@ npm test               # vitest run — offline, no token, no quota, no database
 npm run test:executors # focused offline board/driver/runner/telemetry suites
 npm run test:coverage:executors # the same surface with executor-specific coverage thresholds
 npm run typecheck      # tsc -b across all four project references (plus server/tsconfig.test.json,
-                       # which typechecks server/test-db and its harness — the suites drift quietly otherwise)
-npm run lint           # biome check — lint + format verification over the four packages, offline
+                       # which typechecks server/test-db and its harness — the suites drift quietly otherwise,
+                       # and e2e/tsconfig.json, which covers the Playwright specs and playwright.config.ts:
+                       # nothing else compiles them, and `verify:ui` needs a browser and two databases to
+                       # find out)
+npm run lint           # biome check — lint + format verification over the four packages and e2e/, offline
 npm run format         # biome format --write — fixes format drift
 npm run lint:fix       # biome check --write — fixes what lint flags
 
@@ -169,19 +173,60 @@ Prefer watching one package (`npx vitest watch core/test`) over the whole suite.
 again, look for orphaned `node (vitest N)` workers (parent = 1) left by a killed session —
 `pkill -f 'node (vitest'` clears them.
 
-Biome is the linter and formatter: `biome.json` at the root, covering the four packages and the
+Biome is the linter and formatter: `biome.json` at the root, covering the four packages, `e2e/`
+(which shares the test override — magic numbers and function length are not a spec's problem) and the
 root config files. `npm run lint` is `biome check .` — lint and format verification in one offline
 pass — and `npm run format` is the fixer. The enforced style is the one the tree was already
 written in: 4-space indent, single quotes (double in JSX attributes), semicolons, 120-column
 lines, `es5` trailing commas; `core/test/biome.test.ts` pins all of it. Recommended rules run with
-deliberate carve-outs in `biome.json`, added because they fire on existing code that the
-enablement PR chose not to churn: non-null assertions are the house style under
-`noUncheckedIndexedAccess`, index keys drive chart ticks, bracket access preserves raw-JSON
-contracts (`otlp.ts` reads OTEL payloads field by field), `stripAnsi` in `driver/src/runner.ts`
-matches control characters on purpose, and the `.cjs` container scripts carry their own quirks.
-Every carve-out is a re-enable candidate: turn a rule back on only with the
-source change that retires its hits. Import sorting (assist) and CSS formatting are off; neither
-is a convention here.
+deliberate carve-outs in `biome.json`. Every carve-out is a re-enable candidate: turn a rule back
+on only with the source change that retires its hits. Import sorting (assist) and CSS formatting
+are off; neither is a convention here.
+
+Four carve-outs survive, and each is now **scoped to the file that earns it** rather than disabled
+tree-wide, so a new violation anywhere else is still caught: index keys drive chart ticks
+(`web/src/charts/**`), `stripAnsi` matches control characters on purpose
+(`driver/src/runner.ts`), bracket access preserves the raw-JSON contract (`otlp.ts` reads OTEL
+payloads field by field), and `web/src/main.tsx` carries the one bare CSS side-effect import that
+`useImportExtensions` has no mode for. `noNonNullAssertion` stays global: non-null assertions are
+the house style under `noUncheckedIndexedAccess`, at 661 sites.
+
+Beyond the recommended preset, ~60 further rules are enabled explicitly. Every one was measured at
+zero hits **individually** before being turned on, so each is a pure ratchet. A dozen live in
+`nursery`, which is not a stability promise: a Biome upgrade can rename, graduate or re-scope those,
+so if `npm run lint` breaks right after a version bump, check the nursery block first.
+
+**Measure one rule at a time.** Enabling every rule at once in a scratch config to survey the tree
+reports **false zeros** for the type-aware rules — `noUnnecessaryConditions` reads 0 in a
+whole-config sweep and 35 under `--only`. A zero from a bulk sweep means "did not run" at least as
+often as it means "clean".
+
+Three rules are off because their hits here are **false positives, measured rather than assumed** —
+re-enabling any of them means teaching it the shape, not churning the source:
+
+- `useJsxKeyInIterable` — fires on the `[label, node]` pairs array that `KeyValues` consumes.
+  `KeyValues` already keys each row by its label, so the value JSX is the single child of an
+  already-keyed element, not a list item. Adding keys there is cargo-cult.
+- `useUniqueElementIds` — every hit is a deliberate stable anchor: `main-content` is the skip-link
+  target (minting it breaks keyboard navigation), `mobile-nav` and `task-board-heading` are
+  `aria-labelledby` anchors on singletons, and `BarChart`'s `partial-hatch` is an SVG `<pattern>`
+  referenced from `styles.css` as `fill: url(#partial-hatch)` — a static stylesheet cannot name a
+  minted id, and the duplicate patterns are identical, so the collision is harmless.
+
+- `noUnnecessaryConditions` — 35 hits, and most are guards the code keeps *on purpose* past a cast
+  that lies. `parseVarEntry(entry: unknown)` asserts a shape and then writes `item?.name`; the
+  assertion is a claim about untrusted JSON, and `entry` really can be `null` at runtime, so
+  deleting the `?.` turns a 400 into a 500. Same story for the `routes/workspace.ts` body
+  validators and the JSONB rows in `workflow-store.ts`. The one genuinely dead guard it found —
+  `envFilePath`'s `leaseToken` check — is already gone.
+
+Where an id genuinely is per-instance — a dialog's title and field helps — mint it with `useId`
+and select it in e2e by role, label or `aria-describedby`, never by the literal.
+
+Two more rules look attractive and are not: `useNullishCoalescing` flags
+`output || error.message || '…'` in `driver/src/gates.ts`, where `||` is load-bearing — `??` would
+keep an empty output and render a blank error message. `useJsxKeyInIterable`'s advice on the pairs
+idiom is the same kind of trap. Read the site before believing the rule.
 
 `lint/no-shared-literals.grit` is a Biome plugin that bans raw spellings of values with one named
 home: executor types (`CLAUDE_CODE`, `OPENCODE`), roles (`ADMIN_ROLE`, `MEMBER_ROLE`), the
@@ -193,6 +238,20 @@ home, list the home in the plugin's `$filename` exclusions, and add one regex pe
 codes are matched by their `BAD_`/`UNKNOWN_`/`TOO_MANY_` prefix, so a new code in those families
 is caught before it reaches `ERROR_CODES`. Grit binds a regex group to a variable, so an
 alternation group fails to compile.
+
+Two more plugins enforce invariants this file states and nothing used to check.
+`lint/no-inline-container-scripts.grit` refuses a string or template literal as the argument after
+`node -e` or `sh -c` — the container-scripts rule below. It anchors on the interpreter, not the
+flag, because `docker run -e KEY=VAL` spells `-e` too.
+`lint/no-cross-package-imports.grit` refuses `@factory-ai/core` from `driver/` and any
+`core/src/…` path from `server/`/`web/`. Both are zero-hit ratchets.
+
+**A Grit plugin that fails to compile does not fail the run.** It reports `<plugin> errored: …`
+once per file at `info` severity and then matches nothing, so a broken ratchet is
+indistinguishable from a clean one — `biome check` still prints success. The way in is the
+alternation group above: spell paths as an `or` of whole regexes, never `(src|test)`.
+`core/test/biome.test.ts` asserts the absence of that message, which is the only thing standing
+between a zero and a lie.
 
 ## Build coupling to know about
 

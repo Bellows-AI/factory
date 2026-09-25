@@ -1,5 +1,6 @@
 import { ADMIN_ROLE, type Role } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
+import { refusalOf } from './refusal.js';
 
 export interface Session {
     /** The `/api/auth/me` union's signed-in arm; the anonymous answer is `{ authenticated: false }`. */
@@ -99,7 +100,7 @@ export function useSession(): UseSession {
             // 'include' would drag CORS into a same-origin app for nothing.
             const response = await fetch('/api/auth/me');
             if (!response.ok) {
-                setError(`Could not check the session (${response.status})`);
+                setError((await refusalOf(response, 'Could not check the session')).error);
             } else {
                 const payload = (await response.json()) as MeResponse;
                 setSession(payload.authenticated ? payload : null);

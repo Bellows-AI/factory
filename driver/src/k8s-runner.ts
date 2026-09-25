@@ -1,4 +1,3 @@
-import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { envFileBody } from './claim.js';
@@ -35,6 +34,7 @@ import {
     opencodeReadoutJobSpec,
     runnerJobSpec,
     runnerName,
+    secretBody,
     secretName,
 } from './k8s-podspec.js';
 import {
@@ -48,11 +48,12 @@ import {
 } from './k8s-poll.js';
 import { startServiceFleet, teardownServices } from './k8s-services.js';
 import {
-    ERROR_PREVIEW_CHARS,
+    expectOk,
     HTTP_ERROR_STATUS,
     livePod,
     parsePodMetrics,
     parseServicePods,
+    refusal,
     wait,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
@@ -91,11 +92,8 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
     const jobName = spec.metadata.name;
     try {
         const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        if (created.status >= HTTP_ERROR_STATUS) {
-            return fail(
-                `creating the session readout answered ${created.status}: ${created.body.slice(0, ERROR_PREVIEW_CHARS)}`
-            );
-        }
+        const refused = refusal(created, 'creating the session readout');
+        if (refused) return fail(refused);
         const pollFailure = await pollJobToTerminal(deps, jobName, {
             what: 'the session readout',
             notFound: (n) => `the session readout ${n} no longer exists`,
@@ -286,18 +284,13 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
     const env = envBodyToData(envFileBody(withPublishToken(job, publishToken)));
     const secret = Object.keys(env).length ? publishEnvSecretName(job) : null;
     if (secret) {
-        const response = await deps.request('POST', secretsPath(deps.config.k8sNamespace), {
-            apiVersion: 'v1',
-            kind: 'Secret',
-            type: 'Opaque',
-            metadata: { name: secret, labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken } },
-            stringData: env,
-        });
-        if (response.status >= HTTP_ERROR_STATUS) {
-            return publishFailed(
-                `creating the publish secret answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
-            );
-        }
+        const response = await deps.request(
+            'POST',
+            secretsPath(deps.config.k8sNamespace),
+            secretBody(job, secret, env)
+        );
+        const refused = refusal(response, 'creating the publish secret');
+        if (refused) return publishFailed(refused);
     }
     let stepNumber = 0;
     try {
@@ -314,11 +307,7 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
                     jobsPath(deps.config.k8sNamespace),
                     publishStepJobSpec(deps.config, job, { step: stepNumber, publish, envSecret: secret, repo })
                 );
-                if (created.status >= HTTP_ERROR_STATUS) {
-                    throw new Error(
-                        `creating the publish job answered ${created.status}: ${created.body.slice(0, ERROR_PREVIEW_CHARS)}`
-                    );
-                }
+                expectOk(created, 'creating the publish job');
                 const verdict = await auxVerdict(deps, jobName);
                 if (verdict.exitCode !== 0) {
                     throw new Error(

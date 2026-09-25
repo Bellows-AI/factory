@@ -105,7 +105,10 @@ describe('output invariants', () => {
         const bad: string[] = [];
         const walk = (value: unknown, path: string) => {
             if (typeof value === 'number' && Number.isNaN(value)) bad.push(path);
-            else if (Array.isArray(value)) value.forEach((v, i) => walk(v, `${path}[${i}]`));
+            else if (Array.isArray(value))
+                value.forEach((v, i) => {
+                    walk(v, `${path}[${i}]`);
+                });
             else if (value && typeof value === 'object') {
                 for (const [k, v] of Object.entries(value)) walk(v, `${path}.${k}`);
             }

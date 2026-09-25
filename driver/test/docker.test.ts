@@ -106,6 +106,24 @@ describe('the docker run arguments', () => {
         ]);
     });
 
+    // Parity pin, the docker half of the pair: the prompt is delivered on EVERY run, resume
+    // included. The kubernetes runner used to suppress it on a resume that was not a follow-up;
+    // both platforms now render the one plan (runner-plan.ts), and the k8s twin of this case is
+    // pinned in k8s.test.ts ('delivers the command into a resumed session').
+    it('delivers the prompt on a resume too, never only on a fresh run', () => {
+        expect(resumed().slice(-9)).toEqual([
+            'claude-executor',
+            '--resume',
+            SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+            '-p',
+            'fix the failing build',
+        ]);
+    });
+
     // The link the UI shows is built from this, so it has to be the id the runner actually uses —
     // which is why it is given to the CLI rather than read back out of it.
     it('tells the runner which session id to use', () => {
@@ -619,6 +637,15 @@ describe('an opencode runner', () => {
         expect(line).not.toContain('--session-id');
         expect(line).not.toContain('--resume');
         expect(line).not.toContain(SESSION);
+    });
+
+    // The refusal that enforces it, and the docker half of the parity pair: a session with
+    // `resume: false` is an id this driver minted, and opencode cannot adopt one. The k8s twin is
+    // pinned in k8s.test.ts ('refuses to adopt a minted session'); both read the one predicate.
+    it('refuses to adopt a minted session', () => {
+        expect(() =>
+            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toThrow(/cannot adopt a minted session/);
     });
 
     // The session database has to outlive the container or there is nothing to resume into: a
@@ -1520,7 +1547,7 @@ describe('the docker runner', () => {
     });
 
     it('never asks the daemon about a run whose exit code is unambiguous', async () => {
-        const inspect = vitest.fn((args: string[]) => Promise.resolve({ stdout: '' }));
+        const inspect = vitest.fn((_args: string[]) => Promise.resolve({ stdout: '' }));
         const runner = createDockerRunner(
             loadDriverConfig({}),
             child('done\n', '', 0),
@@ -1886,7 +1913,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     const spawnRecording = (stdout: string, code: number | null) => {
         const seen: string[][] = [];
-        const fn = ((command: string, argv: string[]) => {
+        const fn = ((_command: string, argv: string[]) => {
             seen.push(argv);
             const c = new EventEmitter() as ChildProcess;
             const stream = (text: string) => {
@@ -1916,7 +1943,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // scripted daemon, whose `docker run` goes through spawnFn and never through the exec seam.
     const gatedSpawns = (track?: (argv: string[]) => void) => {
         const fires: ((what: 'error' | 'close', payload?: unknown) => void)[] = [];
-        const fn = ((command: string, argv: string[]) => {
+        const fn = ((_command: string, argv: string[]) => {
             track?.(argv);
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
@@ -2375,7 +2402,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // Both children hold their close until released, so the interleaving — A still alive
         // while B stands its fleet up, then A's close landing over it — is the test's to pace.
         const closers: (() => void)[] = [];
-        const gatedSpawn = ((command: string, argv: string[]) => {
+        const gatedSpawn = ((_command: string, _argv: string[]) => {
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
                 const s = new EventEmitter();
@@ -2439,7 +2466,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // Both children hold their close until released, so the interleaving — A still alive
         // while B stands its fleet up, then A's close landing over it — is the test's to pace.
         const closers: (() => void)[] = [];
-        const gatedSpawn = ((command: string, argv: string[]) => {
+        const gatedSpawn = ((_command: string, _argv: string[]) => {
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
                 const s = new EventEmitter();

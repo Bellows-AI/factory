@@ -92,17 +92,21 @@ export function createUserExecutorStore({
                     where org_id = ${orgId} and user_id = ${userId}
                 `;
                 if (executors.length) {
-                    const rows = executors.map((executor) => ({
+                    // `position` is the member's own order, taken from the array index. It has to
+                    // be stored rather than inferred: this is one transaction, so every row lands
+                    // with the same `now()` and a created_at sort is a total tie (041's header).
+                    const rows = executors.map((executor, index) => ({
                         org_id: orgId,
                         user_id: userId,
                         name: executor.name,
                         type: executor.type,
                         config: executor.config as never,
                         is_default: executor.isDefault ?? false,
+                        position: index,
                     }));
                     await tx`
                         insert into user_executor
-                            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'is_default')}
+                            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'is_default', 'position')}
                     `;
                 }
             });
@@ -116,7 +120,7 @@ export function createUserExecutorStore({
                 select name, type, created_at, updated_at, is_default
                 from user_executor
                 where org_id = ${orgId} and user_id = ${userId}
-                order by created_at asc, name asc
+                order by position asc, name asc
             `;
             return rows.map(toUserExecutor);
         },
@@ -127,7 +131,7 @@ export function createUserExecutorStore({
                 select name, type, created_at, updated_at, is_default, config
                 from user_executor
                 where org_id = ${orgId} and user_id = ${userId}
-                order by created_at asc, name asc
+                order by position asc, name asc
             `;
             return rows.map((row) => ({ ...toUserExecutor(row), config: row.config }));
         },

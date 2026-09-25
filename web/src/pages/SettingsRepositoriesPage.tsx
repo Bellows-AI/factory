@@ -24,6 +24,9 @@ import { checkoutCell, checkoutText } from '../components/repository-setup.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
+/** Code-unit order over `owner/name` keys — the default `.sort()` order, written down. */
+const byRepoKey = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 /** The installation list's transient postures, worded like the page has always worded them: a
  * load in flight says so, and a hard failure is named rather than rendered as an empty list. */
 function installationListNotice(repos: UseRepos): string | null {
@@ -83,7 +86,10 @@ function useRepositorySelectionDraft(workspace: UseWorkspace) {
     const [failure, setFailure] = useState<string | null>(null);
 
     const wsRepos = workspace.data?.repos;
-    const seedKey = wsRepos ? wsRepos.map(repoKey).sort().join(',') : null;
+    // Sorted only to make the key order-independent, so a reshuffled listing is not a new seed.
+    // The comparator is spelled out because `.sort()`'s implicit one stringifies its arguments —
+    // harmless on `owner/name` today, a silent wrong answer the moment the element type changes.
+    const seedKey = wsRepos ? wsRepos.map(repoKey).sort(byRepoKey).join(',') : null;
 
     /*
      * The FIRST seed is adopted outright — an empty draft before the first answer is the initial

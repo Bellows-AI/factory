@@ -12,17 +12,18 @@ import {
     servicesPath,
     servicesSelectorPath,
 } from './k8s-auxspec.js';
-import { jobsPath, runnerName, secretBody, type RunnerJobSpec } from './k8s-podspec.js';
+import { jobsPath, runnerName, secretBody, secretName, type RunnerJobSpec } from './k8s-podspec.js';
 import { readVerdict } from './k8s-poll.js';
 import {
     CLAIM_ROUNDS,
-    ERROR_PREVIEW_CHARS,
+    expectOk,
     HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
     HTTP_OK_STATUS,
     parse,
     POLL_MS,
+    refusal,
     REPLACE_MAX_POLLS,
 } from './k8s-transport.js';
 import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
@@ -75,9 +76,7 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     const get = await deps.request('GET', path);
     // Gone between our 409 and the read — the holder released it; race for it again.
     if (get.status === HTTP_NOT_FOUND) return 'retry';
-    if (get.status >= HTTP_ERROR_STATUS) {
-        throw new Error(`reading the checkout claim answered ${get.status}: ${get.body.slice(0, ERROR_PREVIEW_CHARS)}`);
-    }
+    expectOk(get, 'reading the checkout claim');
     const claim = parse<K8sClaim>(get.body);
     if (claim.data?.holder === job.leaseToken) return 'ours';
     const attempt = Number(claim.data?.attempt);
@@ -101,11 +100,8 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     });
     // 404: the holder released it first. 409: the claim we read was replaced in the meantime —
     // the next round's GET reads the new holder and orders us against it.
-    if (release.status >= HTTP_ERROR_STATUS && release.status !== HTTP_NOT_FOUND && release.status !== HTTP_CONFLICT) {
-        throw new Error(
-            `releasing the checkout claim answered ${release.status}: ${release.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
+    const refusedRelease = refusal(release, 'releasing the checkout claim', HTTP_NOT_FOUND, HTTP_CONFLICT);
+    if (refusedRelease) throw new Error(refusedRelease);
     return 'retry';
 }
 
@@ -124,9 +120,8 @@ export async function acquireClaim(deps: K8sDeps, job: BoardJob, round = 1): Pro
     }
     const post = await deps.request('POST', configmapsPath(deps.config.k8sNamespace), claimBody(job));
     if (post.status < HTTP_ERROR_STATUS) return;
-    if (post.status !== HTTP_CONFLICT) {
-        throw new Error(`claiming the checkout answered ${post.status}: ${post.body.slice(0, ERROR_PREVIEW_CHARS)}`);
-    }
+    const refused = refusal(post, 'claiming the checkout', HTTP_CONFLICT);
+    if (refused) throw new Error(refused);
     if ((await takeOverStaleClaim(deps, job, path)) === 'ours') return;
     return acquireClaim(deps, job, round + 1);
 }
@@ -268,16 +263,8 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<n
             // A 404 is the ordinary end of an object another fence got to first; a 409 is a
             // concurrent replacement's fence deleting the same object. Both mean the object is
             // being removed. Anything else fails loud, as ever.
-            if (
-                response.status >= HTTP_ERROR_STATUS &&
-                response.status !== HTTP_NOT_FOUND &&
-                response.status !== HTTP_CONFLICT
-            ) {
-                throw new Error(
-                    `deleting the leftover ${fleet.kind}s answered ${response.status}: ` +
-                        `${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
-                );
-            }
+            const refused = refusal(response, `deleting the leftover ${fleet.kind}s`, HTTP_NOT_FOUND, HTTP_CONFLICT);
+            if (refused) throw new Error(refused);
             if (response.status < HTTP_ERROR_STATUS) deleted += 1;
         }
     }
@@ -340,7 +327,7 @@ async function standDownOwnJob(deps: K8sDeps, job: BoardJob, cleanup: RunCleanup
  * Secret and runs the pre-create claim verify; `launch` POSTs the Job and runs the post-create
  * verify.
  */
-export async function prepare(deps: K8sDeps, job: BoardJob, cleanup: RunCleanup): Promise<void> {
+export async function prepare(deps: K8sDeps, job: BoardJob, _cleanup: RunCleanup): Promise<void> {
     const env = runnerEnv(job);
 
     // Step one: TAKE THE CHECKOUT.
@@ -353,12 +340,12 @@ export async function prepare(deps: K8sDeps, job: BoardJob, cleanup: RunCleanup)
     // that references a Secret that is not there yet is a CreateContainerConfigError and a
     // burned attempt.
     if (Object.keys(env).length) {
-        const secretResponse = await deps.request('POST', secretsPath(deps.config.k8sNamespace), secretBody(job, env));
-        if (secretResponse.status >= HTTP_ERROR_STATUS) {
-            throw new Error(
-                `creating the runner secret answered ${secretResponse.status}: ${secretResponse.body.slice(0, ERROR_PREVIEW_CHARS)}`
-            );
-        }
+        const secretResponse = await deps.request(
+            'POST',
+            secretsPath(deps.config.k8sNamespace),
+            secretBody(job, secretName(job), env)
+        );
+        expectOk(secretResponse, 'creating the runner secret');
     }
 
     // Step four: the claim must STILL be ours immediately before the Job POST — the first half
@@ -380,11 +367,7 @@ export async function prepare(deps: K8sDeps, job: BoardJob, cleanup: RunCleanup)
 // Step five: this attempt's Job, under its own attempt-scoped name.
 export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec, cleanup: RunCleanup): Promise<void> {
     const response = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-    if (response.status >= HTTP_ERROR_STATUS) {
-        throw new Error(
-            `creating the runner job answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
+    expectOk(response, 'creating the runner job');
 
     // Step six: the claim must STILL be ours once the Job exists — the second half of the
     // bracket the pre-create verify opened. See docs/kubernetes.md for the full race analysis.

@@ -110,7 +110,7 @@ describe('validateExecutorConfig', () => {
     it('requires no config fields for opencode either', () => {
         // Same raw-JSON contract as claude-code: field rules wait for a consumer that can be
         // wrong about them.
-        expect(REQUIRED_FIELDS['opencode']).toEqual([]);
+        expect(REQUIRED_FIELDS.opencode).toEqual([]);
     });
 });
 

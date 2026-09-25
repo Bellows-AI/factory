@@ -1,5 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
+import { fullName, type Repo } from '../config.js';
+import type { OrgRuntime } from '../orgs.js';
 
 const HTTP_UNAVAILABLE = 503;
 
@@ -59,6 +61,42 @@ export function repoReason(value: string): string | null {
         if (reason) return reason;
     }
     return null;
+}
+
+/**
+ * Every selected repo must be one the installation can actually see. Not a formality: the clone
+ * uses the App's installation token, so a repository outside the installation is one this
+ * deployment has no business fetching — and accepting the name would write a row that fails on
+ * every retry with a 404. The env route applies the identical bargain to the ONE repo a
+ * repository-scope write names, so it calls this with a one-element list; `subject` is the only
+ * thing that differed between the two copies.
+ */
+export async function checkReposVisible(
+    repos: OrgRuntime['repos'],
+    selection: readonly Repo[],
+    { subject }: { subject: string }
+): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
+    const available = new Set((await repos.list()).map(fullName));
+    // An unreachable installation is refused rather than waved through. The list is empty in two
+    // very different situations — nothing is installed, or GitHub could not be asked — and only
+    // the first is a state in which "no repository matches" is true.
+    if (!available.size && repos.lastError()) {
+        return {
+            ok: false,
+            status: HTTP_UNAVAILABLE,
+            code: ERROR_CODES.UNAVAILABLE,
+            message: `Cannot check ${subject} against the GitHub App installation: ${repos.lastError()}`,
+        };
+    }
+    for (const repo of selection) {
+        if (available.has(`${repo.owner}/${repo.name}`)) continue;
+        return {
+            ok: false,
+            code: ERROR_CODES.UNKNOWN_REPO,
+            message: `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
+        };
+    }
+    return { ok: true };
 }
 
 /**

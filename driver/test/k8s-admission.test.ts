@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import type { HelperPlan } from '../src/helpers.js';
 import { helperEnvSecretName, publishEnvSecretName, syncEnvSecretName } from '../src/k8s-auxspec.js';
-import { gateEnvSecretName, secretName, workspaceSubPathOf } from '../src/k8s-podspec.js';
+import { workspacePath } from '../src/claim.js';
+import { gateEnvSecretName, secretName } from '../src/k8s-podspec.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -63,7 +64,7 @@ const subPathPattern = new RegExp(/\$workspaceSubPath := "([^"]+)"/.exec(templat
 
 describe('the admission policy workspace subPath pattern', () => {
     it('admits the subPath every driver workspace mount uses', () => {
-        expect(workspaceSubPathOf(job)).toMatch(subPathPattern);
+        expect(workspacePath(job)).toMatch(subPathPattern);
     });
 
     it.each([

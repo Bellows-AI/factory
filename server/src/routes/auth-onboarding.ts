@@ -176,13 +176,19 @@ async function rollbackOnboarding(request: FastifyRequest, store: AuthStore, sta
  * re-produces, so the exposure is one produce, not a full TTL.
  */
 async function refreshOrgRepoCaches(orgs: OrgRegistry | undefined, orgIds: string[]): Promise<void> {
-    for (const orgId of orgIds) {
-        const runtime = await orgs?.for(orgId);
-        if (!runtime) continue;
-        runtime.repos.invalidate();
-        await runtime.repos.list();
-        runtime.repos.invalidate();
-    }
+    // Across orgs, in parallel: each listing is a GitHub round trip measured in seconds and the
+    // orgs share nothing, so serialising them put `n × listing` on the completion click. The
+    // invalidate/list/invalidate ORDER within one org is what the paragraph above is about and is
+    // unchanged.
+    await Promise.all(
+        orgIds.map(async (orgId) => {
+            const runtime = await orgs?.for(orgId);
+            if (!runtime) return;
+            runtime.repos.invalidate();
+            await runtime.repos.list();
+            runtime.repos.invalidate();
+        })
+    );
 }
 
 interface CompleteCtx {

@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ADD_LABEL, ExecutorDialog, SAVE_LABEL, TYPE_CONFIG_NOTE } from '../src/components/ExecutorDialog.js';
+import { ADD_LABEL, ExecutorDialog, SAVE_LABEL } from '../src/components/ExecutorDialog.js';
+import { TYPE_CONFIG_NOTE } from '../src/workspace/executors.js';
 
 /**
  * The add/edit executor dialog is a Headless UI Dialog, so it portals — and

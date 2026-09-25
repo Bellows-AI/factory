@@ -6,11 +6,10 @@ export type { ExecutorType } from './executors.js';
 export { CLAUDE_CODE, EXECUTOR_TYPES, OPENCODE } from './executors.js';
 export { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, JSON_HEADERS } from './http.js';
 export type { Role } from './roles.js';
-export { ADMIN_ROLE, MEMBER_ROLE, ROLES } from './roles.js';
+export { ADMIN_ROLE, MEMBER_ROLE } from './roles.js';
 export { dayKey, dayStart, isoWeekKey, ratio, weekStart } from './metrics.js';
 export {
     ALL_TIME,
-    RANGE_PRESETS,
     filterJobRuns,
     filterTelemetryInput,
     isAllTime,
@@ -18,8 +17,6 @@ export {
     resolveRange,
 } from './range.js';
 export type { DateRange, RangePreset } from './range.js';
-export { seriesGranularity, telemetryStats } from './telemetry.js';
-export type { TelemetryStatsOptions } from './telemetry.js';
+export { telemetryStats } from './telemetry.js';
 export { taskUsageStats } from './task-usage.js';
-export type { TaskUsageOptions } from './task-usage.js';
 export type * from './types.js';

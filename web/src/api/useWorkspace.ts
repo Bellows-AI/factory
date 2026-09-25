@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import { JSON_HEADERS } from '@factory-ai/core';
 
@@ -138,10 +139,9 @@ export const listExecutorConfigs = async (): Promise<
             return { ok: false as const, error: 'Your session expired' };
         }
         if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
             return {
                 ok: false as const,
-                error: body.error ?? `Could not load the executors (${response.status})`,
+                error: (await refusalOf(response, 'Could not load the executors')).error,
             };
         }
         const rows: unknown = ((await response.json()) as { executors?: unknown }).executors;
@@ -178,10 +178,9 @@ export function useWorkspace(): UseWorkspace {
                 return;
             }
             if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
                 // Deliberately does not clear `data`: what is on screen is still the last true
                 // answer, and blanking the page on one failed poll is worse than being stale.
-                setError(body.error ?? `Request failed (${response.status})`);
+                setError((await refusalOf(response)).error);
                 setLoading(false);
                 return;
             }
@@ -244,8 +243,7 @@ export function useWorkspace(): UseWorkspace {
                     return 'Your session expired';
                 }
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not save the selection (${response.status})`;
+                    return (await refusalOf(response, 'Could not save the selection')).error;
                 }
                 // 202: the clones have not started yet. Re-arm the poll immediately so the page
                 // shows them go from queued to cloning rather than waiting out a back-off.
@@ -280,8 +278,7 @@ export function useWorkspace(): UseWorkspace {
                     return 'Your session expired';
                 }
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not save the executors (${response.status})`;
+                    return (await refusalOf(response, 'Could not save the executors')).error;
                 }
                 start();
                 return null;

@@ -2,10 +2,9 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { type BoardScanner, boardsFor, storeFor } from './job-context.js';
+import { type BoardScanner, storeFor } from './job-context.js';
 import {
     followUpRefusal,
-    validateClaimBody,
     validateCommandField,
     validateCompleteFields,
     validateListQuery,
@@ -13,6 +12,7 @@ import {
     validateWorkerField,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
+import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { UUID } from '../config.js';
 import {
     HTTP_ACCEPTED,
@@ -33,10 +33,9 @@ import {
 // the body: the adjustment is bound to the executor that ran the task, copied from the parent at
 // insert like the repo and the session.
 export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const fields = body(request.body);
     const commandResult = validateCommandField(fields.command);
@@ -59,10 +58,9 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
 // The user's verdict that the task is done — the one no run can make. Idempotent in the store, so
 // a retried click answers the same instant rather than rewriting it.
 export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const result = await guard(
         reply,
@@ -86,10 +84,9 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
 // sees next. 202 for the moving case, because the request RIDES to the worker and the settle
 // lands moments later.
 export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const result = await guard(
         reply,
@@ -118,10 +115,9 @@ export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, rep
 // job write here, not just because the driver has no use for it — the board secret deleting the
 // audit rows of jobs it never held would be exactly the thread-read hole again.
 export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const result = await guard(
         reply,
@@ -150,11 +146,9 @@ export async function handleReclaimsClaim(
     request: FastifyRequest,
     reply: FastifyReply
 ) {
-    const boards = await boardsFor(orgs, request);
-    if (!boards.length) return noBoard(reply);
-    const parsed = validateClaimBody(body(request.body));
-    if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
-    const { worker, lease } = parsed.value;
+    const claimRoute = await resolveClaimRoute(orgs, request, reply);
+    if (!claimRoute) return reply;
+    const { boards, worker, lease } = claimRoute;
 
     const reclaimFailed = (e: Error) => request.log.error({ err: e }, 'reclaim claim failed');
     const claim = await guard(reply, reclaimFailed, () =>
@@ -168,10 +162,9 @@ export async function handleReclaimsClaim(
 // The driver's proof that a parked worktree is gone. Only the worker that holds the claim may ack
 // it, so a slow worker's row survives a foreign ack and finishes on its next try.
 export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const workerResult = validateWorkerField(body(request.body).worker);
     if (!workerResult.ok) return bad(reply, ERROR_CODES.BAD_WORKER, workerResult.message);
@@ -198,10 +191,9 @@ export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyReque
 // worker credential can never pull the audit data of jobs it does not hold (see docs/auth.md). A
 // thread that merely finished keeps its tree.
 export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const fields = body(request.body);
     const { leaseToken } = fields;
@@ -227,10 +219,9 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
 }
 
 export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const job = await guard(
         reply,
@@ -246,10 +237,9 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
 // conversation — the UI keeps one task per thread, so the URL may name the root or any adjustment
 // and the page must not change identity underneath the reader.
 export async function handleThread(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const jobs = await guard(
         reply,
