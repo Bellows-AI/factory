@@ -1,0 +1,38 @@
+:root {
+    --sl-color-accent-low: #102a46;
+    --sl-color-accent: #60a5fa;
+    --sl-color-accent-high: #dbeafe;
+    --sl-color-white: #f8fafc;
+    --sl-color-gray-1: #e2e8f0;
+    --sl-color-gray-2: #cbd5e1;
+    --sl-color-gray-3: #94a3b8;
+    --sl-color-gray-4: #475569;
+    --sl-color-gray-5: #273447;
+    --sl-color-gray-6: #182230;
+    --sl-color-black: #101720;
+    --sl-font-system: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+    --sl-font-system-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+}
+
+:root[data-theme='light'] {
+    --sl-color-accent-low: #dbeafe;
+    --sl-color-accent: #1d5faa;
+    --sl-color-accent-high: #12345b;
+    --sl-color-white: #172033;
+    --sl-color-gray-1: #273447;
+    --sl-color-gray-2: #475569;
+    --sl-color-gray-3: #64748b;
+    --sl-color-gray-4: #cbd5e1;
+    --sl-color-gray-5: #e2e8f0;
+    --sl-color-gray-6: #f1f5f9;
+    --sl-color-gray-7: #f8fafc;
+    --sl-color-black: #ffffff;
+}
+
+.hero .tagline {
+    max-width: 52rem;
+}
+
+code {
+    font-variant-ligatures: none;
+}

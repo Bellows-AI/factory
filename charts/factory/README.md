@@ -6,6 +6,9 @@ installed to, selected with `EXECUTOR=kubernetes`. The chart deploys **no databa
 names a managed TimescaleDB and is required. Local clusters get one, plus a workspaces claim that
 survives an app reinstall, from the separate [`factory-local-state`](../factory-local-state) chart.
 
+For the operator-focused installation and upgrade guide, see the
+[Factory documentation](https://bellows-ai.github.io/factory/getting-started/kubernetes/).
+
 Configuration is the repository's usual environment-only contract (`docs/configuration.md`): the
 chart is a way to set the containers' environment, not a second config system. Every value maps to
 a variable documented in `docs/kubernetes.md`. Half-configured values (github mode without

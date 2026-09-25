@@ -14,10 +14,11 @@ Read before: reporting a number as measured, or "fixing" something in this list.
   missed entirely, and the sample is allowed to fail silently.
 - `POST /api/otlp/v1/logs` accepts and discards. `prompt.id` and `message.uuid` are only worth
   storing once there is a per-prompt view to spend them on.
-- **The caches `cache.ts` builds are process-global** — the telemetry snapshot and the repo list
-  both. Correct for one organization, and the actual blocker for multi-tenancy — not the store
-  signatures, which are already org-bound. A second organization needs a slot per organization, or
-  every request serves the first one's snapshot.
+- **The caches `cache.ts` builds are per organization, not process-global.** Each organization gets
+  its own runtime in the org registry (`server/src/orgs.ts`), with its own `createRepoSource` and
+  `createStatsService`, so the telemetry snapshot and the repo list are cached per org. A built
+  runtime is held for the life of the process (only a failed or missing build is dropped), so
+  memory grows with the number of organizations that have been served.
 - **`session_branch.branch` is documented nullable ("null on detached HEAD") but sits in the
   primary key**, so postgres has rejected those rows since `001_init.sql`. `recordBranch` and
   `transcripts.ts` both try to write them and `routes.ingest.test.ts` cannot catch it because it
