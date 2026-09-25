@@ -9,14 +9,18 @@ collapsed into one credential.
 
 ## GitHub App: repositories and organizations
 
-Create a GitHub App with these repository permissions:
+Create a GitHub App with these permissions:
 
-- Metadata: read, for the repository list.
-- Contents: read, so the dashboard and runners can clone private source.
+- Metadata: read (repository), for the repository list.
+- Contents: read (repository), so the dashboard and runners can clone private source.
+- Pull requests: read (repository), required to subscribe to the `pull_request`,
+  `pull_request_review`, and `pull_request_review_comment` webhook events below.
+- Issues: read (repository), required to subscribe to the `issue_comment` webhook event below.
+- Members: read (organization), required to subscribe to the `organization` webhook event below.
 
-Pull request activity arrives through the webhook below, so no pull request read permission is
-needed. If runners should push commits, open pull requests, or read CI results, grant more on the
-installation: Contents: write, Pull requests: write, and Actions: read. The token handed to each run
+Publishing needs write access on top of that. If runners should push commits, open pull requests,
+or read CI results, grant more on the installation: Contents: write, Pull requests: write, and
+Actions: read. The token handed to each run
 carries the installation's permissions, and Factory cannot grant what the installation lacks.
 
 Install the App on each organization and repository Factory should see. The installation is both the

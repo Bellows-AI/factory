@@ -30,6 +30,9 @@ function candidatesFor(rawTarget) {
 
 const errors = [];
 const files = walk(docsRoot).filter((file) => /\.mdx?$/.test(file));
+// Only a Markdown page becomes a URL: a bare directory or a `..` escape to a file outside docsRoot
+// exists on disk but publishes nothing.
+const pages = new Set(files);
 
 for (const file of files) {
     const relative = path.relative(repoRoot, file);
@@ -67,7 +70,7 @@ for (const file of files) {
         }
 
         const candidates = candidatesFor(target);
-        if (candidates.length && !candidates.some((candidate) => fs.existsSync(candidate))) {
+        if (candidates.length && !candidates.some((candidate) => pages.has(candidate))) {
             errors.push(`${relative}: broken internal link ${target}`);
         }
     }

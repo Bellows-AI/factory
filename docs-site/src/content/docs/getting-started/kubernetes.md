@@ -31,24 +31,53 @@ a private registry, create a pull Secret and list its name in `imagePullSecrets`
 names, not `name:` objects); the chart applies it to
 its own pods and forwards it to every runner, gate, and service pod the driver creates.
 
-Create the namespace and secrets before installing the chart:
+Create the namespace and secrets before installing the chart. Keep every credential in a file,
+never on the command line: a value passed as a `kubectl` argument is visible in the process list
+and retained in shell history. Create a private directory first:
+
+```bash
+umask 077
+mkdir -p ./factory-secrets
+```
+
+Then write one file per key into it with an editor — not with `echo` or `printf`, which put the
+value back into your shell history. Each file holds only the value, with no trailing newline
+(`--from-file` stores the file's bytes as they are):
+
+| File | Value |
+| --- | --- |
+| `database-url` | `postgres://<user>:<password>@<host>:5432/<database>` |
+| `github-oauth-client-secret` | the OAuth client secret |
+| `session-secret` | at least 32 characters |
+| `github-webhook-secret` | at least 32 characters |
+| `ingest-token` | the telemetry ingest token |
+| `job-board-token` | at least 32 characters |
+| `CLAUDE_CODE_OAUTH_TOKEN` | the runner token |
+| `ANTHROPIC_API_KEY` | the runner API key |
+
+Create the Secrets from those files, then delete the files:
 
 ```bash
 kubectl create namespace factory --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl -n factory create secret generic factory-secrets \
-  --from-literal=database-url='postgres://<user>:<password>@<host>:5432/<database>' \
+  --from-file=database-url=./factory-secrets/database-url \
   --from-file=github-app-private-key=./factory.private-key.pem \
-  --from-literal=github-oauth-client-secret='<oauth-client-secret>' \
-  --from-literal=session-secret='<at-least-32-characters>' \
-  --from-literal=github-webhook-secret='<at-least-32-characters>' \
-  --from-literal=ingest-token='<telemetry-ingest-token>' \
-  --from-literal=job-board-token='<at-least-32-characters>'
+  --from-file=github-oauth-client-secret=./factory-secrets/github-oauth-client-secret \
+  --from-file=session-secret=./factory-secrets/session-secret \
+  --from-file=github-webhook-secret=./factory-secrets/github-webhook-secret \
+  --from-file=ingest-token=./factory-secrets/ingest-token \
+  --from-file=job-board-token=./factory-secrets/job-board-token
 
 kubectl -n factory create secret generic factory-runner-credentials \
-  --from-literal=CLAUDE_CODE_OAUTH_TOKEN='<runner-token>' \
-  --from-literal=ANTHROPIC_API_KEY='<runner-api-key>'
+  --from-file=CLAUDE_CODE_OAUTH_TOKEN=./factory-secrets/CLAUDE_CODE_OAUTH_TOKEN \
+  --from-file=ANTHROPIC_API_KEY=./factory-secrets/ANTHROPIC_API_KEY
+
+rm -r ./factory-secrets
 ```
+
+Protect the GitHub App private key the same way: keep it `chmod 600` and remove it from the
+machine once the Secret exists.
 
 `database-url` is the one key the pods cannot start without. Do not commit secret values or pass
 them through Helm command-line arguments.

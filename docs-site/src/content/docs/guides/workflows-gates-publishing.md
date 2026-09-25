@@ -34,7 +34,7 @@ the first match wins; a completed node that no edge matches rests the thread.
       "name": "review",
       "kind": "agent",
       "session": "fresh",
-      "prompt": "Review this result: {{implement.output}}",
+      "prompt": "Review this result: {{implement.output}}\nEnd with exactly one final line: VERDICT: CLEAN or VERDICT: BLOCKERS.",
       "gates": false
     },
     {

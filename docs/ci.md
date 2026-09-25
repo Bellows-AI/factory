@@ -38,7 +38,7 @@ It reads no repository secret: every credential the auth project uses is a liter
 the DOM was right, only the screenshot says the layout was.
 
 Node is `24`, matching `docker/Dockerfile`'s runtime base; a test compares the two, which is the
-only pin there is (`engines` says `>=22` and there is no `.nvmrc`). Pull requests share a per-ref
+only pin there is (`engines` says `>=22.12.0` and there is no `.nvmrc`). Pull requests share a per-ref
 concurrency group, so a new push supersedes the old run; every other event gets a group of its own,
 because only one run may sit pending per group and a shared group would let a third merge to `main`
 cancel the second's validation outright.
@@ -46,6 +46,12 @@ cancel the second's validation outright.
 Actions are referenced by major tag (`@v4`), not by commit sha — all three are GitHub-owned, the
 major tag keeps security patches flowing, and there is no Dependabot here to bump a pin. Revisit
 that if the release path ever gains a registry push.
+
+The one exception is a third-party action: `docs-deploy.yml` pins `withastro/action` to a full
+commit sha (version in a trailing comment), because its output is what GitHub Pages publishes and a
+retargeted tag outside GitHub's control would change the site. Bump it by hand. Checkouts in the
+docs workflows set `persist-credentials: false`; nothing after them needs git credentials, and PR
+code (`docs-check.yml`) or the third-party action (`docs-deploy.yml`) runs next.
 
 ## `.github/workflows/release-image.yml`
 
