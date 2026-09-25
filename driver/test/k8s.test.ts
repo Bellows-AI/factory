@@ -5822,3 +5822,44 @@ describe('the block-helper transport (issue #207)', () => {
         expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('500') });
     });
 });
+
+// A private registry is the normal case in a cluster, and every pod this driver specs pulls on its
+// own: the runner, each aux Job (sync shown — they all share `auxJobSpec`) and each service pod.
+describe('RUNNER_IMAGE_PULL_SECRETS', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const withSecrets = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_IMAGE_PULL_SECRETS: 'regcred, mirror ,' });
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+
+    it('names every configured secret on the runner, aux and service pod specs', () => {
+        const expected = [{ name: 'regcred' }, { name: 'mirror' }];
+        expect(
+            runnerJobSpec(withSecrets, job, { id: SESSION, resume: false }).spec.template.spec.imagePullSecrets
+        ).toEqual(expected);
+        expect(syncJobSpec(withSecrets, repoJob, null).spec.template.spec.imagePullSecrets).toEqual(expected);
+        expect(servicePodSpec(withSecrets, job, service).spec.imagePullSecrets).toEqual(expected);
+    });
+
+    it('leaves the field off entirely when none are configured', () => {
+        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
+        expect(spec().spec.template.spec).not.toHaveProperty('imagePullSecrets');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('imagePullSecrets');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('imagePullSecrets');
+    });
+});
+
+// The chart's runner NetworkPolicy selects by release, so every pod the driver specs must carry
+// the release label — not only the runner Job object, which is what bulk cleanup reads.
+describe('K8S_RELEASE on pod templates', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const released = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_RELEASE: 'dev' });
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const instance = { 'app.kubernetes.io/instance': 'dev' };
+
+    it('labels the runner, aux and service pods with the release', () => {
+        expect(
+            runnerJobSpec(released, job, { id: SESSION, resume: false }).spec.template.metadata.labels
+        ).toMatchObject(instance);
+        expect(syncJobSpec(released, repoJob, null).spec.template.metadata.labels).toMatchObject(instance);
+        expect(servicePodSpec(released, job, service).metadata.labels).toMatchObject(instance);
+    });
+});

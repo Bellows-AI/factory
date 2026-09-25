@@ -112,6 +112,13 @@ export interface DriverConfig {
      */
     imagePullPolicy: string;
     /**
+     * The Secrets every pod this driver specs pulls its image with, under the kubernetes executor
+     * (RUNNER_IMAGE_PULL_SECRETS, comma-separated names). A private registry is the normal case in
+     * a cluster, and a runner pod cannot borrow the driver's pull secret — each pod names its own.
+     * Docker has no twin: the daemon's own login is what a `docker run` pulls with.
+     */
+    imagePullSecrets: string[];
+    /**
      * How long a gate environment container outlives the task that started it. The issue's
      * cooldown: a container that stays up across a coding task's turns saves each turn the
      * environment's startup, and ten minutes is the default because that is what the issue
@@ -133,6 +140,12 @@ export interface DriverConfig {
      * gate that hangs, which reads as a broken test rather than as configuration.
      */
     gateAdvertiseUrl: string | null;
+    /**
+     * A file the driver touches on a fixed interval (DRIVER_HEARTBEAT_FILE), so a liveness probe
+     * can tell a live process from one whose event loop is wedged — the driver serves no HTTP of
+     * its own to probe. Null writes nothing.
+     */
+    heartbeatFile: string | null;
     /**
      * The wall-clock cap on ONE gate run. The runner's own timeout covers the agent; a gate that
      * outlives it (a watch-mode test, a dev server) would otherwise stall the verdict forever.
@@ -288,6 +301,19 @@ function assertCacheWatchSupported(cacheWatch: boolean, executor: (typeof EXECUT
     }
 }
 
+/** A comma-separated list of names, trimmed, empties dropped. Unset is the empty list. */
+function nameList(raw: string | undefined): string[] {
+    return (raw ?? '')
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean);
+}
+
+/** A trimmed value, or null when unset or blank. */
+function optionalText(raw: string | undefined): string | null {
+    return (raw ?? '').trim() || null;
+}
+
 export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     const boardUrl = text(env.JOB_BOARD_URL, 'JOB_BOARD_URL', DEFAULTS.boardUrl).replace(/\/+$/, '');
     assertHttpUrl(boardUrl, 'JOB_BOARD_URL');
@@ -348,10 +374,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         leaseSeconds,
         jobTimeoutMs,
         skipPermissions: flag(env.RUNNER_SKIP_PERMISSIONS),
-        passEnv: text(env.RUNNER_ENV, 'RUNNER_ENV', DEFAULTS.passEnv)
-            .split(',')
-            .map((name) => name.trim())
-            .filter(Boolean),
+        passEnv: nameList(text(env.RUNNER_ENV, 'RUNNER_ENV', DEFAULTS.passEnv)),
         executor,
         k8sNamespace: text(env.K8S_NAMESPACE, 'K8S_NAMESPACE', 'default'),
         // The Helm release this driver was installed by, when the chart set one. It labels every
@@ -361,12 +384,14 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         k8sRelease: (env.K8S_RELEASE ?? '').trim() || null,
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw,
+        imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),
         gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', DEFAULT_GATE_COOLDOWN_MS, {
             min: 0,
             max: 24 * MS_PER_HOUR,
         }),
         gateListenHost: text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1'),
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
+        heartbeatFile: optionalText(env.DRIVER_HEARTBEAT_FILE),
         gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', DEFAULT_GATE_TIMEOUT_MS, {
             min: MIN_GATE_TIMEOUT_MS,
             max: 24 * MS_PER_HOUR,

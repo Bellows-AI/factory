@@ -1,0 +1,72 @@
+{{- if .Values.isolation.networkPolicy }}
+{{/*
+Every pod this release's driver specs — runners, gates, aux Jobs, declared services — carries
+`factory.job` and this release's `app.kubernetes.io/instance` (the driver's K8S_RELEASE), and none
+carries `app.kubernetes.io/name`, so this selects them and no chart pod. They run agent-written
+code, so they reach only what a run needs:
+  - DNS on port 53, to any destination: kube-dns is a pod, but NodeLocal DNSCache answers on a
+    host-network link-local address (169.254.20.10) no pod selector matches and blockedCidrs
+    covers;
+  - this release's dashboard (the branch reporter posts to FACTORY_STATS_URL), collector (OTLP)
+    and driver (the gate endpoint, on an ephemeral port — hence no port list);
+  - each other, for the declared services a run starts beside itself;
+  - the internet: anything outside isolation.blockedCidrs, plus isolation.allowedCidrs.
+Ingress only from each other. IPv4 only: the egress rule names 0.0.0.0/0, so an IPv6-only cluster
+must add its own policy.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: {{ include "factory.fullname" . }}-runners
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    podSelector:
+        matchLabels:
+            app.kubernetes.io/instance: {{ .Release.Name }}
+        matchExpressions:
+            - key: factory.job
+              operator: Exists
+            - key: app.kubernetes.io/name
+              operator: DoesNotExist
+    policyTypes: [Ingress, Egress]
+    ingress:
+        - from:
+              - podSelector:
+                    matchLabels:
+                        app.kubernetes.io/instance: {{ .Release.Name }}
+                    matchExpressions:
+                        - key: factory.job
+                          operator: Exists
+    egress:
+        - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+        - to:
+              - podSelector:
+                    matchLabels:
+                        {{- include "factory.selectorLabels" . | nindent 24 }}
+                    matchExpressions:
+                        - key: app.kubernetes.io/component
+                          operator: In
+                          values: [dashboard, collector, driver]
+              - podSelector:
+                    matchLabels:
+                        app.kubernetes.io/instance: {{ .Release.Name }}
+                    matchExpressions:
+                        - key: factory.job
+                          operator: Exists
+        - to:
+              - ipBlock:
+                    cidr: 0.0.0.0/0
+                    {{- with .Values.isolation.blockedCidrs }}
+                    except:
+                        {{- toYaml . | nindent 24 }}
+                    {{- end }}
+              {{- range .Values.isolation.allowedCidrs }}
+              - ipBlock:
+                    cidr: {{ . }}
+              {{- end }}
+{{- end }}

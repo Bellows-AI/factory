@@ -118,6 +118,19 @@ describe('the driver config: executor and endpoints', () => {
                 .credentialsSecret
         ).toBe('claude-credentials');
     });
+
+    it('reads RUNNER_IMAGE_PULL_SECRETS as a trimmed name list, empty unless set', () => {
+        expect(loadDriverConfig({}).imagePullSecrets).toEqual([]);
+        expect(loadDriverConfig({ RUNNER_IMAGE_PULL_SECRETS: ' regcred,,mirror ' }).imagePullSecrets).toEqual([
+            'regcred',
+            'mirror',
+        ]);
+    });
+
+    it('leaves DRIVER_HEARTBEAT_FILE off unless set', () => {
+        expect(loadDriverConfig({}).heartbeatFile).toBeNull();
+        expect(loadDriverConfig({ DRIVER_HEARTBEAT_FILE: '/tmp/heartbeat' }).heartbeatFile).toBe('/tmp/heartbeat');
+    });
 });
 
 describe('the driver config: policy and gates', () => {

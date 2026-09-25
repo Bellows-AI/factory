@@ -4,6 +4,7 @@ metadata:
     name: {{ include "factory.fullname" . }}
     labels:
         {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: dashboard
 spec:
     # ClusterIP, never LoadBalancer, by default: the port carries the job board, and an
     # unauthenticated POST /api/jobs is remote code execution on the cluster (docs/security.md).
@@ -15,7 +16,7 @@ spec:
           port: {{ .Values.dashboard.port }}
           targetPort: http
     selector:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "factory.selectorLabels" . | nindent 8 }}
         # The component label matters: without it this selector also matches the driver and
         # timescale pods, and anything that resolves the service to a pod — a port-forward, a
         # probe — can land on a container that has no http port at all.

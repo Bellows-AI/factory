@@ -81,7 +81,8 @@ K8S_STATE_RELEASE := factory-state
 K8S_PORT ?= 8081
 DRIVER_IMAGE ?= factory-driver
 STUB_IMAGE ?= echo-executor
-COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib
+# Whatever the chart pins — read from the render, so the image loaded is the image the pod names.
+COLLECTOR_IMAGE ?= $(shell helm template x charts/factory -f charts/factory/values-local.yaml --show-only templates/collector.yaml 2>/dev/null | awk '$$1 == "image:" { print $$2; exit }')
 
 .PHONY: build start stop reset
 

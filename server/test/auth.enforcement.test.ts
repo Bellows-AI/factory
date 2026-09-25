@@ -120,6 +120,8 @@ describe('the route table', () => {
      */
     it.each([
         ['/api/health', 'open'],
+        // The kubelet's startup probe carries no credential.
+        ['/api/ready', 'open'],
         ['/api/auth/github', 'open'],
         // The installation webhook answers to the HMAC signature over its body — a credential the
         // route verifies itself — so the session hook must not demand a cookie of it.

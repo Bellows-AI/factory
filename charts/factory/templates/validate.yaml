@@ -1,0 +1,43 @@
+{{/*
+Render-time refusals for configurations the server would otherwise refuse at boot, one crash loop
+later. Every check mirrors a loadConfig rule (server/src/config.ts) and names the value to set.
+Values that live in `secret.existingSecret` cannot be seen from here — the server still names
+those at boot, which is why every such key is `optional` in the pod spec: a missing key reads as
+the server's own message, never as an opaque CreateContainerConfigError.
+*/}}
+{{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
+{{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
+{{- end }}
+{{- if not (has .Values.auth.mode (list "github" "none")) }}
+{{- fail (printf "auth.mode must be \"github\" or \"none\", got %q" .Values.auth.mode) }}
+{{- end }}
+{{- if and (eq .Values.auth.mode "none") (not .Values.auth.allowPublicBind) }}
+{{- fail "auth.mode=none on a 0.0.0.0 bind needs auth.allowPublicBind='1': every route, POST /api/jobs included, is open to whatever reaches the Service" }}
+{{- end }}
+{{- if eq .Values.auth.mode "github" }}
+{{- if not .Values.auth.publicUrl }}
+{{- fail "auth.mode=github requires auth.publicUrl: the origin GitHub redirects back to" }}
+{{- end }}
+{{- if not .Values.auth.oauthClientId }}
+{{- fail "auth.mode=github requires auth.oauthClientId" }}
+{{- end }}
+{{- if .Values.secret.create }}
+{{- if not .Values.secret.oauthClientSecret }}
+{{- fail "auth.mode=github requires secret.oauthClientSecret" }}
+{{- end }}
+{{- if lt (len .Values.secret.sessionSecret) 32 }}
+{{- fail "auth.mode=github requires secret.sessionSecret of at least 32 characters (openssl rand -hex 32)" }}
+{{- end }}
+{{- if lt (len .Values.secret.jobBoardToken) 32 }}
+{{- fail "auth.mode=github requires secret.jobBoardToken of at least 32 characters (openssl rand -hex 32): the driver's credential on the worker routes" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if not .Values.dashboard.offline }}
+{{- if not .Values.github.appId }}
+{{- fail "github.appId is required: the repo list and the repo-read credential are the GitHub App's (set dashboard.offline=true for the code-only no-fetch entry)" }}
+{{- end }}
+{{- if and .Values.secret.create (not .Values.github.appPrivateKey) }}
+{{- fail "github.appPrivateKey is required alongside github.appId" }}
+{{- end }}
+{{- end }}

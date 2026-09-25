@@ -3,12 +3,17 @@ The organization's checkouts. The dashboard writes them here and every runner mo
 claim — the kubernetes form of the named docker volume the compose services share. Default
 ReadWriteMany because the dashboard and runners share it across nodes; values-local.yaml
 overrides ReadWriteOnce for single-node local clusters.
+
+Kept on `helm uninstall`: the checkouts hold uncommitted agent work and the database's rows
+describe them, so removing the app must not remove them. Delete the claim by hand to reclaim it.
 */}}
 {{- if not .Values.workspaces.existingClaim }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
     name: {{ include "factory.workspaceClaim" . }}
+    annotations:
+        helm.sh/resource-policy: keep
     labels:
         {{- include "factory.labels" . | nindent 8 }}
 spec:

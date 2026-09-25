@@ -68,6 +68,8 @@ export interface AppDeps {
      * reports repo tracking as unavailable — the offline shape, where there is no App client.
      */
     installationListing?: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined;
+    /** The migration run main.ts started — what `/api/ready` reports. Absent in the route tests. */
+    ready?: Promise<unknown> | undefined;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
     logger?: boolean;
@@ -103,6 +105,7 @@ export async function buildApp({
     identity,
     appSlug,
     installationListing,
+    ready,
     now = Date.now,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
@@ -121,7 +124,7 @@ export async function buildApp({
     if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim });
     else app.decorateRequest('auth', null);
 
-    await app.register(healthRoutes());
+    await app.register(healthRoutes(ready));
     if (auth) {
         await app.register(authRoutes({ config, store: auth, orgs, identity, appSlug, installationListing }));
         // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
