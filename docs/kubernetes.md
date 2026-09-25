@@ -205,10 +205,16 @@ board, say), that is a new decision, made then.
 `charts/factory/` — see [its README](../charts/factory/README.md) for the object list and the
 kind walkthrough. Decisions that look like cruft and are not:
 
-- **The in-chart TimescaleDB is a plain Deployment, not the upstream chart dependency.** One
-  deployment, one claim, no subchart; it mirrors compose running a plain timescale container. For
-  anything real, `timescale.enabled=false` and `database.url` point at a managed instance — which
-  is also why the helper fails the template when that combination is asked for without a URL.
+- **The app chart deploys no database.** Production points `database.url` at a managed TimescaleDB;
+  the URL carries the password, so it lands in the dashboard Secret as `database-url` and reaches
+  the pod by `secretKeyRef`, and the template refuses to render without one. There is no
+  `timescale.enabled` switch to leave on by accident.
+- **Local state is its own release: `charts/factory-local-state`.** A plain TimescaleDB Deployment
+  (not the upstream chart — one deployment, one claim, mirroring compose) plus the workspaces
+  claim, installed as `factory-state`; `values-local.yaml` names both objects (`database.url`,
+  `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
+  and the checkouts that database records — the two are kept together, since rows describing a
+  worktree that is gone are worse than no rows. `make reset` removes the state release too.
 - **`AUTH_MODE` defaults to `github` in the chart**, as compose pins it, because the chart's
   dashboard holds checkouts and serves a route that runs shell commands. The local values file
   turns it off explicitly (`none` + `AUTH_ALLOW_PUBLIC_BIND=1`, the ClusterIP being the perimeter —
@@ -217,11 +223,13 @@ kind walkthrough. Decisions that look like cruft and are not:
 - **`values-local.yaml` points the executor at a stub echo image**, the same trick
   `scripts/test-jobs.sh` uses: a queued job runs a real pod that echoes its prompt, which proves
   the whole board → driver → Job → pod → complete path offline, with no Claude and no credential.
-- **The dashboard pod waits for the in-chart database before starting.** The server's migration
-  retry gives up after ~55s — and then keeps serving with no tables, every DB-backed route a 500
-  no client can poll away. On a cold cluster the database image pulls for minutes, so an init
-  container runs the database pod's own readiness predicate (`pg_isready` against its service)
-  until it passes; only then does the server start, inside its retry budget.
+- **The dashboard pod waits for the database before starting.** The server's migration retry
+  gives up after ~55s — and then keeps serving with no tables, every DB-backed route a 500 no
+  client can poll away. A cold local node pulls the database image for minutes and a managed
+  instance can be mid-failover, so an init container runs `pg_isready -d "$DATABASE_URL"` — the
+  same URL, from the same Secret key, the server reads — until it passes. `database.waitImage` is
+  any image with the postgres client; the local profile reuses the timescale image already on the
+  node.
 - **The chart ships the collector, and the driver names it in every runner spec.** A docker runner
   joins the compose network and its baked `collector:4318` resolves; a pod cannot join a network,
   so the kubernetes form of `RUNNER_NETWORK` is the driver setting `OTEL_EXPORTER_OTLP_ENDPOINT`

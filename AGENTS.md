@@ -33,7 +33,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping, per-repo rendering | [docs/repos.md](docs/repos.md) |
 | `config.ts`, compose env blocks, `.env.example` | [docs/configuration.md](docs/configuration.md) |
 | `server/src/workspace/*`, `011_user_workspace.sql`, `ORG_WORKSPACE_ROOT`, the `git` install in the runtime image | [docs/workspace.md](docs/workspace.md) |
-| `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
+| `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/factory/`, `charts/factory-local-state/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh`, `scripts/test-k8s.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
 | `server/src/routes/jobs.ts`, `db/job-store*.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
@@ -45,6 +45,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `web/src/styles.css`, tokens and primitives, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
+| `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
 | Bind addresses, headers, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
 | Reporting a number as measured | [docs/limits.md](docs/limits.md) |
 

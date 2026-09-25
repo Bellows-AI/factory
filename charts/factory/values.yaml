@@ -1,6 +1,6 @@
-# The Factory stack on Kubernetes: the dashboard (API + SPA on one port), an in-chart TimescaleDB,
-# the workspaces volume the checkouts live on, and the driver running its runners as Jobs in this
-# namespace.
+# The Factory stack on Kubernetes: the dashboard (API + SPA on one port), the workspaces volume the
+# checkouts live on, and the driver running its runners as Jobs in this namespace. The database is
+# external (`database.url`).
 #
 # Every knob is an environment variable on the container it belongs to — configuration in this
 # repository is environment-only (docs/configuration.md), and the chart is a way to set that
@@ -46,20 +46,16 @@ telemetry:
     ingestToken: ''
 
 database:
-    # Overridden to the in-chart service when `timescale.enabled` is true.
+    # The chart deploys no database: point this at a managed TimescaleDB (metric_point is a
+    # hypertable). REQUIRED when the chart creates the Secret — the URL carries the password, so it
+    # lands there as `database-url` and reaches the pod by secretKeyRef. With
+    # `secret.existingSecret`, put the `database-url` key in that Secret instead. Local clusters
+    # get one from charts/factory-local-state (values-local.yaml points here).
     url: ''
-
-timescale:
-    # The in-chart database, for a stack that is self-contained — the same plain TimescaleDB
-    # container compose runs. For anything real, set enabled=false and point `database.url` at a
-    # managed instance.
-    enabled: true
-    image: timescale/timescaledb:latest-pg17
-    user: factory
-    password: factory
-    database: factory_dev
-    storageSize: 10Gi
-    resources: {}
+    # Runs `pg_isready -d $DATABASE_URL` in an init container before the server starts: the
+    # server's migration retry gives up after ~55s and then serves every DB-backed route as a 500.
+    # Any image with the postgres client tools will do.
+    waitImage: postgres:17-alpine
 
 # The checkouts. Default ReadWriteMany because the dashboard pod and every runner pod share one
 # claim across nodes; values-local.yaml overrides ReadWriteOnce (single node). A default
