@@ -34,9 +34,9 @@ jobs:
             # Lint first: it needs nothing built, so style failures report in about a minute.
             - name: npm run lint
               run: npm run lint
-            # BEFORE npm test, always: server and web resolve @factory-ai/core to core/dist, so a
-            # fresh checkout cannot run the suite until core is built. `npm run build` starts with
-            # `-w core`, so this one step is both the build gate and the test's prerequisite.
+            # BEFORE npm test: `pretest` builds core for the suite, but only this builds server,
+            # web and driver too, so a broken build reports as a broken build rather than as 74
+            # suites failing to resolve @factory-ai/core.
             - name: npm run build
               run: npm run build
             - name: npm test
@@ -80,6 +80,10 @@ jobs:
                   psql -h 127.0.0.1 -U factory -d postgres -c 'create database factory_auth_e2e'
             - name: npx playwright install --with-deps chromium
               run: npx playwright install --with-deps chromium
+            # Playwright's two webServer commands each run `npm run build` in the same tree; build
+            # once up front so both find the outputs current instead of racing over core/dist.
+            - name: npm run build
+              run: npm run build
             # Builds, resets, seeds and serves on its own (playwright.config.ts webServer). Every
             # credential it uses is a literal stub in that file; no repository secret is read.
             - name: npm run verify:ui

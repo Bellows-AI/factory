@@ -11,11 +11,11 @@ workflow calls it so a tag runs the same gates by reference instead of a copy th
 `validate` runs, in this order: `npm ci`, `npm run lint`, `npm run build`, `npm test`. Every step
 is named after the command it runs, so a red job names the gate that broke without opening the log.
 
-**`npm run build` precedes `npm test` because it has to.** `server` and `web` resolve
-`@factory-ai/core` to `core/dist`, not `core/src`, so a fresh checkout cannot run the suite until
-core is built — 74 suites fail to collect with "Failed to resolve entry for package
-@factory-ai/core", which reads like a source bug and is not one. `npm run build` starts with
-`-w core`, so the build gate and the test's prerequisite are the same step.
+**`npm run build` precedes `npm test` on purpose.** `server` and `web` resolve `@factory-ai/core`
+to `core/dist`, not `core/src`; `package.json`'s `pretest` builds core so the suite stands alone,
+but only `npm run build` also builds server, web and driver. Running it first means a broken build
+reports as a broken build rather than as 74 suites failing to collect with "Failed to resolve entry
+for package @factory-ai/core" — a message that reads like a source bug and is not one.
 
 `npm run typecheck` is deliberately not a step. `npm run build` fails on a type error in `src`;
 `typecheck` additionally covers `server/tsconfig.test.json`, which the build does not — that gap is
@@ -48,6 +48,13 @@ Triggers on `v*` tags. `validate` calls `ci.yml`; because a called workflow sees
 `docker build -f docker/Dockerfile --target runtime -t factory-ai:<tag> .`, `docker save`s it and
 uploads the tarball for 7 days. No build arg, no credential, no registry — publishing, deployment
 and release notes are out of scope until a target registry exists.
+
+## A red `npm test` step is not always your change
+
+`driver/test/executor-images.test.ts` and `driver/test/review-reply-script.test.ts` spawn real
+processes and time them out; under a contended runner they fail intermittently, a different case
+each run, and pass when run alone. Re-run the job before hunting a bug in your diff — and if you
+can make them deterministic, that is its own change, not a `continue-on-error` on this job.
 
 ## What CI does NOT run
 
