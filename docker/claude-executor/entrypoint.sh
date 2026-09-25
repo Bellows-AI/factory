@@ -103,6 +103,25 @@ fi
 # signal death's 143 included, is captured and re-raised, which is the one behavior exec had
 # that must survive; the reporter is stopped and reaped before the close-time sample so
 # nothing outlives the run.
+# The trap goes up BEFORE the first child, not after the last one. Installed afterwards, the
+# stretch between the CLI's `&` and the `trap` line is a window where PID 1 still carries the
+# default TERM action: a `docker stop` landing there kills this shell outright and leaves the
+# CLI running until the runtime's forced kill — the exact outcome the trap exists to prevent.
+# The window is small and it is real; it is also what made the offline signal test flaky, since
+# that test could only guess at its width with a sleep.
+#
+# The pids are empty until each child starts, and `kill` is given them UNQUOTED so an empty one
+# expands to nothing rather than to an empty argument. A TERM arriving before any child exists
+# finds nothing to forward, which is correct: there is nothing running yet to stop.
+CLI_PID=''
+REPORTER_PID=''
+PROGRESS_PID=''
+on_term() {
+    # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
+    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID 2>/dev/null || true
+}
+trap on_term TERM INT
+
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
 PROGRESS_DIR="$(mktemp -d)"
@@ -112,11 +131,6 @@ node "$(dirname "$0")/claude-progress.cjs" < "$PROGRESS_FIFO" &
 PROGRESS_PID=$!
 claude --output-format stream-json --verbose "$@" > "$PROGRESS_FIFO" &
 CLI_PID=$!
-
-on_term() {
-    kill -TERM "$CLI_PID" "$REPORTER_PID" "$PROGRESS_PID" 2>/dev/null || true
-}
-trap on_term TERM INT
 
 set +e
 # `wait` returns 128+signal when the trap interrupts it, indistinguishable from a child that

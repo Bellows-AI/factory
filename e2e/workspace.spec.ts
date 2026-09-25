@@ -168,7 +168,10 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     // with useId so two open dialogs cannot collide, which means no id here is stable across a
     // render. The accessible name and the describedby links are the contract worth selecting on —
     // they are what a screen reader follows.
-    const dialog = page.getByRole('dialog', { name: 'Add executor' });
+    // Either title: the same dialog is "Add executor" opened from the panel and "Edit executor"
+    // opened from a row, and this spec drives both. The id-based selector this replaced matched
+    // them without saying so, which is how naming only the Add case slipped through.
+    const dialog = page.getByRole('dialog', { name: /^(Add|Edit) executor$/ });
     const dialogPanel = dialog.locator('.picker');
     await expect(dialogPanel).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');

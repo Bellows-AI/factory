@@ -104,6 +104,26 @@ fi
 # signal death's 143 included, is captured and re-raised, which is the one behavior exec had
 # that must survive; the reporter and the rate-limit watch are stopped and reaped before the
 # close-time sample so nothing outlives the run.
+# The trap goes up BEFORE the first child, not after the last one. Installed afterwards, the
+# stretch between the CLI's `&` and the `trap` line is a window where PID 1 still carries the
+# default TERM action: a `docker stop` landing there kills this shell outright and leaves the
+# CLI running until the runtime's forced kill — the exact outcome the trap exists to prevent.
+# This entrypoint's window is the wider of the two, because the rate-limit watch forks between
+# them. It is also what made the offline signal test flaky, since that test could only guess at
+# the window's width with a sleep.
+#
+# The pids are empty until each child starts, and `kill` is given them UNQUOTED so an empty one
+# expands to nothing rather than to an empty argument. A TERM arriving before any child exists
+# finds nothing to forward, which is correct: there is nothing running yet to stop.
+CLI_PID=''
+REPORTER_PID=''
+WATCHER_PID=''
+on_term() {
+    # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID 2>/dev/null || true
+}
+trap on_term TERM INT
+
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
 opencode "$@" &
@@ -113,11 +133,6 @@ CLI_PID=$!
 # until the one moment it must speak.
 CLI_PID=$CLI_PID node --disable-warning=ExperimentalWarning /usr/local/bin/rate-limit-watch.cjs &
 WATCHER_PID=$!
-
-on_term() {
-    kill -TERM "$CLI_PID" "$REPORTER_PID" "$WATCHER_PID" 2>/dev/null || true
-}
-trap on_term TERM INT
 
 set +e
 # `wait` returns 128+signal when the trap interrupts it, indistinguishable from a child that
