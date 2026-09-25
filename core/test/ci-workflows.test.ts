@@ -62,6 +62,8 @@ describe('ci workflows', () => {
         expect(commands).toContain('npm run lint');
         expect(commands).toContain('npm run build');
         expect(commands).toContain('npm test');
+        // Not redundant with the build: tsc -b also covers server/tsconfig.test.json.
+        expect(commands).toContain('npm run typecheck');
     });
 
     it('builds core before the suite that resolves @factory-ai/core to core/dist', () => {
@@ -126,9 +128,22 @@ describe('ci workflows', () => {
         expect(commands).toContain('--target runtime');
         // `github.ref_name` on a tag push is the bare tag, so the image carries the release name —
         // bound as an env value, because a ref name may contain shell metacharacters.
-        expect(commands).toMatch(/-t "factory-ai:\$TAG"/);
-        const build = runSteps(image).find((step) => step.run.includes('docker build'))!;
-        expect(build.env!.TAG).toMatch(/^\$\{\{ github\.ref_name \}\}$/);
+        expect(commands).toMatch(/-t "factory-ai:\$IMAGE_TAG"/);
+        const normalize = runSteps(image).find((step) => step.run.includes('IMAGE_TAG='))!;
+        expect(normalize.env!.TAG).toMatch(/^\$\{\{ github\.ref_name \}\}$/);
+    });
+
+    // `v1.0.0+build.1` is a legal git tag and an illegal docker tag; without normalization the
+    // release job dies at `docker build` and never produces the artifact the issue asks for.
+    it('folds a git tag into a tag docker accepts', () => {
+        const image = workflow(RELEASE).jobs.image!;
+        const normalize = runSteps(image).find((step) => step.run.includes('IMAGE_TAG='));
+        expect(normalize, 'the git tag reaches docker unnormalized').toBeTruthy();
+        expect(normalize!.run).toMatch(/tr -c 'A-Za-z0-9_\.-'/);
+        // A docker step still naming the raw ref would reintroduce the illegal character.
+        for (const step of runSteps(image)) {
+            if (step.run.includes('docker ')) expect(step.run, step.name).not.toContain('$TAG');
+        }
     });
 
     it('never interpolates a ref name into shell text', () => {

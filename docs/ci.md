@@ -8,17 +8,18 @@ that a change could silently break — edit the workflow and the test tells you 
 Triggers: pull requests targeting `main`, pushes to `main`, and `workflow_call` — the release
 workflow calls it so a tag runs the same gates by reference instead of a copy that drifts.
 
-`validate` runs, in this order: `npm ci`, `npm run lint`, `npm run build`, `npm test`. Every step
-is named after the command it runs, so a red job names the gate that broke without opening the log.
+`validate` runs, in this order: `npm ci`, `npm run lint`, `npm run build`, `npm run typecheck`,
+`npm test`. Every step is named after the command it runs, so a red job names the gate that broke
+without opening the log.
 
 **`npm run build` precedes `npm test` on purpose.** `server` and `web` resolve `@factory-ai/core`
 to `core/dist`, not `core/src`; `package.json`'s `pretest` builds core so the suite stands alone,
 but only `npm run build` also builds server, web and driver. Running it first means a broken build
 reports as a broken build, rather than as a `pretest` failure buried in the test step.
 
-`npm run typecheck` is deliberately not a step. `npm run build` fails on a type error in `src`;
-`typecheck` additionally covers `server/tsconfig.test.json`, which the build does not — that gap is
-known and out of scope here.
+`npm run typecheck` follows the build rather than replacing it: the build fails on a type error in
+`src`, and `tsc -b` additionally covers `server/tsconfig.test.json`, so the db-test harness cannot
+drift out of type without CI noticing.
 
 `e2e` runs only on a push to `main` (`needs: validate`): it boots two servers, builds the tree
 twice and drives a real chromium, which is too slow to gate every pull request. It provisions what
@@ -43,7 +44,10 @@ pull-request runs and never cancels a run on `main`.
 ## `.github/workflows/release-image.yml`
 
 Triggers on `v*` tags. `validate` calls `ci.yml`; because a called workflow sees the caller's event,
-`e2e`'s `if` correctly skips on a tag push. Then `image` builds
+`e2e`'s `if` correctly skips on a tag push. The git tag is folded into a docker tag first — a docker
+tag admits only `[A-Za-z0-9_.-]`, so `v1.0.0+build.1` is a legal git tag that `docker build` would
+refuse; everything outside that set becomes a dash, and the image and artifact carry the folded
+name. Then `image` builds
 `docker build -f docker/Dockerfile --target runtime -t factory-ai:<tag> .`, `docker save`s it and
 uploads the tarball for 7 days. No build arg, no credential, no registry — publishing, deployment
 and release notes are out of scope until a target registry exists.

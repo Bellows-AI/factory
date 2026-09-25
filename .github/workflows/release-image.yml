@@ -23,20 +23,22 @@ jobs:
         timeout-minutes: 30
         steps:
             - uses: actions/checkout@v4
+            # A docker tag admits only [A-Za-z0-9_.-], but `v*` matches build metadata too:
+            # v1.0.0+build.1 is a legal git tag and an illegal image tag, and `docker build` would
+            # refuse it. Fold everything else to a dash. The tag travels as an env value and is
+            # never interpolated into shell text — a ref name may legally contain a backtick or a $.
+            - name: normalize the git tag into a docker tag
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: printf 'IMAGE_TAG=%s\n' "$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_.-' '-')" >>"$GITHUB_ENV"
             # The command AGENTS.md documents, plus the tag. No registry, no credential and no
             # build arg — the runtime stage takes none, and .dockerignore keeps .env out.
-            # The tag travels as an env value, never interpolated into the shell text: a ref name
-            # may legally contain a backtick or a $, and `run:` would execute it.
             - name: docker build --target runtime
-              env:
-                  TAG: ${{ github.ref_name }}
-              run: docker build -f docker/Dockerfile --target runtime -t "factory-ai:$TAG" .
+              run: docker build -f docker/Dockerfile --target runtime -t "factory-ai:$IMAGE_TAG" .
             - name: docker save
-              env:
-                  TAG: ${{ github.ref_name }}
-              run: docker save "factory-ai:$TAG" -o "factory-ai-$TAG.tar"
+              run: docker save "factory-ai:$IMAGE_TAG" -o "factory-ai-$IMAGE_TAG.tar"
             - uses: actions/upload-artifact@v4
               with:
-                  name: factory-ai-image-${{ github.ref_name }}
-                  path: factory-ai-${{ github.ref_name }}.tar
+                  name: factory-ai-image-${{ env.IMAGE_TAG }}
+                  path: factory-ai-${{ env.IMAGE_TAG }}.tar
                   retention-days: 7
