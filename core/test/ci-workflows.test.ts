@@ -41,7 +41,8 @@ const RELEASE = '.github/workflows/release-image.yml';
 const triggers = (doc: Workflow) => doc.on;
 const needs = (job: Job) => [job.needs ?? []].flat();
 // A job that reuses another workflow (`uses:`) carries no steps at all.
-const runSteps = (job: Job) => (job.steps ?? []).filter((step): step is Step & { run: string } => !!step.run);
+const runSteps = (job: Job) =>
+    (job.steps ?? []).filter((step): step is Step & { run: string } => step.run !== undefined);
 const runs = (job: Job) => runSteps(job).map((step) => step.run.trim());
 
 describe('ci workflows', () => {
