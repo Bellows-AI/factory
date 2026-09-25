@@ -45,6 +45,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `web/src/styles.css`, tokens and primitives, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
+| `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
 | Bind addresses, headers, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
 | Reporting a number as measured | [docs/limits.md](docs/limits.md) |
 

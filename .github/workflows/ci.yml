@@ -1,0 +1,90 @@
+name: CI
+
+on:
+    pull_request:
+        branches: [main]
+    push:
+        branches: [main]
+    # Called by release-image.yml so a v* tag runs exactly these gates, once, with no copy.
+    workflow_call:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+    validate:
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  # The major docker/Dockerfile's runtime stage ships; a test pins the pair.
+                  node-version: '24'
+                  cache: npm
+            - name: npm ci
+              run: npm ci
+            # Lint first: it needs nothing built, so style failures report in about a minute.
+            - name: npm run lint
+              run: npm run lint
+            # BEFORE npm test, always: server and web resolve @factory-ai/core to core/dist, so a
+            # fresh checkout cannot run the suite until core is built. `npm run build` starts with
+            # `-w core`, so this one step is both the build gate and the test's prerequisite.
+            - name: npm run build
+              run: npm run build
+            - name: npm test
+              run: npm test
+
+    e2e:
+        # Post-merge only: it boots two servers, builds the tree twice and drives a real chromium.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        needs: validate
+        runs-on: ubuntu-latest
+        timeout-minutes: 40
+        services:
+            timescale:
+                # The image docker-compose.yml pins: 001_init.sql needs the timescaledb extension
+                # and a hypertable, which plain postgres cannot do.
+                image: timescale/timescaledb:latest-pg17
+                env:
+                    POSTGRES_USER: factory
+                    POSTGRES_PASSWORD: factory
+                    POSTGRES_DB: factory_dev
+                ports:
+                    - 5432:5432
+                options: >-
+                    --health-cmd "pg_isready -U factory -d factory_dev"
+                    --health-interval 5s --health-timeout 5s --health-retries 10
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '24'
+                  cache: npm
+            - name: npm ci
+              run: npm ci
+            # The two databases playwright.config.ts names. e2e/reset-db.mjs truncates but never
+            # creates, and docker/init-databases.sh only makes factory_test.
+            - name: create the e2e databases
+              env:
+                  PGPASSWORD: factory
+              run: |
+                  psql -h 127.0.0.1 -U factory -d postgres -c 'create database factory_e2e'
+                  psql -h 127.0.0.1 -U factory -d postgres -c 'create database factory_auth_e2e'
+            - name: npx playwright install chromium
+              run: npx playwright install --with-deps chromium
+            # Builds, resets, seeds and serves on its own (playwright.config.ts webServer). Every
+            # credential it uses is a literal stub in that file; no repository secret is read.
+            - name: npm run verify:ui
+              run: npm run verify:ui
+            - if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ui-artifacts
+                  path: artifacts/ui
+                  retention-days: 7
+                  if-no-files-found: warn

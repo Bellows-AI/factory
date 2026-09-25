@@ -1,0 +1,35 @@
+name: Release image
+
+on:
+    push:
+        tags: ['v*']
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    # The same gates a pull request runs, by reference rather than by copy.
+    validate:
+        uses: ./.github/workflows/ci.yml
+
+    image:
+        needs: validate
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v4
+            # The command AGENTS.md documents, plus the tag. No registry, no credential and no
+            # build arg — the runtime stage takes none, and .dockerignore keeps .env out.
+            - name: docker build --target runtime
+              run: docker build -f docker/Dockerfile --target runtime -t factory-ai:${{ github.ref_name }} .
+            - name: docker save
+              run: docker save factory-ai:${{ github.ref_name }} -o factory-ai-${{ github.ref_name }}.tar
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: factory-ai-image-${{ github.ref_name }}
+                  path: factory-ai-${{ github.ref_name }}.tar
+                  retention-days: 7
