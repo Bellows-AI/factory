@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { createBoard } from './board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
 import { createDockerRunner } from './docker-runner.js';
@@ -9,6 +10,17 @@ import { createLoop } from './loop.js';
 import type { GateStack } from './loop-types.js';
 
 const config = loadDriverConfig(process.env);
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
+// Timer-driven, not poll-driven: a drain stops polling for as long as its jobs take, and a probe
+// that read that as death would kill the drain it is waiting on. What it proves is a turning
+// event loop — the one failure a process that stays up would otherwise hide from the kubelet.
+if (config.heartbeatFile) {
+    const file = config.heartbeatFile;
+    const beat = () => writeFileSync(file, `${Date.now()}\n`);
+    beat();
+    setInterval(beat, HEARTBEAT_INTERVAL_MS).unref();
+}
 
 const missing = config.passEnv.filter((name) => !process.env[name]);
 if (missing.length === config.passEnv.length) {

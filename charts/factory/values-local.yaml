@@ -15,8 +15,11 @@
 #
 # See charts/factory/README.md for the walkthrough and scripts/test-k8s.sh for the scripted version.
 
+# Local builds are tagged `latest` (the commands above), not the chart's appVersion.
 dashboard:
-    image: factory-ai
+    image:
+        repository: factory-ai
+        tag: latest
     workspaceRoot: /workspaces
     # The offline profile: the code-only no-fetch entry. There is no GitHub App credential in this
     # cluster, so the dashboard serves whatever the database holds and clones nothing.
@@ -50,7 +53,9 @@ secret:
     jobBoardToken: ''
 
 driver:
-    image: factory-driver
+    image:
+        repository: factory-driver
+        tag: latest
     executorImages:
         claudeCode: echo-executor
         opencode: echo-executor

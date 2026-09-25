@@ -4,7 +4,15 @@ import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession, workspacePath } from './claim.js';
 import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
 import type { HelperDescriptor, HelperPlan } from './helpers.js';
-import { auxJobSpec, hash16, jobsPath, workspaceMount, type AuxJobSpec } from './k8s-podspec.js';
+import {
+    auxJobSpec,
+    hash16,
+    jobsPath,
+    pullSecretsField,
+    releaseLabel,
+    workspaceMount,
+    type AuxJobSpec,
+} from './k8s-podspec.js';
 import { JOB_ID, LOG_TAIL_LINES, MS_PER_SECOND } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import {
@@ -272,6 +280,7 @@ export function servicePodSpec(
     spec: {
         restartPolicy: 'Never';
         automountServiceAccountToken: false;
+        imagePullSecrets?: { name: string }[];
         containers: {
             name: string;
             image: string;
@@ -284,6 +293,7 @@ export function servicePodSpec(
         [JOB_LABEL]: job.id,
         [LEASE_LABEL]: job.leaseToken,
         [SERVICE_LABEL]: spec.name,
+        ...releaseLabel(config),
     };
     return {
         apiVersion: 'v1',
@@ -292,6 +302,7 @@ export function servicePodSpec(
         spec: {
             restartPolicy: 'Never',
             automountServiceAccountToken: false,
+            ...pullSecretsField(config),
             containers: [
                 {
                     name: spec.name,

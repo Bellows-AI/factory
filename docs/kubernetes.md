@@ -82,7 +82,9 @@ before it existed runs to its natural end with its env intact and its report ref
 a driver that crashes before cleanup leaks its attempt's Secret (Secrets have no TTL), and the
 `factory.job: <id>` label is what a cleanup job would select. The chart's Role grows
 `secrets: ['create', 'delete']` and nothing more on secrets — no `get`, no `list`; the driver
-writes values it was handed and never reads one back. (The fence's checkout claim adds a
+writes values it was handed and never reads one back. The Role alone does not make that true —
+RBAC cannot scope a verb to a name, and `create` on pods is `read` on any Secret a pod may mount —
+which is what the chart's admission policy is for (see [The chart](#the-chart)). (The fence's checkout claim adds a
 `configmaps` rule with `get` — see below for why that read is safe there and only there.)
 
 **The runner gets no ServiceAccount token.** Pods automount one by default, and a driver-spawned
@@ -230,6 +232,53 @@ kind walkthrough. Decisions that look like cruft and are not:
   same URL, from the same Secret key, the server reads — until it passes. `database.waitImage` is
   any image with the postgres client; the local profile reuses the timescale image already on the
   node.
+- **The driver is fenced by admission, not by its Role alone.** Runners run agent-written code in
+  the release's namespace — they have to: the workspaces claim is namespaced and the dashboard
+  mounts it too — and RBAC cannot scope a verb to a name prefix, so the driver's `create pods`
+  would be "mount any Secret here" and its `delete secrets` would reach the dashboard's. Two
+  `ValidatingAdmissionPolicy` objects bound to the driver's ServiceAccount (`templates/driver-admission.yaml`,
+  `isolation.admissionPolicy`, Kubernetes ≥ 1.30) close that: a pod spec the driver submits
+  (runner, aux Job, service pod) may let a container read (volume, env, envFrom) only the
+  per-attempt Secrets — `factory-{job,sync,publish,helper,gate}-…-env`, the naming every
+  `*SecretName` in `driver/src/k8s-*.ts` follows — and the runner credentials; the chart's pull
+  secrets only under `imagePullSecrets`, where the kubelet and never a container reads them; may
+  mount only the workspaces claim, emptyDir and those Secrets, and the claim only with a `subPath`
+  of the `WORKSPACE_PATH` shape (`<org>/<user id>`, no `subPathExpr`), never its root; and carries
+  no ServiceAccount token, host namespace, privilege or added capability. Creates and deletes reach
+  only objects labelled `factory.job`; Secrets only Opaque, Services only headless. **A new
+  driver-owned Secret must follow the naming, every new driver-owned object must carry
+  `factory.job`, and every workspace mount must use `workspaceMount()`'s subPath**, or the
+  apiserver refuses it. `driver/test/k8s-admission.test.ts` pins every `*SecretName` builder
+  against the policy's own pattern, and the subPath pattern against `WORKSPACE_PATH`, both read
+  from the template. Limits, stated in the template: the names carry no release (one release per
+  namespace), the subPath is fenced by shape and not by owner (a compromised driver can still name
+  another member's subtree), and a mesh sidecar injector's volumes are refused on service pods.
+- **Runner pods are confined by a NetworkPolicy** (`templates/runner-networkpolicy.yaml`,
+  `isolation.networkPolicy`), selected by `factory.job` plus the release label — every pod the
+  driver specs carries `app.kubernetes.io/instance: <K8S_RELEASE>` for exactly this, so one
+  release's policy never confines a neighbor's runners. Ingress only from each other (declared
+  services); egress to DNS (port 53 only to the `k8s-app: kube-dns` pods in kube-system and
+  `isolation.dnsCidrs`, default the NodeLocal DNSCache address 169.254.20.10/32 — a cluster whose
+  DNS carries other labels must list its resolver there, or runners lose DNS), this release's
+  dashboard, collector and driver, each other, and anything outside `isolation.blockedCidrs` (the private ranges and 169.254.0.0/16, the cloud
+  metadata endpoint). IPv4 only; inert without an enforcing CNI.
+- **The gate endpoint is advertised at the driver pod's IP.** `GATE_ADVERTISE_URL=http://$(POD_IP)`
+  from the downward API: a Service name would resolve to every driver replica — and to the old and
+  new pod both during a rollout — while the ephemeral port the driver appends is open on exactly
+  one. There is no driver Service. With `DRIVER_WORKER` set to the pod name — defaulted, every
+  container's `driver-<pid>` is `driver-1`, and the board's `claimed_by` fences could not tell
+  replicas apart — `driver.replicas` above one is safe. IPv4 pod IPs only: an IPv6 address would
+  need brackets the URL does not add.
+- **One dashboard, recreated.** The server is the single in-process writer of the checkouts, its
+  migrations take no lock, and an RWO claim cannot attach twice, so the Deployment runs one
+  replica with `strategy: Recreate`. Startup and readiness read `/api/ready` — 503 until the
+  migrations land, 503 for good if they gave up — so a pod whose schema never arrived is restarted
+  instead of left Ready; liveness stays on `/api/health`, which touches no database.
+- **Images carry tags.** `dashboard.image.tag`/`driver.image.tag` default to the chart's
+  `appVersion`, so an upgrade to a new build changes the pod spec and rolls; the collector is
+  pinned, its config keys moving between releases. `values-local.yaml` uses `latest`, the tag the
+  local builds produce. A changed chart Secret or collector config rolls its readers via
+  `checksum/*` pod annotations.
 - **The chart ships the collector, and the driver names it in every runner spec.** A docker runner
   joins the compose network and its baked `collector:4318` resolves; a pod cannot join a network,
   so the kubernetes form of `RUNNER_NETWORK` is the driver setting `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -258,6 +307,9 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `K8S_NAMESPACE` | `default` | Where runner Jobs are created. The chart sets it via the downward API, so the driver follows whichever namespace it landed in. |
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials, one key per `RUNNER_ENV` name. Unset forwards nothing — an image with a login baked into a volume needs none, the same answer as the docker driver's missing-credentials warning. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT` in the pod spec. Always provided, so a pod never relies on an image-baked default that nothing in a cluster resolves; the default names the compose collector and the chart overrides it with the in-chart collector. |
+| `RUNNER_IMAGE_PULL_SECRETS` | unset | Comma-separated Secret names set as `imagePullSecrets` on every pod the driver specs (runner, aux Jobs, gates, services). The chart forwards its own `imagePullSecrets`. Docker has no twin: the daemon's login is what `docker run` pulls with. |
+| `K8S_RELEASE` | unset | The Helm release; labels every runner Job and every driver-specced pod `app.kubernetes.io/instance`, which scopes bulk cleanup and the runner NetworkPolicy to one release. |
+| `DRIVER_HEARTBEAT_FILE` | unset | A file the driver rewrites every 10s from a timer, so a liveness probe can tell a turning event loop from a wedged one — the driver serves no HTTP. Timer-driven on purpose: a drain stops polling for as long as its jobs take. The chart sets `/tmp/heartbeat` and probes its age. Executor-neutral. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy. Kubernetes reads a missing or `:latest` tag as `Always`, which reaches past the node's local images for a registry copy of `claude-executor` — where the docker runner would have used what the daemon holds. The chart passes `driver.imagePullPolicy` through. |
 
 Refused combination, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each

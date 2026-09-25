@@ -97,6 +97,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     const app = await buildApp({
         config,
         orgs,
+        ready,
         store,
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents

@@ -57,6 +57,7 @@ export interface RunnerJobSpec {
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
+                imagePullSecrets?: { name: string }[];
                 containers: {
                     name: string;
                     image: string;
@@ -200,7 +201,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             labels: {
                 [JOB_LABEL]: job.id,
                 [LEASE_LABEL]: job.leaseToken,
-                ...(config.k8sRelease ? { 'app.kubernetes.io/instance': config.k8sRelease } : {}),
+                ...releaseLabel(config),
             },
         },
         spec: {
@@ -215,13 +216,14 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             activeDeadlineSeconds: Math.max(1, Math.round(config.jobTimeoutMs / MS_PER_SECOND)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken } },
+                metadata: { labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) } },
                 spec: {
                     restartPolicy: 'Never',
                     // The runner gets no ServiceAccount token: automounting one would hand the
                     // Claude container the driver's own job-creating credentials — the docker
                     // socket riding along with the dashboard, refused here for the same reason.
                     automountServiceAccountToken: false,
+                    ...pullSecretsField(config),
                     containers: [
                         {
                             // A constant: a container name is a DNS LABEL (63 bytes), which rules
@@ -309,6 +311,7 @@ export interface AuxJobSpec {
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
+                imagePullSecrets?: { name: string }[];
                 /** The uid:gid the gate writes the shared worktree as — GATE_UID/GATE_GID. */
                 securityContext?: { runAsUser: number; runAsGroup: number };
                 containers: {
@@ -346,6 +349,26 @@ interface AuxJobSpecInput {
 }
 
 /**
+ * `app.kubernetes.io/instance: <K8S_RELEASE>` on every object and pod template the driver specs.
+ * On the Job it scopes bulk cleanup to THIS release (`make stop`, a shared-namespace neighbor); on
+ * the pod it is what the chart's runner NetworkPolicy selects by, so one release's policy never
+ * confines another release's runners. Absent when no release is configured.
+ */
+export function releaseLabel(config: DriverConfig): Record<string, string> {
+    return config.k8sRelease ? { 'app.kubernetes.io/instance': config.k8sRelease } : {};
+}
+
+/**
+ * RUNNER_IMAGE_PULL_SECRETS on a pod spec. Absent when none are configured, so the spec a
+ * registry-less cluster sees is unchanged.
+ */
+export function pullSecretsField(config: DriverConfig): { imagePullSecrets?: { name: string }[] } {
+    return config.imagePullSecrets.length > 0
+        ? { imagePullSecrets: config.imagePullSecrets.map((name) => ({ name })) }
+        : {};
+}
+
+/**
  * The skeleton every aux Job builder shares: `factory.job`/`factory.lease` labels (twice — Job
  * and pod template), no ServiceAccount token, `backoffLimit: 0` (the board owns retries, never
  * the kubelet), the finished-Job TTL, and the workspaces PVC as the one named volume. Each
@@ -355,7 +378,7 @@ interface AuxJobSpecInput {
  * with the aux Jobs would make "the runner has no envFrom" unreadable.
  */
 export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpecInput): AuxJobSpec {
-    const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken };
+    const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) };
     return {
         apiVersion: 'batch/v1',
         kind: 'Job',
@@ -371,6 +394,7 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                 spec: {
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,
+                    ...pullSecretsField(config),
                     ...(input.securityContext ? { securityContext: input.securityContext } : {}),
                     containers: [input.container],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],

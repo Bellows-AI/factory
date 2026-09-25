@@ -86,6 +86,7 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
  *
  * - `/api/health` must answer while the migrations are still retrying, and the compose healthcheck
  *   carries no credential. Authenticating it would restart the container that was about to succeed.
+ * - `/api/ready` is the kubelet's startup probe, which carries no credential either.
  * - `/api/auth/*` is how a caller obtains a credential in the first place. `/api/auth/me` answers
  *   `200 {authenticated: false}` for nobody — being the thing that *tells* the SPA it is
  *   unauthenticated is its whole purpose, and a 401 there would be logged as a console error by
@@ -97,6 +98,7 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
  */
 const OPEN_ROUTES: readonly RegExp[] = [
     /^\/api\/health$/,
+    /^\/api\/ready$/,
     /^\/api\/auth\//,
     // The installation webhook answers to the HMAC signature over its body — a credential the
     // route verifies itself — so the session hook must not demand a cookie of it.

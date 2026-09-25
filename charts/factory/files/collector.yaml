@@ -3,10 +3,16 @@
 # `collector` service in docker-compose.yml.
 #
 # This file is not shared with docker/otel-collector.yaml: the two differ exactly where they must —
-# the exporter's target (a compose service name there, a templated service URL here) and the
-# optional ingest token that keeps an authenticated board reachable. The decisions that must NOT
+# the exporter's target (a compose service name there, a templated service URL here), the ingest
+# token header that keeps an authenticated board reachable, and the pod's operational pair (the
+# health_check extension its probes read, the memory_limiter its memory limit needs). The decisions that must NOT
 # differ — identity stripped, cost refused, compression off, http/json, the session id kept — are
 # deliberate copies; docs/telemetry.md is the reading list for which ones are guarded by a test.
+extensions:
+    # The pod's liveness and readiness probes read this.
+    health_check:
+        endpoint: 0.0.0.0:13133
+
 receivers:
     otlp:
         protocols:
@@ -16,6 +22,13 @@ receivers:
                 endpoint: 0.0.0.0:4318
 
 processors:
+    # First in every pipeline: under a burst the collector refuses data instead of growing until
+    # the container's memory limit kills it and drops everything it was holding.
+    memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+
     batch:
         timeout: 5s
         send_batch_size: 512
@@ -65,24 +78,25 @@ exporters:
             enabled: true
             initial_interval: 5s
             max_elapsed_time: 300s
-{{- if .Values.telemetry.ingestToken }}
         # The token travels by reference: the Deployment mounts the Secret's ingest-token key as
         # INGEST_TOKEN, and the collector expands ${env:INGEST_TOKEN} at boot, so the value never
-        # lands in this ConfigMap. Rendered only when set — an open board needs no header.
+        # lands in this ConfigMap. Sent unconditionally: whether a token is configured is known to
+        # the Secret, not to these values — `secret.existingSecret` carries it with
+        # `telemetry.ingestToken` empty — and an open board ignores the header, empty or not.
         headers:
             X-Factory-Ingest-Token: ${env:INGEST_TOKEN}
-{{- end }}
 
 service:
+    extensions: [health_check]
     telemetry:
         logs:
             level: warn
     pipelines:
         metrics:
             receivers: [otlp]
-            processors: [filter/drop-cost, attributes/strip-identity, batch]
+            processors: [memory_limiter, filter/drop-cost, attributes/strip-identity, batch]
             exporters: [otlp_http/dashboard]
         logs:
             receivers: [otlp]
-            processors: [attributes/strip-identity, batch]
+            processors: [memory_limiter, attributes/strip-identity, batch]
             exporters: [otlp_http/dashboard]
