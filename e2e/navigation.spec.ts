@@ -257,6 +257,12 @@ test.describe('the desktop shell', () => {
 
     test('the sidenav preview never exceeds five rows per section', async ({ page }) => {
         await page.goto('/tasks');
+        // The counts arrive with the navigation read, not with the document, and both assertions
+        // below are plain `count()`/`allInnerTexts()` reads that do not retry. Waiting for a
+        // parenthesised number is waiting for the sidenav to have answered at all — without it
+        // this samples whatever was painted first and passes on timing.
+        await expect(page.locator('.sidenav-section').first()).toContainText(/\(\d+\)/);
+
         // All three sections' rows together, however the seed sorted them.
         const rows = await page.locator('.sidenav-task').count();
         expect(rows, 'preview rows across all sections').toBeLessThanOrEqual(15);

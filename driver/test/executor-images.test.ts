@@ -125,6 +125,14 @@ describe('the executor branch reporter', () => {
         // exists to prevent. The gap is also unobservable from outside, which is why the offline
         // signal test below could only guess at its width with a sleep, and why it failed about
         // one full-suite run in three until the ordering changed.
+        // `cmd & PID=$!` is two commands, so a signal can land between the fork and the
+        // assignment: the child is running, the shell does not know its pid, and the forward
+        // reaches nothing. The handler records that it fired and the shell re-delivers once every
+        // pid is known — without it that TERM is silently dropped and the run continues.
+        expect(entry).toMatch(/^TERM_PENDING=''$/m);
+        expect(entry).toMatch(/^ {4}TERM_PENDING=1$/m);
+        expect(entry).toMatch(/if \[ -n "\$TERM_PENDING" \]; then\n {4}#[^\n]*\n {4}kill -TERM \$CLI_PID /);
+
         const trapAt = entry.search(/^trap \w+ TERM INT$/m);
         const firstChildAt = entry.search(/^node --disable-warning=ExperimentalWarning .*&$/m);
         expect(trapAt, 'no trap line').toBeGreaterThan(-1);

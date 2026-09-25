@@ -115,10 +115,17 @@ fi
 # The pids are empty until each child starts, and `kill` is given them UNQUOTED so an empty one
 # expands to nothing rather than to an empty argument. A TERM arriving before any child exists
 # finds nothing to forward, which is correct: there is nothing running yet to stop.
+#
+# `cmd & PID=$!` is two commands and cannot be made one, so a signal can still land in the gap
+# between the fork and the assignment — the child exists, this shell does not know its pid yet,
+# and the forward reaches nothing. TERM_PENDING records that it happened; the re-check once every
+# pid is known delivers it. Without that, the signal is simply lost and the run keeps going.
 CLI_PID=''
 REPORTER_PID=''
 WATCHER_PID=''
+TERM_PENDING=''
 on_term() {
+    TERM_PENDING=1
     # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
     kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID 2>/dev/null || true
 }
@@ -133,6 +140,11 @@ CLI_PID=$!
 # until the one moment it must speak.
 CLI_PID=$CLI_PID node --disable-warning=ExperimentalWarning /usr/local/bin/rate-limit-watch.cjs &
 WATCHER_PID=$!
+
+if [ -n "$TERM_PENDING" ]; then
+    # shellcheck disable=SC2086 # same reason as on_term
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID 2>/dev/null || true
+fi
 
 set +e
 # `wait` returns 128+signal when the trap interrupts it, indistinguishable from a child that

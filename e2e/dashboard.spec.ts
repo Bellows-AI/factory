@@ -342,6 +342,17 @@ test.describe('the supporting tables and the task board', () => {
     test('the primary content begins in the first viewport', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto('/');
+        // Measured once the analytics have landed, not at whatever the first paint happened to be.
+        // The board panels mount before the telemetry read resolves, so for a moment the first
+        // `main section` is a task panel a screen and a half down; `.first()` resolves against that
+        // DOM and the assertion then describes a page that no longer exists. It is the same anchor
+        // navigation.spec.ts and workspace.spec.ts wait on for "the dashboard is loaded".
+        //
+        // This raced from the day it was written and passed on timing alone — a front-end change
+        // that moved hydration by a few milliseconds flipped it to failing 2 runs in 6, with the
+        // settled layout byte-identical before and after. What it means to assert is where the
+        // content SETTLES, which is what it now measures.
+        await expect(page.locator('.usage-summary, .usage-empty').first()).toBeVisible();
         const box = await page.locator('main section').first().boundingBox();
         expect(box).not.toBeNull();
         expect(box!.y).toBeLessThan(900);
