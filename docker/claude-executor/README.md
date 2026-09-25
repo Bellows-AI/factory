@@ -42,18 +42,11 @@ has — instructions for an absent binary cost tokens every session and end in
   `claude plugin install` writes `extraKnownMarketplaces` and `enabledPlugins` into `settings.json`
   itself, those keys are deliberately absent from the committed file.
 - **`acli`** (Atlassian CLI) at `/usr/local/bin/acli`, matching `CLAUDE.md`'s instruction to drive
-  Jira through it rather than through the Atlassian MCP server. Unauthenticated on a fresh
-  container — it reads credentials from `~/.config/acli`, so either log in once per container:
-
-  ```bash
-  docker run --rm -it --entrypoint sh -e JIRA_API_TOKEN claude-executor \
-      -c 'echo "$JIRA_API_TOKEN" | acli jira auth login \
-          --site your-site.atlassian.net --email you@example.com --token'
-  ```
-
-  or mount an existing profile read-only with `-v "$HOME/.config/acli:/home/node/.config/acli:ro"`.
-  Note that the image's `ENTRYPOINT` is the `claude-executor` wrapper, hence the explicit
-  `--entrypoint sh` above.
+  Jira through it rather than through the Atlassian MCP server. It reads credentials from
+  `~/.config/acli`, empty on a fresh container, so the entrypoint logs it in when
+  `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_TOKEN` are all set — on the board, as
+  claim env ([docs/env.md](../../docs/env.md)); standalone, with `-e`. A failed sign-in warns and
+  the run goes on.
 
 ## Build
 

@@ -250,6 +250,14 @@ exit "\${STUB_STATUS:-0}"
  * race actually lived; keep this at 0 so the test would notice if it reopened.
  */
 const STUB_SETTLE_S = '0';
+
+/** Stand-in acli: records its argv and stdin, then exits ACLI_STATUS. */
+const ACLI_STUB = `#!/bin/sh
+printf '%s\\n' "$@" > "$STUB_DIR/acli-argv"
+cat > "$STUB_DIR/acli-stdin"
+exit "\${ACLI_STATUS:-0}"
+`;
+const ATLASSIAN_NAMES = ['ATLASSIAN_SITE', 'ATLASSIAN_EMAIL', 'ATLASSIAN_API_TOKEN'];
 const EXIT_TIMEOUT_MS = 10_000;
 const STARTED_TIMEOUT_MS = 5_000;
 /** The stub CLI's own chosen exit status, for the "re-raises it" assertion. */
@@ -280,11 +288,16 @@ const makeSandbox = (): Sandbox => {
         writeFileSync(join(bin, cli), STUB);
         chmodSync(join(bin, cli), EXECUTABLE_MODE);
     }
+    // Always stubbed, so a developer's own ATLASSIAN_* can never drive the host's real acli.
+    writeFileSync(join(bin, 'acli'), ACLI_STUB);
+    chmodSync(join(bin, 'acli'), EXECUTABLE_MODE);
+    const inherited = { ...process.env };
+    for (const name of ATLASSIAN_NAMES) delete inherited[name];
     return {
         bin,
         work,
         env: {
-            ...process.env,
+            ...inherited,
             PATH: `${bin}:${process.env.PATH}`,
             WORKDIR: work,
             HOME: root,
@@ -359,6 +372,68 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
             // The substance: the marker is written by the STUB's own trap, so it exists only
             // if the signal truly reached the CLI rather than the shell merely dying.
             expect(readFileSync(join(sandbox.bin, 'signaled'), 'utf8')).toMatch(/^\d+$/m);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+});
+
+/*
+ * Jira sign-in: the claim env's ATLASSIAN_* names log acli in before the CLI starts, the token on
+ * stdin and never in argv. A failed or half-configured sign-in must not cost the run.
+ */
+describe('the entrypoint acli sign-in', () => {
+    const ATLASSIAN_ENV = {
+        ATLASSIAN_SITE: 'example.atlassian.net',
+        ATLASSIAN_EMAIL: 'agent@example.com',
+        ATLASSIAN_API_TOKEN: 'secret-token',
+    };
+    const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
+
+    it.each(ENTRYPOINTS)('%s logs acli in with the token on stdin', async (entrypoint) => {
+        const sandbox = makeSandbox();
+        try {
+            const child = runEntrypoint(entrypoint, sandbox, ATLASSIAN_ENV);
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            const argv = readFileSync(join(sandbox.bin, 'acli-argv'), 'utf8').trimEnd().split('\n');
+            expect(argv).toEqual([
+                'jira',
+                'auth',
+                'login',
+                '--site',
+                ATLASSIAN_ENV.ATLASSIAN_SITE,
+                '--email',
+                ATLASSIAN_ENV.ATLASSIAN_EMAIL,
+                '--token',
+            ]);
+            expect(readFileSync(join(sandbox.bin, 'acli-stdin'), 'utf8')).toBe(ATLASSIAN_ENV.ATLASSIAN_API_TOKEN);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+
+    it.each(ENTRYPOINTS)('%s still runs the CLI when the sign-in fails', async (entrypoint) => {
+        const sandbox = makeSandbox();
+        try {
+            const child = runEntrypoint(entrypoint, sandbox, {
+                ...ATLASSIAN_ENV,
+                ACLI_STATUS: '1',
+                STUB_STATUS: String(STUB_EXIT_CODE),
+            });
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
+            expect(existsSync(join(sandbox.bin, 'acli-argv'))).toBe(true);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+
+    it.each(ENTRYPOINTS)('%s skips the sign-in unless all three names are set', async (entrypoint) => {
+        const sandbox = makeSandbox();
+        try {
+            const { ATLASSIAN_API_TOKEN: _omitted, ...partial } = ATLASSIAN_ENV;
+            const child = runEntrypoint(entrypoint, sandbox, partial);
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            expect(existsSync(join(sandbox.bin, 'acli-argv'))).toBe(false);
         } finally {
             sandbox.cleanup();
         }

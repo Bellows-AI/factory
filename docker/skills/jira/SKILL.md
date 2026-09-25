@@ -40,14 +40,8 @@ acli jira workitem comment <KEY> --body "..."
 
 ## Authentication
 
-A fresh container is unauthenticated — `acli` reads credentials from `~/.config/acli`, which is
-not baked into the image. On any auth failure, **stop and report it**; do not retry, and do not
+`acli` reads credentials from `~/.config/acli`, which is not baked into the image. When the run's
+environment carries `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_TOKEN`, the entrypoint
+has already logged in before you started; otherwise the container is unauthenticated. On any auth
+failure, **stop and report it** — name the three variables as the fix — do not retry, and do not
 work around it by guessing ticket contents.
-
-To authenticate, either mount an existing profile at run time
-(`-v "$HOME/.config/acli:/home/node/.config/acli:ro"`) or log in once inside the container:
-
-```bash
-echo "$JIRA_API_TOKEN" | acli jira auth login \
-    --site your-site.atlassian.net --email you@example.com --token
-```

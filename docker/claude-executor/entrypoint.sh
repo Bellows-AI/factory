@@ -42,6 +42,20 @@ if [ -e "$WORKDIR/.git" ]; then
     git config --global --add safe.directory "$WORKDIR" 2>/dev/null || true
 fi
 
+# Jira sign-in (docs/env.md): acli keeps credentials in ~/.config/acli, which a fresh container
+# does not have, so when the claim env carries all three ATLASSIAN_* names — configured on the
+# Environment page like any other secret — log in before the CLI starts. The token goes in on
+# stdin, never argv, and acli's stdout is discarded because this container's stdout is the run's.
+# A failed sign-in does not fail the run: most tasks never touch Jira, and the jira skill tells
+# the agent to stop and report an auth failure when one does.
+if [ -n "${ATLASSIAN_SITE:-}" ] && [ -n "${ATLASSIAN_EMAIL:-}" ] && [ -n "${ATLASSIAN_API_TOKEN:-}" ]; then
+    printf '%s' "$ATLASSIAN_API_TOKEN" \
+        | acli jira auth login --site "$ATLASSIAN_SITE" --email "$ATLASSIAN_EMAIL" --token >/dev/null \
+        || echo "claude-executor: acli could not sign in to $ATLASSIAN_SITE; Jira is unavailable this run" >&2
+elif [ -n "${ATLASSIAN_SITE:-}${ATLASSIAN_EMAIL:-}${ATLASSIAN_API_TOKEN:-}" ]; then
+    echo "claude-executor: acli sign-in needs ATLASSIAN_SITE, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN; skipped" >&2
+fi
+
 # The member's own executor config — model, env vars, permission allowlist — synthesized by the
 # board from their `claude-code` executor row (server/src/db/job-store.ts) and delivered as
 # CLAUDE_CODE_CONFIG_CONTENT, the same shape opencode's OPENCODE_CONFIG_CONTENT takes. Top-level

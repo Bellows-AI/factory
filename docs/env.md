@@ -171,6 +171,23 @@ each is answered in place:
   commits and PRs (`contents:write`, `pull_requests:write`) and reading CI (`actions:read`) — is
   granted in the App's installation settings on GitHub, or the runner's token stays read-only.
 
+## Jira: the `ATLASSIAN_*` names
+
+Both executor images ship `acli`, which keeps its credentials in `~/.config/acli` — absent in a
+fresh container. So both entrypoints log it in before the CLI starts when the claim env carries
+all three of `ATLASSIAN_SITE` (e.g. `your-site.atlassian.net`), `ATLASSIAN_EMAIL` and
+`ATLASSIAN_API_TOKEN` (an Atlassian API token; store it as a secret). Nothing platform-specific:
+the names reach the runner by the same env-file / per-attempt Secret as every other claim value,
+so docker and kubernetes behave identically.
+
+- **The token goes in on stdin** (`printf` is a shell builtin), never in an argv another process
+  could read.
+- **A failed sign-in does not fail the run.** Most tasks never touch Jira; the entrypoint prints a
+  one-line warning to stderr and the `jira` skill tells the agent to stop and report an auth
+  failure when a task does. Only some of the three set is the same: a warning, no attempt.
+- **The names are not reserved.** They are ordinary member configuration; the runner only reads
+  them.
+
 ## The page
 
 The three editors (Core, My workspace, Per repository) live in the settings tree (#150): Core at
