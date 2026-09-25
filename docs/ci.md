@@ -55,7 +55,11 @@ tag admits only `[A-Za-z0-9_.-]`, so `v1.0.0+build.1` is a legal git tag that `d
 refuse; everything outside that set becomes a dash. Folding is lossy — `v1.0.0+build.1` and
 `v1.0.0-build.1` collapse to one string — so when it changes anything, a 7-character sha1 of the
 original ref is appended. A docker tag also stops at 128 characters where a git tag does not, so an
-over-long ref is truncated to 120 and carries the same digest. The image tag, the tarball name and the artifact name all use that folded
+over-long ref is truncated to 120 and carries the same digest. A clean `v1.2.3` is therefore tagged
+`v1.2.3` and nothing else — the suffix appears only where the raw ref could not be used. The stated
+limit: a tag deliberately named to equal another tag's truncated-plus-digest form would land on the
+same image tag. Nothing accidental reaches that case, and always-suffixing to close it would put a
+digest on every ordinary release. The image tag, the tarball name and the artifact name all use that folded
 value; the raw ref stays on the run and on the tag itself. Nothing downstream carries the raw ref,
 because a git ref may legally contain a pipe and an artifact name may not. Then `image` builds
 `docker build -f docker/Dockerfile --target runtime -t factory-ai:<tag> .`, `docker save`s it and
