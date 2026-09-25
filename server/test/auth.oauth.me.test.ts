@@ -82,6 +82,9 @@ describe('/api/auth/me', () => {
 
         expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
         expect(response.json().code).toBe('UNAVAILABLE');
+        // The exception stays in the log; the requester gets a generic message. A store error
+        // message carries connection strings, hostnames and query text.
+        expect(response.body).not.toContain('session store unreachable');
     });
 
     it('still answers 200 {authenticated: false} for a cookie the store simply does not know', async () => {
@@ -182,5 +185,6 @@ describe('POST /api/auth/org', () => {
 
         expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
         expect(response.json().code).toBe('UNAVAILABLE');
+        expect(response.body).not.toContain('session store unreachable');
     });
 });

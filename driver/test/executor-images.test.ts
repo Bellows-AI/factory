@@ -79,16 +79,25 @@ describe('the executor branch reporter', () => {
         );
         // Both children tracked: the reporter and the CLI each hand their PID back to the shell.
         expect(entry).toMatch(/^REPORTER_PID=\$!$/m);
+        // The CLI is forked through a subshell that clears the inherited handler and execs. A
+        // background child keeps the parent's traps until it execs, so a TERM landing in that
+        // sliver runs `on_term` IN THE CHILD, which swallows the signal meant to kill it: the CLI
+        // then execs and runs on, and `docker stop` waits out its grace period for a process that
+        // was already told to stop. Measured at 3 of 12 under bash-as-/bin/sh; ash and dash reset
+        // the handler themselves, which is why the images never showed it and the host suite could.
         if (cli === 'claude') {
-            expect(entry).toMatch(/^claude --output-format stream-json --verbose "\$@" > "\$PROGRESS_FIFO" &$/m);
+            expect(entry).toMatch(
+                /\(\n {4}trap - TERM INT\n {4}exec claude --output-format stream-json --verbose "\$@"\n\) > "\$PROGRESS_FIFO" &$/m
+            );
             expect(entry).toMatch(/node "\$\(dirname "\$0"\)\/claude-progress\.cjs" < "\$PROGRESS_FIFO" &/);
             expect(entry).toMatch(/^PROGRESS_PID=\$!$/m);
         } else {
-            expect(entry).toMatch(new RegExp(`^${cli} "\\$@" &$`, 'm'));
+            expect(entry).toMatch(/\(\n {4}trap - TERM INT\n {4}exec opencode "\$@"\n\) &$/m);
         }
         expect(entry).toMatch(/^CLI_PID=\$!$/m);
-        // The CLI runs as a background child now, so the close-time sample can run after it;
-        // a leftover `exec` would turn the script into the PID-1 replacement and skip it.
+        // The `exec` above is INSIDE the subshell, so it replaces that child and leaves $! pointing
+        // at the CLI. At the top level it would replace this shell instead, taking the wait loop
+        // and the close-time sample with it.
         expect(entry).not.toMatch(new RegExp(`^exec ${cli} `, 'm'));
         // TERM/INT reaching PID 1 is forwarded to every child — CLI, reporter and, in the
         // opencode image (the only one that ships it, #68), the rate-limit watch — without

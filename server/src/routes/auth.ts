@@ -248,6 +248,10 @@ function isMemberOf(memberships: readonly { id: string }[], orgId: string): bool
  * a database outage was reported to every signed-in browser as "you are not signed in" — with
  * nothing in the logs to say otherwise. A store failure is now a logged 503; an absent or invalid
  * credential still gets each route's own answer, which is not the same answer in both.
+ *
+ * The exception stays in the log and never reaches the requester: a store error message carries
+ * connection strings, hostnames and query text, and these two routes answer anyone who can reach
+ * the port. The caller is told the session store is unavailable, which is all it can act on.
  */
 async function resolvedCaller(
     resolveUser: (request: FastifyRequest) => Promise<Caller | null>,
@@ -258,7 +262,9 @@ async function resolvedCaller(
         return { ok: true, caller: await resolveUser(request) };
     } catch (err) {
         request.log.error({ err }, 'session resolve failed');
-        await reply.code(HTTP_UNAVAILABLE).send({ error: (err as Error).message, code: ERROR_CODES.UNAVAILABLE });
+        await reply
+            .code(HTTP_UNAVAILABLE)
+            .send({ error: 'The session store is unavailable', code: ERROR_CODES.UNAVAILABLE });
         return { ok: false };
     }
 }

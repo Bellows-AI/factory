@@ -254,10 +254,29 @@ async function loadMoreTasksPage(
  * The most pages one refresh will rebuild. The chain is inherently serial — page n+1's cursor is
  * only known once page n answered — so an uncapped depth turns a member who clicked Load more ten
  * times into eleven sequential `GET /api/tasks` round trips every three seconds. Past the cap the
- * deeper pages go stale and the loaded depth collapses to what the refresh still serves, which is
- * the same collapse a shrinking list already causes.
+ * deeper pages simply go stale — they are NOT re-read, and {@link refreshLanding} keeps them on
+ * screen rather than dropping them.
  */
 export const MAX_REFRESH_DEPTH = 3;
+
+/**
+ * Lands one rebuild onto the rows already on screen. When the rebuild reached the loaded depth —
+ * or the list shrank and the chain ran out of cursors — the rebuild IS the list, and the loaded
+ * depth follows it. When the cap stopped the chain short of the loaded depth while the list still
+ * had more, the pages past the cap were never re-read: replacing the list with the capped rebuild
+ * would make rows the member is reading disappear every tick and collapse the loaded depth to the
+ * cap, so those rows are kept (deduped by id, the rebuild's position winning) and the caller
+ * leaves the cursor and the depth where Load more put them.
+ */
+export function refreshLanding(
+    prev: TaskSummary[] | null,
+    loadedDepth: number,
+    rebuilt: { items: TaskSummary[]; nextCursor: string | null; pages: number }
+): { items: TaskSummary[]; capped: boolean } {
+    const capped = rebuilt.nextCursor !== null && loadedDepth > rebuilt.pages;
+    if (!capped) return { items: rebuilt.items, capped: false };
+    return { items: mergeTaskPage(rebuilt.items, prev ?? []), capped: true };
+}
 
 /**
  * Reads enough successive keyset pages to REBUILD a previously loaded depth, deduped by task id
@@ -305,6 +324,29 @@ export async function fetchDepthPages(
         pages += 1;
     }
     return { navigation: first.navigation, items, nextCursor: cursor, pages };
+}
+
+/**
+ * Lands one rebuild on the poll's state. A rebuild that reached the loaded depth replaces the
+ * list and owns the cursor and the depth; a CAPPED one keeps the pages past the cap on screen
+ * (see {@link refreshLanding}) and leaves the cursor and the depth where Load more put them, so
+ * neither the rows nor the loaded depth collapse to the cap every tick.
+ */
+function landRebuild(
+    rebuilt: { navigation: TaskNavigation; items: TaskSummary[]; nextCursor: string | null; pages: number },
+    depthRef: { current: number },
+    setters: {
+        setNavigation: (navigation: TaskNavigation) => void;
+        setItems: (updater: (prev: TaskSummary[] | null) => TaskSummary[]) => void;
+        setNextCursor: (cursor: string | null) => void;
+    }
+): void {
+    const loadedDepth = depthRef.current;
+    setters.setNavigation(rebuilt.navigation);
+    setters.setItems((prev) => refreshLanding(prev, loadedDepth, rebuilt).items);
+    if (refreshLanding(null, loadedDepth, rebuilt).capped) return;
+    setters.setNextCursor(rebuilt.nextCursor);
+    depthRef.current = rebuilt.pages;
 }
 
 const VISIBLE_MOVING_POLL_MS = 3_000;
@@ -513,10 +555,7 @@ function useOrgTaskPoll(enabled: boolean, query: string): OrgTaskPoll {
             // The chain can complete after the area was left or the filters moved; landing it
             // would paint one question's answer onto another.
             if (signal.aborted) return;
-            setNavigation(rebuilt.navigation);
-            setItems(rebuilt.items);
-            setNextCursor(rebuilt.nextCursor);
-            depthRef.current = rebuilt.pages;
+            landRebuild(rebuilt, depthRef, { setNavigation, setItems, setNextCursor });
             setRefreshError(null);
             setLoadMoreError(null);
             setRefreshing(false);

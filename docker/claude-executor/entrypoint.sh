@@ -136,7 +136,22 @@ PROGRESS_FIFO="$PROGRESS_DIR/events"
 mkfifo "$PROGRESS_FIFO"
 node "$(dirname "$0")/claude-progress.cjs" < "$PROGRESS_FIFO" &
 PROGRESS_PID=$!
-claude --output-format stream-json --verbose "$@" > "$PROGRESS_FIFO" &
+# The CLI is forked through a subshell that CLEARS the inherited handler and execs. A background
+# child inherits the parent's traps until it execs, so a TERM landing in that sliver runs
+# `on_term` IN THE CHILD — which sets a copy of TERM_PENDING nothing reads, and swallows the very
+# signal meant to kill it. The child then execs and runs on, and `docker stop` waits out its
+# grace period for a CLI that was already told to stop. `exec` keeps $! pointing at the CLI, so
+# the wait loop and the `kill -0` probe below are unchanged, and the FIFO redirect stays on the
+# subshell, which is the same file descriptor the CLI inherits.
+#
+# ash and dash — what these images ship — reset the handler themselves and never showed this;
+# bash-as-/bin/sh does not, and dropped the signal in 3 of 12 runs of a reduction of this script.
+# The entrypoints are run under the host's sh by the offline suite, so "correct only under ash"
+# is not good enough for a file whose whole job is to pass a signal on.
+(
+    trap - TERM INT
+    exec claude --output-format stream-json --verbose "$@"
+) > "$PROGRESS_FIFO" &
 CLI_PID=$!
 
 if [ -n "$TERM_PENDING" ]; then
