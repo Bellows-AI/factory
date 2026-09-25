@@ -189,7 +189,7 @@ describe('the container scripts', () => {
             check(collect, name, value, 'collect');
             check(reply, name, value, 'reply');
         }
-        expect(collect['TOTAL_OUTPUT_BYTES']).toBe('262144');
+        expect(collect.TOTAL_OUTPUT_BYTES).toBe('262144');
         // The GraphQL thread pagination is untyped in the scripts: the collect script interpolates
         // the constant into its query, the reply script writes the resolved number; pin both to
         // THREADS_LIMIT (the collect file text is 'first: ${THREADS_LIMIT}', not the number).

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import { refusalOf } from './refusal.js';
 import type { DefaultWorkflowSteps } from './useDefaultWorkflowSettings.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
@@ -75,7 +76,9 @@ const TASK_STATES: readonly TaskState[] = ['attention', 'running', 'review', 'pa
 const AUTHOR_SHAPE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,98}[a-zA-Z0-9])?$/;
 /** Two non-empty path-segment halves: anything else is not an owner/name repo and is not sent. */
 const REPO_SHAPE = /^[^/\\]+\/[^/\\]+$/;
-const QUERY_MAX = 200;
+/** The search field's character cap — the same one `inboxFiltersFromSearch` clamps to, exported
+ * so the inbox's input cannot drift from what the poll would actually send. */
+export const QUERY_MAX = 200;
 
 /**
  * The filters one URL search names, with every unknown clamped to the default — the URL is
@@ -183,8 +186,7 @@ async function fetchTaskPage(url: string, signal: AbortSignal): Promise<TaskList
     const response = await fetch(url, { signal });
     if (response.status === HTTP_STATUS_UNAUTHORIZED) throw new TaskAuthExpired();
     if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Request failed (${response.status})`);
+        throw new Error((await refusalOf(response)).error);
     }
     return (await response.json()) as TaskListResponse;
 }
@@ -195,8 +197,7 @@ async function fetchMorePage(query: string, cursor: string, signal: AbortSignal)
     const response = await fetch(morePageUrl(query, cursor), { signal });
     if (response.status === HTTP_STATUS_UNAUTHORIZED) throw new TaskAuthExpired();
     if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Could not load more tasks (${response.status})`);
+        throw new Error((await refusalOf(response, 'Could not load more tasks')).error);
     }
     return (await response.json()) as TaskListResponse;
 }
@@ -250,10 +251,40 @@ async function loadMoreTasksPage(
 }
 
 /**
+ * The most pages one refresh will rebuild. The chain is inherently serial — page n+1's cursor is
+ * only known once page n answered — so an uncapped depth turns a member who clicked Load more ten
+ * times into eleven sequential `GET /api/tasks` round trips every three seconds. Past the cap the
+ * deeper pages simply go stale — they are NOT re-read, and {@link refreshLanding} keeps them on
+ * screen rather than dropping them.
+ */
+export const MAX_REFRESH_DEPTH = 3;
+
+/**
+ * Lands one rebuild onto the rows already on screen. When the rebuild reached the loaded depth —
+ * or the list shrank and the chain ran out of cursors — the rebuild IS the list, and the loaded
+ * depth follows it. When the cap stopped the chain short of the loaded depth while the list still
+ * had more, the pages past the cap were never re-read: replacing the list with the capped rebuild
+ * would make rows the member is reading disappear every tick and collapse the loaded depth to the
+ * cap, so those rows are kept (deduped by id, the rebuild's position winning) and the caller
+ * leaves the cursor and the depth where Load more put them.
+ */
+export function refreshLanding(
+    prev: TaskSummary[] | null,
+    loadedDepth: number,
+    rebuilt: { items: TaskSummary[]; nextCursor: string | null; pages: number }
+): { items: TaskSummary[]; capped: boolean } {
+    const capped = rebuilt.nextCursor !== null && loadedDepth > rebuilt.pages;
+    if (!capped) return { items: rebuilt.items, capped: false };
+    return { items: mergeTaskPage(rebuilt.items, prev ?? []), capped: true };
+}
+
+/**
  * Reads enough successive keyset pages to REBUILD a previously loaded depth, deduped by task id
  * (first occurrence wins — the newest position). Exported with the fetch injected so the offline
  * suite can drive the whole chain: a plain first-page swap on refresh would collapse the pages
  * the member already paged through, every three seconds while anything runs.
+ *
+ * The rebuild reads at most {@link MAX_REFRESH_DEPTH} pages however deep the member paged.
  *
  * Returns page one's navigation (org-wide, so any page could serve it — the first is simply the
  * freshest), the merged rows, the cursor of the LAST page read (null when the list shrank below
@@ -281,7 +312,7 @@ export async function fetchDepthPages(
     }
     let cursor = first.page.nextCursor;
     let pages = 1;
-    while (cursor !== null && pages < depth) {
+    while (cursor !== null && pages < Math.min(depth, MAX_REFRESH_DEPTH)) {
         const next = await fetchPage(morePageUrl(query, cursor));
         for (const task of next.page.items) {
             if (!known.has(task.id)) {
@@ -293,6 +324,29 @@ export async function fetchDepthPages(
         pages += 1;
     }
     return { navigation: first.navigation, items, nextCursor: cursor, pages };
+}
+
+/**
+ * Lands one rebuild on the poll's state. A rebuild that reached the loaded depth replaces the
+ * list and owns the cursor and the depth; a CAPPED one keeps the pages past the cap on screen
+ * (see {@link refreshLanding}) and leaves the cursor and the depth where Load more put them, so
+ * neither the rows nor the loaded depth collapse to the cap every tick.
+ */
+function landRebuild(
+    rebuilt: { navigation: TaskNavigation; items: TaskSummary[]; nextCursor: string | null; pages: number },
+    depthRef: { current: number },
+    setters: {
+        setNavigation: (navigation: TaskNavigation) => void;
+        setItems: (updater: (prev: TaskSummary[] | null) => TaskSummary[]) => void;
+        setNextCursor: (cursor: string | null) => void;
+    }
+): void {
+    const loadedDepth = depthRef.current;
+    setters.setNavigation(rebuilt.navigation);
+    setters.setItems((prev) => refreshLanding(prev, loadedDepth, rebuilt).items);
+    if (refreshLanding(null, loadedDepth, rebuilt).capped) return;
+    setters.setNextCursor(rebuilt.nextCursor);
+    depthRef.current = rebuilt.pages;
 }
 
 const VISIBLE_MOVING_POLL_MS = 3_000;
@@ -322,8 +376,7 @@ async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
             return { id: null, error: 'Your session expired' };
         }
         if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
-            return { id: null, error: body.error ?? `Could not queue the task (${response.status})` };
+            return { id: null, error: (await refusalOf(response, 'Could not queue the task')).error };
         }
         const body = (await response.json()) as { id: string };
         return { id: body.id, error: null };
@@ -345,8 +398,7 @@ async function followUpOnTask(id: string, command: string): Promise<QueueResult>
             return { id: null, error: 'Your session expired' };
         }
         if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
-            return { id: null, error: body.error ?? `Could not queue the follow-up (${response.status})` };
+            return { id: null, error: (await refusalOf(response, 'Could not queue the follow-up')).error };
         }
         const body = (await response.json()) as { id: string };
         return { id: body.id, error: null };
@@ -357,9 +409,9 @@ async function followUpOnTask(id: string, command: string): Promise<QueueResult>
 
 /**
  * The shared shape of `markDone`/`stop`/`remove`: a bare POST that answers no body worth keeping,
- * where only the failure text differs between the three routes.
+ * where only the fallback `verb` differs between the three routes.
  */
-async function postTaskAction(url: string, describeFailure: (status: number) => string): Promise<string | null> {
+async function postTaskAction(url: string, verb: string): Promise<string | null> {
     try {
         const response = await fetch(url, { method: 'POST' });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
@@ -367,8 +419,7 @@ async function postTaskAction(url: string, describeFailure: (status: number) => 
             return 'Your session expired';
         }
         if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
-            return body.error ?? describeFailure(response.status);
+            return (await refusalOf(response, verb)).error;
         }
         return null;
     } catch (e) {
@@ -504,10 +555,7 @@ function useOrgTaskPoll(enabled: boolean, query: string): OrgTaskPoll {
             // The chain can complete after the area was left or the filters moved; landing it
             // would paint one question's answer onto another.
             if (signal.aborted) return;
-            setNavigation(rebuilt.navigation);
-            setItems(rebuilt.items);
-            setNextCursor(rebuilt.nextCursor);
-            depthRef.current = rebuilt.pages;
+            landRebuild(rebuilt, depthRef, { setNavigation, setItems, setNextCursor });
             setRefreshError(null);
             setLoadMoreError(null);
             setRefreshing(false);
@@ -613,26 +661,17 @@ function useTaskActions(start: () => void): UseTasks['actions'] {
                 return result;
             },
             async markDone(id: string): Promise<string | null> {
-                const error = await postTaskAction(
-                    `/api/jobs/${id}/done`,
-                    (status) => `Could not mark the task done (${status})`
-                );
+                const error = await postTaskAction(`/api/jobs/${id}/done`, 'Could not mark the task done');
                 if (error === null) start();
                 return error;
             },
             async stop(id: string): Promise<string | null> {
-                const error = await postTaskAction(
-                    `/api/jobs/${id}/stop`,
-                    (status) => `Could not stop the task (${status})`
-                );
+                const error = await postTaskAction(`/api/jobs/${id}/stop`, 'Could not stop the task');
                 if (error === null) start();
                 return error;
             },
             async remove(id: string): Promise<string | null> {
-                const error = await postTaskAction(
-                    `/api/jobs/${id}/remove`,
-                    (status) => `Could not remove the task (${status})`
-                );
+                const error = await postTaskAction(`/api/jobs/${id}/remove`, 'Could not remove the task');
                 if (error === null) start();
                 return error;
             },

@@ -144,7 +144,7 @@ function rowsFromDataPoints({
         }
         const attrs = { ...resourceAttrs, ...attributes(point.attributes) };
         rows.push({
-            agent: attrs['agent'] ?? agentOf(name),
+            agent: attrs.agent ?? agentOf(name),
             metric: name,
             field: canonicalField(name, attrs),
             sessionId: attrs['session.id'] ?? null,
@@ -162,8 +162,8 @@ function rowsFromDataPoints({
 function metricContainer(
     metric: Record<string, never>
 ): { dataPoints: unknown[] | undefined; temporality: MetricRow['temporality'] } | null {
-    const sum = metric['sum'] as { dataPoints?: unknown[]; aggregationTemporality?: unknown } | undefined;
-    const gauge = metric['gauge'] as { dataPoints?: unknown[] } | undefined;
+    const sum = metric.sum as { dataPoints?: unknown[]; aggregationTemporality?: unknown } | undefined;
+    const gauge = metric.gauge as { dataPoints?: unknown[] } | undefined;
     const container = sum ?? gauge;
     if (!container) return null;
     // A gauge has no temporality; treating it as a delta would make it summable, which it is not.
@@ -177,13 +177,13 @@ function rowsFromMetric(
     resourceAttrs: Record<string, string>,
     skipped: Skipped
 ): MetricRow[] {
-    const name = metric['name'] as unknown as string;
+    const name = metric.name as unknown as string;
     if (typeof name !== 'string' || !name) return [];
     if (METRIC_DENYLIST.has(name)) {
         skipped.deniedMetric += 1;
         return [];
     }
-    if (metric['histogram'] || metric['exponentialHistogram'] || metric['summary']) {
+    if (metric.histogram || metric.exponentialHistogram || metric.summary) {
         skipped.histogram += 1;
         return [];
     }
@@ -203,12 +203,12 @@ function rowsFromResource(resource: Record<string, never>, skipped: Skipped): Me
     // Resource attributes are promoted onto every datapoint, because that is where
     // OTEL_RESOURCE_ATTRIBUTES keys arrive and datapoint attributes are what we query.
     const resourceAttrs = attributes(
-        (resource['resource'] as { attributes?: { key: string; value: AnyValue }[] } | undefined)?.attributes
+        (resource.resource as { attributes?: { key: string; value: AnyValue }[] } | undefined)?.attributes
     );
 
     const rows: MetricRow[] = [];
-    for (const scope of (resource['scopeMetrics'] as unknown as Record<string, never>[] | undefined) ?? []) {
-        for (const metric of (scope['metrics'] as unknown as Record<string, never>[] | undefined) ?? []) {
+    for (const scope of (resource.scopeMetrics as unknown as Record<string, never>[] | undefined) ?? []) {
+        for (const metric of (scope.metrics as unknown as Record<string, never>[] | undefined) ?? []) {
             rows.push(...rowsFromMetric(metric, resourceAttrs, skipped));
         }
     }

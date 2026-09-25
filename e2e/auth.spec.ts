@@ -79,17 +79,13 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     await expect(appearance.locator('option')).toHaveText(['System', 'Light', 'Dark']);
 });
 
-test('the gate holds a narrow phone inside the viewport, in both palettes (issue 190)', async ({
-    page,
-}) => {
+test('the gate holds a narrow phone inside the viewport, in both palettes (issue 190)', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
 
     await expect(gate(page)).toBeVisible();
     await expect(signIn(page)).toBeVisible();
-    const overflow = await page.evaluate(
-        () => document.body.scrollWidth - document.body.clientWidth
-    );
+    const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
     expect(overflow, 'the gate overflows horizontally at 390px').toBeLessThanOrEqual(0);
     // Dark is SET, not assumed: the appearance bootstrap (#188) maps a missing attribute to the
     // live OS palette, which headless cannot be trusted to prefer.
@@ -134,8 +130,7 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
 
     // The same screen at phone width, both palettes: the closeout's onboarding captures. The
     // column must reflow to one column and never widen the body (issue 190).
-    const overflow = () =>
-        page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
+    const overflow = () => page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await overflow(), 'onboarding overflows at 390px').toBeLessThanOrEqual(0);
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
@@ -178,11 +173,11 @@ test('the screen explains itself, its identity, and the default choice (issue 18
     // The recomposed page: one heading, the setup context, the purpose, the person, the note.
     await expect(page.getByRole('heading', { level: 1, name: 'Choose organizations and repositories' })).toHaveCount(1);
     await expect(page.getByText('Setup · One step')).toBeVisible();
-    await expect(page.getByText('Track agent activity, start work, and keep repository setup visible in one place.')).toBeVisible();
-    await expect(page.getByText('Signed in as E2E User (@e2e-user)')).toBeVisible();
     await expect(
-        page.getByText('GitHub sign-in provides your identity and organization membership.')
+        page.getByText('Track agent activity, start work, and keep repository setup visible in one place.')
     ).toBeVisible();
+    await expect(page.getByText('Signed in as E2E User (@e2e-user)')).toBeVisible();
+    await expect(page.getByText('GitHub sign-in provides your identity and organization membership.')).toBeVisible();
 
     // Whatever a previous test stored arrives pre-checked; normalize to every reported
     // installation selected, so what this test confirms is what this test chose — every stored

@@ -172,3 +172,18 @@ export function withDefault(
 export function defaultExecutorName(executors: readonly { name: string; isDefault?: boolean }[]): string {
     return executors.find((executor) => executor.isDefault)?.name ?? executors[0]?.name ?? '';
 }
+
+/**
+ * The member-facing copy for the executor surfaces, kept here rather than beside the components
+ * that render it: this module is plain TypeScript with no React, so the e2e specs can import these
+ * and assert what the DOM must say instead of holding their own copies of the sentences. Three of
+ * those copies had already drifted out of sync with the product, and nothing caught it —
+ * `verify:ui` needs Playwright and two databases to run at all.
+ */
+
+/** The panel-level sentence on both executor surfaces: what an executor decides for a task. */
+export const EXECUTOR_GUIDANCE =
+    'Each task runs with its selected executor. The executor type chooses Claude Code or OpenCode, and its JSON config is applied to that runner.';
+
+/** What choosing a Type does; tied to the select with aria-describedby. */
+export const TYPE_CONFIG_NOTE = 'Tasks using this executor run with the selected type: Claude Code or OpenCode.';

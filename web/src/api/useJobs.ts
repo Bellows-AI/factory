@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /**
@@ -209,8 +210,7 @@ async function pollThreadOnce(id: string, signal: AbortSignal): Promise<ThreadPo
         if (response.status === HTTP_STATUS_UNAUTHORIZED) return { kind: 'unauthorized' };
         if (!response.ok) {
             if (signal.aborted) return { kind: 'aborted' };
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
-            return { kind: 'error', message: body.error ?? `Request failed (${response.status})` };
+            return { kind: 'error', message: (await refusalOf(response)).error };
         }
         const body = (await response.json()) as { jobs: Job[] };
         if (signal.aborted) return { kind: 'aborted' };

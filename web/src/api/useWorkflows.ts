@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import type { WorkflowParamChoice } from '../task-composer.js';
 import { JSON_HEADERS } from '@factory-ai/core';
@@ -68,7 +69,9 @@ export function useWorkflows(repo: string | null): UseWorkflows {
         const ack = new AbortController();
         controller.current = ack;
         const url = repo === null ? '/api/workflows' : `/api/workflows?repo=${encodeURIComponent(repo)}`;
-        (async () => {
+        // Explicitly discarded: the body catches everything it can answer for, and an effect
+        // cannot await. The `void` is what says so rather than leaving a floating promise.
+        void (async () => {
             try {
                 const response = await fetch(url, { signal: ack.signal });
                 if (response.status === HTTP_STATUS_UNAUTHORIZED) {
@@ -76,7 +79,7 @@ export function useWorkflows(repo: string | null): UseWorkflows {
                     return;
                 }
                 if (!response.ok) {
-                    setError(`Could not load the workflows (${response.status})`);
+                    setError((await refusalOf(response, 'Could not load the workflows')).error);
                     return;
                 }
                 const body = (await response.json()) as { workflows?: WorkflowChoice[] };
@@ -122,13 +125,6 @@ export interface UseWorkflowsManagement {
     create: (input: { name: string; scope: 'org' | 'user'; definition: unknown }) => Promise<WorkflowResult>;
     update: (id: string, input: { name: string; definition: unknown }) => Promise<WorkflowResult>;
     remove: (id: string) => Promise<string | null>;
-}
-
-/** A failed response's body, best-effort: never throws on a non-JSON or empty body. */
-async function refusalOf(response: Response): Promise<{ error: string; code?: string }> {
-    const body = (await response.json().catch(() => ({}))) as { error?: string; code?: string };
-    const error = body.error ?? `Request failed (${response.status})`;
-    return body.code ? { error, code: body.code } : { error };
 }
 
 /**

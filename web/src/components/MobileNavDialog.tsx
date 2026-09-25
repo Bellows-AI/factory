@@ -1,9 +1,10 @@
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import type { TaskNavigation } from '../api/useTasks.js';
 import type { StatsPayload } from '../api/useStats.js';
 import { switchOrg } from '../api/org.js';
-import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor, countLabel } from '../nav-model.js';
+import { NAV_ITEMS, countLabel } from '../nav-model.js';
+import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
 import { OrgSelector } from './OrgSelector.js';
 
 /** What the drawer calls itself, and what its way out says — asserted by name in e2e. */
@@ -13,8 +14,9 @@ export const CLOSE_LABEL = 'Close navigation';
 /**
  * The mobile navigation drawer (issue 160).
  *
- * The same model as SideNav, in compact mode — `NAV_ITEMS` and `SETTINGS_SECTIONS` from the one
- * nav-model module, never a second route array. What it deliberately does NOT carry is the task
+ * The same model as SideNav, in compact mode — `NAV_ITEMS` from the one nav-model module, rendered
+ * by the one set of link components (`NavItems.tsx`), never a second route array and never a
+ * second spelling of a nav class. What it deliberately does NOT carry is the task
  * tree's rows: a drawer is navigation, not a preview, so it renders the task COUNTS as sentences
  * and the New task link, and nothing that would scroll the route you are looking for off a
  * 360px screen. Focus trapping, Escape, the backdrop and focus restoration are Headless UI's —
@@ -61,34 +63,10 @@ export function MobileNavDialog({
                         <ul className="sidenav-items">
                             {NAV_ITEMS.map((item) => (
                                 <li key={item.to}>
-                                    <NavLink
-                                        to={item.to}
-                                        end={item.end ?? false}
-                                        className={({ isActive }) =>
-                                            isActive ? 'sidenav-link is-active' : 'sidenav-link'
-                                        }
-                                        onClick={onNavigate}
-                                        aria-current={ariaCurrentFor(item, pathname)}
-                                    >
-                                        {item.label}
-                                    </NavLink>
+                                    <NavItemLink item={item} pathname={pathname} onNavigate={onNavigate} />
                                 </li>
                             ))}
-                            {onSettings
-                                ? SETTINGS_SECTIONS.map((section) => (
-                                      <li key={section.to}>
-                                          <NavLink
-                                              to={section.to}
-                                              className={({ isActive }) =>
-                                                  isActive ? 'sidenav-sublink is-active' : 'sidenav-sublink'
-                                              }
-                                              onClick={onNavigate}
-                                          >
-                                              {section.label}
-                                          </NavLink>
-                                      </li>
-                                  ))
-                                : null}
+                            {onSettings ? <SettingsSectionItems onNavigate={onNavigate} /> : null}
                         </ul>
                         {navigation !== null ? (
                             <>
@@ -99,16 +77,7 @@ export function MobileNavDialog({
                                 <p className="mobile-nav-count">{countLabel('running', navigation.counts.running)}</p>
                                 <p className="mobile-nav-count">{countLabel('review', navigation.counts.review)}</p>
                                 <p className="mobile-nav-count">{countLabel('past', navigation.counts.past)}</p>
-                                <NavLink
-                                    to="/tasks/new"
-                                    end
-                                    className={({ isActive }) =>
-                                        isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'
-                                    }
-                                    onClick={onNavigate}
-                                >
-                                    + New task
-                                </NavLink>
+                                <NewTaskLink onNavigate={onNavigate} />
                             </>
                         ) : null}
                     </nav>

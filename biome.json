@@ -11,6 +11,7 @@
             "server/**",
             "web/**",
             "driver/**",
+            "e2e/**",
             "*.ts",
             "package.json",
             "tsconfig.json",
@@ -28,7 +29,11 @@
         "lineWidth": 120,
         "lineEnding": "lf"
     },
-    "plugins": ["./lint/no-shared-literals.grit"],
+    "plugins": [
+        "./lint/no-shared-literals.grit",
+        "./lint/no-inline-container-scripts.grit",
+        "./lint/no-cross-package-imports.grit"
+    ],
     "assist": {
         "enabled": false
     },
@@ -36,9 +41,6 @@
         "enabled": true,
         "rules": {
             "preset": "recommended",
-            "a11y": {
-                "noSvgWithoutTitle": "off"
-            },
             "complexity": {
                 "noExcessiveCognitiveComplexity": {
                     "level": "error",
@@ -52,38 +54,103 @@
                     "level": "error",
                     "options": { "max": 4 }
                 },
-                "noAdjacentSpacesInRegex": "off",
-                "noUselessFragments": "off",
-                "useLiteralKeys": "off",
+                "noExcessiveNestedTestSuites": "error",
+                "noImplicitCoercions": "error",
+                "noUselessCatchBinding": "error",
+                "noUselessReturn": "error",
+                "noUselessUndefined": "error",
                 "useOptionalChain": "off",
-                "useRegexLiterals": "off"
+                "useWhile": "error"
             },
             "correctness": {
-                "noUnusedFunctionParameters": "off",
+                "noGlobalDirnameFilename": "error",
+                "noNestedComponentDefinitions": "error",
+                "noPrivateImports": "error",
+                "noUnusedFunctionParameters": "error",
                 "noUnusedImports": "error",
                 "noUnusedVariables": "error",
-                "noUnsafeOptionalChaining": "off",
+                "noUnsafeOptionalChaining": "error",
                 "useExhaustiveDependencies": "off",
-                "useJsxKeyInIterable": "off"
+                "useImportExtensions": {
+                    "level": "error",
+                    "options": { "forceJsExtensions": true }
+                },
+                "useJsonImportAttributes": "error",
+                "useJsxKeyInIterable": "off",
+                "useUniqueElementIds": "off"
+            },
+            "performance": {
+                "noAccumulatingSpread": "error"
+            },
+            "security": {
+                "noDangerouslySetInnerHtml": "error",
+                "noGlobalEval": "error"
             },
             "style": {
+                "noCommonJs": "error",
+                "noEnum": "error",
                 "noExcessiveLinesPerFile": {
                     "level": "error",
                     "options": { "maxLines": 500, "skipBlankLines": true }
                 },
+                "noInferrableTypes": "error",
                 "noMagicNumbers": "error",
+                "noMultiAssign": "error",
                 "noNonNullAssertion": "off",
-                "useImportType": "off",
-                "useTemplate": "off"
+                "noSubstr": "error",
+                "noUselessElse": "error",
+                "noYodaExpression": "error",
+                "useAsConstAssertion": "error",
+                "useConsistentBuiltinInstantiation": "error",
+                "useForOf": "error",
+                "useFragmentSyntax": "error",
+                "useNodeAssertStrict": "error",
+                "useObjectSpread": "error",
+                "useReadonlyClassProperties": "error",
+                "useSelfClosingElements": "error",
+                "useShorthandAssign": "error",
+                "useSpreadOverApply": "error",
+                "useTemplate": "off",
+                "useThrowNewError": "error",
+                "useThrowOnlyError": "error",
+                "useTrimStartEnd": "error"
             },
             "suspicious": {
-                "noArrayIndexKey": "off",
-                "noAssignInExpressions": "off",
-                "noControlCharactersInRegex": "off",
-                "noImplicitAnyLet": "off",
-                "noPrototypeBuiltins": "off",
-                "noRedeclare": "off",
-                "useIterableCallbackReturn": "off"
+                "noAlert": "error",
+                "noConstantBinaryExpressions": "error",
+                "noDoubleEquals": "error",
+                "noDuplicateDependencies": "error",
+                "noDuplicateTestHooks": "error",
+                "noEvolvingTypes": "error",
+                "noExportsInTest": "error",
+                "noFocusedTests": "error",
+                "noForIn": "error",
+                "noImportCycles": "error",
+                "noNestedPromises": "error",
+                "noParametersOnlyUsedInRecursion": "error",
+                "noSkippedTests": "error",
+                "noTsIgnore": "error",
+                "noUnassignedVariables": "error",
+                "noUnusedExpressions": "error",
+                "useDeprecatedDate": "error",
+                "useErrorMessage": "error",
+                "useGuardForIn": "error",
+                "useNumberToFixedDigitsArgument": "error",
+                "useStaticResponseMethods": "error"
+            },
+            "nursery": {
+                "noExcessiveNestedCallbacks": "error",
+                "noExtendNative": "error",
+                "noFloatingPromises": "error",
+                "noIdenticalTestTitle": "error",
+                "noNegationInEqualityCheck": "error",
+                "noUnsafePlusOperands": "error",
+                "useArraySome": "error",
+                "useImportsFirst": "error",
+                "useIncludes": "error",
+                "useRegexpTest": "error",
+                "useTestHooksInOrder": "error",
+                "useTestHooksOnTop": "error"
             }
         }
     },
@@ -108,7 +175,30 @@
     },
     "overrides": [
         {
-            "includes": ["core/test/**", "server/test/**", "server/test-db/**", "driver/test/**", "web/test/**"],
+            "includes": ["web/src/charts/**"],
+            "linter": { "rules": { "suspicious": { "noArrayIndexKey": "off" } } }
+        },
+        {
+            "includes": ["driver/src/runner.ts"],
+            "linter": { "rules": { "suspicious": { "noControlCharactersInRegex": "off" } } }
+        },
+        {
+            "includes": ["server/src/telemetry/otlp.ts"],
+            "linter": { "rules": { "complexity": { "useLiteralKeys": "off" } } }
+        },
+        {
+            "includes": ["web/src/main.tsx"],
+            "linter": { "rules": { "correctness": { "useImportExtensions": "off" } } }
+        },
+        {
+            "includes": [
+                "core/test/**",
+                "server/test/**",
+                "server/test-db/**",
+                "driver/test/**",
+                "web/test/**",
+                "e2e/**"
+            ],
             "linter": {
                 "rules": {
                     "complexity": {

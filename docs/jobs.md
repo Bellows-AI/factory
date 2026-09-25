@@ -847,15 +847,24 @@ driver died before it could report. Since 016 the session id is whatever the exe
 claude uuid or an opencode `ses_…` — so every executor with a reported session can be followed up. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
 retried click answers the first verdict's instant rather than rewriting it.
 
-**A follow-up's command is delivered into the restored session — the one exception to
-delivered-once.** The follow-up's command is the NEW adjustment and the restored transcript is the
-conversation it continues, so it goes out even though the claim
-resumes (`followUp: true` → `--resume <id> -p <command>`). `command_delivered_at` is what has kept
-this an exception rather than a rule: `suspend` stamps it — parking is the moment "the command sits
-in a transcript somebody may have been driving" becomes true — and the claim returns `followUp`
-from the pre-update value. Since stop became a verdict, a suspended follow-up is terminal and never
-claimed again, so in practice every claimed follow-up delivers; the column remains the guard that
-keeps the delivered-once rule from being quietly rewritten.
+**The command is delivered on every claim, resume included.** There is no delivered-once rule: the
+runner plan both executors render from (`driver/src/runner-plan.ts`) appends `-p <command>` to every
+claude-code run, so a resumed claim carries its command exactly as a fresh one does
+(`--resume <id> -p <command>`). A follow-up is not a special case of delivery — its command is the
+NEW adjustment and the restored transcript is the conversation it continues, which is the same
+argv either way.
+
+This replaced a delivered-once rule the two executors disagreed about: docker delivered
+unconditionally, kubernetes suppressed the command on a resume that was not a follow-up, and each
+file's comments claimed to be the other's twin. Docker's behavior is the one that survived, so the
+rule is now stated in one place and rendered by one planner.
+
+`command_delivered_at` is left over from the old rule and no longer gates anything. `suspend()`
+still stamps it (`job-store-actions.ts`) and the claim still derives `followUp` from it —
+`(parent_job_id is not null and command_delivered_at is null)`, `job-store-claim.ts` — but no
+runner reads that flag to decide delivery any more; `followUp` survives only in
+`claimContinuesSession` (`driver/src/claim.ts`). The column and its derivation are candidates for
+removal, which is a schema change and wants its own migration.
 
 **A crashed follow-up attempt keeps the session through the re-claim, where an ordinary job's is
 cleared.** The claim's keep predicate (below) extends to rows carrying

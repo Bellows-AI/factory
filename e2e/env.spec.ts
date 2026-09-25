@@ -38,7 +38,7 @@ async function open(page: Page) {
  * so both tabs are swept and the whole-list save commits the deletions. A clean panel needs no
  * save at all — and its save button is exactly what tells us so.
  */
-async function clearScope(page: Page, panel: Locator) {
+async function clearScope(panel: Locator) {
     for (const tabName of [/^Variables \(/, /^Secrets \(/]) {
         await panel.getByRole('tab', { name: tabName }).click();
         // No iteration cap: the test timeout bounds a runaway sweep, and a cap below the row
@@ -73,7 +73,8 @@ test.describe('environment editors', () => {
         await page.goto('/settings/workspace');
         await expect(page.getByRole('heading', { name: 'My workspace' })).toBeVisible({ timeout: 60_000 });
         const workspaceText = await page.locator('main').innerText();
-        for (const token of FORBIDDEN) expect(workspaceText, `workspace section contains ${token}`).not.toContain(token);
+        for (const token of FORBIDDEN)
+            expect(workspaceText, `workspace section contains ${token}`).not.toContain(token);
         await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
 
         await page.goto('/settings/repos');
@@ -93,7 +94,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
 
         // Clean means the save button has nothing to do — the disabled posture is the test.
         await expect(core.getByRole('button', { name: 'Save changes' })).toBeDisabled();
@@ -117,7 +118,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
 
         await core.getByRole('button', { name: 'Add variable' }).click();
         await core.getByLabel('Variable 1 name').fill('E2E_TAB_DRAFT');
@@ -137,7 +138,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
 
         await core.getByRole('button', { name: 'Add variable' }).click();
         await core.getByLabel('Variable 1 name').fill('E2E_UNDO_VAR');
@@ -166,7 +167,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
 
         // Opening alone never changes the draft; the warning says what Apply will do.
         await core.getByRole('button', { name: 'Edit variables as .env' }).click();
@@ -196,7 +197,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
 
         await core.getByRole('tab', { name: /^Secrets \(/ }).click();
         await core.getByRole('button', { name: 'Add secret' }).click();
@@ -221,7 +222,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
 
         await core.getByRole('button', { name: 'Add variable' }).click();
         await core.getByLabel('Variable 1 name').fill('E2E_GUARD_VAR');
@@ -285,7 +286,7 @@ test.describe('environment editors', () => {
 
         await open(page);
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
 
         // Clean: a reload asks nobody anything.
         await page.reload({ waitUntil: 'domcontentloaded' });
@@ -308,7 +309,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
         await core.getByRole('button', { name: 'Add variable' }).click();
         await core.getByLabel('Variable 1 name').fill('E2E_FAIL_VAR');
         await core.getByLabel('Variable 1 value').fill('kept');
@@ -359,7 +360,7 @@ test.describe('environment editors', () => {
         await open(page);
 
         const core = corePanel(page);
-        await clearScope(page, core);
+        await clearScope(core);
         await core.getByRole('button', { name: 'Add variable' }).click();
         await core.getByLabel('Variable 1 name').fill('E2E_NARROW');
         await core.getByLabel('Variable 1 value').fill('fits');

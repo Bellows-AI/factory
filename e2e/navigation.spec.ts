@@ -90,18 +90,20 @@ async function controlsInsideViewport(page: Page, width: number): Promise<void> 
         ({ vw, regions }) => {
             const out: string[] = [];
             for (const el of document.querySelectorAll<HTMLElement>(
-                'main button, main a, main input, main select, main textarea, .appbar button, .appbar a',
+                'main button, main a, main input, main select, main textarea, .appbar button, .appbar a'
             )) {
                 if (el.offsetWidth === 0) continue;
                 if (el.closest(regions)) continue;
                 const box = el.getBoundingClientRect();
                 if (box.left < -1 || box.right > vw + 1) {
-                    out.push(`${el.tagName.toLowerCase()}.${el.className} at ${Math.round(box.left)}..${Math.round(box.right)}`);
+                    out.push(
+                        `${el.tagName.toLowerCase()}.${el.className} at ${Math.round(box.left)}..${Math.round(box.right)}`
+                    );
                 }
             }
             return out;
         },
-        { vw: width, regions: NAMED_SCROLL_REGIONS },
+        { vw: width, regions: NAMED_SCROLL_REGIONS }
     );
     expect(outside, 'controls pushed outside the viewport').toEqual([]);
 }
@@ -177,7 +179,9 @@ test.describe('appearance', () => {
         await page.getByLabel('Appearance').waitFor({ state: 'attached' });
         expect((await page.locator('.theme-select').boundingBox())?.height).toBeGreaterThanOrEqual(44);
         await expect
-            .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth))
+            .poll(() =>
+                page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+            )
             .toBeLessThanOrEqual(0);
     });
 
@@ -253,6 +257,12 @@ test.describe('the desktop shell', () => {
 
     test('the sidenav preview never exceeds five rows per section', async ({ page }) => {
         await page.goto('/tasks');
+        // The counts arrive with the navigation read, not with the document, and both assertions
+        // below are plain `count()`/`allInnerTexts()` reads that do not retry. Waiting for a
+        // parenthesised number is waiting for the sidenav to have answered at all — without it
+        // this samples whatever was painted first and passes on timing.
+        await expect(page.locator('.sidenav-section').first()).toContainText(/\(\d+\)/);
+
         // All three sections' rows together, however the seed sorted them.
         const rows = await page.locator('.sidenav-task').count();
         expect(rows, 'preview rows across all sections').toBeLessThanOrEqual(15);
@@ -262,10 +272,11 @@ test.describe('the desktop shell', () => {
         // clauses into one element ("Running (1) · Need review (103)"), so read every
         // parenthesized number, not just the first.
         const headers = await page.locator('.sidenav-section').allInnerTexts();
-        const counts = headers.flatMap((text) =>
-            [...text.matchAll(/\((\d+)\)/g)].map((match) => Number(match[1])),
-        );
-        expect(counts.some((count) => count > 5), `one section counts past the cap: ${headers.join(', ')}`).toBe(true);
+        const counts = headers.flatMap((text) => [...text.matchAll(/\((\d+)\)/g)].map((match) => Number(match[1])));
+        expect(
+            counts.some((count) => count > 5),
+            `one section counts past the cap: ${headers.join(', ')}`
+        ).toBe(true);
     });
 });
 
@@ -278,7 +289,9 @@ test.describe('the responsive shell', () => {
                 await settle(page, path);
                 // Polled, not slept: the claim is about the settled layout.
                 await expect
-                    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth))
+                    .poll(() =>
+                        page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+                    )
                     .toBeLessThanOrEqual(0);
                 await expect
                     .poll(() => page.evaluate(() => document.body.scrollWidth - document.body.clientWidth))
@@ -301,9 +314,7 @@ test.describe('the responsive shell', () => {
         await expect(skip).toBeFocused();
         await expect(skip).toBeVisible();
         // The reveal is a transform; capture once it has actually slid in.
-        await expect
-            .poll(() => page.evaluate(() => getComputedStyle(document.activeElement!).transform))
-            .toBe('none');
+        await expect.poll(() => page.evaluate(() => getComputedStyle(document.activeElement!).transform)).toBe('none');
         await page.screenshot({ path: `${SHOTS}/skip-link-focus.png` });
 
         await page.keyboard.press('Enter');
@@ -319,9 +330,7 @@ test.describe('the responsive shell', () => {
         expect(after, 'client-side navigation did not move focus to the main region').not.toBe('main-content');
     });
 
-    test('keyboard focus paints the accent ring on navigation and controls, in both themes', async ({
-        page,
-    }) => {
+    test('keyboard focus paints the accent ring on navigation and controls, in both themes', async ({ page }) => {
         // The :focus-visible rule is CSS, invisible to the render suites; this pins the contract
         // where it lands: a keyboard-focused link and button carry a solid two-pixel ring, and
         // the rule colors it via var(--accent) — asserted per theme, since a reflow can wrap the
@@ -457,20 +466,17 @@ test.describe('the responsive shell', () => {
         for (const path of await matrixRoutes(page)) {
             await page.goto(path);
             await settle(page, path);
-            const offenders = await page.evaluate(
-                (allowed) => {
-                    const out: string[] = [];
-                    for (const el of document.querySelectorAll<HTMLElement>('main *')) {
-                        if (el.scrollWidth - el.clientWidth <= 1) continue;
-                        const style = getComputedStyle(el);
-                        if (style.overflowX !== 'auto' && style.overflowX !== 'scroll') continue;
-                        if (el.closest(allowed)) continue;
-                        out.push(`${el.tagName.toLowerCase()}.${el.className}`);
-                    }
-                    return out;
-                },
-                NAMED_SCROLL_REGIONS,
-            );
+            const offenders = await page.evaluate((allowed) => {
+                const out: string[] = [];
+                for (const el of document.querySelectorAll<HTMLElement>('main *')) {
+                    if (el.scrollWidth - el.clientWidth <= 1) continue;
+                    const style = getComputedStyle(el);
+                    if (style.overflowX !== 'auto' && style.overflowX !== 'scroll') continue;
+                    if (el.closest(allowed)) continue;
+                    out.push(`${el.tagName.toLowerCase()}.${el.className}`);
+                }
+                return out;
+            }, NAMED_SCROLL_REGIONS);
             expect(offenders, `${path} scrolls somewhere without a named region`).toEqual([]);
         }
     });
@@ -502,9 +508,7 @@ test.describe('the responsive shell', () => {
         await page.screenshot({ path: `${SHOTS}/zoom-200-dashboard.png`, fullPage: true });
     });
 
-    test('the account menu opens inside the viewport and restores its trigger on a narrow phone', async ({
-        page,
-    }) => {
+    test('the account menu opens inside the viewport and restores its trigger on a narrow phone', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto('/');
         await page.locator('.skip-link').waitFor({ state: 'attached' });

@@ -249,7 +249,7 @@ describe('parseBellows: rejects invalid gates and limits', () => {
 
 describe('readGatesFile: repo tree resolution', () => {
     const USER = '0b9e6c50-8d13-4b8e-9dfb-2fa2d1ba4c71';
-    const seam = (content: string | Error) => (path: string) =>
+    const seam = (content: string | Error) => (_path: string) =>
         content instanceof Error ? Promise.reject(content) : Promise.resolve(content);
 
     it('reads the repo checkout root under the member tree, by repo NAME', async () => {

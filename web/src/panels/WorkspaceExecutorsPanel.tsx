@@ -1,6 +1,6 @@
 import type { WorkspaceExecutor } from '../api/useWorkspace.js';
 import { commitDate } from '../format.js';
-import { defaultExecutorName, executorTypeLabel } from '../workspace/executors.js';
+import { defaultExecutorName, EXECUTOR_GUIDANCE, executorTypeLabel } from '../workspace/executors.js';
 
 /**
  * One row per configured executor — each with the Edit action that reopens the dialog on it, and
@@ -9,10 +9,6 @@ import { defaultExecutorName, executorTypeLabel } from '../workspace/executors.j
  * and its Add action are the page header's; this panel is the list plus its scope context
  * (issue 183): "My workspace", and the guidance that explains the task-scoped runner choice.
  */
-
-/** The same sentence the page's root-null refusal reuses — one truth about scope, two contexts. */
-export const EXECUTOR_GUIDANCE =
-    'Each task runs with its selected executor. The executor type chooses Claude Code or OpenCode, and its JSON config is applied to that runner.';
 
 /** The row action that flags an executor as the default (issue 215). */
 export const MAKE_DEFAULT_LABEL = 'Make default';

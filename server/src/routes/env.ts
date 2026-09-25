@@ -8,9 +8,9 @@ import {
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
-import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
+import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
-import { fullName, type AppConfig, type Repo } from '../config.js';
+import type { AppConfig, Repo } from '../config.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 
 /**
@@ -124,33 +124,6 @@ function repoSegmentReason(repo: Repo): string | null {
 }
 
 /**
- * The same bargain the workspace selection route makes: the scope must be one the installation can
- * actually see, or the row is one this deployment has no business holding.
- */
-async function checkRepoVisible(
-    repos: OrgRuntime['repos'],
-    repo: Repo
-): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
-    const available = new Set((await repos.list()).map(fullName));
-    if (!available.size && repos.lastError()) {
-        return {
-            ok: false,
-            status: HTTP_UNAVAILABLE,
-            code: ERROR_CODES.UNAVAILABLE,
-            message: `Cannot check the repository against the GitHub App installation: ${repos.lastError()}`,
-        };
-    }
-    if (!available.has(`${repo.owner}/${repo.name}`)) {
-        return {
-            ok: false,
-            code: ERROR_CODES.UNKNOWN_REPO,
-            message: `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
-        };
-    }
-    return { ok: true };
-}
-
-/**
  * Every check the repo-scope PUT applies before it touches the store, in one place so the route
  * handler itself stays a single guard-and-save.
  */
@@ -166,7 +139,7 @@ async function validatePutRepoRequest(
     if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
     const vars = parseVars(request.body);
     if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
-    const visible = await checkRepoVisible(repos, repo);
+    const visible = await checkReposVisible(repos, [repo], { subject: 'the repository' });
     if (!visible.ok) return visible;
     return { ok: true, repo, vars };
 }

@@ -1,4 +1,3 @@
-import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { claimContinuesSession, envFileBody } from './claim.js';
 import { reportTail } from './runner.js';
@@ -13,9 +12,9 @@ import {
     syncJobName,
     syncJobSpec,
 } from './k8s-auxspec.js';
-import { envBodyToData, jobsPath, runnerName } from './k8s-podspec.js';
+import { envBodyToData, jobsPath, runnerName, secretBody } from './k8s-podspec.js';
 import {
-    ERROR_PREVIEW_CHARS,
+    expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
     HTTP_SERVER_ERROR_STATUS,
@@ -24,6 +23,7 @@ import {
     parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
+    refusal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sResponse } from './k8s-transport.js';
 import { parseLastJsonLine, reclaimUnreadable, syncUnreadable } from './publish.js';
@@ -158,9 +158,7 @@ export async function readJobPodVerdict(
     what: string
 ): Promise<{ exitCode: number | null; output: string }> {
     const podsResponse = await readVerdict(deps, jobPodsPath(deps.config.k8sNamespace, jobName), what);
-    if (podsResponse.status >= HTTP_ERROR_STATUS) {
-        throw new Error(`${what} answered ${podsResponse.status}: ${podsResponse.body.slice(0, ERROR_PREVIEW_CHARS)}`);
-    }
+    expectOk(podsResponse, what);
     const pod = livePod(podsResponse.body);
     const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
     let output = '';
@@ -188,11 +186,7 @@ export async function auxVerdict(deps: K8sDeps, jobName: string): Promise<{ exit
     if (result.kind === 'notFound') {
         throw new Error(`the job ${jobName} no longer exists`);
     }
-    if (result.kind === 'error') {
-        throw new Error(
-            `reading the job ${jobName} answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
+    if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
     if (result.kind === 'pending') {
         await deps.sleep(POLL_MS);
         return auxVerdict(deps, jobName);
@@ -214,11 +208,7 @@ export async function helperVerdict(
     if (result.kind === 'notFound') {
         throw new Error(`the helper job ${jobName} no longer exists`);
     }
-    if (result.kind === 'error') {
-        throw new Error(
-            `reading the helper job answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
+    if (result.kind === 'error') throw new Error(refusal(result, 'reading the helper job')!);
     if (result.kind === 'pending') {
         await deps.sleep(POLL_MS);
         return helperVerdict(deps, jobName);
@@ -284,11 +274,7 @@ export async function pollRunnerJobUntilTerminal(
         // never arrive, so waiting longer is holding a slot for nothing.
         throw new Error(`the runner job ${runnerName(job)} no longer exists`);
     }
-    if (result.kind === 'error') {
-        throw new Error(
-            `reading the runner job answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
+    if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
     if (result.kind === 'terminal') {
         return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
     }
@@ -349,22 +335,13 @@ export async function runSyncJob(
     const restore = claimContinuesSession(job);
     const env = restore ? {} : envBodyToData(envFileBody(job));
     if (Object.keys(env).length) {
-        const response = await deps.request('POST', secretsPath(deps.config.k8sNamespace), {
-            apiVersion: 'v1',
-            kind: 'Secret',
-            type: 'Opaque',
-            metadata: {
-                name: syncEnvSecretName(job),
-                labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken },
-            },
-            stringData: env,
-        });
-        if (response.status >= HTTP_ERROR_STATUS) {
-            return {
-                ok: false,
-                reason: `creating the sync secret answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`,
-            };
-        }
+        const response = await deps.request(
+            'POST',
+            secretsPath(deps.config.k8sNamespace),
+            secretBody(job, syncEnvSecretName(job), env)
+        );
+        const refused = refusal(response, 'creating the sync secret');
+        if (refused) return { ok: false, reason: refused };
         secretRef.current = syncEnvSecretName(job);
     }
     const create = await deps.request(
@@ -372,12 +349,8 @@ export async function runSyncJob(
         jobsPath(deps.config.k8sNamespace),
         syncJobSpec(deps.config, job, secretRef.current)
     );
-    if (create.status >= HTTP_ERROR_STATUS) {
-        return {
-            ok: false,
-            reason: `creating the worktree sync job answered ${create.status}: ${create.body.slice(0, ERROR_PREVIEW_CHARS)}`,
-        };
-    }
+    const refusedCreate = refusal(create, 'creating the worktree sync job');
+    if (refusedCreate) return { ok: false, reason: refusedCreate };
     const jobName = syncJobName(job);
     const pollFailure = await pollJobToTerminal(deps, jobName, {
         what: 'reading the worktree sync job',
@@ -397,13 +370,8 @@ export async function runSyncJob(
  */
 export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult> {
     const create = await deps.request('POST', jobsPath(deps.config.k8sNamespace), reclaimJobSpec(deps.config, job));
-    if (create.status >= HTTP_ERROR_STATUS) {
-        return {
-            ok: false,
-            removed: false,
-            reason: `creating the worktree reclaim job answered ${create.status}: ${create.body.slice(0, ERROR_PREVIEW_CHARS)}`,
-        };
-    }
+    const refused = refusal(create, 'creating the worktree reclaim job');
+    if (refused) return { ok: false, removed: false, reason: refused };
     const jobName = reclaimJobName(job);
     const pollFailure = await pollJobToTerminal(deps, jobName, {
         what: 'reading the worktree reclaim job',

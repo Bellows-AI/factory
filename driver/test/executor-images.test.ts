@@ -48,9 +48,7 @@ describe('the executor branch reporter', () => {
     it('is copied to /usr/local/bin by both Dockerfiles, never into a config home', () => {
         for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
             const dockerfile = read(`${dir}/Dockerfile`);
-            expect(dockerfile).toMatch(
-                new RegExp(`COPY[^\\n]*branch-reporter\\.cjs /usr/local/bin/branch-reporter\\.cjs`)
-            );
+            expect(dockerfile).toMatch(/COPY[^\n]*branch-reporter\.cjs \/usr\/local\/bin\/branch-reporter\.cjs/);
             expect(dockerfile).not.toMatch(/home\/COPY[^\n]*branch-reporter/);
             expect(dockerfile).not.toMatch(/branch-reporter[^\n]*-home\//);
         }
@@ -81,16 +79,25 @@ describe('the executor branch reporter', () => {
         );
         // Both children tracked: the reporter and the CLI each hand their PID back to the shell.
         expect(entry).toMatch(/^REPORTER_PID=\$!$/m);
+        // The CLI is forked through a subshell that clears the inherited handler and execs. A
+        // background child keeps the parent's traps until it execs, so a TERM landing in that
+        // sliver runs `on_term` IN THE CHILD, which swallows the signal meant to kill it: the CLI
+        // then execs and runs on, and `docker stop` waits out its grace period for a process that
+        // was already told to stop. Measured at 3 of 12 under bash-as-/bin/sh; ash and dash reset
+        // the handler themselves, which is why the images never showed it and the host suite could.
         if (cli === 'claude') {
-            expect(entry).toMatch(/^claude --output-format stream-json --verbose "\$@" > "\$PROGRESS_FIFO" &$/m);
+            expect(entry).toMatch(
+                /\(\n {4}trap - TERM INT\n {4}exec claude --output-format stream-json --verbose "\$@"\n\) > "\$PROGRESS_FIFO" &$/m
+            );
             expect(entry).toMatch(/node "\$\(dirname "\$0"\)\/claude-progress\.cjs" < "\$PROGRESS_FIFO" &/);
             expect(entry).toMatch(/^PROGRESS_PID=\$!$/m);
         } else {
-            expect(entry).toMatch(new RegExp(`^${cli} "\\$@" &$`, 'm'));
+            expect(entry).toMatch(/\(\n {4}trap - TERM INT\n {4}exec opencode "\$@"\n\) &$/m);
         }
         expect(entry).toMatch(/^CLI_PID=\$!$/m);
-        // The CLI runs as a background child now, so the close-time sample can run after it;
-        // a leftover `exec` would turn the script into the PID-1 replacement and skip it.
+        // The `exec` above is INSIDE the subshell, so it replaces that child and leaves $! pointing
+        // at the CLI. At the top level it would replace this shell instead, taking the wait loop
+        // and the close-time sample with it.
         expect(entry).not.toMatch(new RegExp(`^exec ${cli} `, 'm'));
         // TERM/INT reaching PID 1 is forwarded to every child — CLI, reporter and, in the
         // opencode image (the only one that ships it, #68), the rate-limit watch — without
@@ -101,20 +108,45 @@ describe('the executor branch reporter', () => {
         // (the kill -0 probe), and the reporter is terminated and reaped before the close-time
         // sample so nothing outlives the run.
         expect(entry).toMatch(
-            /while :; do\n    wait "\$CLI_PID"\n    STATUS=\$\?\n    kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/
+            /while :; do\n {4}wait "\$CLI_PID"\n {4}STATUS=\$\?\n {4}kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/
         );
+        // The forwarding kill takes its pids UNQUOTED, unlike every other expansion in these
+        // files. The trap is installed before any child exists (asserted below), so each pid is
+        // empty until its child starts, and an empty "$VAR" would hand kill an empty argument
+        // instead of nothing at all.
         if (cli === 'opencode') {
-            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID" "\$WATCHER_PID"/);
+            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$WATCHER_PID/);
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
         } else {
-            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID" "\$PROGRESS_PID"/);
+            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$PROGRESS_PID/);
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$PROGRESS_PID" 2>\/dev\/null \|\| true/);
         }
         expect(entry).toMatch(/branch-reporter\.cjs --once/);
         expect(entry).toMatch(/exit "\$STATUS"/);
+
+        // The trap is installed BEFORE the first child is forked, and that ordering is the
+        // assertion — not a detail of it. With the trap after the last `&`, PID 1 carries the
+        // default TERM action across the gap between them, so a `docker stop` landing there kills
+        // this shell and orphans the CLI until the runtime's forced kill: precisely what the trap
+        // exists to prevent. The gap is also unobservable from outside, which is why the offline
+        // signal test below could only guess at its width with a sleep, and why it failed about
+        // one full-suite run in three until the ordering changed.
+        // `cmd & PID=$!` is two commands, so a signal can land between the fork and the
+        // assignment: the child is running, the shell does not know its pid, and the forward
+        // reaches nothing. The handler records that it fired and the shell re-delivers once every
+        // pid is known — without it that TERM is silently dropped and the run continues.
+        expect(entry).toMatch(/^TERM_PENDING=''$/m);
+        expect(entry).toMatch(/^ {4}TERM_PENDING=1$/m);
+        expect(entry).toMatch(/if \[ -n "\$TERM_PENDING" \]; then\n {4}#[^\n]*\n {4}kill -TERM \$CLI_PID /);
+
+        const trapAt = entry.search(/^trap \w+ TERM INT$/m);
+        const firstChildAt = entry.search(/^node --disable-warning=ExperimentalWarning .*&$/m);
+        expect(trapAt, 'no trap line').toBeGreaterThan(-1);
+        expect(firstChildAt, 'no backgrounded first child').toBeGreaterThan(-1);
+        expect(trapAt, 'the TERM trap must be installed before the first child is forked').toBeLessThan(firstChildAt);
     });
 
     it('turns Claude protocol events into safe live progress', () => {
@@ -163,8 +195,8 @@ describe('the claude-executor transcript redirect', () => {
     it('redirects CLAUDE_CONFIG_DIR only when the driver hands it a transcript dir', () => {
         const entry = read(ENTRYPOINT);
         expect(entry).toMatch(/if \[ -n "\$\{FACTORY_TRANSCRIPT_DIR:-\}" \]; then/);
-        expect(entry).toMatch(/\n    mkdir -p "\$FACTORY_TRANSCRIPT_DIR"\n/);
-        expect(entry).toMatch(/\n    export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
+        expect(entry).toMatch(/\n {4}mkdir -p "\$FACTORY_TRANSCRIPT_DIR"\n/);
+        expect(entry).toMatch(/\n {4}export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
     });
 
     it('carries no Remote Control trust patch', () => {
@@ -194,10 +226,9 @@ describe('the claude-executor transcript redirect', () => {
  */
 const STUB = `#!/bin/sh
 # Stand-in CLI. Installs its own TERM trap FIRST (an early forward must still leave the
-# marker), records that it started only after a settle — the entrypoint needs a fork plus
-# two builtins to get its trap up, and the test must never signal before that — then blocks
-# in the wait builtin, which a trap interrupts at once, where a foreground sleep would
-# defer it. Without a signal it exits with STUB_STATUS after STUB_SLEEP seconds.
+# marker), records that it started, then blocks in the wait builtin, which a trap interrupts
+# at once, where a foreground sleep would defer it. Without a signal it exits with STUB_STATUS
+# after STUB_SLEEP seconds.
 trap 'echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
 sleep "\${STUB_SETTLE:-0}"
 echo started > "$STUB_DIR/started"
@@ -206,10 +237,19 @@ wait "$!"
 exit "\${STUB_STATUS:-0}"
 `;
 
-// Signaling before the entrypoint's trap exists would kill the shell with the default action
-// and make the test measure nothing; half a second covers the fork-and-two-builtins window
-// with a margin that survives a loaded CI box.
-const STUB_SETTLE_S = '0.5';
+/**
+ * No settle. The entrypoints install their TERM trap BEFORE forking the first child, so this
+ * stub can only be running at all if the trap is already up: the `started` marker IS the
+ * readiness signal, and the test can send its TERM the instant it appears.
+ *
+ * This used to be half a second of sleep, chosen to cover the window between the CLI's `&` and
+ * a `trap` line that came after it. A duration guess is not a synchronisation primitive — under
+ * the load of a full suite run the window outgrew the guess and the case failed roughly one run
+ * in three, because the signal arrived while PID 1 still had the default TERM action. Moving the
+ * trap ahead of the fork closed the window in the entrypoints themselves, which is where the
+ * race actually lived; keep this at 0 so the test would notice if it reopened.
+ */
+const STUB_SETTLE_S = '0';
 const EXIT_TIMEOUT_MS = 10_000;
 const STARTED_TIMEOUT_MS = 5_000;
 /** The stub CLI's own chosen exit status, for the "re-raises it" assertion. */

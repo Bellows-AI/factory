@@ -1,0 +1,29 @@
+language js
+
+// Container scripts are files, never inline strings (AGENTS.md). The argument after `node -e` or
+// `sh -c` must be an identifier bound to a constant read out of driver/src/scripts/ at load time
+// via import.meta.url — a string or template literal here is a script that exists only in argv:
+// it cannot be `sh -n` checked by the scripts suite, it is invisible to the dist copy the driver
+// build performs, and it interpolates its parameters into code rather than passing them as env
+// values or argv. The driver talks to a remote daemon and has no host path into the volumes it
+// names, which is why the script travels by content — that is the reason for the constant, not an
+// argument for inlining it.
+//
+// Anchored on the interpreter, not on the flag: `docker run -e KEY=VAL` spells `-e` too
+// (driver/src/docker-runner-support.ts), and matching the flag alone reports it as a script.
+or {
+    `['node', '-e', $body, $...]`,
+    `[$..., 'node', '-e', $body, $...]`,
+    `['sh', '-c', $body, $...]`,
+    `[$..., 'sh', '-c', $body, $...]`
+} where {
+    not $filename <: or {
+        r".*/test/.*",
+        r".*/test-db/.*"
+    },
+    $body <: or { JsStringLiteralExpression(), JsTemplateExpression() },
+    register_diagnostic(
+        span = $body,
+        message = "Container script passed inline. Put it in driver/src/scripts/ and import the constant (AGENTS.md)."
+    )
+}

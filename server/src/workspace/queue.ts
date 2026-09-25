@@ -141,7 +141,12 @@ export function createCloneQueue(deps: CloneQueueDeps): CloneQueue {
                     // must not stop everyone else's clones, and the page shows this sentence.
                     const message = (error as Error).message.split('\n')[0] ?? 'clone failed';
                     log(`failed ${job.owner}/${job.name}: ${message}`);
-                    await store.markFailed(job.userId, job, message).catch(() => {});
+                    // A failing markFailed leaves the row `cloning` until the next boot recovery
+                    // sweeps it, so it is said out loud rather than swallowed: the page shows a
+                    // clone that never finishes and nothing else would explain why.
+                    await store
+                        .markFailed(job.userId, job, message)
+                        .catch((e: Error) => log(`${job.userId} could not record the failure: ${e.message}`));
                 } finally {
                     inFlight -= 1;
                     // Refill the slot this clone just freed, rather than waiting out the poll.

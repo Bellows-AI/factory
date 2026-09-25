@@ -592,7 +592,7 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
  * `volume-subpath` and the script's `BELLOWS_ROOT`; a malformed one must name which half failed
  * before any argv or env exists.
  */
-function assertedWorkspacePath(job: BoardJob): string {
+export function assertedWorkspacePath(job: BoardJob): string {
     if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
         throw new Error(
             `refusing to read .bellows.yaml for job ${job.id}: ` +

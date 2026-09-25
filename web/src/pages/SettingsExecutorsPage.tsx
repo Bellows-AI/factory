@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { type WorkspaceExecutorFull } from '../api/useWorkspace.js';
+import type { WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
-import { EXECUTOR_GUIDANCE, WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
-import { withDefault } from '../workspace/executors.js';
+import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
+import { EXECUTOR_GUIDANCE, withDefault } from '../workspace/executors.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**

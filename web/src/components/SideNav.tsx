@@ -1,8 +1,9 @@
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import type { TaskNavigation, TaskSummary } from '../api/useTasks.js';
 import { PRODUCT_NAME } from '../brand.js';
-import { NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor } from '../nav-model.js';
+import { NAV_ITEMS } from '../nav-model.js';
 import { sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree.js';
+import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
 
 /**
  * The left navigation.
@@ -103,30 +104,10 @@ export function SideNav({
             <ul className="sidenav-items">
                 {NAV_ITEMS.map((item) => (
                     <li key={item.to}>
-                        <NavLink
-                            to={item.to}
-                            end={item.end ?? false}
-                            className={({ isActive }) => (isActive ? 'sidenav-link is-active' : 'sidenav-link')}
-                            onClick={onNavigate}
-                            aria-current={ariaCurrentFor(item, pathname)}
-                        >
-                            {item.label}
-                        </NavLink>
+                        <NavItemLink item={item} pathname={pathname} onNavigate={onNavigate} />
                         {item.to === '/settings' && onSettings ? (
                             <ul className="sidenav-subitems">
-                                {SETTINGS_SECTIONS.map((section) => (
-                                    <li key={section.to}>
-                                        <NavLink
-                                            to={section.to}
-                                            className={({ isActive }) =>
-                                                isActive ? 'sidenav-sublink is-active' : 'sidenav-sublink'
-                                            }
-                                            onClick={onNavigate}
-                                        >
-                                            {section.label}
-                                        </NavLink>
-                                    </li>
-                                ))}
+                                <SettingsSectionItems onNavigate={onNavigate} />
                             </ul>
                         ) : null}
                         {item.to === '/tasks' && navigation !== null ? (
@@ -137,16 +118,7 @@ export function SideNav({
                             ) : (
                                 <>
                                     <CountLine navigation={navigation} />
-                                    <NavLink
-                                        to="/tasks/new"
-                                        end
-                                        className={({ isActive }) =>
-                                            isActive ? 'sidenav-newtask is-active' : 'sidenav-newtask'
-                                        }
-                                        onClick={onNavigate}
-                                    >
-                                        + New task
-                                    </NavLink>
+                                    <NewTaskLink onNavigate={onNavigate} />
                                     <ul className="sidenav-subitems">
                                         {preview.rows.map((task) => (
                                             <TaskRow key={task.id} task={task} onNavigate={onNavigate} />

@@ -13,7 +13,7 @@ import {
 } from './k8s-auxspec.js';
 import { bellowsJobSpec, jobsPath } from './k8s-podspec.js';
 import { pollJobToTerminal, readVerdict } from './k8s-poll.js';
-import { ERROR_PREVIEW_CHARS, HTTP_CONFLICT, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
+import { expectOk, HTTP_CONFLICT, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import { collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
@@ -36,11 +36,7 @@ async function readBellows(deps: K8sDeps, job: BoardJob): Promise<string> {
     const jobName = spec.metadata.name;
     try {
         const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        if (created.status >= HTTP_ERROR_STATUS) {
-            throw new Error(
-                `creating the .bellows.yaml readout answered ${created.status}: ${created.body.slice(0, ERROR_PREVIEW_CHARS)}`
-            );
-        }
+        expectOk(created, 'creating the .bellows.yaml readout');
         const pollFailure = await pollJobToTerminal(deps, jobName, {
             what: 'the .bellows.yaml readout',
             notFound: (n) => `the .bellows.yaml readout ${n} no longer exists`,
@@ -114,11 +110,7 @@ async function startOneService(deps: K8sDeps, job: BoardJob, spec: ServiceSpec):
             podsPath(deps.config.k8sNamespace),
             servicePodSpec(deps.config, job, spec)
         );
-        if (pod.status >= HTTP_ERROR_STATUS) {
-            throw new Error(
-                `creating the service pod answered ${pod.status}: ${pod.body.slice(0, ERROR_PREVIEW_CHARS)}`
-            );
-        }
+        expectOk(pod, 'creating the service pod');
         const dns = await deps.request('POST', servicesPath(deps.config.k8sNamespace), serviceDnsSpec(job, spec));
         if (dns.status === HTTP_CONFLICT) {
             return (
@@ -128,11 +120,7 @@ async function startOneService(deps: K8sDeps, job: BoardJob, spec: ServiceSpec):
                 'Re-queue this job when the other one is done, or rename one of the services.'
             );
         }
-        if (dns.status >= HTTP_ERROR_STATUS) {
-            throw new Error(
-                `creating the service DNS name answered ${dns.status}: ${dns.body.slice(0, ERROR_PREVIEW_CHARS)}`
-            );
-        }
+        expectOk(dns, 'creating the service DNS name');
         return null;
     } catch (e) {
         // A partial fleet is torn down on the way out, exactly as docker's is.

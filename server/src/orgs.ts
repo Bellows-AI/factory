@@ -244,10 +244,16 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
 
         async warmAll() {
             await ready;
-            for (const org of await this.list()) {
-                const rt = await this.for(org.id);
-                rt?.service.ensureFresh();
-            }
+            // In parallel: the whole point is to beat the first visitor to the cold read, and a
+            // cold `for()` is a real build — serialising them hands org #2 onward the very wait
+            // this exists to remove. `for` never rejects (it logs and answers null), so one
+            // broken org cannot take the sweep down with it.
+            await Promise.all(
+                (await this.list()).map(async (org) => {
+                    const rt = await this.for(org.id);
+                    rt?.service.ensureFresh();
+                })
+            );
         },
     };
 }

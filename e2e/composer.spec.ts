@@ -65,9 +65,7 @@ test.describe('the guided task composer', () => {
         // The refusal speaks the declaration's own words first — the seeded `issue` param
         // describes the shape it wants — and never the regex source: the raw rule lives only
         // under the field's Format details.
-        await expect(
-            composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })
-        ).toBeVisible();
+        await expect(composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })).toBeVisible();
         await expect(composer.getByText('Format details')).toBeVisible();
         const visible = await composer.innerText();
         expect(visible).not.toContain('#\\d+');
@@ -165,9 +163,7 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('an unchosen workflow runs the raw prompt, and an empty prompt explains the dark Start', async ({
-        page,
-    }) => {
+    test('an unchosen workflow runs the raw prompt, and an empty prompt explains the dark Start', async ({ page }) => {
         const problems = watchConsole(page);
         await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
@@ -206,9 +202,7 @@ test.describe('the guided task composer', () => {
         // The shortcut is the button, never a bypass: the invalid submission marks the field,
         // focuses it, and sends nothing — the member is still on the composer.
         await issue.press('ControlOrMeta+Enter');
-        await expect(
-            composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })
-        ).toBeVisible();
+        await expect(composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })).toBeVisible();
         await expect(issue).toBeFocused();
         expect(page.url()).toContain('/tasks/new');
 
