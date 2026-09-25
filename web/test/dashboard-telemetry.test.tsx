@@ -196,16 +196,16 @@ describe('analytics toolbar', () => {
         expect(html).toContain('1 repository');
     });
 
-    it('renders a read-only Organization scope in open mode, never a dead Me option', () => {
+    it('renders a read-only Organization scope in open mode, never a dead Scope dropdown', () => {
         const html = render(READY);
-        expect(html).toContain('Organization');
-        expect(html).not.toMatch(/Me<\/button>/);
+        expect(html).toContain('<span class="toolbar-value">Organization</span>');
+        expect(html).not.toContain('id="scope-select"');
     });
 
-    it('renders the Org/Me toggle when the session carries a personal scope', () => {
+    it('renders the Scope dropdown when the session carries a personal scope', () => {
         const html = render(READY, { session: GITHUB_SESSION });
-        expect(html).toMatch(/Org<\/button>/);
-        expect(html).toMatch(/Me<\/button>/);
+        expect(html).toContain('id="scope-select"');
+        expect(html).toContain('>Organization</button>');
     });
 });
 

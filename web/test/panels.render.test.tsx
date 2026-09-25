@@ -211,9 +211,14 @@ describe('telemetry panels render — usage summary panel', () => {
         // Each carries its OWN figure from the payload, never input + output.
         expect(html).toContain(`>${tokens(telemetry.totals.tokens.input)}<`);
         expect(html).toContain(`>${tokens(telemetry.totals.tokens.output)}<`);
-        // Cache rides the supporting line, separate from the measure it belongs to.
-        expect(html).toContain('read from cache');
-        expect(html).toContain('written to cache');
+        // Cache tokens are input-side (Anthropic's cache_creation_input_tokens), so both cache
+        // lines sit under Input, and Output carries neither.
+        const inputMeasure = html.slice(html.indexOf('>Input</'), html.indexOf('>Output</'));
+        expect(inputMeasure).toContain('read from cache');
+        expect(inputMeasure).toContain('written to cache');
+        const outputMeasure = html.slice(html.indexOf('>Output</'));
+        expect(outputMeasure).not.toContain('read from cache');
+        expect(outputMeasure).not.toContain('written to cache');
     });
 
     it('carries the required supporting copy for every group', () => {

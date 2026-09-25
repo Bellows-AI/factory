@@ -108,10 +108,24 @@ zero changes to either file, and a block descriptor's own future implementation 
 workflows CREATED after it lands — an already-created workflow's expansion is fixed at its own
 create time, exactly like every other frozen snapshot in this file.
 
-One consequence worth knowing: `GET`/`POST /api/workflows` responses show the EXPANDED graph for a
-definition that used a block, not the `uses`/`with` text originally posted — there is no
-update/edit endpoint today, so nothing currently needs to re-read the authored source. Expanded
-node names are namespaced under the referencing node's own name (`${blockName}--${internalName}`)
+One consequence worth knowing: `GET`/`POST`/`PUT /api/workflows` responses show the EXPANDED graph
+for a definition that used a block, not the `uses`/`with` text originally posted — nothing reads
+the authored source back. `PUT` runs the SAME pipeline `create` does (`validateAndCompile`: the
+authored schema check under `DEFINITION_LIMIT`, then `compileDefinition`), so pasting a fetched
+block-derived definition straight back is checked against the AUTHORED cap, not the wider
+`EXPANDED_DEFINITION_LIMIT` it was stored under — an expansion that grew past 16 KiB refuses
+`TOO_LARGE` on an otherwise-unedited round trip. A block that declares a durable-wait `runtime`
+boundary (`builtin/github-review-reconcile`'s `wait` node, above) fails a straight round-trip
+UNCONDITIONALLY, regardless of size: `runtime` is attached to the compiled `WorkflowNode` strictly
+AFTER the expanded graph passes `validateDefinition` (see "Durable block waits" below), so it is not
+one of `KNOWN_AGENT_NODE_KEYS` — a fetched definition carrying it refuses `UNKNOWN_KEY` the moment
+it is pasted back unedited, the same closed-grammar guarantee the field gets from any other
+authored source. Deleting the `runtime` key to get past that refusal silently turns the durable
+wait into an ordinary claimable agent node — a functional change, not a fix. Both limits are of
+`PUT` itself (issue 131) — a raw request hits them exactly like the panel's textarea does — not
+bugs to chase: re-authoring a block reference from scratch, rather than editing its expansion,
+avoids both. Expanded node names are namespaced under the referencing node's own name
+(`${blockName}--${internalName}`)
 so two uses of one block, or a name a block's own internal subgraph happens to reuse, cannot
 collide — collision-freedom is not trusted to the naming scheme alone, either: the expanded graph's
 own re-validation pass is what actually refuses a true clash, via the ordinary `DUPLICATE_NODE`
@@ -581,8 +595,12 @@ board, no longer model discipline. The board seeds it at boot (idempotent by nam
 one choosable process among the list — a member picks it by name like any other; it never resolves
 from an unnamed task, which walks the separate code-owned default workflow instead (issue #209,
 above). The row is the board's, so it tracks the shipped template — a definition an older boot seeded refreshes to the
-current shape, because a stale row would serve a process the code no longer ships with no way for
-a member to fix it (no workflow edit UI exists). A member's own same-named definition in another
+current shape, because a stale row would serve a process the code no longer ships. `PUT
+/api/workflows/:id` (issue 131) refuses to edit this one row in place regardless — its name is
+reserved in the org scope (`checkCreateInput`), the same refusal `create` gives a same-named
+attempt — so the boot refresh stays the only path that keeps it current; renaming it away instead
+frees the name, and the NEXT boot reseeds a fresh copy into the freed slot, exactly as
+`workflow-store.test.ts` pins. A member's own same-named definition in another
 scope is never touched. Running threads are safe regardless — they froze their snapshot at
 creation.
 
@@ -617,6 +635,7 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The driver's one publish gate | `driver/src/loop.ts` |
 | CRUD routes and `POST /api/jobs` resolution | `server/src/routes/workflows.ts`, `routes/jobs.ts` |
 | The composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/task-composer.ts`, `web/src/api/useWorkflows.ts` |
+| The workflow management panel: list, create, edit, delete (issue 131) | `web/src/panels/WorkflowsPanel.tsx`, `web/src/api/useWorkflows.ts` (`useWorkflowsManagement`), mounted on `web/src/pages/SettingsWorkflowsPage.tsx` |
 | A member's saved default-step switches (035, #203) — read by `POST /api/jobs` for an unnamed task with no `defaultWorkflow` override | `server/src/db/default-workflow-settings-store.ts`, `server/src/routes/workflow-settings.ts` |
 | The settings page and composer checkboxes that read/write that API (#208) | `web/src/pages/SettingsWorkflowsPage.tsx`, `web/src/panels/DefaultWorkflowPanel.tsx`, `web/src/api/useDefaultWorkflowSettings.ts` |
 | The code-owned default workflow: the assembler, the selected pair, the launch resolution (issue #209) | `server/src/db/default-workflow.ts`, `server/src/routes/job-workflow-resolution.ts` |
@@ -675,10 +694,15 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
   graph's own entry (`from: null`); false for a same-scope move, a rest, or a node with no declared
   helper plans.
 - HTTP contracts: `server/test/routes.workflows.test.ts` (including `GET /api/workflow-blocks` and
-  the compiler's refusal codes surfacing the same way a schema refusal does), the
-  workflow-resolution block of `routes.jobs.test.ts`, and `server/test/routes.jobs.default-workflow.test.ts`
+  the compiler's refusal codes surfacing the same way a schema refusal does; `GET`/`PUT
+  /api/workflows/:id`, issue 131 — visibility versus modify-permission, the `scope` field's
+  `BAD_SCOPE` refusal, rename-collision 409, and the validator's refusals passing through at 400),
+  the workflow-resolution block of `routes.jobs.test.ts`, and `server/test/routes.jobs.default-workflow.test.ts`
   (issue #209) — the full `workflow`/`defaultWorkflow` body matrix, every refusal's no-row
   guarantee, and that the stored pair and snapshot agree with the request.
+- Render smoke: `web/test/workflows-panel.render.test.tsx` (issue 131) — the list with its scope
+  badges, the empty state, a fetch refusal rendered as the panel's status line, and the
+  organization scope option gated to an admin caller.
 - Against a real database (`npm run test:db`): `server/test-db/job-store.workflow.default.test.ts`
   (issue #209) — the frozen name/null-id/node/snapshot/pair, the claim's `publish: true`, entering a
   selected block only with a recorded publication, both-excluded leaving one row, follow-up
@@ -686,7 +710,10 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 - Against a real database (`npm run test:db`): `server/test-db/workflow-store.test.ts` and
   `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds; the
   former also covers `create()` compiling `builtin/github-review-reconcile` and storing its
-  expanded, namespaced graph with the `wait` node's `runtime` intact.
+  expanded, namespaced graph with the `wait` node's `runtime` intact, and `update()` (issue 131) —
+  the name/definition replace, the `updated_at` bump, a rename collision leaving the row unchanged,
+  storing the expanded graph for a block definition, and the org-scope base workflow refusing an
+  in-place edit while a rename away frees its name for the next boot's `seedBase`.
 - Against a real database: `server/test-db/job-store.block-wait.test.ts` (issue #231) — parking
   (no runnable row, an open wait, the frozen continuation), resting when unpublished, the wake
   sweep's zero/one/many-and-redelivered-GUID coalescing, a thread with an active member never

@@ -59,6 +59,8 @@ export interface WorkflowRefusal {
 
 export type CreateResult = { id: string } | ({ refused: true } & WorkflowRefusal);
 
+export type UpdateResult = { id: string } | { notFound: true } | ({ refused: true } & WorkflowRefusal);
+
 interface WorkflowRow {
     id: string;
     name: string;
@@ -69,6 +71,15 @@ interface WorkflowRow {
     created_at: Date;
     updated_at: Date;
 }
+
+/** The scope a stored row already belongs to — scope is immutable after create, so `update` rebuilds
+ * it from the row rather than accepting one from the caller. */
+const scopeOfRow = (row: WorkflowRow): WorkflowScope =>
+    row.user_id !== null
+        ? { kind: 'user', userId: row.user_id }
+        : row.repo_owner !== null && row.repo_name !== null
+          ? { kind: 'repo', owner: row.repo_owner, name: row.repo_name }
+          : { kind: 'org' };
 
 const toSummary = (row: WorkflowRow): WorkflowSummary => ({
     id: row.id,
@@ -156,6 +167,16 @@ interface NewWorkflowRow {
     created_by: string | null;
 }
 
+/** The one conflict a name-uniqueness index can raise, turned into the named refusal both `create`
+ * and `update` answer with — shared so the mapping lives in one place. */
+function nameTakenOr(e: unknown, name: string): WorkflowRefusal {
+    const err = e as { code?: string };
+    if (err.code === '23505') {
+        return { code: ERROR_CODES.NAME_TAKEN, message: `a workflow named "${name}" already exists in this scope` };
+    }
+    throw e;
+}
+
 /**
  * The insert itself, with the one conflict a name-uniqueness index can raise turned into the
  * named refusal `create` answers with — pulled out so the try/catch does not add to that
@@ -169,15 +190,28 @@ async function insertWorkflowRow(sql: Sql, row: NewWorkflowRow): Promise<CreateR
         `;
         return { id: (rows as unknown as { id: string }[])[0]!.id };
     } catch (e) {
-        const err = e as { code?: string };
-        if (err.code === '23505') {
-            return {
-                refused: true,
-                code: ERROR_CODES.NAME_TAKEN,
-                message: `a workflow named "${row.name}" already exists in this scope`,
-            };
-        }
-        throw e;
+        return { refused: true, ...nameTakenOr(e, row.name) };
+    }
+}
+
+/**
+ * The update itself, mirroring `insertWorkflowRow`: the same name-conflict mapping, and `notFound`
+ * for an id the org no longer holds (removed between `get` and this write, or never its own).
+ */
+async function updateWorkflowRow(
+    sql: Sql,
+    row: { org_id: string; id: string; name: string; definition: never }
+): Promise<UpdateResult> {
+    try {
+        const rows = await sql<{ id: string }[]>`
+            update workflow
+            set name = ${row.name}, definition = ${sql.json(row.definition)}, updated_at = now()
+            where org_id = ${row.org_id} and id = ${row.id}
+            returning id
+        `;
+        return rows[0] ? { id: rows[0].id } : { notFound: true };
+    } catch (e) {
+        return { refused: true, ...nameTakenOr(e, row.name) };
     }
 }
 
@@ -193,6 +227,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         definition: unknown;
         createdBy: string | null;
     }): Promise<CreateResult>;
+    update(id: string, input: { name: string; definition: unknown }): Promise<UpdateResult>;
     listVisible(target: WorkflowTarget): Promise<WorkflowSummary[]>;
     get(id: string): Promise<WorkflowRecord | null>;
     remove(id: string): Promise<boolean>;
@@ -246,6 +281,34 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
                 repo_name: scope.kind === 'repo' ? scope.name : null,
                 definition: compiled.definition as never,
                 created_by: createdBy,
+            });
+        },
+
+        async update(id, { name, definition }) {
+            await gate();
+            const rows = await sql<WorkflowRow[]>`
+                select * from workflow where org_id = ${orgId} and id = ${id}
+            `;
+            const existing = rows[0];
+            if (!existing) return { notFound: true };
+
+            // Scope is immutable after create — rebuilt from the row, never accepted from a
+            // caller, so a rename can never re-gate a definition into a different scope. This is
+            // also what keeps the base workflow's org slot refused here exactly as it is in
+            // `create`: renaming IN PLACE still names `fix-issue` at org scope, which
+            // `checkCreateInput` reserves — an edit lands only by renaming the row away first,
+            // which frees the name for the next boot's `seedBase` to reseed (docs/workflows.md).
+            const refusal = checkCreateInput(name, scopeOfRow(existing));
+            if (refusal) return { refused: true, ...refusal };
+
+            const compiled = validateAndCompile(definition);
+            if (!compiled.ok) return { refused: true, ...compiled.refusal };
+
+            return updateWorkflowRow(sql, {
+                org_id: orgId,
+                id,
+                name: name.trim(),
+                definition: compiled.definition as never,
             });
         },
 

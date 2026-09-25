@@ -227,9 +227,9 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
 | Toggle | `settings-toggle` | A labelled checkbox row — the design system's one boolean-control primitive (no dedicated switch family exists): the default-workflow settings panel's two switches and the composer's matching pair of optional-step checkboxes (issue 208), the latter now inside the composer's `composer-steps` disclosure (issue 228) |
-| Popover | `select-trigger`, `popover`, `popover-option`, `popover-separator` | The shared quiet-selector language above — user menu, org and composer listboxes; `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
-| Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166): label above control, read-only values sunken like the inputs they echo |
-| Range | `range-presets`, `range-option.active`, `range-picker`, `range-popover-root`, `range-popover`, `range-draft`, `range-draft-actions` | The date-range presets and the Custom trigger; the dates live in the anchored popover (`--line-strong` edge, z-index 30), whose draft form commits only through Apply or Clear |
+| Popover | `select-trigger`, `popover`, `popover-option`, `popover-separator` | The shared quiet-selector language above — user menu, org, composer and dashboard listboxes (Range, Scope); `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
+| Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166, refined by #246): each a real `fieldset`/`legend` — the caption groups the trigger without stealing its own accessible name — read-only values sunken like the inputs they echo |
+| Range | `range-dialog`, `range-dialog-title`, `range-draft`, `range-draft-fields`, `range-draft-actions` | The Range group's one dropdown (issue 246): a `select-trigger`/`popover`/`popover-option` Listbox over the presets plus Custom; picking a preset commits it, picking Custom opens the `range-dialog` — a Headless UI Dialog in the shared `dialog-*` shell — holding the draft form (`range-draft`, `range-draft-fields` for the two labeled date fields); Apply, Cancel and Clear are the only ways to commit or discard it |
 | Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar groups — mono, muted, a polite live region |
 | Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
 | Org | `org-selector`, `org-select`, `select-trigger` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
@@ -249,7 +249,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | --- | --- | --- |
 | Table | `table-wrap`, `data`, `sortable`, `align-end`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks — a named, keyboard-focusable `<section>` (the region role, implicitly), so a scrolled-off column stays reachable. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. `align-end` right-aligns a numeric column's header and cells. |
 | Key-values | `kv` | The dt/dd definition grid |
-| Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's five measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order |
+| Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's five measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order. Each `usage-measure` stacks its figure, label and cache detail in its own column (#246) so nothing collides; both cache lines (read and write) sit under Input, the token count they actually belong to, and Output carries neither |
 | Analytics empty state | `usage-empty` | The one "nothing measured in this selection" state that replaces the dash-card chorus, naming the selection and one next action |
 | Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
 | Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
@@ -335,12 +335,12 @@ Components:
 | `OrgSelector.tsx` | org, selector |
 | `PageHeader.tsx` | page-header |
 | `PublicPageHeader.tsx` | public-header |
-| `RangeSelector.tsx` | analytics toolbar, range, range-draft |
+| `RangeSelector.tsx` | analytics toolbar, selector, range, picker (dialog shell), primary, status |
 | `ConfigurationScope.tsx` | scope-context |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
 | `RepositorySetup.tsx` | panel, panel-head, panel-actions, table-wrap, data, pill, repo-search, repo-summary, repo-table, repo-save, scope-context, status, muted, primary |
 | `repository-setup.ts` | helper — no markup |
-| `ScopeToggle.tsx` | analytics toolbar, range-presets |
+| `ScopeToggle.tsx` | analytics toolbar, selector |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
 | `ThemeSelector.tsx` | appearance, selector |
@@ -369,6 +369,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
+| `WorkflowsPanel.tsx` | panel, panel-head, table-wrap, data, pill, muted, status, primary, env-raw |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 | `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |

@@ -51,6 +51,20 @@ function noStore(reply: FastifyReply) {
  *   description, config schema, availability. Never a prompt or script body — those stay inside
  *   the registry, unserialized. Static, org-independent metadata; gated the same as the other
  *   routes here because block selection is the same human authoring surface.
+ * - `GET /api/workflows/:id` — the full record, `definition` included: visibility mirrors the
+ *   list (org rows to any signed-in member, a user row to its own owner only, a repo row to any
+ *   member), a 404 for anything outside it so an invisible id never confirms its own existence.
+ * - `PUT /api/workflows/:id` — replaces `name`/`definition` under the same validator `POST` runs,
+ *   gated by visibility (like `GET`, above) THEN the same modify matrix `DELETE` uses (an admin
+ *   for org scope, the owning member for user scope, any member for repo scope) — stricter than
+ *   `DELETE` alone for a user-scope row: `DELETE` lets an admin remove one they cannot see, but a
+ *   blind admin EDIT of a member's private definition is a bigger blast radius than a delete, so
+ *   `PUT` refuses 404 before it ever reaches the modify check. A `scope` field in the body is a
+ *   `BAD_SCOPE` refusal, since scope is immutable after create. The base org workflow's own row
+ *   can never be edited in place — its name is reserved (`checkCreateInput`) — but renaming it to
+ *   anything else frees the name, and the next boot's `seedBase` reseeds a fresh copy into the
+ *   freed slot. That is the documented, working shape of "edit the base workflow": never a bug to
+ *   chase.
  * - `DELETE /api/workflows/:id` — an admin, the owning member, or any member within repo scope.
  *
  * Refusals carry named codes: a pasted foreign pipeline fails loudly (UNKNOWN_KEY, UNKNOWN_NODE,
@@ -157,11 +171,63 @@ async function handleCreateWorkflow(orgs: OrgRegistry, request: FastifyRequest, 
     return reply.code(HTTP_CREATED).send(record);
 }
 
-function canDelete(caller: Caller, record: WorkflowSummary): boolean {
+/** Whether a record is visible at all: org rows to anyone signed in, a user row to its own owner
+ * only, a repo row to any member — the same rule `listVisible` applies at the list level, reused
+ * here for the single-record read since a fetch-one has no repo query to narrow it by. */
+function canSee(caller: Caller, record: WorkflowSummary): boolean {
+    return record.scope !== 'user' || record.userId === caller.user.id;
+}
+
+/** Whether a caller may change or remove a record — shared by `PUT` and `DELETE`. */
+function canModify(caller: Caller, record: WorkflowSummary): boolean {
     if (caller.role === ADMIN_ROLE) return true;
     if (record.scope === 'org') return false;
     if (record.scope === 'user' && record.userId !== caller.user.id) return false;
     return true;
+}
+
+async function handleGetWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+    const { id } = request.params as { id: string };
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+
+    const record = await store.get(id);
+    if (!record || !canSee(caller, record)) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
+    return reply.code(HTTP_OK).send(record);
+}
+
+async function handleUpdateWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+    const { id } = request.params as { id: string };
+    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+
+    const fields = body(request.body);
+    // Scope is immutable after create: silently ignoring a `scope` field would let a caller
+    // believe they moved a definition between scopes when nothing changed, which is exactly the
+    // quiet re-gate the issue calls out — refused instead, loudly.
+    if ('scope' in fields) return bad(reply, ERROR_CODES.BAD_SCOPE, 'scope cannot change after create');
+    const { name, definition } = fields;
+    if (typeof name !== 'string') return bad(reply, ERROR_CODES.BAD_NAME, 'name must be a string');
+
+    const record = await store.get(id);
+    if (!record || !canSee(caller, record)) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
+    if (!canModify(caller, record)) {
+        return bad(reply, ERROR_CODES.FORBIDDEN, 'You cannot edit this workflow', HTTP_FORBIDDEN);
+    }
+
+    const updated = await store.update(id, { name, definition });
+    if ('notFound' in updated) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
+    if ('refused' in updated) {
+        const taken = updated.code === ERROR_CODES.NAME_TAKEN;
+        return bad(reply, updated.code, updated.message, taken ? HTTP_CONFLICT : HTTP_BAD_REQUEST);
+    }
+    return reply.code(HTTP_OK).send(await store.get(id));
 }
 
 async function handleDeleteWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
@@ -174,7 +240,7 @@ async function handleDeleteWorkflow(orgs: OrgRegistry, request: FastifyRequest, 
 
     const record = await store.get(id);
     if (!record) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
-    if (!canDelete(caller, record)) {
+    if (!canModify(caller, record)) {
         return bad(reply, ERROR_CODES.FORBIDDEN, 'You cannot delete this workflow', HTTP_FORBIDDEN);
     }
     const removed = await store.remove(id);
@@ -194,6 +260,12 @@ export const workflowRoutes =
         );
         app.post('/api/workflows', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleCreateWorkflow(orgs, request, reply)
+        );
+        app.get('/api/workflows/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleGetWorkflow(orgs, request, reply)
+        );
+        app.put('/api/workflows/:id', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+            handleUpdateWorkflow(orgs, request, reply)
         );
         app.delete('/api/workflows/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDeleteWorkflow(orgs, request, reply)

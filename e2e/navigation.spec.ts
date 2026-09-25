@@ -334,7 +334,7 @@ test.describe('the responsive shell', () => {
                 if (t) document.documentElement.setAttribute('data-theme', t);
                 else document.documentElement.removeAttribute('data-theme');
             }, theme);
-            for (const target of [page.locator('.sidenav-link').first(), page.locator('.range-option').first()]) {
+            for (const target of [page.locator('.sidenav-link').first(), page.locator('#range-select')]) {
                 await target.focus();
                 const outline = await target.evaluate((el) => {
                     const style = getComputedStyle(el);
@@ -571,7 +571,7 @@ test.describe('the visual regression matrix', () => {
         });
     });
 
-    test('captures the account menu and the range popover open', async ({ page }) => {
+    test('captures the account menu and the range dialog open', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 1000 });
         await page.goto('/');
         await settle(page, '/');
@@ -583,10 +583,11 @@ test.describe('the visual regression matrix', () => {
             animations: 'disabled',
         });
         await page.keyboard.press('Escape');
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
-        await expect(page.locator('.range-popover')).toBeVisible();
+        await page.locator('#range-select').click();
+        await page.getByRole('option', { name: 'Custom', exact: true }).click();
+        await expect(page.locator('.range-dialog')).toBeVisible();
         await page.screenshot({
-            path: `${SHOTS}/matrix/dashboard_range-popover-open_dark_1440.png`,
+            path: `${SHOTS}/matrix/dashboard_range-dialog-open_dark_1440.png`,
             animations: 'disabled',
         });
     });
