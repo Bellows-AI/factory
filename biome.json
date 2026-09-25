@@ -53,9 +53,18 @@
                     "level": "error",
                     "options": { "max": 4 }
                 },
-                "useOptionalChain": "off"
+                "noExcessiveNestedTestSuites": "error",
+                "noImplicitCoercions": "error",
+                "noUselessCatchBinding": "error",
+                "noUselessReturn": "error",
+                "noUselessUndefined": "error",
+                "useOptionalChain": "off",
+                "useWhile": "error"
             },
             "correctness": {
+                "noGlobalDirnameFilename": "error",
+                "noNestedComponentDefinitions": "error",
+                "noPrivateImports": "error",
                 "noUnusedFunctionParameters": "error",
                 "noUnusedImports": "error",
                 "noUnusedVariables": "error",
@@ -65,28 +74,82 @@
                     "level": "error",
                     "options": { "forceJsExtensions": true }
                 },
+                "useJsonImportAttributes": "error",
                 "useJsxKeyInIterable": "off",
                 "useUniqueElementIds": "off"
             },
+            "performance": {
+                "noAccumulatingSpread": "error"
+            },
+            "security": {
+                "noDangerouslySetInnerHtml": "error",
+                "noGlobalEval": "error"
+            },
             "style": {
+                "noCommonJs": "error",
+                "noEnum": "error",
                 "noExcessiveLinesPerFile": {
                     "level": "error",
                     "options": { "maxLines": 500, "skipBlankLines": true }
                 },
+                "noInferrableTypes": "error",
                 "noMagicNumbers": "error",
+                "noMultiAssign": "error",
                 "noNonNullAssertion": "off",
-                "useTemplate": "off"
+                "noSubstr": "error",
+                "noUselessElse": "error",
+                "noYodaExpression": "error",
+                "useAsConstAssertion": "error",
+                "useConsistentBuiltinInstantiation": "error",
+                "useForOf": "error",
+                "useFragmentSyntax": "error",
+                "useNodeAssertStrict": "error",
+                "useObjectSpread": "error",
+                "useReadonlyClassProperties": "error",
+                "useSelfClosingElements": "error",
+                "useShorthandAssign": "error",
+                "useSpreadOverApply": "error",
+                "useTemplate": "off",
+                "useThrowNewError": "error",
+                "useThrowOnlyError": "error",
+                "useTrimStartEnd": "error"
             },
             "suspicious": {
+                "noAlert": "error",
                 "noConstantBinaryExpressions": "error",
                 "noDoubleEquals": "error",
+                "noDuplicateDependencies": "error",
                 "noDuplicateTestHooks": "error",
+                "noEvolvingTypes": "error",
                 "noExportsInTest": "error",
                 "noFocusedTests": "error",
+                "noForIn": "error",
                 "noImportCycles": "error",
+                "noNestedPromises": "error",
+                "noParametersOnlyUsedInRecursion": "error",
                 "noSkippedTests": "error",
                 "noTsIgnore": "error",
-                "useErrorMessage": "error"
+                "noUnassignedVariables": "error",
+                "noUnusedExpressions": "error",
+                "useDeprecatedDate": "error",
+                "useErrorMessage": "error",
+                "useGuardForIn": "error",
+                "useNumberToFixedDigitsArgument": "error",
+                "useStaticResponseMethods": "error"
+            },
+            "nursery": {
+                "noExcessiveNestedCallbacks": "error",
+                "noExtendNative": "error",
+                "noFloatingPromises": "error",
+                "noIdenticalTestTitle": "error",
+                "noNegationInEqualityCheck": "error",
+                "noUnsafePlusOperands": "error",
+                "useArraySome": "error",
+                "useImportsFirst": "error",
+                "useIncludes": "error",
+                "useRegexpTest": "error",
+                "useTestHooksInOrder": "error",
+                "useTestHooksOnTop": "error"
             }
         }
     },

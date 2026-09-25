@@ -186,8 +186,18 @@ payloads field by field), and `web/src/main.tsx` carries the one bare CSS side-e
 `useImportExtensions` has no mode for. `noNonNullAssertion` stays global: non-null assertions are
 the house style under `noUncheckedIndexedAccess`, at 661 sites.
 
-Two rules are off because their hits here are **false positives, measured rather than assumed** —
-re-enabling either means teaching it the shape, not churning the source:
+Beyond the recommended preset, ~60 further rules are enabled explicitly. Every one was measured at
+zero hits **individually** before being turned on, so each is a pure ratchet. A dozen live in
+`nursery`, which is not a stability promise: a Biome upgrade can rename, graduate or re-scope those,
+so if `npm run lint` breaks right after a version bump, check the nursery block first.
+
+**Measure one rule at a time.** Enabling every rule at once in a scratch config to survey the tree
+reports **false zeros** for the type-aware rules — `noUnnecessaryConditions` reads 0 in a
+whole-config sweep and 35 under `--only`. A zero from a bulk sweep means "did not run" at least as
+often as it means "clean".
+
+Three rules are off because their hits here are **false positives, measured rather than assumed** —
+re-enabling any of them means teaching it the shape, not churning the source:
 
 - `useJsxKeyInIterable` — fires on the `[label, node]` pairs array that `KeyValues` consumes.
   `KeyValues` already keys each row by its label, so the value JSX is the single child of an
@@ -198,8 +208,20 @@ re-enabling either means teaching it the shape, not churning the source:
   referenced from `styles.css` as `fill: url(#partial-hatch)` — a static stylesheet cannot name a
   minted id, and the duplicate patterns are identical, so the collision is harmless.
 
+- `noUnnecessaryConditions` — 35 hits, and most are guards the code keeps *on purpose* past a cast
+  that lies. `parseVarEntry(entry: unknown)` asserts a shape and then writes `item?.name`; the
+  assertion is a claim about untrusted JSON, and `entry` really can be `null` at runtime, so
+  deleting the `?.` turns a 400 into a 500. Same story for the `routes/workspace.ts` body
+  validators and the JSONB rows in `workflow-store.ts`. The one genuinely dead guard it found —
+  `envFilePath`'s `leaseToken` check — is already gone.
+
 Where an id genuinely is per-instance — a dialog's title and field helps — mint it with `useId`
 and select it in e2e by role, label or `aria-describedby`, never by the literal.
+
+Two more rules look attractive and are not: `useNullishCoalescing` flags
+`output || error.message || '…'` in `driver/src/gates.ts`, where `||` is load-bearing — `??` would
+keep an empty output and render a blank error message. `useJsxKeyInIterable`'s advice on the pairs
+idiom is the same kind of trap. Read the site before believing the rule.
 
 `lint/no-shared-literals.grit` is a Biome plugin that bans raw spellings of values with one named
 home: executor types (`CLAUDE_CODE`, `OPENCODE`), roles (`ADMIN_ROLE`, `MEMBER_ROLE`), the
