@@ -2,17 +2,17 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { type BoardScanner, boardsFor, storeFor, workflowDefaultsFor, workflowsFor } from './job-context.js';
+import { type BoardScanner, storeFor, workflowDefaultsFor, workflowsFor } from './job-context.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import {
     type ResolvedWorkflow,
-    validateClaimBody,
     validateCommandField,
     validateExecutorField,
     validateGates,
     validateRepoField,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
+import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { UUID } from '../config.js';
 import {
     HTTP_CREATED,
@@ -94,11 +94,9 @@ export async function handleClaimJob(
     request: FastifyRequest,
     reply: FastifyReply
 ) {
-    const boards = await boardsFor(orgs, request);
-    if (!boards.length) return noBoard(reply);
-    const parsed = validateClaimBody(body(request.body));
-    if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
-    const { worker, lease } = parsed.value;
+    const claimRoute = await resolveClaimRoute(orgs, request, reply);
+    if (!claimRoute) return reply;
+    const { boards, worker, lease } = claimRoute;
 
     const claimFailed = (e: Error) => request.log.error({ err: e }, 'job claim failed');
     const claim = await guard(reply, claimFailed, () =>
@@ -112,10 +110,9 @@ export async function handleClaimJob(
 }
 
 export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const { leaseToken, leaseSeconds: requested } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -147,10 +144,9 @@ export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest
 // session id at spawn time, and a run that is still going is exactly when a reader wants to open
 // it.
 export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const { leaseToken, sessionId } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -180,10 +176,9 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
 // dashboard's "is it stuck or working" answer. Absent (or null) means no fresh sample: the last
 // stored one stays. Replaced, never appended, like the tail.
 export async function handleOutput(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const { leaseToken, output, runtime } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -211,10 +206,9 @@ export async function handleOutput(orgs: OrgRegistry, request: FastifyRequest, r
 // here; the report REPLACES the stored list, which is what makes the UI's "current/last ran only"
 // honest rather than a truncation somebody has to remember.
 export async function handleGates(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const { leaseToken, gates } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -240,10 +234,9 @@ export async function handleGates(orgs: OrgRegistry, request: FastifyRequest, re
 // run on what the tree holds NOW. Lease-guarded like every worker route: the fresh answer goes
 // only to the worker that holds the run.
 export async function handleGatesReread(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const { leaseToken } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -272,10 +265,9 @@ export async function handleGatesReread(orgs: OrgRegistry, request: FastifyReque
 // worker that holds the run. `GITHUB_TOKEN: null` — nothing fresher than the claim env — is an
 // answer, not an error.
 export async function handlePublishToken(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const { leaseToken } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
@@ -300,10 +292,9 @@ export async function handlePublishToken(orgs: OrgRegistry, request: FastifyRequ
 // indistinguishable from a run that ended on its own. The row lands `stopped` — the park is the
 // user's stop landing — and the answer carries the status.
 export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
-    if (!store) return noBoard(reply);
-    const id = (request.params as { id: string }).id;
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
 
     const { leaseToken } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {

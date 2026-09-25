@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { throughSignIn } from './signin.js';
 
 /**
@@ -156,24 +156,42 @@ test('an executor is added through the dialog, with bad JSON refused in place', 
     await expect(panel).toContainText('The deployment chooses the runner CLI and image');
 
     await page.getByRole('button', { name: 'Add executor' }).click();
-    const dialog = page.locator('[role="dialog"][aria-labelledby="executor-title"]');
+    // Named by its title through aria-labelledby, not by a literal id: the dialog mints its ids
+    // with useId so two open dialogs cannot collide, which means no id here is stable across a
+    // render. The accessible name and the describedby links are the contract worth selecting on —
+    // they are what a screen reader follows.
+    const dialog = page.getByRole('dialog', { name: 'Add executor' });
     const dialogPanel = dialog.locator('.picker');
     await expect(dialogPanel).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
 
+    /**
+     * The help a field points at with aria-describedby — resolved live, since the id is minted.
+     * The config textarea names two targets once its JSON fails to parse (help, then error), and
+     * the help is always first, so `.first()` is the help in both states.
+     */
+    const describedBy = async (field: Locator) => {
+        const ids = (await field.getAttribute('aria-describedby'))?.split(/\s+/).filter(Boolean) ?? [];
+        expect(ids.length, 'the field names no describedby target').toBeGreaterThan(0);
+        return dialog.locator(ids.map((id) => `[id="${id}"]`).join(', ')).first();
+    };
+
+    const typeField = dialog.getByRole('combobox');
+    const configField = dialog.getByRole('textbox', { name: /config/i });
+
     // The Type note says what the field does NOT do — choosing a type describes the config, it
     // does not switch the deployment's runner CLI — and the config help opens on the Claude Code
     // truth: stored with the executor, not consumed by the current runner.
-    await expect(dialog.locator('#executor-type-help')).toContainText("does not change the deployment's runner CLI");
-    await expect(dialog.locator('#executor-config-help')).toContainText('not consumed by the current Claude Code runner');
+    await expect(await describedBy(typeField)).toContainText("does not change the deployment's runner CLI");
+    await expect(await describedBy(configField)).toContainText('not consumed by the current Claude Code runner');
     await page.screenshot({ path: `${SHOTS}/settings-executor-help.png` });
 
     // Switching type swaps the help for the OpenCode truth: the deployment's CLI merges the
     // object over its baked configuration, and the permission fence holds.
-    await dialog.getByRole('combobox').selectOption({ label: 'OpenCode' });
-    await expect(dialog.locator('#executor-config-help')).toContainText('merged over its baked configuration');
-    await expect(dialog.locator('#executor-config-help')).toContainText('permission rules are ignored');
-    await dialog.getByRole('combobox').selectOption({ label: 'Claude Code' });
+    await typeField.selectOption({ label: 'OpenCode' });
+    await expect(await describedBy(configField)).toContainText('merged over its baked configuration');
+    await expect(await describedBy(configField)).toContainText('permission rules are ignored');
+    await typeField.selectOption({ label: 'Claude Code' });
 
     // Not valid JSON: the message appears under the field, Save stays disabled, and what was
     // typed is still there — an error never costs the member their paste.

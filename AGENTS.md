@@ -174,14 +174,32 @@ root config files. `npm run lint` is `biome check .` — lint and format verific
 pass — and `npm run format` is the fixer. The enforced style is the one the tree was already
 written in: 4-space indent, single quotes (double in JSX attributes), semicolons, 120-column
 lines, `es5` trailing commas; `core/test/biome.test.ts` pins all of it. Recommended rules run with
-deliberate carve-outs in `biome.json`, added because they fire on existing code that the
-enablement PR chose not to churn: non-null assertions are the house style under
-`noUncheckedIndexedAccess`, index keys drive chart ticks, bracket access preserves raw-JSON
-contracts (`otlp.ts` reads OTEL payloads field by field), `stripAnsi` in `driver/src/runner.ts`
-matches control characters on purpose, and the `.cjs` container scripts carry their own quirks.
-Every carve-out is a re-enable candidate: turn a rule back on only with the
-source change that retires its hits. Import sorting (assist) and CSS formatting are off; neither
-is a convention here.
+deliberate carve-outs in `biome.json`. Every carve-out is a re-enable candidate: turn a rule back
+on only with the source change that retires its hits. Import sorting (assist) and CSS formatting
+are off; neither is a convention here.
+
+Four carve-outs survive, and each is now **scoped to the file that earns it** rather than disabled
+tree-wide, so a new violation anywhere else is still caught: index keys drive chart ticks
+(`web/src/charts/**`), `stripAnsi` matches control characters on purpose
+(`driver/src/runner.ts`), bracket access preserves the raw-JSON contract (`otlp.ts` reads OTEL
+payloads field by field), and `web/src/main.tsx` carries the one bare CSS side-effect import that
+`useImportExtensions` has no mode for. `noNonNullAssertion` stays global: non-null assertions are
+the house style under `noUncheckedIndexedAccess`, at 661 sites.
+
+Two rules are off because their hits here are **false positives, measured rather than assumed** —
+re-enabling either means teaching it the shape, not churning the source:
+
+- `useJsxKeyInIterable` — fires on the `[label, node]` pairs array that `KeyValues` consumes.
+  `KeyValues` already keys each row by its label, so the value JSX is the single child of an
+  already-keyed element, not a list item. Adding keys there is cargo-cult.
+- `useUniqueElementIds` — every hit is a deliberate stable anchor: `main-content` is the skip-link
+  target (minting it breaks keyboard navigation), `mobile-nav` and `task-board-heading` are
+  `aria-labelledby` anchors on singletons, and `BarChart`'s `partial-hatch` is an SVG `<pattern>`
+  referenced from `styles.css` as `fill: url(#partial-hatch)` — a static stylesheet cannot name a
+  minted id, and the duplicate patterns are identical, so the collision is harmless.
+
+Where an id genuinely is per-instance — a dialog's title and field helps — mint it with `useId`
+and select it in e2e by role, label or `aria-describedby`, never by the literal.
 
 `lint/no-shared-literals.grit` is a Biome plugin that bans raw spellings of values with one named
 home: executor types (`CLAUDE_CODE`, `OPENCODE`), roles (`ADMIN_ROLE`, `MEMBER_ROLE`), the
@@ -193,6 +211,20 @@ home, list the home in the plugin's `$filename` exclusions, and add one regex pe
 codes are matched by their `BAD_`/`UNKNOWN_`/`TOO_MANY_` prefix, so a new code in those families
 is caught before it reaches `ERROR_CODES`. Grit binds a regex group to a variable, so an
 alternation group fails to compile.
+
+Two more plugins enforce invariants this file states and nothing used to check.
+`lint/no-inline-container-scripts.grit` refuses a string or template literal as the argument after
+`node -e` or `sh -c` — the container-scripts rule below. It anchors on the interpreter, not the
+flag, because `docker run -e KEY=VAL` spells `-e` too.
+`lint/no-cross-package-imports.grit` refuses `@factory-ai/core` from `driver/` and any
+`core/src/…` path from `server/`/`web/`. Both are zero-hit ratchets.
+
+**A Grit plugin that fails to compile does not fail the run.** It reports `<plugin> errored: …`
+once per file at `info` severity and then matches nothing, so a broken ratchet is
+indistinguishable from a clean one — `biome check` still prints success. The way in is the
+alternation group above: spell paths as an `or` of whole regexes, never `(src|test)`.
+`core/test/biome.test.ts` asserts the absence of that message, which is the only thing standing
+between a zero and a lie.
 
 ## Build coupling to know about
 

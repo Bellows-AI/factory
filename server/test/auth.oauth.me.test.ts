@@ -7,6 +7,7 @@ const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_FORBIDDEN = 403;
 const HTTP_UNAUTHORIZED = 401;
+const HTTP_UNAVAILABLE = 503;
 
 describe('/api/auth/me', () => {
     it('answers 200 {authenticated: false} for an anonymous caller, which is how the SPA learns to show the gate', async () => {
@@ -63,6 +64,41 @@ describe('/api/auth/me', () => {
             workspacePath: null,
             mode: 'github',
         });
+    });
+
+    it('answers 503, not "not signed in", when the session store cannot be reached', async () => {
+        // The two used to be one answer: an unreachable store was reported to every signed-in
+        // browser as `authenticated: false`, which reads as "everybody was logged out" and left
+        // nothing in the logs to contradict it.
+        const { app, auth } = await setup();
+        const cookie = await signIn(app);
+        auth.findSession = () => Promise.reject(new Error('session store unreachable'));
+
+        const response = await app.inject({
+            method: 'GET',
+            url: '/api/auth/me',
+            cookies: { [SESSION_COOKIE]: cookie },
+        });
+
+        expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('still answers 200 {authenticated: false} for a cookie the store simply does not know', async () => {
+        // The other arm of the same split: the store answered, it just had no row. That is not an
+        // outage and must not become one.
+        const { app } = await setup();
+        const cookie = await signIn(app);
+        const { app: other } = await setup();
+
+        const response = await other.inject({
+            method: 'GET',
+            url: '/api/auth/me',
+            cookies: { [SESSION_COOKIE]: cookie },
+        });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual({ authenticated: false });
     });
 });
 
@@ -135,5 +171,16 @@ describe('POST /api/auth/org', () => {
         const { app } = await setup();
         const response = await switchOrg(app, 'not-a-session', '888888');
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('answers 503, not 401, when the session store cannot be reached', async () => {
+        const { app, auth } = await setup();
+        const cookie = await signIn(app);
+        auth.findSession = () => Promise.reject(new Error('session store unreachable'));
+
+        const response = await switchOrg(app, cookie, '888888');
+
+        expect(response.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(response.json().code).toBe('UNAVAILABLE');
     });
 });

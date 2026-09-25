@@ -28,7 +28,11 @@
         "lineWidth": 120,
         "lineEnding": "lf"
     },
-    "plugins": ["./lint/no-shared-literals.grit"],
+    "plugins": [
+        "./lint/no-shared-literals.grit",
+        "./lint/no-inline-container-scripts.grit",
+        "./lint/no-cross-package-imports.grit"
+    ],
     "assist": {
         "enabled": false
     },
@@ -36,9 +40,6 @@
         "enabled": true,
         "rules": {
             "preset": "recommended",
-            "a11y": {
-                "noSvgWithoutTitle": "off"
-            },
             "complexity": {
                 "noExcessiveCognitiveComplexity": {
                     "level": "error",
@@ -52,19 +53,20 @@
                     "level": "error",
                     "options": { "max": 4 }
                 },
-                "noAdjacentSpacesInRegex": "off",
-                "noUselessFragments": "off",
-                "useLiteralKeys": "off",
-                "useOptionalChain": "off",
-                "useRegexLiterals": "off"
+                "useOptionalChain": "off"
             },
             "correctness": {
-                "noUnusedFunctionParameters": "off",
+                "noUnusedFunctionParameters": "error",
                 "noUnusedImports": "error",
                 "noUnusedVariables": "error",
-                "noUnsafeOptionalChaining": "off",
+                "noUnsafeOptionalChaining": "error",
                 "useExhaustiveDependencies": "off",
-                "useJsxKeyInIterable": "off"
+                "useImportExtensions": {
+                    "level": "error",
+                    "options": { "forceJsExtensions": true }
+                },
+                "useJsxKeyInIterable": "off",
+                "useUniqueElementIds": "off"
             },
             "style": {
                 "noExcessiveLinesPerFile": {
@@ -73,17 +75,18 @@
                 },
                 "noMagicNumbers": "error",
                 "noNonNullAssertion": "off",
-                "useImportType": "off",
                 "useTemplate": "off"
             },
             "suspicious": {
-                "noArrayIndexKey": "off",
-                "noAssignInExpressions": "off",
-                "noControlCharactersInRegex": "off",
-                "noImplicitAnyLet": "off",
-                "noPrototypeBuiltins": "off",
-                "noRedeclare": "off",
-                "useIterableCallbackReturn": "off"
+                "noConstantBinaryExpressions": "error",
+                "noDoubleEquals": "error",
+                "noDuplicateTestHooks": "error",
+                "noExportsInTest": "error",
+                "noFocusedTests": "error",
+                "noImportCycles": "error",
+                "noSkippedTests": "error",
+                "noTsIgnore": "error",
+                "useErrorMessage": "error"
             }
         }
     },
@@ -107,6 +110,22 @@
         "linter": { "enabled": false }
     },
     "overrides": [
+        {
+            "includes": ["web/src/charts/**"],
+            "linter": { "rules": { "suspicious": { "noArrayIndexKey": "off" } } }
+        },
+        {
+            "includes": ["driver/src/runner.ts"],
+            "linter": { "rules": { "suspicious": { "noControlCharactersInRegex": "off" } } }
+        },
+        {
+            "includes": ["server/src/telemetry/otlp.ts"],
+            "linter": { "rules": { "complexity": { "useLiteralKeys": "off" } } }
+        },
+        {
+            "includes": ["web/src/main.tsx"],
+            "linter": { "rules": { "correctness": { "useImportExtensions": "off" } } }
+        },
         {
             "includes": ["core/test/**", "server/test/**", "server/test-db/**", "driver/test/**", "web/test/**"],
             "linter": {

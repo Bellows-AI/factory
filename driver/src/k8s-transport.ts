@@ -100,6 +100,30 @@ export interface K8sResponse {
     body: string;
 }
 
+/**
+ * The one reading of "did the API server refuse this?" — the message every k8s call site used to
+ * spell out by hand, in one place. `null` is success; a string is the refusal, `what` naming the
+ * operation ("creating the runner job") and the body preview carrying the apiserver's own reason.
+ *
+ * It answers a STRING rather than throwing because the channel is the caller's: the fence throws,
+ * the publish answers `publishFailed(...)`, a helper answers `{ ok: false, reason: 'runner_error' }`
+ * and a gate throws a CONTAINER_GONE-coded harness error. One message shape, five channels — the
+ * previous 24 hand-rolled copies could drift on the shape, and the handful of sites that tolerate
+ * a status (a gate secret's 409 means an earlier acquire of this same attempt already created it,
+ * same name, same values; a fence delete's 404/409 means the object is already going) name it in
+ * `tolerate` rather than each writing its own `&& status !== …` chain before the message.
+ */
+export const refusal = (res: K8sResponse, what: string, ...tolerate: number[]): string | null =>
+    res.status < HTTP_ERROR_STATUS || tolerate.includes(res.status)
+        ? null
+        : `${what} answered ${res.status}: ${res.body.slice(0, ERROR_PREVIEW_CHARS)}`;
+
+/** `refusal` for the majority of call sites, whose channel is a thrown Error. */
+export function expectOk(res: K8sResponse, what: string): void {
+    const message = refusal(res, what);
+    if (message) throw new Error(message);
+}
+
 export type K8sMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export type K8sRequest = (method: K8sMethod, path: string, body?: unknown) => Promise<K8sResponse>;

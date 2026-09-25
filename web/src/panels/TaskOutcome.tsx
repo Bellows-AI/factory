@@ -113,6 +113,9 @@ function PublishedWorkSection({
     prLink: string | null;
     prNr: number | null;
 }) {
+    // Keyed even though this is a label/value tuple list rather than a render list: the nodes
+    // reach the DOM through `KeyValues`' own map, and an unkeyed element in an array is the
+    // reconciliation bug React warns about whichever array it was built in.
     const allRows: [string, ReactNode][] = [
         ['Branch', publish !== null ? <code>{publish.branch}</code> : null],
         [

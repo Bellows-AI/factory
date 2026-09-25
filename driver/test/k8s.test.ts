@@ -99,11 +99,13 @@ describe('the runner job spec', () => {
         ]);
     });
 
-    // The command is delivered once. On a resume it is already in the transcript, and sending it
-    // again would re-run the work somebody has been driving by hand — the Factory execution
-    // context still rides every claim, delivered or not, so a resumed conversation always rebuilds
-    // it fresh (issue #244).
-    it('restores a resumed session without re-sending the command', () => {
+    // Parity, decided in docker's favour: the prompt is delivered on EVERY run, resume included.
+    // This platform used to suppress it on a resume that was not a follow-up, and docker never
+    // did — one of the two had to be wrong, and a restored conversation that receives no prompt
+    // idles to the deadline. The Factory execution context rides every claim either way, so a
+    // resumed conversation always rebuilds it fresh (issue #244). The docker twin of this case is
+    // pinned in docker.test.ts ('delivers the prompt on a resume too').
+    it('delivers the command into a resumed session, exactly as the docker runner does', () => {
         expect(resumedSpec().spec.template.spec.containers[0].args).toEqual([
             '--resume',
             SESSION,
@@ -111,11 +113,14 @@ describe('the runner job spec', () => {
             MASTER_PROMPT,
             '--system-prompt-snapshot',
             'off',
+            '-p',
+            'fix the failing build',
         ]);
     });
 
-    // The docker runner's follow-up rule, unchanged on this platform: a follow-up restores the
-    // parent conversation AND delivers the adjustment into it.
+    // The follow-up arm of the same rule: it restores the parent conversation AND delivers the
+    // adjustment into it. Identical to the resume case above now that the two agree — kept
+    // separate because the follow-up flag is the one a board change could move independently.
     it('delivers the command into the restored session on a follow-up', () => {
         const followUpSpec = runnerJobSpec(
             loadDriverConfig({ EXECUTOR: 'kubernetes' }),
@@ -828,7 +833,9 @@ describe('the worktree sync', () => {
             stringData: { CORE_TOKEN: 'shh' },
         });
         // The Job the sync POSTs is the sync's own, named after this attempt.
-        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(syncJobName(envJob));
+        expect((jobPost?.body as { metadata?: { name?: string } } | undefined)?.metadata?.name).toBe(
+            syncJobName(envJob)
+        );
         const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
         expect(order.indexOf(`POST ${secretsPath}`)).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
         // Reaped with the verdict, the same accepted-leak posture the runner env Secret has.
@@ -861,7 +868,9 @@ describe('the worktree sync', () => {
         expect(result).toEqual({ ok: true, reason: null });
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
         const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
-        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(syncJobName(followJob));
+        expect((jobPost?.body as { metadata?: { name?: string } } | undefined)?.metadata?.name).toBe(
+            syncJobName(followJob)
+        );
         expect(JSON.stringify(jobPost?.body)).toContain('"name":"RESTORE","value":"1"');
         // The checkout claim is taken and, on success, held through the run as ever.
         const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
@@ -1012,7 +1021,7 @@ describe('the worktree sync', () => {
         const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
         expect(release).toBeDefined();
         // The uid precondition is what keeps a stale release from reaching a newer claim.
-        expect((release?.body as { preconditions?: { uid?: string } }).preconditions?.uid).toBeDefined();
+        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBeDefined();
     });
 
     /*
@@ -5330,9 +5339,13 @@ describe('the runner job spec under opencode', () => {
         expect(spec.spec.template.spec.containers[0].env.some((e) => e.name === 'XDG_DATA_HOME')).toBe(false);
     });
 
-    it('refuses to restore a session for anything but a follow-up, as dockerArgs does', () => {
-        expect(() => runnerJobSpec(ocConfig, opencodeJob, { id: 'ses_abc123', resume: true })).toThrow(
-            /restores a session only for a follow-up/
+    // The unified predicate is docker's: opencode mints its own ids and cannot ADOPT one minted
+    // in advance, which is exactly what a session with `resume: false` is. This platform used to
+    // refuse on `!job.followUp` instead, which rejected a legitimate resumed claim and accepted a
+    // minted one — the opposite of the rule the CLI actually has.
+    it('refuses to adopt a minted session, as dockerArgs does', () => {
+        expect(() => runnerJobSpec(ocConfig, opencodeJob, { id: 'ses_abc123', resume: false })).toThrow(
+            /cannot adopt a minted session/
         );
     });
 

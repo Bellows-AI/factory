@@ -5,6 +5,7 @@ import {
     firstPageError,
     inboxFiltersFromSearch,
     inboxQueryString,
+    MAX_REFRESH_DEPTH,
 } from '../src/api/useTasks.js';
 
 /**
@@ -129,6 +130,21 @@ describe('fetchDepthPages', () => {
         expect(rebuilt.items.map((t) => t.id)).toEqual(['a']);
         expect(rebuilt.nextCursor).toBeNull();
         expect(rebuilt.pages).toBe(2);
+    });
+
+    it('reads at most MAX_REFRESH_DEPTH pages however deep the member paged', async () => {
+        // The tick is 3s while anything runs and the chain is serial, so an uncapped depth is a
+        // request-count problem: past the cap the deeper pages go stale rather than re-read.
+        const calls: string[] = [];
+        const fetchPage = async (url: string) => {
+            calls.push(url);
+            return page([`p${calls.length}`], `c${calls.length}`);
+        };
+        const rebuilt = await fetchDepthPages(fetchPage, '', 12);
+        expect(calls).toHaveLength(MAX_REFRESH_DEPTH);
+        expect(rebuilt.pages).toBe(MAX_REFRESH_DEPTH);
+        // The cursor of the LAST page read, so Load more resumes from the capped depth.
+        expect(rebuilt.nextCursor).toBe(`c${MAX_REFRESH_DEPTH}`);
     });
 
     it('reads exactly one page when the depth is one', async () => {

@@ -1,20 +1,19 @@
-import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
-import { deleteJob, deleteSecret, jobPodsPath } from './k8s-auxspec.js';
+import { deleteJob, deleteSecret, jobPodsPath, secretsPath } from './k8s-auxspec.js';
 import { readJobPodVerdict, readJobStatus, timedOutOf } from './k8s-poll.js';
 import type { JobStatusResult } from './k8s-poll.js';
-import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath } from './k8s-podspec.js';
+import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath, secretBody } from './k8s-podspec.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import {
     ERROR_PREVIEW_CHARS,
     HTTP_CONFLICT,
-    HTTP_ERROR_STATUS,
     livePod,
     POLL_MS,
+    refusal,
     TIMEOUT_EXIT_CODE,
     wait,
 } from './k8s-transport.js';
@@ -44,21 +43,14 @@ const gateHarness = (message: string): Error => Object.assign(new Error(message)
  * method's complexity readable.
  */
 async function createGateEnvSecret(deps: K8sDeps, job: BoardJob, secretName: string, envBody: string): Promise<void> {
-    const response = await deps.request('POST', `/api/v1/namespaces/${deps.config.k8sNamespace}/secrets`, {
-        apiVersion: 'v1',
-        kind: 'Secret',
-        type: 'Opaque',
-        metadata: {
-            name: secretName,
-            labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken },
-        },
-        stringData: envBodyToData(envBody),
-    });
-    if (response.status >= HTTP_ERROR_STATUS && response.status !== HTTP_CONFLICT) {
-        throw gateHarness(
-            `creating the gate env secret answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
+    const response = await deps.request(
+        'POST',
+        secretsPath(deps.config.k8sNamespace),
+        secretBody(job, secretName, envBodyToData(envBody))
+    );
+    // HTTP_CONFLICT is the tolerated one — `refusal`'s third argument is exactly this case.
+    const refused = refusal(response, 'creating the gate env secret', HTTP_CONFLICT);
+    if (refused) throw gateHarness(refused);
 }
 
 /**
@@ -106,11 +98,7 @@ async function pollGateJobToTerminal(
             throw gateHarness((e as Error).message);
         }
         if (result.kind === 'notFound') throw gateHarness(`the gate job ${jobName} no longer exists`);
-        if (result.kind === 'error') {
-            throw gateHarness(
-                `reading the gate job answered ${result.status}: ${result.body.slice(0, ERROR_PREVIEW_CHARS)}`
-            );
-        }
+        if (result.kind === 'error') throw gateHarness(refusal(result, 'reading the gate job')!);
         if (result.kind === 'terminal') {
             return { succeeded: result.outcome === 'succeeded', timedOut: timedOutOf(result.status) };
         }
@@ -210,7 +198,11 @@ export function createKubernetesGateManager({
             if (!entry) {
                 return Promise.reject(gateHarness(`no gate environment for ${key}`));
             }
-            const run = (entry.run += 1);
+            // The run counter, bumped then read — one statement each, so the increment is not
+            // hidden inside the expression that consumes it. It keeps a second ad-hoc call of the
+            // same gate off the first's Job name.
+            entry.run += 1;
+            const run = entry.run;
             const { job, image, secretName } = entry;
             const jobName = gateJobName(job, name, run);
             return (async (): Promise<GateRun> => {
@@ -228,11 +220,8 @@ export function createKubernetesGateManager({
                             gateTimeoutMs,
                         })
                     );
-                    if (created.status >= HTTP_ERROR_STATUS) {
-                        throw gateHarness(
-                            `creating the gate job answered ${created.status}: ${created.body.slice(0, ERROR_PREVIEW_CHARS)}`
-                        );
-                    }
+                    const refused = refusal(created, 'creating the gate job');
+                    if (refused) throw gateHarness(refused);
 
                     const { succeeded, timedOut } = await pollGateJobToTerminal(deps, jobName, image);
                     const { exitCode, output } = await readGateJobResult(deps, jobName, succeeded);

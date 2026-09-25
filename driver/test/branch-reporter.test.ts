@@ -4,7 +4,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AddressInfo } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
@@ -377,7 +377,7 @@ describe('the branch reporter: loop mode', () => {
     it('reports immediately in loop mode and stays silent while it waits', async () => {
         const { url, waitForRequest } = await board();
         const dir = gitRepo();
-        let child;
+        let child: ReturnType<typeof spawn> | undefined;
         try {
             child = spawn(process.execPath, [...NODE_ARGS, CLAUDE_REPORTER], {
                 cwd: dir,

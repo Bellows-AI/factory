@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import { JSON_HEADERS } from '@factory-ai/core';
 
@@ -48,11 +49,10 @@ export async function fetchDefaultWorkflowSettings(): Promise<DefaultWorkflowFet
             return { ok: false, unavailable: true, error: null };
         }
         if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
             return {
                 ok: false,
                 unavailable: false,
-                error: body.error ?? `Could not load the workflow defaults (${response.status})`,
+                error: (await refusalOf(response, 'Could not load the workflow defaults')).error,
             };
         }
         return { ok: true, data: (await response.json()) as DefaultWorkflowSettings };
@@ -74,16 +74,14 @@ export async function putDefaultWorkflowSettings(pair: DefaultWorkflowSteps): Pr
             return { ok: false, unavailable: false, error: 'Your session expired' };
         }
         if (response.status === HTTP_STATUS_SERVICE_UNAVAILABLE) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
             return {
                 ok: false,
                 unavailable: true,
-                error: body.error ?? 'No workflow settings store for this organization',
+                error: (await refusalOf(response, 'No workflow settings store for this organization')).error,
             };
         }
         if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
-            return { ok: false, unavailable: false, error: body.error ?? `Could not save (${response.status})` };
+            return { ok: false, unavailable: false, error: (await refusalOf(response, 'Could not save')).error };
         }
         return { ok: true, data: (await response.json()) as DefaultWorkflowSettings };
     } catch (e) {

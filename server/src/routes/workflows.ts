@@ -5,7 +5,7 @@ import type { WorkflowStore, WorkflowSummary } from '../db/workflow-store.js';
 import type { Caller } from '../auth/store.js';
 import { blockCatalog } from '../db/workflow-blocks/index.js';
 import { bad, body, repoReason } from './helpers.js';
-import { UUID } from '../config.js';
+import { resolveCallerRoute } from './route-guards.js';
 import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 
 export interface WorkflowRouteDeps {
@@ -189,10 +189,9 @@ function canModify(caller: Caller, record: WorkflowSummary): boolean {
 async function handleGetWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeOf(orgs, request);
     if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    const { id } = request.params as { id: string };
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = resolveCallerRoute(request, reply);
+    if (!route) return reply;
+    const { caller, id } = route;
 
     const record = await store.get(id);
     if (!record || !canSee(caller, record)) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
@@ -202,10 +201,9 @@ async function handleGetWorkflow(orgs: OrgRegistry, request: FastifyRequest, rep
 async function handleUpdateWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeOf(orgs, request);
     if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    const { id } = request.params as { id: string };
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = resolveCallerRoute(request, reply);
+    if (!route) return reply;
+    const { caller, id } = route;
 
     const fields = body(request.body);
     // Scope is immutable after create: silently ignoring a `scope` field would let a caller
@@ -233,10 +231,9 @@ async function handleUpdateWorkflow(orgs: OrgRegistry, request: FastifyRequest, 
 async function handleDeleteWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeOf(orgs, request);
     if (!store) return noStore(reply);
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    const { id } = request.params as { id: string };
-    if (!UUID.test(id)) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a uuid');
+    const route = resolveCallerRoute(request, reply);
+    if (!route) return reply;
+    const { caller, id } = route;
 
     const record = await store.get(id);
     if (!record) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });

@@ -18,7 +18,7 @@
  * (workflow-schema.ts validates it), so a block's prompt is always fully filled before the row
  * ever reaches a runner.
  */
-import { type WorkflowDefinition, type WorkflowParam } from './workflow-schema.js';
+import type { WorkflowDefinition, WorkflowParam } from './workflow-schema.js';
 
 /** The final line a review block must emit. The board's marker edges match exactly this. */
 export const REVIEW_VERDICT_MARKER = 'VERDICT: CLEAN';

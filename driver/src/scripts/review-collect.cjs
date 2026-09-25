@@ -200,7 +200,7 @@ function fetchThreadsGql(ref) {
 }
 
 /** One review thread's comments, capped and recorded in `ts`/`counts` when truncated. */
-function threadComments(node, ts, counts) {
+function threadComments(node, _ts, counts) {
     const comments = (node.comments && Array.isArray(node.comments.nodes) ? node.comments.nodes : [])
         .filter((c) => c && typeof c.id === 'string')
         .map((c) => ({

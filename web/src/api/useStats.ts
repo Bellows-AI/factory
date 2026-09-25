@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DateRange, OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
+import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 export interface TelemetryMeta {
@@ -99,10 +100,9 @@ export function useStats(query = 'range=all'): UseStats {
                 }
 
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
                     // Deliberately does not clear `data`: an outage leaves
                     // whatever is on screen the most accurate view available.
-                    setError(body.error ?? `Request failed (${response.status})`);
+                    setError((await refusalOf(response)).error);
                     setPending(false);
                     return;
                 }

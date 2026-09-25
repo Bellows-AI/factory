@@ -22,12 +22,12 @@ export async function storeFor(orgs: OrgRegistry, request: FastifyRequest): Prom
  */
 export async function boardsFor(orgs: OrgRegistry, request: FastifyRequest): Promise<JobStore[]> {
     if (request.auth?.kind === 'worker' && request.auth.orgId === null) {
-        const boards: JobStore[] = [];
-        for (const org of await orgs.list()) {
-            const rt = await orgs.for(org.id);
-            if (rt?.jobs) boards.push(rt.jobs);
-        }
-        return boards;
+        // Resolved in parallel — the lookups are independent, and this runs on every driver poll.
+        // Warm runtimes are cached promises and cost nothing; a cold start would otherwise
+        // serialise every org's build behind the first. The registry's order is preserved, which
+        // is what `boardScan`'s rotation counts positions against.
+        const runtimes = await Promise.all((await orgs.list()).map((org) => orgs.for(org.id)));
+        return runtimes.flatMap((rt) => (rt?.jobs ? [rt.jobs] : []));
     }
     const store = await storeFor(orgs, request);
     return store ? [store] : [];

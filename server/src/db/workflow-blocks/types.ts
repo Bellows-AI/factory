@@ -3,7 +3,7 @@
  * produces, and why a compile was refused. Registry-aware — the opposite of workflow-schema.ts,
  * which validates the authored `uses`/`with` shape but knows no block's real id or config.
  */
-import { ERROR_CODES } from '@factory-ai/core';
+import type { ERROR_CODES } from '@factory-ai/core';
 import type {
     BlockConfigValue,
     DefinitionRefusal,

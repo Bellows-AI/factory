@@ -205,7 +205,11 @@ export function createGateManager({
             });
         },
 
-        runGate(key, name, command) {
+        // `name` names the gate, and this manager addresses the environment by CHECKOUT KEY —
+        // one warm container per checkout, every gate exec'd into it — so the gate's own name
+        // never reaches the transport here. The kubernetes manager does use it: a gate run is a
+        // Job there, and the name becomes part of the Job's.
+        runGate(key, _name, command) {
             const entry = entries.get(key);
             if (!entry) {
                 return Promise.reject(

@@ -75,7 +75,7 @@ function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean 
         async listVisible() {
             return [record];
         },
-        async get(id: string) {
+        async get(_id: string) {
             return options.get === undefined ? record : options.get;
         },
         async remove(id: string) {

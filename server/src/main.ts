@@ -114,7 +114,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
 
     // Warm every known org's cache at boot so the first visitor does not eat the cold read. Fired,
     // not awaited: a cold database must not hold `listen()`.
-    void ready.then(() => orgs.warmAll()).catch(() => {});
+    void ready.then(() => orgs.warmAll()).catch((e: Error) => console.error(`[orgs] warm failed: ${e.message}`));
 
     await app.listen({ port: config.port, host: config.host });
 }

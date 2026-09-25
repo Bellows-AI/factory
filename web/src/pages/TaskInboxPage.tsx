@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { useTasksPage } from './TasksLayout.js';
+import { inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
 import type { InboxFilters, TaskSummary, UseTasks } from '../api/useTasks.js';
 import { taskDotClass, taskStatusLabel, taskTitleFromCommand } from '../task-tree.js';
 
@@ -31,20 +32,12 @@ const SORTS: readonly { value: InboxFilters['sort']; label: string }[] = [
     { value: 'oldest', label: 'Oldest' },
 ];
 
-/** The URL for a filter set: defaults omitted, so the default view stays `/tasks`. */
+/** The URL for a filter set: `inboxQueryString` decides what a filter set serializes to — one
+ * home, so a new filter key cannot be added to the poll and forgotten in the shareable link. */
 const filtersUrl = (filters: InboxFilters): string => {
-    const params = new URLSearchParams();
-    if (filters.state !== 'attention') params.set('state', filters.state);
-    if (filters.q !== null) params.set('q', filters.q);
-    if (filters.repo !== null) params.set('repo', filters.repo);
-    if (filters.author !== null) params.set('author', filters.author);
-    if (filters.sort !== 'newest') params.set('sort', filters.sort);
-    const query = params.toString();
+    const query = inboxQueryString(filters);
     return query === '' ? '/tasks' : `/tasks?${query}`;
 };
-
-/** The URL-search field's character cap — mirrors `QUERY_MAX` in `useTasks.ts`. */
-const SEARCH_QUERY_MAX = 200;
 
 /** The workspace's selected repositories, plus the currently filtered one if it has since
  * disappeared from the configuration — a linkable URL must keep rendering its own filter. */
@@ -82,6 +75,10 @@ function InboxFilterBar({
     repoOptions: readonly { owner: string; name: string }[];
     onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+    // Minted, not literal: a component owns no id, and three hard-coded ones become three
+    // DUPLICATE ids the moment this bar is rendered twice on a page — a duplicate id points every
+    // `<label for>` at the first match, so the second bar's labels focus the first bar's fields.
+    const fieldId = useId();
     return (
         <div className="inbox-filters">
             <nav className="inbox-tabs" aria-label="Task state">
@@ -97,10 +94,10 @@ function InboxFilterBar({
                 ))}
             </nav>
             <form className="inbox-search" onSubmit={onSubmit}>
-                <label htmlFor="inbox-q">Search</label>
-                <input id="inbox-q" name="q" defaultValue={filters.q ?? ''} type="text" />
-                <label htmlFor="inbox-repo">Repository</label>
-                <select id="inbox-repo" name="repo" defaultValue={filters.repo ?? ''}>
+                <label htmlFor={`${fieldId}-q`}>Search</label>
+                <input id={`${fieldId}-q`} name="q" defaultValue={filters.q ?? ''} type="text" />
+                <label htmlFor={`${fieldId}-repo`}>Repository</label>
+                <select id={`${fieldId}-repo`} name="repo" defaultValue={filters.repo ?? ''}>
                     <option value="">All repositories</option>
                     {repoOptions.map((repo) => (
                         <option key={`${repo.owner}/${repo.name}`} value={`${repo.owner}/${repo.name}`}>
@@ -108,8 +105,8 @@ function InboxFilterBar({
                         </option>
                     ))}
                 </select>
-                <label htmlFor="inbox-author">Author</label>
-                <input id="inbox-author" name="author" defaultValue={filters.author ?? ''} type="text" />
+                <label htmlFor={`${fieldId}-author`}>Author</label>
+                <input id={`${fieldId}-author`} name="author" defaultValue={filters.author ?? ''} type="text" />
                 <button type="submit">Filter</button>
             </form>
             <div className="inbox-sort">
@@ -287,7 +284,7 @@ export function TaskInboxPage() {
         const fields = new FormData(event.currentTarget);
         const q = String(fields.get('q') ?? '')
             .trim()
-            .slice(0, SEARCH_QUERY_MAX);
+            .slice(0, QUERY_MAX);
         const repo = String(fields.get('repo') ?? '');
         const author = String(fields.get('author') ?? '').trim();
         applyFilters({

@@ -6,8 +6,8 @@
  */
 
 import { JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { execFile, spawn } from 'node:child_process';
-import { writeFile, rm } from 'node:fs/promises';
+import { execFile, type spawn } from 'node:child_process';
+import type { writeFile, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import { workspacePath, claimCarriesGithubToken } from './claim.js';

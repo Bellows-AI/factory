@@ -41,7 +41,9 @@ export function seedSelection(repos: readonly { owner: string; name: string }[])
 /** Chosen keys the installation list no longer reports, sorted — the save blockers. */
 export function absentSelection(chosen: ReadonlySet<string>, reported: readonly InstallationRepo[]): string[] {
     const reportedKeys = new Set(reported.map(repoKey));
-    return [...chosen].filter((key) => !reportedKeys.has(key)).sort();
+    // Keys are `owner/name` strings, so the order is the same `localeCompare` the recency
+    // tiebreak uses — spelled out, never the default sort's implicit stringify.
+    return [...chosen].filter((key) => !reportedKeys.has(key)).sort((a, b) => a.localeCompare(b));
 }
 
 /** A draft differs from its baseline — either side alone is not the whole truth. */
@@ -94,10 +96,12 @@ export function canSelect(chosen: ReadonlySet<string>, max: number = MAX_SELECTE
 
 /** The PUT's body: the WHOLE selection as owner/name pairs, sorted for a stable request. */
 export function selectionPayload(chosen: ReadonlySet<string>): { owner: string; name: string }[] {
-    return [...chosen].sort().map((key) => {
-        const slash = key.indexOf('/');
-        return { owner: key.slice(0, slash), name: key.slice(slash + 1) };
-    });
+    return [...chosen]
+        .sort((a, b) => a.localeCompare(b))
+        .map((key) => {
+            const slash = key.indexOf('/');
+            return { owner: key.slice(0, slash), name: key.slice(slash + 1) };
+        });
 }
 
 export interface SelectionSaveState {

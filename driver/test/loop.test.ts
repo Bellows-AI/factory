@@ -132,7 +132,7 @@ function stubBoard(
             const verdict: HeartbeatVerdict = { result: 'held', cancelRequested: options.cancelRequested ?? false };
             return verdict;
         },
-        async claimReclaim(worker) {
+        async claimReclaim(_worker) {
             const next = reclaimQueue.shift();
             if (next) board.reclaimGrants.push(next);
             return next ?? null;
@@ -142,7 +142,7 @@ function stubBoard(
             board.reclaimAcks.push(id);
             return options.ackReclaimLease ?? 'ok';
         },
-        async rereadGates(claimed) {
+        async rereadGates(_claimed) {
             board.gatesReread += 1;
             return options.rereadGates ?? null;
         },
@@ -2221,7 +2221,7 @@ describe('verification gates', () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
         let acquires = 0;
-        stack.gates.manager.acquire = async (key: string) => {
+        stack.gates.manager.acquire = async (_key: string) => {
             acquires += 1;
             if (acquires > 1) throw new Error('daemon unreachable');
         };
@@ -2284,7 +2284,7 @@ describe('verification gates', () => {
     it('bounds the total reported gate output', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
-        stack.gates.manager.runGate = async (_key, name) => ({
+        stack.gates.manager.runGate = async (_key, _name) => ({
             exitCode: 0,
             output: 'x'.repeat(40_000),
         });

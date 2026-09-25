@@ -14,7 +14,7 @@
  * referencing the two descriptors `workflow-blocks/index.ts` already registers — this file copies
  * neither block's prompt nor script into itself.
  */
-import { type AuthoredWorkflowDefinition, type WorkflowDefinition } from './workflow-schema.js';
+import type { AuthoredWorkflowDefinition, WorkflowDefinition } from './workflow-schema.js';
 import { validateDefinition } from './workflow-schema-validate.js';
 import { BLOCK_REGISTRY, compileDefinition } from './workflow-blocks/index.js';
 import { REVIEW_MARKERS } from './workflow-blocks/github-review-reconcile.js';

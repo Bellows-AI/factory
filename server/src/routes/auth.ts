@@ -32,6 +32,7 @@ import {
     HTTP_NO_CONTENT,
     HTTP_OK,
     HTTP_UNAUTHORIZED,
+    HTTP_UNAVAILABLE,
     INSTALLATION_ID,
     type ListInstallationRepos,
     MS_PER_SECOND,
@@ -239,6 +240,29 @@ function isMemberOf(memberships: readonly { id: string }[], orgId: string): bool
     return memberships.some((membership) => membership.id === orgId);
 }
 
+/**
+ * The caller behind a request, or a refusal already sent.
+ *
+ * `resolveUser` answers null for "no credential, or one that does not resolve" and THROWS when the
+ * session store could not be reached. The `.catch(() => null)` this replaces collapsed the two, so
+ * a database outage was reported to every signed-in browser as "you are not signed in" — with
+ * nothing in the logs to say otherwise. A store failure is now a logged 503; an absent or invalid
+ * credential still gets each route's own answer, which is not the same answer in both.
+ */
+async function resolvedCaller(
+    resolveUser: (request: FastifyRequest) => Promise<Caller | null>,
+    request: FastifyRequest,
+    reply: FastifyReply
+): Promise<{ ok: true; caller: Caller | null } | { ok: false }> {
+    try {
+        return { ok: true, caller: await resolveUser(request) };
+    } catch (err) {
+        request.log.error({ err }, 'session resolve failed');
+        await reply.code(HTTP_UNAVAILABLE).send({ error: (err as Error).message, code: ERROR_CODES.UNAVAILABLE });
+        return { ok: false };
+    }
+}
+
 interface SwitchOrgCtx {
     store: AuthStore;
     secret: string;
@@ -253,7 +277,9 @@ interface SwitchOrgCtx {
  */
 async function handleSwitchOrg(ctx: SwitchOrgCtx, request: FastifyRequest, reply: FastifyReply) {
     const { store, secret, resolveUser } = ctx;
-    const caller = await resolveUser(request).catch(() => null);
+    const resolved = await resolvedCaller(resolveUser, request, reply);
+    if (!resolved.ok) return reply;
+    const caller = resolved.caller;
     if (!caller)
         return reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
 
@@ -311,7 +337,9 @@ export const authRoutes =
         const listInstallationRepos: ListInstallationRepos = installationListing ?? defaultListing;
 
         app.get('/api/auth/me', async (request, reply) => {
-            const caller = await resolveUser(request).catch(() => null);
+            const resolved = await resolvedCaller(resolveUser, request, reply);
+            if (!resolved.ok) return reply;
+            const caller = resolved.caller;
             if (!caller) {
                 // 200, not 401. This is the SPA's session probe, and the browser logs every 4xx as
                 // a console error even when the client handles it — the login screen would open

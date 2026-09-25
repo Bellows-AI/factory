@@ -48,9 +48,7 @@ describe('the executor branch reporter', () => {
     it('is copied to /usr/local/bin by both Dockerfiles, never into a config home', () => {
         for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
             const dockerfile = read(`${dir}/Dockerfile`);
-            expect(dockerfile).toMatch(
-                new RegExp(`COPY[^\\n]*branch-reporter\\.cjs /usr/local/bin/branch-reporter\\.cjs`)
-            );
+            expect(dockerfile).toMatch(/COPY[^\n]*branch-reporter\.cjs \/usr\/local\/bin\/branch-reporter\.cjs/);
             expect(dockerfile).not.toMatch(/home\/COPY[^\n]*branch-reporter/);
             expect(dockerfile).not.toMatch(/branch-reporter[^\n]*-home\//);
         }
@@ -101,7 +99,7 @@ describe('the executor branch reporter', () => {
         // (the kill -0 probe), and the reporter is terminated and reaped before the close-time
         // sample so nothing outlives the run.
         expect(entry).toMatch(
-            /while :; do\n    wait "\$CLI_PID"\n    STATUS=\$\?\n    kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/
+            /while :; do\n {4}wait "\$CLI_PID"\n {4}STATUS=\$\?\n {4}kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/
         );
         if (cli === 'opencode') {
             expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID" "\$WATCHER_PID"/);
@@ -163,8 +161,8 @@ describe('the claude-executor transcript redirect', () => {
     it('redirects CLAUDE_CONFIG_DIR only when the driver hands it a transcript dir', () => {
         const entry = read(ENTRYPOINT);
         expect(entry).toMatch(/if \[ -n "\$\{FACTORY_TRANSCRIPT_DIR:-\}" \]; then/);
-        expect(entry).toMatch(/\n    mkdir -p "\$FACTORY_TRANSCRIPT_DIR"\n/);
-        expect(entry).toMatch(/\n    export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
+        expect(entry).toMatch(/\n {4}mkdir -p "\$FACTORY_TRANSCRIPT_DIR"\n/);
+        expect(entry).toMatch(/\n {4}export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
     });
 
     it('carries no Remote Control trust patch', () => {

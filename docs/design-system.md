@@ -331,6 +331,7 @@ Components:
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login, appearance, public-header |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
+| `NavItems.tsx` | sidenav — the nav links both `SideNav.tsx` and `MobileNavDialog.tsx` render |
 | `OnboardingOrganization.tsx` | onboarding |
 | `OrgSelector.tsx` | org, selector |
 | `PageHeader.tsx` | page-header |

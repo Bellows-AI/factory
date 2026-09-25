@@ -1,13 +1,12 @@
-import { JOB_LABEL, LEASE_LABEL } from './labels.js';
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { envFileBody } from './claim.js';
 import { lookupHelper, parseHelperOutput } from './helpers.js';
 import type { HelperPlan, HelperResult } from './helpers.js';
 import { helperEnvSecretName, helperJobName, helperJobSpec, jobPath, secretsPath } from './k8s-auxspec.js';
-import { envBodyToData, jobsPath } from './k8s-podspec.js';
+import { envBodyToData, jobsPath, secretBody } from './k8s-podspec.js';
 import { helperVerdict } from './k8s-poll.js';
-import { ERROR_PREVIEW_CHARS, HTTP_ERROR_STATUS } from './k8s-transport.js';
+import { refusal } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import { withPublishToken } from './publish.js';
 
@@ -39,33 +38,21 @@ export async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, 
     const jobName = helperJobName(job, plan, nonce);
     try {
         if (secret) {
-            const response = await deps.request('POST', secretsPath(deps.config.k8sNamespace), {
-                apiVersion: 'v1',
-                kind: 'Secret',
-                type: 'Opaque',
-                metadata: { name: secret, labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken } },
-                stringData: env,
-            });
-            if (response.status >= HTTP_ERROR_STATUS) {
-                return {
-                    ok: false,
-                    reason: 'runner_error',
-                    message: `creating the helper secret answered ${response.status}: ${response.body.slice(0, ERROR_PREVIEW_CHARS)}`,
-                };
-            }
+            const response = await deps.request(
+                'POST',
+                secretsPath(deps.config.k8sNamespace),
+                secretBody(job, secret, env)
+            );
+            const refused = refusal(response, 'creating the helper secret');
+            if (refused) return { ok: false, reason: 'runner_error', message: refused };
         }
         const created = await deps.request(
             'POST',
             jobsPath(deps.config.k8sNamespace),
             helperJobSpec(deps.config, job, { plan, descriptor, envSecret: secret, nonce })
         );
-        if (created.status >= HTTP_ERROR_STATUS) {
-            return {
-                ok: false,
-                reason: 'runner_error',
-                message: `creating the helper job answered ${created.status}: ${created.body.slice(0, ERROR_PREVIEW_CHARS)}`,
-            };
-        }
+        const refusedJob = refusal(created, 'creating the helper job');
+        if (refusedJob) return { ok: false, reason: 'runner_error', message: refusedJob };
         const verdict = await helperVerdict(deps, jobName);
         if (verdict.timedOut) {
             return { ok: false, reason: 'timeout', message: 'the helper job exceeded its deadline' };

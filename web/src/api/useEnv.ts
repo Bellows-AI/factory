@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import { JSON_HEADERS } from '@factory-ai/core';
 
@@ -74,8 +75,7 @@ export function useEnv(): UseEnv {
                 return;
             }
             if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                setError(body.error ?? `Request failed (${response.status})`);
+                setError((await refusalOf(response)).error);
                 setLoading(false);
                 return;
             }
@@ -114,8 +114,7 @@ export function useEnv(): UseEnv {
                 return { error: 'Your session expired', vars: [] };
             }
             if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                return { error: body.error ?? `Could not save (${response.status})`, vars: [] };
+                return { error: (await refusalOf(response, 'Could not save')).error, vars: [] };
             }
             const saved = (await response.json()) as { vars: EnvVarView[] };
             return { error: null, vars: saved.vars };

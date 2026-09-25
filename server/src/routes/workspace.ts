@@ -3,10 +3,10 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
 import type { ErrorCode } from '@factory-ai/core';
 import { callerOf, orgOf } from '../auth/plugin.js';
-import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
+import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
 import type { UserExecutor, UserExecutorStore } from '../db/user-executor-store.js';
 import type { UserRepoStore } from '../db/user-repo-store.js';
-import { fullName, type AppConfig, type Repo } from '../config.js';
+import type { AppConfig, Repo } from '../config.js';
 import type { UserRepo } from '../db/user-repo-store.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 import type { FactsCache } from '../workspace/facts.js';
@@ -210,39 +210,6 @@ function validateRepoSelection(
     return { ok: true, value: selection };
 }
 
-/**
- * Every selected repo must be one the installation can actually see. Not a formality: the clone
- * uses the App's installation token, so a repository outside the installation is one this
- * deployment has no business fetching — and accepting the name would write a row that fails on
- * every retry with a 404.
- */
-async function checkReposVisible(
-    repos: OrgRuntime['repos'],
-    selection: Repo[]
-): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
-    const available = new Set((await repos.list()).map(fullName));
-    // An unreachable installation is refused rather than waved through. The list is empty in two
-    // very different situations — nothing is installed, or GitHub could not be asked — and only
-    // the first is a state in which "no repository matches" is true.
-    if (!available.size && repos.lastError()) {
-        return {
-            ok: false,
-            status: HTTP_UNAVAILABLE,
-            code: ERROR_CODES.UNAVAILABLE,
-            message: `Cannot check the selection against the GitHub App installation: ${repos.lastError()}`,
-        };
-    }
-    for (const repo of selection) {
-        if (available.has(`${repo.owner}/${repo.name}`)) continue;
-        return {
-            ok: false,
-            code: ERROR_CODES.UNKNOWN_REPO,
-            message: `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
-        };
-    }
-    return { ok: true };
-}
-
 /** `list`'s per-entry name-shape and duplicate-name checks, in one place. */
 function validateExecutorList(
     raw: unknown
@@ -365,7 +332,7 @@ async function handlePutRepos(deps: WorkspaceDeps, request: FastifyRequest, repl
      * installation is one this deployment has no business fetching — and accepting the name would
      * write a row that fails on every retry with a 404.
      */
-    const visible = await checkReposVisible(repos, selection);
+    const visible = await checkReposVisible(repos, selection, { subject: 'the selection' });
     if (!visible.ok) return bad(reply, visible.code, visible.message, visible.status);
 
     const saved = await guard(
