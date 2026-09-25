@@ -140,14 +140,17 @@ describe('ci workflows', () => {
         const normalize = runSteps(image).find((step) => step.run.includes('IMAGE_TAG='));
         expect(normalize, 'the git tag reaches docker unnormalized').toBeTruthy();
         expect(normalize!.run).toMatch(/tr -c 'A-Za-z0-9_\.-'/);
-        // Only the image tag is charset-limited. Folding the tarball and the artifact too would
-        // make two refs differing by a folded character indistinguishable on the releases page,
-        // so those keep the raw ref.
+        // Folding is lossy, so a digest of the original keeps two refs that fold alike apart —
+        // in the image tag, the tarball name and the artifact name, none of which may carry a
+        // raw ref (a ref may contain a pipe; an artifact name may not).
+        expect(normalize!.run).toMatch(/sha1sum/);
         const save = runSteps(image).find((step) => step.run.includes('docker save'))!;
-        expect(save.run).toContain('-o "factory-ai-$TAG.tar"');
+        expect(save.run).toContain('-o "factory-ai-$IMAGE_TAG.tar"');
         const upload = (image.steps ?? []).find((step) => step.uses?.startsWith('actions/upload-artifact@'))!;
-        expect(upload.with!.name).toContain('github.ref_name');
-        expect(upload.with!.path).toContain('github.ref_name');
+        for (const value of [upload.with!.name, upload.with!.path]) {
+            expect(value).toContain('env.IMAGE_TAG');
+            expect(value).not.toContain('github.ref_name');
+        }
     });
 
     it('never interpolates a ref name into shell text', () => {
@@ -176,9 +179,12 @@ describe('ci workflows', () => {
         }
     });
 
-    it('supersedes only pull-request runs', () => {
+    // Only one run sits pending per group, so a group shared across merges to main would let a
+    // third push cancel the second's validation outright.
+    it('supersedes pull-request runs and never queues two merges against each other', () => {
         const concurrency = workflow(CI).concurrency!;
         expect(concurrency.group).toContain('github.ref');
+        expect(concurrency.group).toContain('github.run_id');
         expect(String(concurrency['cancel-in-progress'])).toContain('pull_request');
     });
 

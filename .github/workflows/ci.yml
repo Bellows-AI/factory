@@ -15,7 +15,10 @@ concurrency:
     # A literal prefix, not ${{ github.workflow }}: inside a called workflow the github context is
     # the CALLER's, so `${{ github.workflow }}-${{ github.ref }}` would resolve to the group the
     # release workflow already holds and the tag run would deadlock waiting on itself.
-    group: ci-${{ github.ref }}
+    # Pull requests share a per-ref group so a new push supersedes the old run. Everything else —
+    # a merge to main, a tag — gets a group of its own: only one run can sit pending per group, so
+    # a shared group would let a third push silently cancel the second's validation.
+    group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

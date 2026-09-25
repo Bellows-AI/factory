@@ -30,20 +30,25 @@ jobs:
             - name: normalize the git tag into a docker tag
               env:
                   TAG: ${{ github.ref_name }}
-              run: printf 'IMAGE_TAG=%s\n' "$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_.-' '-')" >>"$GITHUB_ENV"
+              run: |
+                  FOLDED=$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_.-' '-')
+                  # Folding is lossy — v1.0.0+build.1 and v1.0.0-build.1 collapse to one string.
+                  # When it changed anything, a digest of the original keeps the releases apart.
+                  if [ "$FOLDED" != "$TAG" ]; then
+                      FOLDED="$FOLDED-$(printf '%s' "$TAG" | sha1sum | cut -c1-7)"
+                  fi
+                  printf 'IMAGE_TAG=%s\n' "$FOLDED" >>"$GITHUB_ENV"
             # The command AGENTS.md documents, plus the tag. No registry, no credential and no
             # build arg — the runtime stage takes none, and .dockerignore keeps .env out.
             - name: docker build --target runtime
               run: docker build -f docker/Dockerfile --target runtime -t "factory-ai:$IMAGE_TAG" .
-            # The tarball and the artifact carry the RAW ref: only a docker tag is charset-limited,
-            # so folding the filename too would make two refs that differ by a folded character
-            # (v1.0.0+build.1 and v1.0.0-build.1) indistinguishable on the releases page.
+            # The tarball and the artifact use the folded tag too: a ref name may contain a pipe,
+            # which an artifact name may not, and the digest suffix is what keeps two folded refs
+            # from sharing a filename. The original is on the run itself (github.ref_name).
             - name: docker save
-              env:
-                  TAG: ${{ github.ref_name }}
-              run: docker save "factory-ai:$IMAGE_TAG" -o "factory-ai-$TAG.tar"
+              run: docker save "factory-ai:$IMAGE_TAG" -o "factory-ai-$IMAGE_TAG.tar"
             - uses: actions/upload-artifact@v4
               with:
-                  name: factory-ai-image-${{ github.ref_name }}
-                  path: factory-ai-${{ github.ref_name }}.tar
+                  name: factory-ai-image-${{ env.IMAGE_TAG }}
+                  path: factory-ai-${{ env.IMAGE_TAG }}.tar
                   retention-days: 7

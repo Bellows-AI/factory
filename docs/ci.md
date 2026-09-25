@@ -38,19 +38,25 @@ It reads no repository secret: every credential the auth project uses is a liter
 the DOM was right, only the screenshot says the layout was.
 
 Node is `24`, matching `docker/Dockerfile`'s runtime base; a test compares the two, which is the
-only pin there is (`engines` says `>=22` and there is no `.nvmrc`). Concurrency cancels superseded
-pull-request runs and never cancels a run on `main`.
+only pin there is (`engines` says `>=22` and there is no `.nvmrc`). Pull requests share a per-ref
+concurrency group, so a new push supersedes the old run; every other event gets a group of its own,
+because only one run may sit pending per group and a shared group would let a third merge to `main`
+cancel the second's validation outright.
+
+Actions are referenced by major tag (`@v4`), not by commit sha — all three are GitHub-owned, the
+major tag keeps security patches flowing, and there is no Dependabot here to bump a pin. Revisit
+that if the release path ever gains a registry push.
 
 ## `.github/workflows/release-image.yml`
 
 Triggers on `v*` tags. `validate` calls `ci.yml`; because a called workflow sees the caller's event,
 `e2e`'s `if` correctly skips on a tag push. The git tag is folded into a docker tag first — a docker
 tag admits only `[A-Za-z0-9_.-]`, so `v1.0.0+build.1` is a legal git tag that `docker build` would
-refuse; everything outside that set becomes a dash. Only the image tag is folded — the tarball and
-the artifact keep the raw ref, so two releases are always told apart by their filenames. The stated
-limit: two refs that differ *only* in a folded character (`v1.0.0+build.1` and `v1.0.0-build.1`)
-produce two distinct artifacts holding images that carry the same docker tag, so loading both in
-one daemon leaves the second owning the tag. Then `image` builds
+refuse; everything outside that set becomes a dash. Folding is lossy — `v1.0.0+build.1` and
+`v1.0.0-build.1` collapse to one string — so when it changes anything, a 7-character sha1 of the
+original ref is appended. The image tag, the tarball name and the artifact name all use that folded
+value; the raw ref stays on the run and on the tag itself. Nothing downstream carries the raw ref,
+because a git ref may legally contain a pipe and an artifact name may not. Then `image` builds
 `docker build -f docker/Dockerfile --target runtime -t factory-ai:<tag> .`, `docker save`s it and
 uploads the tarball for 7 days. No build arg, no credential, no registry — publishing, deployment
 and release notes are out of scope until a target registry exists.
