@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { refusalOf } from './refusal.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed';
 
@@ -24,6 +26,8 @@ export interface WorkspaceExecutor {
     name: string;
     type: string;
     createdAt: string;
+    /** The row a new task draft autoselects. At most one true per member. */
+    isDefault: boolean;
     /** Deliberately absent from the payload: it may hold credentials, and this is polled. */
 }
 
@@ -50,7 +54,9 @@ export interface UseWorkspace {
     error: string | null;
     saving: boolean;
     save: (repos: { owner: string; name: string }[]) => Promise<string | null>;
-    saveExecutors: (executors: { name: string; type: string; config: object }[]) => Promise<string | null>;
+    saveExecutors: (
+        executors: { name: string; type: string; config: object; isDefault: boolean }[]
+    ) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
@@ -63,6 +69,12 @@ export interface UseWorkspace {
 const settled = (data: WorkspacePayload | null): boolean =>
     !data || data.repos.every((repo) => repo.status === 'ready' || repo.status === 'failed');
 
+const POLL_BACKOFF_FAST_WINDOW_MS = 60_000;
+const POLL_BACKOFF_FAST_DELAY_MS = 2_000;
+const POLL_BACKOFF_SLOW_WINDOW_MS = 300_000;
+const POLL_BACKOFF_SLOW_DELAY_MS = 5_000;
+const POLL_BACKOFF_MAX_DELAY_MS = 15_000;
+
 /**
  * How long to wait before polling again, given how long we have been waiting already.
  *
@@ -72,9 +84,29 @@ const settled = (data: WorkspacePayload | null): boolean =>
  * next twenty minutes is a query per member per tick for a value that changes once.
  */
 export function pollDelay(elapsedMs: number): number {
-    if (elapsedMs < 60_000) return 2_000;
-    if (elapsedMs < 5 * 60_000) return 5_000;
-    return 15_000;
+    if (elapsedMs < POLL_BACKOFF_FAST_WINDOW_MS) return POLL_BACKOFF_FAST_DELAY_MS;
+    if (elapsedMs < POLL_BACKOFF_SLOW_WINDOW_MS) return POLL_BACKOFF_SLOW_DELAY_MS;
+    return POLL_BACKOFF_MAX_DELAY_MS;
+}
+
+/**
+ * Re-arms the poll unless every repo has settled, in which case the back-off clock resets so the
+ * next `save()` starts counting from zero rather than picking up wherever the last run left off.
+ */
+function scheduleNextPoll(
+    body: WorkspacePayload,
+    waitingSince: { current: number | null },
+    scheduleTimeout: (delay: number) => void
+): void {
+    if (settled(body)) {
+        waitingSince.current = null;
+        return;
+    }
+    waitingSince.current ??= Date.now();
+    // Nothing to see while the tab is hidden, and a background tab polling forever is the most
+    // common way a dashboard becomes somebody's battery complaint.
+    const delay = document.hidden ? POLL_BACKOFF_MAX_DELAY_MS : pollDelay(Date.now() - waitingSince.current);
+    scheduleTimeout(delay);
 }
 
 /**
@@ -88,6 +120,7 @@ const isExecutorFull = (row: unknown): row is WorkspaceExecutorFull =>
     typeof (row as WorkspaceExecutorFull).name === 'string' &&
     typeof (row as WorkspaceExecutorFull).type === 'string' &&
     typeof (row as WorkspaceExecutorFull).createdAt === 'string' &&
+    typeof (row as WorkspaceExecutorFull).isDefault === 'boolean' &&
     typeof (row as WorkspaceExecutorFull).config === 'object' &&
     (row as WorkspaceExecutorFull).config !== null;
 
@@ -101,15 +134,14 @@ export const listExecutorConfigs = async (): Promise<
 > => {
     try {
         const response = await fetch('/api/workspace/executors');
-        if (response.status === 401) {
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
             return { ok: false as const, error: 'Your session expired' };
         }
         if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as { error?: string };
             return {
                 ok: false as const,
-                error: body.error ?? `Could not load the executors (${response.status})`,
+                error: (await refusalOf(response, 'Could not load the executors')).error,
             };
         }
         const rows: unknown = ((await response.json()) as { executors?: unknown }).executors;
@@ -140,16 +172,15 @@ export function useWorkspace(): UseWorkspace {
 
             // Handed to the gate rather than rendered as a banner, for the reason useStats gives:
             // every later poll would 401 too, so a banner would never clear.
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 reportUnauthenticated();
                 setLoading(false);
                 return;
             }
             if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
                 // Deliberately does not clear `data`: what is on screen is still the last true
                 // answer, and blanking the page on one failed poll is worse than being stale.
-                setError(body.error ?? `Request failed (${response.status})`);
+                setError((await refusalOf(response)).error);
                 setLoading(false);
                 return;
             }
@@ -159,17 +190,11 @@ export function useWorkspace(): UseWorkspace {
             setError(null);
             setLoading(false);
 
-            // Everything settled: stop entirely. This list only changes when the member acts, and
-            // they act through `save`, which re-arms the poll itself.
-            if (settled(body)) {
-                waitingSince.current = null;
-                return;
-            }
-            waitingSince.current ??= Date.now();
-            // Nothing to see while the tab is hidden, and a background tab polling forever is the
-            // most common way a dashboard becomes somebody's battery complaint.
-            const delay = document.hidden ? 15_000 : pollDelay(Date.now() - waitingSince.current);
-            timer.current = window.setTimeout(() => void poll(signal), delay);
+            // This list only changes when the member acts, and they act through `save`, which
+            // re-arms the poll itself — so a settled answer stops the chain entirely.
+            scheduleNextPoll(body, waitingSince, (delay) => {
+                timer.current = window.setTimeout(() => void poll(signal), delay);
+            });
         } catch (e) {
             if (signal.aborted) return;
             setError((e as Error).message);
@@ -210,16 +235,15 @@ export function useWorkspace(): UseWorkspace {
             try {
                 const response = await fetch('/api/workspace/repos', {
                     method: 'PUT',
-                    headers: { 'content-type': 'application/json' },
+                    headers: JSON_HEADERS,
                     body: JSON.stringify({ repos }),
                 });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return 'Your session expired';
                 }
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not save the selection (${response.status})`;
+                    return (await refusalOf(response, 'Could not save the selection')).error;
                 }
                 // 202: the clones have not started yet. Re-arm the poll immediately so the page
                 // shows them go from queued to cloning rather than waiting out a back-off.
@@ -239,21 +263,22 @@ export function useWorkspace(): UseWorkspace {
      * The executor PUT is not asynchronous — nothing clones — so no re-arm timing is needed.
      */
     const saveExecutors = useCallback(
-        async (executors: { name: string; type: string; config: object }[]): Promise<string | null> => {
+        async (
+            executors: { name: string; type: string; config: object; isDefault: boolean }[]
+        ): Promise<string | null> => {
             setSaving(true);
             try {
                 const response = await fetch('/api/workspace/executors', {
                     method: 'PUT',
-                    headers: { 'content-type': 'application/json' },
+                    headers: JSON_HEADERS,
                     body: JSON.stringify({ executors }),
                 });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return 'Your session expired';
                 }
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not save the executors (${response.status})`;
+                    return (await refusalOf(response, 'Could not save the executors')).error;
                 }
                 start();
                 return null;

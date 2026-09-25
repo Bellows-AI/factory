@@ -3,8 +3,8 @@
 The in-chart OTLP collector: what the `collector` service in docker-compose.yml is to the compose
 stack, this is to the chart. Runner pods export to it over the cluster's service network — the
 driver names it in every runner spec via RUNNER_OTEL_ENDPOINT — and it forwards to this release's
-dashboard ingest route. Stateless, no storage, no ServiceAccount privileges: it only talks outbound
-to the dashboard service and receives OTLP from the drivers it serves.
+dashboard ingest route. Stateless, no storage, no ServiceAccount token: it only talks outbound
+to the dashboard service and receives OTLP from the runners it serves.
 */}}
 apiVersion: apps/v1
 kind: Deployment
@@ -17,18 +17,35 @@ spec:
     replicas: 1
     selector:
         matchLabels:
-            {{- include "factory.labels" . | nindent 12 }}
+            {{- include "factory.selectorLabels" . | nindent 12 }}
             app.kubernetes.io/component: collector
     template:
         metadata:
             labels:
                 {{- include "factory.labels" . | nindent 16 }}
                 app.kubernetes.io/component: collector
+            annotations:
+                # The config is a ConfigMap the collector reads once at boot: without this, an
+                # upgrade that changes it leaves the running collector on the old one.
+                checksum/config: {{ tpl (.Files.Get "files/collector.yaml") . | sha256sum }}
+                {{- include "factory.secretChecksum" . | nindent 16 }}
+                {{- with .Values.podAnnotations }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
         spec:
+            automountServiceAccountToken: false
+            securityContext:
+                # The upstream image's own non-root user.
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                seccompProfile:
+                    type: RuntimeDefault
+            {{- include "factory.podScheduling" . | nindent 12 }}
             containers:
                 - name: collector
-                  image: {{ .Values.collector.image }}
-                  # Stated, never defaulted to `Always` by an untagged image reaching past the
+                  image: {{ include "factory.image" (list . .Values.collector.image) }}
+                  # Stated, never defaulted to `Always` by a :latest image reaching past the
                   # node's side-loaded copy — the same rule the runner pods pin.
                   imagePullPolicy: {{ .Values.collector.imagePullPolicy }}
                   args: ['--config=/etc/otel/config.yaml']
@@ -37,15 +54,34 @@ spec:
                         containerPort: 4317
                       - name: otlp-http
                         containerPort: 4318
+                      - name: health
+                        containerPort: 13133
                   env:
-                      # For the exporter's X-Factory-Ingest-Token header, when the board requires
-                      # one (see files/collector.yaml). Read from the same Secret key the dashboard
-                      # reads; empty keeps the ingest routes open exactly as it does for compose.
+                      # For the exporter's X-Factory-Ingest-Token header (see files/collector.yaml).
+                      # Read from the same Secret key the dashboard reads; optional, because a
+                      # bring-your-own Secret for an open board may not carry the key at all.
                       - name: INGEST_TOKEN
                         valueFrom:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: ingest-token
+                                optional: true
+                  {{- with .Values.collector.resources }}
+                  resources:
+                      {{- toYaml . | nindent 22 }}
+                  {{- end }}
+                  {{- include "factory.containerSecurityContext" . | nindent 18 }}
+                  readinessProbe:
+                      httpGet:
+                          path: /
+                          port: health
+                      periodSeconds: 10
+                  livenessProbe:
+                      httpGet:
+                          path: /
+                          port: health
+                      initialDelaySeconds: 10
+                      periodSeconds: 30
                   volumeMounts:
                       - name: config
                         mountPath: /etc/otel
@@ -60,6 +96,7 @@ metadata:
     name: {{ include "factory.fullname" . }}-collector
     labels:
         {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: collector
 spec:
     # ClusterIP: the consumers are runner pods and nothing else, and nothing external should
     # discover a collector's existence. The driver resolves it by this name when it builds specs.
@@ -72,7 +109,7 @@ spec:
           port: 4318
           targetPort: otlp-http
     selector:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "factory.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: collector
 ---
 apiVersion: v1
@@ -83,10 +120,10 @@ metadata:
         {{- include "factory.labels" . | nindent 8 }}
 data:
     # files/collector.yaml is a template, not a static file: the exporter points at THIS release's
-    # dashboard service, and the ingest-token header is present only when a token is configured.
-    # The content is indented to 8 — deeper than this mapping's children at 4, or the block scalar
-    # absorbs nothing and every top-level config key becomes a data entry (a map, which the
-    # apiserver refuses — helm template decodes nothing, so only a real install catches it).
+    # dashboard service. The content is indented to 8 — deeper than this mapping's children at 4,
+    # or the block scalar absorbs nothing and every top-level config key becomes a data entry (a
+    # map, which the apiserver refuses — helm template decodes nothing, so only a real install
+    # catches it).
     config.yaml: |
 {{ tpl (.Files.Get "files/collector.yaml") . | indent 8 }}
 {{- end }}

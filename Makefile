@@ -36,8 +36,8 @@ baked-run:
 
 baked: baked-build baked-run
 
-# The runner images the job driver spawns per job — claude-executor by default, opencode-executor
-# under RUNNER_CLI=opencode. `make runners` rebuilds both; docker's layer cache makes a no-change
+# The runner images the job driver spawns from each task's executor selection. `make runners`
+# rebuilds both; docker's layer cache makes a no-change
 # rebuild cheap. Rebuild after editing anything under docker/<executor>/ or the driver picks up a
 # stale image silently.
 
@@ -47,10 +47,10 @@ RUNNER_OPENCODE ?= opencode-executor
 .PHONY: runners runners-build claude-executor opencode-executor
 
 claude-executor:
-	docker build -t $(RUNNER_CLAUDE) docker/claude-executor
+	docker build --build-context skills=docker/skills -t $(RUNNER_CLAUDE) docker/claude-executor
 
 opencode-executor:
-	docker build -t $(RUNNER_OPENCODE) docker/opencode-executor
+	docker build --build-context skills=docker/skills -t $(RUNNER_OPENCODE) docker/opencode-executor
 
 runners-build: claude-executor opencode-executor
 
@@ -64,19 +64,27 @@ runners: runners-build
 # takes the foreground; Ctrl-C detaches it and leaves the stack running. `make build` is the hot
 # half against a running stack — rebuild the code images, load them into the node, restart the
 # workloads — no install, no port-forward, release and data kept. K8S_PORT defaults to 8081
-# so it can sit beside a running dev stack on 8080, the same reasoning as BAKED_PORT. `make stop`
-# uninstalls the release and reaps what uninstall leaves: the claims (checkouts and history go
-# with them — a dev install is disposable by construction) and the runner Jobs, created at runtime
-# by the driver and therefore not the release's. `make cleanup` deletes the kind cluster itself.
+# so it can sit beside a running dev stack on 8080, the same reasoning as BAKED_PORT.
+#
+# State lives in its own release, `factory-state` (charts/factory-local-state): the database and
+# the workspaces claim. Production runs no database in the cluster; locally this release stands in
+# for the managed one, and values-local.yaml names its objects. `make stop` uninstalls only the app
+# release and reaps the runner Jobs (created at runtime by the driver, so not the release's) —
+# database and checkouts survive, and the next `make start` picks them up. `make reset` is `stop`
+# plus the state release and its claims: an empty database next start. `make cleanup` deletes the
+# kind cluster itself.
 
 CLUSTER ?= factory
 K8S_RELEASE ?= dev
+# Fixed, not a knob: values-local.yaml names this release's objects.
+K8S_STATE_RELEASE := factory-state
 K8S_PORT ?= 8081
 DRIVER_IMAGE ?= factory-driver
 STUB_IMAGE ?= echo-executor
-COLLECTOR_IMAGE ?= otel/opentelemetry-collector-contrib
+# Whatever the chart pins — read from the render, so the image loaded is the image the pod names.
+COLLECTOR_IMAGE ?= $(shell helm template x charts/factory -f charts/factory/values-local.yaml --show-only templates/collector.yaml 2>/dev/null | awk '$$1 == "image:" { print $$2; exit }')
 
-.PHONY: build start stop
+.PHONY: build start stop reset
 
 # Update a running cluster with new code. The stub executor and the collector are static — start's
 # build left them in the node — so only the two code images are rebuilt and re-loaded. The restart
@@ -91,7 +99,7 @@ build:
 	done
 	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_RELEASE)-factory >/dev/null 2>&1; then \
 		kubectl --context kind-$(CLUSTER) rollout restart \
-			deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local; \
+			deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver; \
 	else \
 		echo "make build: no release $(K8S_RELEASE) in $(CLUSTER) — images loaded; 'make start' installs it"; \
 	fi
@@ -111,20 +119,22 @@ start:
 	@for image in $(IMAGE) $(DRIVER_IMAGE) $(STUB_IMAGE) $(COLLECTOR_IMAGE); do \
 		kind load docker-image $$image --name $(CLUSTER) || exit 1; \
 	done
-	@echo "installing the release $(K8S_RELEASE)"
+	@echo "installing the releases $(K8S_STATE_RELEASE) and $(K8S_RELEASE)"
+	helm upgrade --install $(K8S_STATE_RELEASE) charts/factory-local-state
 	helm upgrade --install $(K8S_RELEASE) charts/factory -f charts/factory/values-local.yaml
 	# The images are side-loaded under one tag and read with IfNotPresent, so an upgrade whose
 	# values did not change rolls nothing out and a re-run would keep the stale pods. Restart both
 	# workloads so every start runs what the build above just loaded.
-	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local
+	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver
 	@echo 'waiting for the deployments (a cold node pulls the database image for minutes)'
 	kubectl wait --for=condition=available \
-		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver-local \
-		deployment/$(K8S_RELEASE)-factory-timescale deployment/$(K8S_RELEASE)-factory-collector \
+		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver \
+		deployment/$(K8S_STATE_RELEASE)-timescale deployment/$(K8S_RELEASE)-factory-collector \
 		--timeout=600s
 	@echo
 	@echo "board on http://127.0.0.1:$(K8S_PORT) — queue a job and watch it run through a pod:"
-	@echo "  curl -s -X POST localhost:$(K8S_PORT)/api/jobs -H 'content-type: application/json' -d '{\"command\":\"hello from the cluster\"}'"
+	@echo "  curl -s -X PUT localhost:$(K8S_PORT)/api/workspace/executors -H 'content-type: application/json' -d '{\"executors\":[{\"name\":\"claude\",\"type\":\"claude-code\",\"config\":{},\"isDefault\":true}]}'"
+	@echo "  curl -s -X POST localhost:$(K8S_PORT)/api/jobs -H 'content-type: application/json' -d '{\"command\":\"hello from the cluster\",\"executor\":\"claude\"}'"
 	@echo '  curl -s localhost:$(K8S_PORT)/api/jobs/<id>'
 	@echo
 	# The forward lands on one ready endpoint of the service, and a restart — this start's own
@@ -134,8 +144,14 @@ start:
 
 stop:
 	helm uninstall $(K8S_RELEASE) || true
-	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_RELEASE)" || true
 	kubectl delete jobs -l factory.job,app.kubernetes.io/instance=$(K8S_RELEASE) || true
+
+# `stop` first, and not only for the order of the words: a runner pod still mounting the
+# workspaces claim holds it under pvc-protection, and the claim delete waits for that — it would
+# block forever on a pod whose delete had not been issued yet.
+reset: stop
+	helm uninstall $(K8S_STATE_RELEASE) || true
+	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" || true
 
 # The kind cluster itself, `stop` being only the release: this takes the node down with every
 # volume bound to it — checkouts, database, history. Everything `make start` needs it rebuilds

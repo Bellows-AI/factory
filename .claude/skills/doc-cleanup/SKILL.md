@@ -21,7 +21,8 @@ Documents are **discovered, never hardcoded** — a list rots as fast as the fac
 Phase 0 enumerates them with `git ls-files '*.md'`, which today yields the root docs
 (`AGENTS.md`, `README.md`; root `CLAUDE.md` is a one-line `@AGENTS.md` pointer — skip), `docs/*.md`,
 `specs/executor/*.md`, the executor and chart READMEs, the executor-home agent instructions
-(`docker/*/claude-home`, `docker/*/opencode-home`), and `.claude/skills/*/SKILL.md`.
+(`docker/*/claude-home`, `docker/*/opencode-home`), the executor skills (`docker/skills/*/SKILL.md`),
+and `.claude/skills/*/SKILL.md`.
 
 Code comments (prose only, never code), under:
 

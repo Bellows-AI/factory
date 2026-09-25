@@ -10,8 +10,15 @@ let store: UserExecutorStore;
 
 const ORG = 'test-org';
 const ALICE = '00000000-0000-4000-8000-00000000a11c';
+const BOB = '00000000-0000-4000-8000-00000000b0b0';
 
-const db = useTestDb({ orgs: [ORG], users: [{ id: ALICE, githubUserId: 90001, login: 'alice' }] });
+const db = useTestDb({
+    orgs: [ORG],
+    users: [
+        { id: ALICE, githubUserId: 90001, login: 'alice' },
+        { id: BOB, githubUserId: 90002, login: 'bob' },
+    ],
+});
 
 beforeAll(async () => {
     if (!enabled) return;
@@ -45,5 +52,67 @@ describe.skipIf(!enabled)('the user executor store', () => {
         expect(await store.configFor(ALICE, 'deleted')).toBeNull();
         // Another member's row is not this member's answer.
         expect(await store.configFor('00000000-0000-4000-8000-00000000b22d', 'main')).toBeNull();
+    });
+
+    it('stores and lists isDefault', async () => {
+        await store.replace(ALICE, [
+            { name: 'main', type: 'claude-code', config: {} },
+            { name: 'heavy', type: 'claude-code', config: {}, isDefault: true },
+        ]);
+
+        expect(await store.list(ALICE)).toEqual([
+            expect.objectContaining({ name: 'main', isDefault: false }),
+            expect.objectContaining({ name: 'heavy', isDefault: true }),
+        ]);
+    });
+
+    /**
+     * The list comes back in the order it was saved, and that is a stored `position` (041), not an
+     * inference. It used to be inferred from `created_at asc, name asc`, which could never work:
+     * `replace` is one transaction, postgres' `now()` is the transaction's start time, so every row
+     * of a save carries the same created_at and the name tiebreak always decides. The list was
+     * alphabetical whatever the member arranged — and the composer autoselects `executors[0]` when
+     * no row is flagged default, so the alphabetically-first row was the one new tasks silently ran
+     * with.
+     *
+     * Saved deliberately in reverse alphabetical order: under the old ORDER BY this case comes back
+     * exactly backwards, so it fails loudly rather than passing by coincidence.
+     */
+    it('lists in the order the member saved, not alphabetically', async () => {
+        await store.replace(ALICE, [
+            { name: 'zulu', type: 'claude-code', config: {} },
+            { name: 'mike', type: 'claude-code', config: {} },
+            { name: 'alpha', type: 'claude-code', config: {} },
+        ]);
+
+        expect((await store.list(ALICE)).map((executor) => executor.name)).toEqual(['zulu', 'mike', 'alpha']);
+        // The edit dialog's read is the same list, so it must agree — it had its own copy of the
+        // ORDER BY, and a fix to one that missed the other would reorder the dialog alone.
+        expect((await store.listWithConfigs(ALICE)).map((executor) => executor.name)).toEqual([
+            'zulu',
+            'mike',
+            'alpha',
+        ]);
+    });
+
+    it('refuses a second default for one member — the partial unique index', async () => {
+        await sql`
+            insert into user_executor (org_id, user_id, name, type, config, is_default)
+            values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb, true)
+        `;
+        await expect(
+            sql`
+                insert into user_executor (org_id, user_id, name, type, config, is_default)
+                values (${ORG}, ${ALICE}, 'heavy', 'claude-code', '{}'::jsonb, true)
+            `
+        ).rejects.toThrow(/user_executor_one_default_uk/);
+    });
+
+    it('lets two members each hold their own default', async () => {
+        await store.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {}, isDefault: true }]);
+        await store.replace(BOB, [{ name: 'main', type: 'claude-code', config: {}, isDefault: true }]);
+
+        expect(await store.list(ALICE)).toEqual([expect.objectContaining({ name: 'main', isDefault: true })]);
+        expect(await store.list(BOB)).toEqual([expect.objectContaining({ name: 'main', isDefault: true })]);
     });
 });

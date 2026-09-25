@@ -9,6 +9,7 @@ import type { Session } from '../src/api/useSession.js';
 import { SettingsExecutorsPage } from '../src/pages/SettingsExecutorsPage.js';
 import { SettingsOrganizationPage } from '../src/pages/SettingsOrganizationPage.js';
 import { SettingsRepositoriesPage } from '../src/pages/SettingsRepositoriesPage.js';
+import { SettingsWorkflowsPage } from '../src/pages/SettingsWorkflowsPage.js';
 import { SettingsWorkspacePage } from '../src/pages/SettingsWorkspacePage.js';
 
 /**
@@ -101,6 +102,7 @@ const render = (
                         <Route path="workspace" element={<SettingsWorkspacePage />} />
                         <Route path="repos" element={<SettingsRepositoriesPage />} />
                         <Route path="executors" element={<SettingsExecutorsPage />} />
+                        <Route path="workflows" element={<SettingsWorkflowsPage />} />
                     </Route>
                 </Route>
             </Routes>
@@ -270,7 +272,7 @@ describe('Settings executors page', () => {
             },
         });
         expect(html).toContain('page-header-description');
-        expect(html).toContain('The deployment chooses the runner CLI and image');
+        expect(html).toContain('Each task runs with its selected executor');
         expect(html).toContain('<h2>My workspace</h2>');
         expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
         expect(html).toContain('Add executor');
@@ -308,6 +310,30 @@ describe('Settings executors page', () => {
         const fetch = vi.fn();
         vi.stubGlobal('fetch', fetch);
         render('/settings/executors');
+        expect(fetch).not.toHaveBeenCalled();
+        vi.unstubAllGlobals();
+    });
+});
+
+describe('Settings workflows page', () => {
+    // The page owns its own poll (`useDefaultWorkflowSettings`) rather than riding the layout's
+    // shared workspace/env polls — the same precedent `TaskComposerPage` sets for `useWorkflows`,
+    // since no other settings page needs this data. Effects never fire under a static render, so
+    // this pins the one posture SSR can reach: the initial loading state, the page's one h1, and
+    // that it fetches nothing before mount.
+    it('says it is loading until the default-workflow poll answers', () => {
+        const html = render('/settings/workflows');
+        expect(html.match(/<h1/g)?.length).toBe(1);
+        expect(html).toContain('<h1>Workflows</h1>');
+        expect(html).toContain('page-header-eyebrow');
+        expect(html).toContain('status');
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('fetches nothing on mount — a static render runs no effects', () => {
+        const fetch = vi.fn();
+        vi.stubGlobal('fetch', fetch);
+        render('/settings/workflows');
         expect(fetch).not.toHaveBeenCalled();
         vi.unstubAllGlobals();
     });
@@ -369,6 +395,16 @@ describe('Settings repositories page', () => {
         expect(html).not.toContain('Environment for');
         expect(html).not.toContain('Choose a repository…');
     });
+
+    it('keeps the list full width before a repository is configured — no split reserved for nothing', () => {
+        // has-detail is what turns the master/detail split on at ≥1100px (issue 223): reserving
+        // that column's width unconditionally is what left Configure clipped at ordinary desktop
+        // widths before this fix. Nothing here can click Configure (a static SSR render never
+        // fires effects or events), so this pins the cold-render case only.
+        const html = render('/settings/repos');
+        expect(html).toContain('class="repo-columns"');
+        expect(html).not.toContain('has-detail');
+    });
 });
 
 describe('settings scope context (issue 182 invariants)', () => {
@@ -418,6 +454,7 @@ describe('settings page headers', () => {
         ['/settings/workspace', 'Workspace'],
         ['/settings/repos', 'Repositories'],
         ['/settings/executors', 'Executors'],
+        ['/settings/workflows', 'Workflows'],
     ])('%s carries one h1 naming the section, under the Settings eyebrow', (path, title) => {
         const html = render(path);
         expect(html.match(/<h1/g)?.length).toBe(1);

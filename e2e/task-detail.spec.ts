@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { ConsoleMessage, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import postgres from 'postgres';
 
 const SHOTS = 'artifacts/ui';
@@ -31,7 +31,7 @@ async function queueTask(page: Page, command: string): Promise<string> {
 
 /**
  * The board claim, driven the way the driver drives it — the offline board's worker routes are
- * open (AUTH_MODE=none), so the spec can move its own queued task through running and standby
+ * open (AUTH_MODE=none), so the spec can move its own queued task through running and stopped
  * the same hands a real worker would.
  */
 async function claimQueued(page: Page, taskId: string): Promise<string> {
@@ -73,13 +73,11 @@ test.describe('the task detail actions', () => {
      * open task offers Mark done as the one primary; Remove task lives only behind More task
      * actions and vanishes while any member of the thread is running.
      */
-    test('Stop run spans queued, running, stopping and standby; Mark done waits behind them', async ({
-        page,
-    }) => {
+    test('Stop run spans queued, running and stopping; Mark done waits behind them', async ({ page }) => {
         const problems = watchConsole(page);
 
         // Queued: Stop run and the overflow both offered — the board lands queued stops directly.
-        const queuedId = await queueTask(page, 'e2e — stop a queued task');
+        await queueTask(page, 'e2e — stop a queued task');
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
         await expect(header(page).getByRole('button', { name: 'More task actions' })).toBeVisible();
         await expect(page.locator('.page-header-meta')).toContainText('queued');
@@ -109,26 +107,11 @@ test.describe('the task detail actions', () => {
         expect(((await parked.json()) as { status: string }).status).toBe('stopped');
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible({ timeout: 10_000 });
 
-        // Standby: a park nobody asked for. Stop run is offered for it too, and lands directly.
-        const standbyId = await queueTask(page, 'e2e — stop a standby task');
-        const idleLease = await claimQueued(page, standbyId);
-        const idled = await page.request.post(`/api/jobs/${standbyId}/suspend`, { data: { leaseToken: idleLease } });
-        expect(((await idled.json()) as { status: string }).status).toBe('standby');
-        await expect(page.locator('.page-header-meta')).toContainText('standby', { timeout: 10_000 });
-        await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
-        await expect(header(page).getByRole('button', { name: 'More task actions' })).toBeVisible();
-        await page.screenshot({ path: `${SHOTS}/task-detail-standby.png`, fullPage: true });
-
-        await header(page).getByRole('button', { name: 'Stop run' }).click();
-        await expect(page.locator('.page-header-meta')).toContainText('stopped', { timeout: 10_000 });
-
         for (const token of FORBIDDEN) expect(problems.join('\n'), token).not.toContain(token);
         expect(problems.join('\n')).toBe('');
     });
 
-    test('Mark done closes a task, and the closure reads as attribution, not a disabled control', async ({
-        page,
-    }) => {
+    test('Mark done closes a task, and the closure reads as attribution, not a disabled control', async ({ page }) => {
         const problems = watchConsole(page);
         await page.goto(`/tasks/${await seededTaskId(page)}`);
 
@@ -180,7 +163,7 @@ test.describe('the task detail actions', () => {
         await expect(dialog).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Remove \u201Cseed task\u201D?' })).toBeVisible();
         await expect(dialog.getByText(new RegExp(`This permanently deletes all ${runs} runs`))).toBeVisible();
-        await expect(dialog.getByText(/their transcript from Factory/)).toBeVisible();
+        await expect(dialog.getByText(/their transcript from Bellows/)).toBeVisible();
         await expect(dialog.getByText(/worktree will be queued for deletion/)).toBeVisible();
         await expect(dialog.getByText(/Published branches and pull requests are not deleted/)).toBeVisible();
         await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
@@ -266,6 +249,35 @@ test.describe('the task detail actions', () => {
         expect(real.join('\n')).toBe('');
     });
 
+    test('the remove dialog contains itself and restores its trigger at a narrow phone width', async ({ page }) => {
+        const taskId = await seededTaskId(page);
+        await page.setViewportSize({ width: 360, height: 844 });
+        await page.goto(`/tasks/${taskId}`);
+
+        const trigger = header(page).getByRole('button', { name: 'More task actions' });
+        await trigger.click();
+        await page.getByRole('menuitem', { name: 'Remove task' }).click();
+
+        // The floating dialog must fit the phone viewport whole — clipped actions are the
+        // failure the closeout audit (issue 190) is about — and the page behind it must not
+        // grow a second scrollbar because a modal opened.
+        const dialog = page.locator('.task-remove');
+        await expect(dialog).toBeVisible();
+        const box = (await dialog.boundingBox())!;
+        expect(box.x, 'dialog left edge').toBeGreaterThanOrEqual(0);
+        expect(box.y, 'dialog top edge').toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, 'dialog right edge').toBeLessThanOrEqual(361);
+        expect(box.y + box.height, 'dialog bottom edge').toBeLessThanOrEqual(845);
+        await page.screenshot({ path: `${SHOTS}/matrix/task-detail_remove-dialog-open_dark_360.png` });
+
+        const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
+        expect(overflow, 'page overflows while the dialog is open').toBeLessThanOrEqual(0);
+
+        await page.keyboard.press('Escape');
+        await expect(dialog).toBeHidden();
+        await expect(trigger).toBeFocused();
+    });
+
     test('no page-level horizontal overflow at any target width', async ({ page }) => {
         const problems = watchConsole(page);
         const detail = `/tasks/${await seededTaskId(page)}`;
@@ -346,27 +358,31 @@ async function seedRun(orgIdLocal: string, run: SeedRun, at: string) {
 test.describe('the task detail page', () => {
     test('a finished thread reads request, response, checks, published work, metadata', async ({ page }) => {
         const problems = watchConsole(page);
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000001',
-            command: 'fix #177 please',
-            repo: 'acme/widgets',
-            executor: 'main',
-            exitCode: 0,
-            summary: 'Rebuilt the task detail layout and outcome summary.',
-            output: 'hunk 1 applied\n[driver] published fix/177 — https://github.com/acme/widgets/pull/9',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000001',
-            gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'all green' }],
-            runtime: {
-                cpuPercent: null,
-                memUsedMb: null,
-                memPercent: null,
-                activity: null,
-                sampledAt: '2026-09-01T12:02:00.000Z',
-                contextTokens: 30_433,
-                costUsd: 0.01,
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000001',
+                command: 'fix #177 please',
+                repo: 'acme/widgets',
+                executor: 'main',
+                exitCode: 0,
+                summary: 'Rebuilt the task detail layout and outcome summary.',
+                output: 'hunk 1 applied\n[driver] published fix/177 — https://github.com/acme/widgets/pull/9',
+                sessionId: 'bbbbbbbb-0000-4000-8000-000000000001',
+                gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'all green' }],
+                runtime: {
+                    cpuPercent: null,
+                    memUsedMb: null,
+                    memPercent: null,
+                    activity: null,
+                    sampledAt: '2026-09-01T12:02:00.000Z',
+                    contextTokens: 30_433,
+                    costUsd: 0.01,
+                },
+                wallClockMs: 1_800_000,
             },
-            wallClockMs: 1_800_000,
-        }, '2026-09-01T12:00:00Z');
+            '2026-09-01T12:00:00Z'
+        );
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000001');
 
         // The reading order the page exists for: request, then response, then the run's work.
@@ -400,23 +416,31 @@ test.describe('the task detail page', () => {
     });
 
     test('a follow-up thread labels its runs and attaches work to each', async ({ page }) => {
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000011',
-            command: 'root command',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000011',
-            exitCode: 0,
-            summary: 'First pass done.',
-            output: '[driver] published fix/1 — https://github.com/acme/widgets/pull/1',
-        }, '2026-09-01T12:00:00Z');
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000012',
-            parentJobId: 'aaaaaaaa-0000-4000-8000-000000000011',
-            command: 'follow-up command',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000012',
-            exitCode: 0,
-            summary: 'Adjustment applied.',
-            gates: [{ name: 'lint', status: 'failed', exitCode: 1, output: 'nope' }],
-        }, '2026-09-01T12:30:00Z');
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000011',
+                command: 'root command',
+                sessionId: 'bbbbbbbb-0000-4000-8000-000000000011',
+                exitCode: 0,
+                summary: 'First pass done.',
+                output: '[driver] published fix/1 — https://github.com/acme/widgets/pull/1',
+            },
+            '2026-09-01T12:00:00Z'
+        );
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000012',
+                parentJobId: 'aaaaaaaa-0000-4000-8000-000000000011',
+                command: 'follow-up command',
+                sessionId: 'bbbbbbbb-0000-4000-8000-000000000012',
+                exitCode: 0,
+                summary: 'Adjustment applied.',
+                gates: [{ name: 'lint', status: 'failed', exitCode: 1, output: 'nope' }],
+            },
+            '2026-09-01T12:30:00Z'
+        );
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000012');
 
         const conversation = page.locator('.task-conversation');
@@ -431,48 +455,64 @@ test.describe('the task detail page', () => {
     });
 
     test('a finished task without a captured response says so, and offers the composer', async ({ page }) => {
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000003',
-            command: 'seed task',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000003',
-            exitCode: 0,
-        }, '2026-09-01T12:00:00Z');
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000003',
+                command: 'seed task',
+                sessionId: 'bbbbbbbb-0000-4000-8000-000000000003',
+                exitCode: 0,
+            },
+            '2026-09-01T12:00:00Z'
+        );
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000003');
         await expect(page.getByText('finished without a captured agent response')).toBeVisible();
         await expect(page.getByText('Ask for a follow-up')).toBeVisible();
     });
 
     test('a sessionless terminal run links to a new task, and a closed one renders no composer', async ({ page }) => {
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000004',
-            command: 'sessionless task',
-            sessionId: null,
-            exitCode: 0,
-        }, '2026-09-01T12:00:00Z');
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000004',
+                command: 'sessionless task',
+                sessionId: null,
+                exitCode: 0,
+            },
+            '2026-09-01T12:00:00Z'
+        );
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000004');
         const link = page.getByRole('link', { name: 'Start a new task' });
         await expect(link).toBeVisible();
         await link.click();
         await expect(page).toHaveURL(/\/tasks\/new$/);
 
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000005',
-            command: 'closed task',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000005',
-            exitCode: 0,
-            doneAt: '2026-09-01T13:00:00Z',
-        }, '2026-09-01T12:00:00Z');
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000005',
+                command: 'closed task',
+                sessionId: 'bbbbbbbb-0000-4000-8000-000000000005',
+                exitCode: 0,
+                doneAt: '2026-09-01T13:00:00Z',
+            },
+            '2026-09-01T12:00:00Z'
+        );
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000005');
         await expect(page.getByText('Ask for a follow-up')).not.toBeVisible();
     });
 
     test('a failed send preserves the draft', async ({ page }) => {
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000006',
-            command: 'draft task',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000006',
-            exitCode: 0,
-        }, '2026-09-01T12:00:00Z');
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000006',
+                command: 'draft task',
+                sessionId: 'bbbbbbbb-0000-4000-8000-000000000006',
+                exitCode: 0,
+            },
+            '2026-09-01T12:00:00Z'
+        );
         await page.route('**/api/jobs/*/follow-up', (route) => route.abort());
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000006');
         const box = page.getByLabel('Ask for a follow-up');
@@ -510,7 +550,6 @@ test.describe('the task detail page', () => {
                 wallClockMs: null,
                 taskWallClockMs: null,
                 sessionId: 'bbbbbbbb-0000-4000-8000-000000000007',
-                remoteSessionId: null,
                 gates: null,
                 runtime: {
                     cpuPercent: 12,
@@ -521,9 +560,7 @@ test.describe('the task detail page', () => {
                 },
             },
         ];
-        await page.route('**/api/jobs/*/thread*', (route) =>
-            route.fulfill({ json: { jobs: runningJobs } }),
-        );
+        await page.route('**/api/jobs/*/thread*', (route) => route.fulfill({ json: { jobs: runningJobs } }));
         const problems = watchConsole(page);
         await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000007');
         await expect(page.getByText('Agent activity', { exact: true })).toBeVisible();
@@ -541,42 +578,44 @@ test.describe('the task detail page', () => {
         await output.focus();
         await page.keyboard.press('ArrowUp');
         // The scroll animates, so poll rather than read on the keypress's heels.
-        await expect
-            .poll(() => output.evaluate((el) => el.scrollTop), { timeout: 2_000 })
-            .toBeLessThan(before);
+        await expect.poll(() => output.evaluate((el) => el.scrollTop), { timeout: 2_000 }).toBeLessThan(before);
         expect(problems).toEqual([]);
     });
 
     test('the detail renders at every target width without overflow', async ({ page }) => {
         test.setTimeout(60_000);
-        await seedRun(orgId, {
-            id: 'aaaaaaaa-0000-4000-8000-000000000008',
-            command: 'responsive task with a fairly long command line to exercise wrapping',
-            repo: 'acme/widgets',
-            executor: 'main',
-            exitCode: 0,
-            summary: 'Done, responsively.',
-            output: '[driver] published fix/9 — https://github.com/acme/widgets/pull/9',
-            sessionId: 'bbbbbbbb-0000-4000-8000-000000000008',
-            gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }],
-            runtime: {
-                cpuPercent: null,
-                memUsedMb: null,
-                memPercent: null,
-                activity: null,
-                sampledAt: '2026-09-01T12:02:00.000Z',
-                contextTokens: 30_433,
-                costUsd: 0.01,
+        await seedRun(
+            orgId,
+            {
+                id: 'aaaaaaaa-0000-4000-8000-000000000008',
+                command: 'responsive task with a fairly long command line to exercise wrapping',
+                repo: 'acme/widgets',
+                executor: 'main',
+                exitCode: 0,
+                summary: 'Done, responsively.',
+                output: '[driver] published fix/9 — https://github.com/acme/widgets/pull/9',
+                sessionId: 'bbbbbbbb-0000-4000-8000-000000000008',
+                gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }],
+                runtime: {
+                    cpuPercent: null,
+                    memUsedMb: null,
+                    memPercent: null,
+                    activity: null,
+                    sampledAt: '2026-09-01T12:02:00.000Z',
+                    contextTokens: 30_433,
+                    costUsd: 0.01,
+                },
+                wallClockMs: 1_800_000,
             },
-            wallClockMs: 1_800_000,
-        }, '2026-09-01T12:00:00Z');
+            '2026-09-01T12:00:00Z'
+        );
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 1000 });
             await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000008');
             await expect(page.locator('.task-outcome')).toBeVisible();
             const overflow = await page.evaluate(
-                () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                () => document.documentElement.scrollWidth - document.documentElement.clientWidth
             );
             expect(overflow, `${width}px overflows by ${overflow}px`).toBeLessThanOrEqual(0);
 

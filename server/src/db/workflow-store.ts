@@ -1,12 +1,9 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
-import {
-    type DefinitionRefusal,
-    type WorkflowDefinition,
-    type WorkflowParam,
-    WORKFLOW_NAME,
-    SCOPE_SEGMENT,
-    validateDefinition,
-} from './workflow-schema.js';
+import { type WorkflowDefinition, type WorkflowParam, WORKFLOW_NAME, SCOPE_SEGMENT } from './workflow-schema.js';
+import { validateDefinition } from './workflow-schema-validate.js';
+import { compileDefinition } from './workflow-blocks/index.js';
+import type { CompileRefusal } from './workflow-blocks/types.js';
 import { BASE_WORKFLOW } from './workflow-templates.js';
 
 /**
@@ -50,11 +47,19 @@ export interface WorkflowTarget {
 
 /** Why a create was refused. Every code is named — a bad definition is diagnosable from the answer. */
 export interface WorkflowRefusal {
-    code: 'BAD_NAME' | 'BAD_SCOPE' | 'NAME_TAKEN' | DefinitionRefusal['code'];
+    // CompileRefusal['code'] already includes every DefinitionRefusal code — validateDefinition's
+    // own refusal is surfaced through compileDefinition's re-validation pass either way.
+    code:
+        | typeof ERROR_CODES.BAD_NAME
+        | typeof ERROR_CODES.BAD_SCOPE
+        | typeof ERROR_CODES.NAME_TAKEN
+        | CompileRefusal['code'];
     message: string;
 }
 
 export type CreateResult = { id: string } | ({ refused: true } & WorkflowRefusal);
+
+export type UpdateResult = { id: string } | { notFound: true } | ({ refused: true } & WorkflowRefusal);
 
 interface WorkflowRow {
     id: string;
@@ -66,6 +71,15 @@ interface WorkflowRow {
     created_at: Date;
     updated_at: Date;
 }
+
+/** The scope a stored row already belongs to — scope is immutable after create, so `update` rebuilds
+ * it from the row rather than accepting one from the caller. */
+const scopeOfRow = (row: WorkflowRow): WorkflowScope =>
+    row.user_id !== null
+        ? { kind: 'user', userId: row.user_id }
+        : row.repo_owner !== null && row.repo_name !== null
+          ? { kind: 'repo', owner: row.repo_owner, name: row.repo_name }
+          : { kind: 'org' };
 
 const toSummary = (row: WorkflowRow): WorkflowSummary => ({
     id: row.id,
@@ -88,6 +102,120 @@ const toRecord = (row: WorkflowRow): WorkflowRecord => ({
 });
 
 /**
+ * The structural refusals `create` checks before ever touching `validateDefinition` or the
+ * database: a bad name, a malformed scope segment, or a name reserved for the seeded base
+ * workflow. Pulled out of `create` so the method itself stays a straight line.
+ */
+function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal | null {
+    if (typeof name !== 'string' || !WORKFLOW_NAME.test(name.trim()) || name.trim() !== name) {
+        return { code: ERROR_CODES.BAD_NAME, message: 'name must be 1..100 characters without padding' };
+    }
+    if (scope.kind === 'user' && !SCOPE_SEGMENT.test(scope.userId)) {
+        return { code: ERROR_CODES.BAD_SCOPE, message: 'user scope must name an account id' };
+    }
+    if (scope.kind === 'repo') {
+        for (const [label, part] of [
+            ['owner', scope.owner],
+            ['name', scope.name],
+        ] as const) {
+            if (!SCOPE_SEGMENT.test(part)) {
+                return { code: ERROR_CODES.BAD_SCOPE, message: `repo scope ${label} must be a checkout-safe segment` };
+            }
+        }
+    }
+    // The base workflow's org slot is the board's: seedBase refreshes that one row to the
+    // shipped template every boot, so an admin definition here would be silently replaced
+    // on the next start. The name stays reserved in the org scope; sibling scopes keep
+    // their own same-named definitions untouched.
+    if (scope.kind === 'org' && name.trim() === BASE_WORKFLOW.name) {
+        return {
+            code: ERROR_CODES.NAME_TAKEN,
+            message: `"${BASE_WORKFLOW.name}" is reserved for the board's own org-level workflow`,
+        };
+    }
+    return null;
+}
+
+type CompileOutcome = { ok: true; definition: WorkflowDefinition } | { ok: false; refusal: WorkflowRefusal };
+
+/**
+ * The schema check and the block-expansion compile, chained: a `kind: "block"` node never reaches
+ * storage, since `compileDefinition` expands every block reference into its low-level agent-node
+ * subgraph and re-validates the result before any row exists. Pulled out of `create` so its own
+ * two sequential refusals do not add to that method's complexity budget.
+ */
+function validateAndCompile(definition: unknown): CompileOutcome {
+    const check = validateDefinition(definition);
+    if (!check.ok) return { ok: false, refusal: { code: check.refusal.code, message: check.refusal.message } };
+    const compiled = compileDefinition(check.definition);
+    if (!compiled.ok) {
+        return { ok: false, refusal: { code: compiled.refusal.code, message: compiled.refusal.message } };
+    }
+    return { ok: true, definition: compiled.definition };
+}
+
+interface NewWorkflowRow {
+    org_id: string;
+    name: string;
+    user_id: string | null;
+    repo_owner: string | null;
+    repo_name: string | null;
+    // Typed `never`, not `WorkflowDefinition`: postgres.js's jsonb helper wants an index
+    // signature no named interface carries, and the caller already validated the value's real
+    // shape — this cast is for the SQL builder's benefit only, the same as the pre-split code's.
+    definition: never;
+    created_by: string | null;
+}
+
+/** The one conflict a name-uniqueness index can raise, turned into the named refusal both `create`
+ * and `update` answer with — shared so the mapping lives in one place. */
+function nameTakenOr(e: unknown, name: string): WorkflowRefusal {
+    const err = e as { code?: string };
+    if (err.code === '23505') {
+        return { code: ERROR_CODES.NAME_TAKEN, message: `a workflow named "${name}" already exists in this scope` };
+    }
+    throw e;
+}
+
+/**
+ * The insert itself, with the one conflict a name-uniqueness index can raise turned into the
+ * named refusal `create` answers with — pulled out so the try/catch does not add to that
+ * method's complexity budget either.
+ */
+async function insertWorkflowRow(sql: Sql, row: NewWorkflowRow): Promise<CreateResult> {
+    try {
+        const rows = await sql`
+            insert into workflow ${sql([row], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'created_by')}
+            returning id
+        `;
+        return { id: (rows as unknown as { id: string }[])[0]!.id };
+    } catch (e) {
+        return { refused: true, ...nameTakenOr(e, row.name) };
+    }
+}
+
+/**
+ * The update itself, mirroring `insertWorkflowRow`: the same name-conflict mapping, and `notFound`
+ * for an id the org no longer holds (removed between `get` and this write, or never its own).
+ */
+async function updateWorkflowRow(
+    sql: Sql,
+    row: { org_id: string; id: string; name: string; definition: never }
+): Promise<UpdateResult> {
+    try {
+        const rows = await sql<{ id: string }[]>`
+            update workflow
+            set name = ${row.name}, definition = ${sql.json(row.definition)}, updated_at = now()
+            where org_id = ${row.org_id} and id = ${row.id}
+            returning id
+        `;
+        return rows[0] ? { id: rows[0].id } : { notFound: true };
+    } catch (e) {
+        return { refused: true, ...nameTakenOr(e, row.name) };
+    }
+}
+
+/**
  * The organization is bound at construction, the way every store is: one deployment, one org, and
  * a per-call parameter is one more thing a write path can forget. `ready` gates every query the
  * same way — migrations retry with backoff while the database container starts.
@@ -99,6 +227,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         definition: unknown;
         createdBy: string | null;
     }): Promise<CreateResult>;
+    update(id: string, input: { name: string; definition: unknown }): Promise<UpdateResult>;
     listVisible(target: WorkflowTarget): Promise<WorkflowSummary[]>;
     get(id: string): Promise<WorkflowRecord | null>;
     remove(id: string): Promise<boolean>;
@@ -135,66 +264,52 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
     return {
         async create({ name, scope, definition, createdBy }) {
             await gate();
-            if (typeof name !== 'string' || !WORKFLOW_NAME.test(name.trim()) || name.trim() !== name) {
-                return { refused: true, code: 'BAD_NAME', message: 'name must be 1..100 characters without padding' };
-            }
-            if (scope.kind === 'user' && !SCOPE_SEGMENT.test(scope.userId)) {
-                return { refused: true, code: 'BAD_SCOPE', message: 'user scope must name an account id' };
-            }
-            if (scope.kind === 'repo') {
-                for (const [label, part] of [
-                    ['owner', scope.owner],
-                    ['name', scope.name],
-                ] as const) {
-                    if (!SCOPE_SEGMENT.test(part)) {
-                        return {
-                            refused: true,
-                            code: 'BAD_SCOPE',
-                            message: `repo scope ${label} must be a checkout-safe segment`,
-                        };
-                    }
-                }
-            }
-            // The base workflow's org slot is the board's: seedBase refreshes that one row to the
-            // shipped template every boot, so an admin definition here would be silently replaced
-            // on the next start. The name stays reserved in the org scope; sibling scopes keep
-            // their own same-named definitions untouched.
-            if (scope.kind === 'org' && name.trim() === BASE_WORKFLOW.name) {
-                return {
-                    refused: true,
-                    code: 'NAME_TAKEN',
-                    message: `"${BASE_WORKFLOW.name}" is reserved for the board's own org-level workflow`,
-                };
-            }
-            const check = validateDefinition(definition);
-            if (!check.ok) return { refused: true, code: check.refusal.code, message: check.refusal.message };
+            const refusal = checkCreateInput(name, scope);
+            if (refusal) return { refused: true, ...refusal };
+            // A `kind: "block"` node never reaches storage — see validateAndCompile — so what
+            // lands here, and later unchanged on a root job's frozen snapshot, is always the
+            // ordinary agent-only shape workflow-engine.ts and routes/jobs.ts already depend on
+            // (docs/workflows.md, "Built-in blocks").
+            const compiled = validateAndCompile(definition);
+            if (!compiled.ok) return { refused: true, ...compiled.refusal };
 
-            const values = {
+            return insertWorkflowRow(sql, {
                 org_id: orgId,
                 name: name.trim(),
                 user_id: scope.kind === 'user' ? scope.userId : null,
                 repo_owner: scope.kind === 'repo' ? scope.owner : null,
                 repo_name: scope.kind === 'repo' ? scope.name : null,
-                definition: check.definition as never,
+                definition: compiled.definition as never,
                 created_by: createdBy,
-            };
-            try {
-                const rows = await sql`
-                    insert into workflow ${sql([values], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'created_by')}
-                    returning id
-                `;
-                return { id: (rows as unknown as { id: string }[])[0]!.id };
-            } catch (e) {
-                const err = e as { code?: string };
-                if (err.code === '23505') {
-                    return {
-                        refused: true,
-                        code: 'NAME_TAKEN',
-                        message: `a workflow named "${name.trim()}" already exists in this scope`,
-                    };
-                }
-                throw e;
-            }
+            });
+        },
+
+        async update(id, { name, definition }) {
+            await gate();
+            const rows = await sql<WorkflowRow[]>`
+                select * from workflow where org_id = ${orgId} and id = ${id}
+            `;
+            const existing = rows[0];
+            if (!existing) return { notFound: true };
+
+            // Scope is immutable after create — rebuilt from the row, never accepted from a
+            // caller, so a rename can never re-gate a definition into a different scope. This is
+            // also what keeps the base workflow's org slot refused here exactly as it is in
+            // `create`: renaming IN PLACE still names `fix-issue` at org scope, which
+            // `checkCreateInput` reserves — an edit lands only by renaming the row away first,
+            // which frees the name for the next boot's `seedBase` to reseed (docs/workflows.md).
+            const refusal = checkCreateInput(name, scopeOfRow(existing));
+            if (refusal) return { refused: true, ...refusal };
+
+            const compiled = validateAndCompile(definition);
+            if (!compiled.ok) return { refused: true, ...compiled.refusal };
+
+            return updateWorkflowRow(sql, {
+                org_id: orgId,
+                id,
+                name: name.trim(),
+                definition: compiled.definition as never,
+            });
         },
 
         async listVisible(target) {

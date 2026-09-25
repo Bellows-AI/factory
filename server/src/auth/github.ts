@@ -1,4 +1,5 @@
 import type { AuthConfig } from '../config.js';
+import { JSON_CONTENT_TYPE, JSON_HEADERS } from '@factory-ai/core';
 
 /** What GitHub is asked for, and all it is asked for. */
 export interface GitHubIdentity {
@@ -49,6 +50,7 @@ export const callbackPath = '/api/auth/github/callback';
 
 /** 100 a page, ten pages, then fail loud rather than feed signIn a prefix of the truth. */
 const MAX_INSTALLATION_PAGES = 10;
+const PAGE_SIZE = 100;
 
 export class GitHubAuthError extends Error {}
 
@@ -75,7 +77,7 @@ export function createGitHubIdentityClient(
         async exchange(code) {
             const response = await fetchFn(auth.tokenUrl, {
                 method: 'POST',
-                headers: { accept: 'application/json', 'content-type': 'application/json' },
+                headers: { accept: JSON_CONTENT_TYPE, ...JSON_HEADERS },
                 body: JSON.stringify({
                     client_id: auth.clientId,
                     client_secret: auth.clientSecret,
@@ -138,30 +140,49 @@ export function createGitHubIdentityClient(
             // instead; a thousand installations is not a page-walk problem anybody has.
             const out: InstallationAccount[] = [];
             for (let page = 1; page <= MAX_INSTALLATION_PAGES; page += 1) {
-                const response = await fetchFn(`${auth.userUrl}/installations?per_page=100&page=${page}`, {
-                    headers: {
-                        authorization: `Bearer ${accessToken}`,
-                        accept: 'application/vnd.github+json',
-                        'user-agent': 'factory-ai',
-                    },
-                });
-                if (!response.ok) throw new GitHubAuthError(`installation lookup failed with ${response.status}`);
-                const body = (await response.json()) as {
-                    installations?: { id?: number; account?: { login?: string } | null }[];
-                };
-                const batch = body.installations ?? [];
-                // A well-formed but meaningless entry (no numeric id) is skipped, not fatal: GitHub
-                // owns the payload, and one malformed row must not lock everybody out.
-                for (const install of batch) {
-                    if (typeof install.id === 'number') {
-                        out.push({ id: String(install.id), account: install.account?.login ?? null });
-                    }
-                }
-                if (batch.length < 100) return out;
+                const batch = await fetchInstallationPage(fetchFn, auth.userUrl, accessToken, page);
+                out.push(
+                    ...batch
+                        .map(toInstallationAccount)
+                        .filter((account): account is InstallationAccount => account !== null)
+                );
+                if (batch.length < PAGE_SIZE) return out;
             }
             throw new GitHubAuthError(
-                `more than ${MAX_INSTALLATION_PAGES * 100} installations — refusing a truncated list, because sign-in removes what this list does not report`
+                `more than ${MAX_INSTALLATION_PAGES * PAGE_SIZE} installations — refusing a truncated list, because sign-in removes what this list does not report`
             );
         },
     };
+}
+
+interface InstallationPayload {
+    id?: number;
+    account?: { login?: string } | null;
+}
+
+async function fetchInstallationPage(
+    fetchFn: typeof fetch,
+    userUrl: string,
+    accessToken: string,
+    page: number
+): Promise<InstallationPayload[]> {
+    const response = await fetchFn(`${userUrl}/installations?per_page=${PAGE_SIZE}&page=${page}`, {
+        headers: {
+            authorization: `Bearer ${accessToken}`,
+            accept: 'application/vnd.github+json',
+            'user-agent': 'factory-ai',
+        },
+    });
+    if (!response.ok) throw new GitHubAuthError(`installation lookup failed with ${response.status}`);
+    const body = (await response.json()) as { installations?: InstallationPayload[] };
+    return body.installations ?? [];
+}
+
+/**
+ * A well-formed but meaningless entry (no numeric id) is skipped, not fatal: GitHub owns the
+ * payload, and one malformed row must not lock everybody out.
+ */
+function toInstallationAccount(install: InstallationPayload): InstallationAccount | null {
+    if (typeof install.id !== 'number') return null;
+    return { id: String(install.id), account: install.account?.login ?? null };
 }

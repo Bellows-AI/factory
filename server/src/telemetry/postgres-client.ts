@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import type { JobRun, SessionRollup, TelemetryInput, TokenTotals, UserRef } from '@factory-ai/core';
+import type { JobRun, SessionRollup, TokenTotals, UserRef } from '@factory-ai/core';
 import type { TelemetryClient, TelemetryFetch, TelemetryHealth } from './client.js';
 import { TelemetryError } from './errors.js';
 import type { CanonicalField } from './metric-map.js';

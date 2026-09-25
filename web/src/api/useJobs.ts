@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { refusalOf } from './refusal.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /**
  * The client's copy of the job board's row. List responses omit `output` (it is unbounded), so it
@@ -13,7 +14,7 @@ import { reportUnauthenticated } from './useSession.js';
  * startedAt), and the wall clock and completion stamp are the thread's sum and max. The per-run
  * lists (tasks pages, sidenav) carry plain per-run rows and group on the client.
  */
-export type JobStatus = 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
 /** Where one declared verification gate stands. The board stores current/last only — no history. */
 export interface GateCheck {
@@ -154,7 +155,16 @@ export interface Job {
      */
     taskWallClockMs: number | null;
     sessionId: string | null;
-    remoteSessionId: string | null;
+    /**
+     * The thread's durable PR-review wait, when it has one: the block's reason ("review", ...),
+     * when the wait began, and — once the wait is terminal — why it ended. The open wait wins
+     * over a terminal one, so a thread waiting for review reads waiting and a finished wait reads
+     * what exhausted it. All null for a thread that never entered a wait. Carried the same on
+     * every member of the thread, never derived from output text or a workflow node name.
+     */
+    waitReason: string | null;
+    waitingSince: string | null;
+    waitTerminalReason: string | null;
 }
 
 /**
@@ -179,6 +189,37 @@ export interface QueueResult {
  * What remains here is the row shape the detail view renders and the thread poll below: the
  * detail page is a DIFFERENT question (one conversation's whole chain) with its own cadence.
  */
+
+const VISIBLE_THREAD_POLL_MS = 2_000;
+const HIDDEN_THREAD_POLL_MS = 15_000;
+
+/**
+ * One thread poll's answer, kept out of `useThread` itself so the hook only has to react to it:
+ * a stale answer from an aborted chain must not land on the newly selected task, which is why
+ * an abort mid-fetch resolves to its own outcome rather than falling into `error`.
+ */
+type ThreadPollOutcome =
+    | { kind: 'aborted' }
+    | { kind: 'unauthorized' }
+    | { kind: 'error'; message: string }
+    | { kind: 'ok'; jobs: Job[]; terminal: boolean };
+
+async function pollThreadOnce(id: string, signal: AbortSignal): Promise<ThreadPollOutcome> {
+    try {
+        const response = await fetch(`/api/jobs/${id}/thread`, { signal });
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) return { kind: 'unauthorized' };
+        if (!response.ok) {
+            if (signal.aborted) return { kind: 'aborted' };
+            return { kind: 'error', message: (await refusalOf(response)).error };
+        }
+        const body = (await response.json()) as { jobs: Job[] };
+        if (signal.aborted) return { kind: 'aborted' };
+        return { kind: 'ok', jobs: body.jobs, terminal: body.jobs.every((task) => isTerminal(task.status)) };
+    } catch (e) {
+        if (signal.aborted) return { kind: 'aborted' };
+        return { kind: 'error', message: (e as Error).message };
+    }
+}
 
 /**
  * One task's whole conversation — the root job and every follow-up after it, oldest first — from
@@ -205,30 +246,21 @@ export function useThread(id: string | null): { jobs: Job[] | null; error: strin
         if (signal.aborted) return;
         const current = idRef.current;
         if (current === null) return;
-        try {
-            const response = await fetch(`/api/jobs/${current}/thread`, { signal });
-            if (response.status === 401) {
-                reportUnauthenticated();
-                return;
-            }
-            if (!response.ok) {
-                // Mirror the list poll: a stale answer from an aborted chain must not land on the
-                // newly selected task.
-                if (signal.aborted) return;
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                setError(body.error ?? `Request failed (${response.status})`);
-                return;
-            }
-            const body = (await response.json()) as { jobs: Job[] };
-            if (signal.aborted) return;
-            setJobs(body.jobs);
-            setError(null);
-            if (body.jobs.every((task) => isTerminal(task.status))) return;
-            timer.current = window.setTimeout(() => void poll(signal), document.hidden ? 15_000 : 2_000);
-        } catch (e) {
-            if (signal.aborted) return;
-            setError((e as Error).message);
+        const outcome = await pollThreadOnce(current, signal);
+        if (outcome.kind === 'aborted') return;
+        if (outcome.kind === 'unauthorized') {
+            reportUnauthenticated();
+            return;
         }
+        if (outcome.kind === 'error') {
+            setError(outcome.message);
+            return;
+        }
+        setJobs(outcome.jobs);
+        setError(null);
+        if (outcome.terminal) return;
+        const delay = document.hidden ? HIDDEN_THREAD_POLL_MS : VISIBLE_THREAD_POLL_MS;
+        timer.current = window.setTimeout(() => void poll(signal), delay);
     }, []);
 
     const start = useCallback(() => {

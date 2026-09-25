@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { LOCAL_ORG_ID } from '../config.js';
 import { TelemetryError } from '../telemetry/errors.js';
+import { ADMIN_ROLE } from '@factory-ai/core';
 
 /**
  * The .sql files are not compiled by tsc, so the Dockerfile has to copy them explicitly.
@@ -66,7 +67,7 @@ async function ensureLocalUser(sql: Sql, orgId: string): Promise<void> {
     // so the local org seeds its own — keyed like every membership since 029, by account.
     await sql`
         insert into org_membership (org_id, github_login, user_id, role, claimed_at)
-        values (${orgId}, ${LOCAL_LOGIN}, ${user.id}, 'admin', now())
+        values (${orgId}, ${LOCAL_LOGIN}, ${user.id}, ${ADMIN_ROLE}, now())
         on conflict (org_id, user_id) do update set user_id = excluded.user_id
     `;
 }
@@ -120,6 +121,47 @@ function files(): { version: string; sql: string; repeatable: boolean }[] {
     return [...all.filter((f) => !f.repeatable), ...all.filter((f) => f.repeatable)];
 }
 
+/** One attempt's worth of `migrate()`'s work, pulled out so the retry loop stays readable. */
+async function applyMigrations(sql: Sql, options: MigrateOptions, log: (message: string) => void): Promise<void> {
+    await sql`
+        create table if not exists schema_migrations (
+            version    text primary key,
+            applied_at timestamptz not null default now()
+        )
+    `;
+
+    // A file that used to be versioned and is now repeatable leaves a row behind. The
+    // runner ignores it, so this is hygiene rather than a fix — but leaving it makes
+    // "repeatable files are never recorded" true only of new writes, not of the table.
+    await sql`delete from schema_migrations where version like '%.repeatable.sql'`;
+
+    const applied = new Set(
+        (await sql<{ version: string }[]>`select version from schema_migrations`).map((r) => r.version)
+    );
+
+    for (const { version, sql: body, repeatable } of files()) {
+        if (!repeatable && applied.has(version)) continue;
+        log(`applying ${repeatable ? 'repeatable ' : ''}migration ${version}`);
+        // Not wrapped in a transaction with the insert: create_hypertable and
+        // create extension behave badly inside one, and every file is idempotent
+        // anyway, so a crash between the two costs one harmless re-run.
+        await sql.unsafe(body);
+        if (repeatable) continue;
+        await sql`insert into schema_migrations (version) values (${version})
+                  on conflict (version) do nothing`;
+    }
+
+    if (options.localUser) {
+        // After the files, so the columns and defaults exist. Inside the retry loop, so a
+        // database that was not up for the first attempt still gets them on a later one.
+        // Ordered — the organization row is the foreign key target for what follows.
+        await seedOrganization(sql, LOCAL_ORG_ID);
+        await ensureLocalUser(sql, LOCAL_ORG_ID);
+    }
+    await reapSessions(sql);
+    await reapPendingSignIns(sql);
+}
+
 /**
  * Applies pending migrations. Idempotent: every statement is `if not exists` or
  * `create or replace`, and applied versions are recorded, so a second run is a no-op.
@@ -130,43 +172,7 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
         try {
-            await sql`
-                create table if not exists schema_migrations (
-                    version    text primary key,
-                    applied_at timestamptz not null default now()
-                )
-            `;
-
-            // A file that used to be versioned and is now repeatable leaves a row behind. The
-            // runner ignores it, so this is hygiene rather than a fix — but leaving it makes
-            // "repeatable files are never recorded" true only of new writes, not of the table.
-            await sql`delete from schema_migrations where version like '%.repeatable.sql'`;
-
-            const applied = new Set(
-                (await sql<{ version: string }[]>`select version from schema_migrations`).map((r) => r.version)
-            );
-
-            for (const { version, sql: body, repeatable } of files()) {
-                if (!repeatable && applied.has(version)) continue;
-                log(`applying ${repeatable ? 'repeatable ' : ''}migration ${version}`);
-                // Not wrapped in a transaction with the insert: create_hypertable and
-                // create extension behave badly inside one, and every file is idempotent
-                // anyway, so a crash between the two costs one harmless re-run.
-                await sql.unsafe(body);
-                if (repeatable) continue;
-                await sql`insert into schema_migrations (version) values (${version})
-                          on conflict (version) do nothing`;
-            }
-
-            if (options.localUser) {
-                // After the files, so the columns and defaults exist. Inside the retry loop, so a
-                // database that was not up for the first attempt still gets them on a later one.
-                // Ordered — the organization row is the foreign key target for what follows.
-                await seedOrganization(sql, LOCAL_ORG_ID);
-                await ensureLocalUser(sql, LOCAL_ORG_ID);
-            }
-            await reapSessions(sql);
-            await reapPendingSignIns(sql);
+            await applyMigrations(sql, options, log);
             return;
         } catch (e) {
             lastError = e;

@@ -36,8 +36,8 @@ real value.
   offline suite, because a rule this load-bearing must not live only where a database is.
 - **A name is checked three times**: the route (`400 BAD_ENV_NAME`, `^[A-Za-z_][A-Za-z0-9_]*$`),
   the row (`env_var_name_ck`, the same regex), and the driver (`claimEnv` drops what it cannot
-  stand). `WORKDIR` and `TRUST_WORKDIR` are refused outright (`400 RESERVED_ENV_NAME`) — those are
-  the driver's own contract with the runner, and a claim env carrying them would be two different
+  stand). `WORKDIR` is refused outright (`400 RESERVED_ENV_NAME`) — it is
+  the driver's own contract with the runner, and a claim env carrying it would be two different
   paths to one working directory. `BELLOWS_GATE_URL` and `BELLOWS_GATE_TOKEN` are reserved the
   same way: they are the ad-hoc gate credentials the DRIVER mints per attempt (see
   [jobs.md](jobs.md)), and a member-configured value for either would be a claim telling the
@@ -46,7 +46,7 @@ real value.
   hands the value to git as a program), so a member value there would be member-controlled code
   running in the sync container — reserving the name is what makes the driver's own helper the
   only possible one. `FACTORY_TRANSCRIPT_DIR` is reserved because the driver composes it
-  (`transcriptDir` in driver/src/docker.ts): it is where the headless transcript store lives, and
+  (`transcriptDir` in driver/src/claim.ts): it is where the transcript store lives, and
   the runner entrypoint redirects `CLAUDE_CONFIG_DIR` onto it — a member value would steer
   transcripts, and with them the CLI's whole configuration directory, somewhere else
    ([jobs.md](jobs.md)). `FACTORY_STATS_URL`, `RUNNER_JOB_ID`, `RUNNER_LEASE_TOKEN` and
@@ -119,10 +119,6 @@ driver reads that as "no environment" (`?? {}`).
   The driver's own `RUNNER_ENV` names keep the `-e NAME` form (operator-controlled values only),
   minus any name the claim also carries — docker gives `-e` precedence over `--env-file`, and the
   claim must win a collision.
-- **Remote Control runners get no claim env, exactly as they get no `RUNNER_ENV`.** A forwarded
-  credential does not fail there — `--remote-control` starts a perfectly ordinary local session and
-  the only symptom is that it never appears at claude.ai/code. The volume is the only credential a
-  Remote Control runner gets. Revisit with an allowlist if that ever needs to change.
 - **Kubernetes: a per-attempt Secret.** `claimEnv`'s keys go into the pod spec as `secretKeyRef` against
   `factory-job-<id>-<lease token>-env` — the lease token is in the name because a reclaimed job's
   superseded worker must not be able to delete the replacement attempt's Secret — created (values in
@@ -146,7 +142,7 @@ name `GITHUB_TOKEN`. This section used to call that "deliberately not built" and
 read-only tokens, a GitHub call on the claim hot path, impossibility without a credential — and
 each is answered in place:
 
-- **The mint is the base layer, below every configured scope** (`withMintedToken` in job-store.ts,
+- **The mint is the base layer, below every configured scope** (`withMintedToken` in job-store-org-resolvers.ts,
   pinned by the offline suite like `stackEnv` is). A `GITHUB_TOKEN` configured in org, workspace or
   repo WINS the collision: it is a credential an operator deliberately chose, and silently
   replacing one token with another is a failure nobody notices. The mint fills only the gap. The
@@ -174,9 +170,6 @@ each is answered in place:
   can only narrow, and code cannot grant what the installation does not have: orchestration —
   commits and PRs (`contents:write`, `pull_requests:write`) and reading CI (`actions:read`) — is
   granted in the App's installation settings on GitHub, or the runner's token stays read-only.
-- **Remote Control runners get none of it**, exactly as they get no configured env: a forwarded
-  credential there does not fail, it degrades the session in silence. The login volume is the only
-  credential that mode gets.
 
 ## The page
 

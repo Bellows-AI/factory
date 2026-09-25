@@ -45,6 +45,12 @@ export interface GitHubAppClient {
  */
 const MAX_PAGES = 100;
 
+/** GitHub's page size for the repositories listing — the standard, and the largest, `per_page`. */
+const PAGE_SIZE = 100;
+
+/** How much of a failed response's body is worth quoting back in the thrown error. */
+const ERROR_DETAIL_LIMIT = 200;
+
 interface RepoPayload {
     name?: string;
     private?: boolean;
@@ -68,62 +74,65 @@ export function createGitHubAppClient(
             },
         });
         if (!response.ok) {
-            const detail = (await response.text().catch(() => '')).slice(0, 200);
+            const detail = (await response.text().catch(() => '')).slice(0, ERROR_DETAIL_LIMIT);
             throw new GitHubAppError(`GET ${path} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
         }
         return response.json();
     };
 
     /**
-     * The standard page walk: 100 a page, a short page ends it (a partial batch is GitHub saying
-     * "this is the last one", so asking again would spend a rate-limit point to learn nothing),
-     * and exhausting the ceiling throws rather than returning a prefix. A caller that persists the
-     * result — a roster, a team's repos — would otherwise treat the first 10,000 entries as the
-     * whole answer and quietly de-scope everyone it never saw.
+     * Skipped rather than thrown: one malformed entry must not cost the whole list, and there is
+     * nothing an operator could do about it from here anyway.
      */
-    const pages = async function* <T>(path: string): AsyncGenerator<T[]> {
+    const toInstallationRepo = (repo: RepoPayload): InstallationRepo | null => {
+        if (!repo.name || !repo.owner?.login) return null;
+        return Object.freeze({
+            owner: repo.owner.login,
+            name: repo.name,
+            private: repo.private ?? false,
+            defaultBranch: repo.default_branch ?? null,
+            pushedAt: repo.pushed_at ?? null,
+        });
+    };
+
+    interface RepoPage {
+        total_count?: number;
+        repository_selection?: string;
+        repositories?: RepoPayload[];
+    }
+
+    const fetchRepoPage = (page: number): Promise<RepoPage> =>
+        call(`/installation/repositories?per_page=${PAGE_SIZE}&page=${page}`) as Promise<RepoPage>;
+
+    /**
+     * Both conditions, not just the count: an empty page ends the walk even if total_count
+     * disagrees, which is what stops a miscount becoming MAX_PAGES requests.
+     */
+    const isLastPage = (body: RepoPage, batchLength: number, repoCount: number): boolean =>
+        batchLength === 0 || (typeof body.total_count === 'number' && repoCount >= body.total_count);
+
+    const fetchInstallationRepos = async (): Promise<{
+        repos: InstallationRepo[];
+        selection: string | undefined;
+    }> => {
+        const repos: InstallationRepo[] = [];
+        let selection: string | undefined;
         for (let page = 1; page <= MAX_PAGES; page += 1) {
-            const batch = (await call(`${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`)) as T[];
-            if (batch.length === 0) return;
-            yield batch;
-            if (batch.length < 100) return;
+            const body = await fetchRepoPage(page);
+            selection ??= body.repository_selection;
+            const batch = body.repositories ?? [];
+            for (const repo of batch) {
+                const parsed = toInstallationRepo(repo);
+                if (parsed) repos.push(parsed);
+            }
+            if (isLastPage(body, batch.length, repos.length)) break;
         }
-        throw new GitHubAppError(
-            `GET ${path}: more than ${MAX_PAGES * 100} entries — refusing a truncated enumeration`
-        );
+        return { repos, selection };
     };
 
     return {
         async listRepositories() {
-            const repos: InstallationRepo[] = [];
-            let selection: string | undefined;
-            for (let page = 1; page <= MAX_PAGES; page += 1) {
-                const body = (await call(`/installation/repositories?per_page=100&page=${page}`)) as {
-                    total_count?: number;
-                    repository_selection?: string;
-                    repositories?: RepoPayload[];
-                };
-                selection ??= body.repository_selection;
-                const batch = body.repositories ?? [];
-                for (const repo of batch) {
-                    // Skipped rather than thrown: one malformed entry must not cost the whole list,
-                    // and there is nothing an operator could do about it from here anyway.
-                    if (!repo.name || !repo.owner?.login) continue;
-                    repos.push(
-                        Object.freeze({
-                            owner: repo.owner.login,
-                            name: repo.name,
-                            private: repo.private ?? false,
-                            defaultBranch: repo.default_branch ?? null,
-                            pushedAt: repo.pushed_at ?? null,
-                        })
-                    );
-                }
-                // Both conditions, not just the count: an empty page ends the walk even if
-                // total_count disagrees, which is what stops a miscount becoming MAX_PAGES requests.
-                if (batch.length === 0) break;
-                if (typeof body.total_count === 'number' && repos.length >= body.total_count) break;
-            }
+            const { repos, selection } = await fetchInstallationRepos();
 
             // The account is inferred from the repositories rather than looked up, for the reason on
             // the interface: the endpoint that would report it authenticates differently. Null when

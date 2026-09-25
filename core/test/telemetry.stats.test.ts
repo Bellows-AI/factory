@@ -54,32 +54,38 @@ describe('totals, recomputed by hand', () => {
     });
 
     it('matches on session count, lines, and active hours', () => {
+        // Restated by hand rather than imported from config.ts — the whole point of this file.
+        const SECONDS_PER_HOUR = 3600;
+        const ASSERTION_PRECISION_DIGITS = 9;
         expect(stats.totals.sessions).toBe(inScope.length);
         expect(stats.totals.linesAdded).toBe(inScope.reduce((s, x) => s + (x.linesAdded ?? 0), 0));
         expect(stats.totals.linesRemoved).toBe(inScope.reduce((s, x) => s + (x.linesRemoved ?? 0), 0));
         const seconds = inScope.reduce((s, x) => s + (x.activeSeconds ?? 0), 0);
-        expect(stats.totals.activeHours).toBeCloseTo(seconds / 3600, 9);
+        expect(stats.totals.activeHours).toBeCloseTo(seconds / SECONDS_PER_HOUR, ASSERTION_PRECISION_DIGITS);
     });
 
     it('matches on edit acceptance, recomputed by hand', () => {
+        const RATIO_PRECISION_DIGITS = 12;
         const accepted = inScope.reduce((s, x) => s + (x.editsAccepted ?? 0), 0);
         const rejected = inScope.reduce((s, x) => s + (x.editsRejected ?? 0), 0);
         const ea = stats.totals.editAcceptance;
         expect(ea.accepted).toBe(accepted);
         expect(ea.rejected).toBe(rejected);
         expect(ea.decisions).toBe(accepted + rejected);
-        expect(ea.ratio).toBeCloseTo(accepted / (accepted + rejected), 12);
+        expect(ea.ratio).toBeCloseTo(accepted / (accepted + rejected), RATIO_PRECISION_DIGITS);
     });
 });
 
 describe('output invariants', () => {
     it('seeds every week in the window rather than closing the gaps', () => {
         // The unscoped call carries no range, so the coverage span (~4 months) decides: weeks.
+        const DAYS_PER_WEEK = 7;
+        const DAY_MS = 86_400_000;
         expect(stats.series.granularity).toBe('week');
         const gaps = stats.series.points
             .map((w) => new Date(w.start).getTime())
-            .map((t, i, all) => (i === 0 ? 7 : (t - (all[i - 1] as number)) / 86_400_000));
-        expect(gaps.every((g) => g === 7)).toBe(true);
+            .map((t, i, all) => (i === 0 ? DAYS_PER_WEEK : (t - (all[i - 1] as number)) / DAY_MS));
+        expect(gaps.every((g) => g === DAYS_PER_WEEK)).toBe(true);
         expect(stats.series.points.reduce((s, w) => s + w.sessions, 0)).toBe(inScope.length);
     });
 
@@ -99,7 +105,10 @@ describe('output invariants', () => {
         const bad: string[] = [];
         const walk = (value: unknown, path: string) => {
             if (typeof value === 'number' && Number.isNaN(value)) bad.push(path);
-            else if (Array.isArray(value)) value.forEach((v, i) => walk(v, `${path}[${i}]`));
+            else if (Array.isArray(value))
+                value.forEach((v, i) => {
+                    walk(v, `${path}[${i}]`);
+                });
             else if (value && typeof value === 'object') {
                 for (const [k, v] of Object.entries(value)) walk(v, `${path}.${k}`);
             }
@@ -171,7 +180,13 @@ describe('edit acceptance invariants', () => {
     it('keeps the ratio null when only rejections were measured', () => {
         // A numerator that was never measured proves nothing about acceptance, however many
         // rejections were counted.
-        expect(withEdits(null, 3)).toEqual({ accepted: null, rejected: 3, decisions: 3, ratio: null });
+        const REJECTED_ONLY_COUNT = 3;
+        expect(withEdits(null, REJECTED_ONLY_COUNT)).toEqual({
+            accepted: null,
+            rejected: REJECTED_ONLY_COUNT,
+            decisions: REJECTED_ONLY_COUNT,
+            ratio: null,
+        });
     });
 
     it('sums mixed sessions null-aware, never folding a missing contributor to zero', () => {
@@ -186,14 +201,19 @@ describe('edit acceptance invariants', () => {
             },
             { now: FIXTURE_NOW }
         ).totals.editAcceptance;
-        expect(ea.accepted).toBe(5);
-        expect(ea.rejected).toBe(5);
+        const EXPECTED_ACCEPTED = 5;
+        const EXPECTED_REJECTED = 5;
+        const EXPECTED_RATIO = 0.5;
+        const RATIO_PRECISION_DIGITS = 12;
+        expect(ea.accepted).toBe(EXPECTED_ACCEPTED);
+        expect(ea.rejected).toBe(EXPECTED_REJECTED);
         expect(ea.decisions).toBe(10);
-        expect(ea.ratio).toBeCloseTo(0.5, 12);
+        expect(ea.ratio).toBeCloseTo(EXPECTED_RATIO, RATIO_PRECISION_DIGITS);
     });
 
     it('reads all-accepted as ratio 1', () => {
-        expect(withEdits(5, 0).ratio).toBe(1);
+        const ALL_ACCEPTED_COUNT = 5;
+        expect(withEdits(ALL_ACCEPTED_COUNT, 0).ratio).toBe(1);
     });
 });
 
@@ -224,7 +244,8 @@ describe('caller scope', () => {
     });
 
     it('keeps naming the unattributed sessions it scoped out', () => {
-        expect(mine.unattributedSessions).toBe(4);
+        const UNATTRIBUTED_SESSION_COUNT = 4;
+        expect(mine.unattributedSessions).toBe(UNATTRIBUTED_SESSION_COUNT);
         // And they contribute no total: the caller's figures cover only the caller's sessions.
         expect(mine.totals.sessions).toBe(aliceSessions.length);
     });
@@ -289,23 +310,28 @@ describe('daily series', () => {
 
 describe('series granularity', () => {
     const NOW = new Date('2026-08-21T12:00:00.000Z');
-    const at = (daysBack: number) => new Date(NOW.getTime() - daysBack * 86_400_000).toISOString();
+    const DAY_MS = 86_400_000;
+    const at = (daysBack: number) => new Date(NOW.getTime() - daysBack * DAY_MS).toISOString();
     const stats = (from: string, to: string) =>
         telemetryStats(input, { repos: [FIXTURE_REPO], now: NOW, range: { preset: 'custom', from, to } });
 
+    // Mirrors telemetry.ts' MAX_DAILY_SERIES_DAYS boundary, restated by hand.
+    const DAILY_BOUNDARY_DAYS = 92;
+
     it('buckets by day at exactly 92 days of window', () => {
-        expect(stats(at(92), NOW.toISOString()).series.granularity).toBe('day');
+        expect(stats(at(DAILY_BOUNDARY_DAYS), NOW.toISOString()).series.granularity).toBe('day');
     });
 
     it('falls back to weeks beyond it', () => {
-        expect(stats(at(93), NOW.toISOString()).series.granularity).toBe('week');
+        expect(stats(at(DAILY_BOUNDARY_DAYS + 1), NOW.toISOString()).series.granularity).toBe('week');
     });
 
     it('lets the coverage span decide for all-time', () => {
         // The fixture's coverage spans about four months: weekly, though the request was open.
+        const YOUNG_SESSION_AGE_DAYS = 9;
         expect(telemetryStats(input, { repos: [FIXTURE_REPO], now: NOW }).series.granularity).toBe('week');
         const young: TelemetryInput = {
-            sessions: [session({ firstSeen: at(10), lastSeen: at(9) })],
+            sessions: [session({ firstSeen: at(10), lastSeen: at(YOUNG_SESSION_AGE_DAYS) })],
             coverage: { from: at(10), to: NOW.toISOString() },
         };
         expect(telemetryStats(young, { now: NOW }).series.granularity).toBe('day');
@@ -313,8 +339,12 @@ describe('series granularity', () => {
 
     it('names daily for the month preset', () => {
         // 30 days of window is the case the daily bucketing exists for.
-        expect(stats(at(30), NOW.toISOString()).series.points.length).toBeGreaterThan(28);
-        expect(stats(at(30), NOW.toISOString()).series.granularity).toBe('day');
+        const MONTH_PRESET_DAYS = 30;
+        const MIN_DAILY_POINTS_FOR_MONTH = 28;
+        expect(stats(at(MONTH_PRESET_DAYS), NOW.toISOString()).series.points.length).toBeGreaterThan(
+            MIN_DAILY_POINTS_FOR_MONTH
+        );
+        expect(stats(at(MONTH_PRESET_DAYS), NOW.toISOString()).series.granularity).toBe('day');
     });
 });
 
@@ -341,8 +371,9 @@ describe('user attribution', () => {
     });
 
     it('counts in-scope sessions with no user as unattributed, not hidden', () => {
+        const UNATTRIBUTED_SESSION_COUNT = 4;
         expect(stats.unattributedSessions).toBe(inScope.filter((s) => s.user === null).length);
-        expect(stats.unattributedSessions).toBe(4);
+        expect(stats.unattributedSessions).toBe(UNATTRIBUTED_SESSION_COUNT);
         expect(stats.byUser.reduce((sum, row) => sum + row.sessions, 0) + stats.unattributedSessions).toBe(
             stats.totals.sessions
         );
@@ -350,7 +381,8 @@ describe('user attribution', () => {
 
     it('keeps out-of-repo-scope sessions out of byUser even when attributed', () => {
         // s09 is bob's and is the other-repo session: a leak would put bob at 5.
-        expect(stats.byUser.find((row) => row.user.login === 'bob')?.sessions).toBe(4);
+        const BOB_SESSION_COUNT = 4;
+        expect(stats.byUser.find((row) => row.user.login === 'bob')?.sessions).toBe(BOB_SESSION_COUNT);
     });
 
     it('sums an all-null token group to null, never zero', () => {

@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ADD_LABEL, ExecutorDialog, SAVE_LABEL, TYPE_CONFIG_NOTE } from '../src/components/ExecutorDialog.js';
+import { ADD_LABEL, ExecutorDialog, SAVE_LABEL } from '../src/components/ExecutorDialog.js';
+import { TYPE_CONFIG_NOTE } from '../src/workspace/executors.js';
 
 /**
  * The add/edit executor dialog is a Headless UI Dialog, so it portals — and
@@ -36,6 +37,6 @@ describe('ExecutorDialog', () => {
         // contract the component renders and e2e/workspace.spec.ts asserts by role and name.
         expect(ADD_LABEL).toBe('Add executor');
         expect(SAVE_LABEL).toBe('Save executor');
-        expect(TYPE_CONFIG_NOTE).toMatch(/does not change the deployment's runner CLI/);
+        expect(TYPE_CONFIG_NOTE).toMatch(/run with the selected type: Claude Code or OpenCode/);
     });
 });

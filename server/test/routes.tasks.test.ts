@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { Job, JobStore, TaskListFilters, TaskListResponse } from '../src/db/job-store.js';
+import type { Job } from '../src/db/job-store-types.js';
+import type { JobStore, TaskListFilters, TaskListResponse } from '../src/db/job-store-types.js';
 import { encodeCursor, memoryTaskList } from '../src/db/task-summary.js';
 import {
     TEST_JOB_BOARD_TOKEN,
@@ -20,13 +21,21 @@ afterEach(async () => {
 });
 
 const ORG = 'test-org';
+const HTTP_OK = 200;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+
+const UUID_SEGMENT_WIDTH = 12;
 
 /** Root ids are uuids — the cursor binds one — so fixtures name threads by number. */
-const uid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const uid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(UUID_SEGMENT_WIDTH, '0')}`;
+
+const MS_PER_MINUTE = 60_000;
 
 /** ISO stamps count backwards from a fixed base — `at(60)` is an hour before `at(5)`. */
 const at = (minutes: number): string =>
-    new Date(Date.parse('2026-09-10T12:00:00.000Z') - minutes * 60_000).toISOString();
+    new Date(Date.parse('2026-09-10T12:00:00.000Z') - minutes * MS_PER_MINUTE).toISOString();
 
 const job = (overrides: Partial<Job> & { id: string }): Job => ({
     command: 'crafted',
@@ -39,7 +48,6 @@ const job = (overrides: Partial<Job> & { id: string }): Job => ({
     stoppedBy: null,
     doneBy: null,
     sessionId: null,
-    remoteSessionId: null,
     exitCode: null,
     output: null,
     summary: null,
@@ -61,40 +69,58 @@ const job = (overrides: Partial<Job> & { id: string }): Job => ({
     ...overrides,
 });
 
+const HEAD_STARTED_MIN = 59;
+const FOLLOWUP_ID = 11;
+const FOLLOWUP_CREATED_MIN = 20;
+const FOLLOWUP_STARTED_MIN = 19;
+const DOCS_ID = 2;
+const DOCS_CREATED_MIN = 50;
+const DOCS_FINISHED_MIN = 45;
+const FOOTER_ID = 3;
+const FOOTER_CREATED_MIN = 40;
+const FOOTER_FINISHED_MIN = 35;
+const FOOTER_DONE_MIN = 30;
+
 /**
  * The fixture board: one thread of each bucket, the running one carrying exactly the fields a
  * task summary must not leak — the output tail, the gate reports, the runtime object.
  */
 const FIXTURE: Job[] = [
-    job({ id: uid(1), command: 'fix the login bug', status: 'running', createdAt: at(60), startedAt: at(59) }),
     job({
-        id: uid(11),
+        id: uid(1),
+        command: 'fix the login bug',
+        status: 'running',
+        createdAt: at(60),
+        startedAt: at(HEAD_STARTED_MIN),
+    }),
+    job({
+        id: uid(FOLLOWUP_ID),
         command: 'now adjust it',
         status: 'running',
         rootJobId: uid(1),
         followUpTo: uid(1),
-        createdAt: at(20),
-        startedAt: at(19),
+        createdAt: at(FOLLOWUP_CREATED_MIN),
+        startedAt: at(FOLLOWUP_STARTED_MIN),
         // The head run's run-detail fields — exactly what a task summary must not leak.
         output: 'a long tail',
         gates: [],
         runtime: { cpuPercent: 3, memUsedMb: 4, memPercent: 5, activity: 'the live line', sampledAt: at(1) },
     }),
     job({
-        id: uid(2),
+        id: uid(DOCS_ID),
         command: 'write the docs',
         status: 'succeeded',
-        createdAt: at(50),
-        finishedAt: at(45),
+        createdAt: at(DOCS_CREATED_MIN),
+        finishedAt: at(DOCS_FINISHED_MIN),
         summary: 'docs written',
     }),
     job({
-        id: uid(3),
+        id: uid(FOOTER_ID),
         command: 'fix the footer',
         status: 'failed',
-        createdAt: at(40),
-        finishedAt: at(35),
-        doneAt: at(30),
+        createdAt: at(FOOTER_CREATED_MIN),
+        finishedAt: at(FOOTER_FINISHED_MIN),
+        doneAt: at(FOOTER_DONE_MIN),
         output: 'a finished tail',
     }),
 ];
@@ -151,7 +177,7 @@ describe('GET /api/tasks', () => {
 
         const response = await instance.inject({ method: 'GET', url: '/api/tasks' });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         const body = response.json();
         expect(body.navigation.counts).toEqual({ running: 1, review: 1, past: 1 });
         // The previews are the org's, not the page's: one running thread, newest first.
@@ -172,8 +198,12 @@ describe('GET /api/tasks', () => {
             author: null,
             activity: 'the live line',
             summary: null,
+            // No PR-wait rows in the in-memory board, so the fields read null — the stored shape.
+            waitReason: null,
+            waitingSince: null,
+            waitTerminalReason: null,
             createdAt: at(60),
-            activityAt: at(19),
+            activityAt: at(FOLLOWUP_STARTED_MIN),
         });
         expect(Object.keys(body.page.items[1])).toEqual([
             'id',
@@ -186,6 +216,9 @@ describe('GET /api/tasks', () => {
             'author',
             'activity',
             'summary',
+            'waitReason',
+            'waitingSince',
+            'waitTerminalReason',
             'createdAt',
             'activityAt',
         ]);
@@ -203,11 +236,13 @@ describe('GET /api/tasks', () => {
 
         const response = await instance.inject({ method: 'GET', url: `/api/tasks?state=${state}` });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().navigation.counts).toEqual(counts);
         expect(response.json().page.items).toHaveLength(expectedItems);
     });
+});
 
+describe('GET /api/tasks: filters and cursors', () => {
     it('passes every filter normalized to the store', async () => {
         const store = taskStub();
         const instance = await openHarness(store);
@@ -217,18 +252,23 @@ describe('GET /api/tasks', () => {
             url: '/api/tasks?state=running&q=%20fix%20&repo=acme/web&author=Cat&sort=oldest&limit=7',
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(store.asked).toEqual([
             { state: 'running', q: 'fix', repo: 'acme/web', author: 'cat', sort: 'oldest', limit: 7 },
         ]);
     });
 
+    const OVER_QUERY_LIMIT = 201;
+    const OVER_AUTHOR_LIMIT = 101;
+    const STALE_CURSOR_ACTIVITY_MIN = 30;
+    const STALE_CURSOR_ROOT_ID = 99;
+
     it.each([
         ['an unknown state', '/api/tasks?state=whenever', 'BAD_TASK_STATE'],
-        ['an over-long query', `/api/tasks?q=${'x'.repeat(201)}`, 'BAD_QUERY'],
+        ['an over-long query', `/api/tasks?q=${'x'.repeat(OVER_QUERY_LIMIT)}`, 'BAD_QUERY'],
         ['a repeated query key', '/api/tasks?q=one&q=two', 'BAD_QUERY'],
         ['a malformed repository', '/api/tasks?repo=nope', 'BAD_REPO'],
-        ['an over-long author', `/api/tasks?author=${'x'.repeat(101)}`, 'BAD_AUTHOR'],
+        ['an over-long author', `/api/tasks?author=${'x'.repeat(OVER_AUTHOR_LIMIT)}`, 'BAD_AUTHOR'],
         ['an author with a space', '/api/tasks?author=octo%20cat', 'BAD_AUTHOR'],
         ['an unknown sort', '/api/tasks?sort=funny', 'BAD_SORT'],
         ['a zero limit', '/api/tasks?limit=0', 'BAD_LIMIT'],
@@ -237,54 +277,75 @@ describe('GET /api/tasks', () => {
         ['a garbage cursor', '/api/tasks?cursor=garbage', 'BAD_CURSOR'],
         [
             'a stale-version cursor',
-            `/api/tasks?cursor=${mint({ v: 99, sort: 'newest', state: 'attention', activityAt: at(30), rootId: uid(99) })}`,
+            `/api/tasks?cursor=${mint({
+                v: 99,
+                sort: 'newest',
+                state: 'attention',
+                activityAt: at(STALE_CURSOR_ACTIVITY_MIN),
+                rootId: uid(STALE_CURSOR_ROOT_ID),
+            })}`,
             'BAD_CURSOR',
         ],
         [
             'a cursor minted for another sort',
-            `/api/tasks?sort=oldest&cursor=${encodeCursor({ sort: 'newest', state: 'attention', activityAt: at(30), rootId: uid(99) })}`,
+            `/api/tasks?sort=oldest&cursor=${encodeCursor({
+                sort: 'newest',
+                state: 'attention',
+                activityAt: at(STALE_CURSOR_ACTIVITY_MIN),
+                rootId: uid(STALE_CURSOR_ROOT_ID),
+            })}`,
             'BAD_CURSOR',
         ],
         [
             'a cursor minted under other filters',
-            `/api/tasks?q=other&cursor=${encodeCursor({ sort: 'newest', state: 'attention', q: 'crafted', activityAt: at(30), rootId: uid(99) })}`,
+            `/api/tasks?q=other&cursor=${encodeCursor({
+                sort: 'newest',
+                state: 'attention',
+                q: 'crafted',
+                activityAt: at(STALE_CURSOR_ACTIVITY_MIN),
+                rootId: uid(STALE_CURSOR_ROOT_ID),
+            })}`,
             'BAD_CURSOR',
         ],
     ])('refuses %s', async (_label, url, code) => {
         const instance = await openHarness(taskStub());
         const response = await instance.inject({ method: 'GET', url });
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe(code);
     });
 
     it('accepts a cursor this endpoint minted', async () => {
+        const MINTED_ACTIVITY_MIN = 30;
+        const MINTED_ROOT_ID = 99;
         const store = taskStub();
         const instance = await openHarness(store);
         const cursor = encodeCursor({
             sort: 'newest',
             state: 'attention',
             q: 'fix the',
-            activityAt: at(30),
-            rootId: uid(99),
+            activityAt: at(MINTED_ACTIVITY_MIN),
+            rootId: uid(MINTED_ROOT_ID),
         });
 
         const response = await instance.inject({ method: 'GET', url: `/api/tasks?q=fix%20the&cursor=${cursor}` });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(store.asked[0]).toMatchObject({ q: 'fix the', cursor });
     });
+});
 
+describe('GET /api/tasks: failures', () => {
     it('answers 503 when the store fails, without echoing the query', async () => {
         const instance = await openHarness(taskStub([], { fail: true }));
         const response = await instance.inject({ method: 'GET', url: '/api/tasks?q=claude%20-p%20secret-prompt' });
-        expect(response.statusCode).toBe(503);
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(JSON.stringify(response.json())).not.toContain('secret-prompt');
     });
 
     it('answers 503 when the org has no job board', async () => {
         const instance = await openHarness(undefined);
         const response = await instance.inject({ method: 'GET', url: '/api/tasks' });
-        expect(response.statusCode).toBe(503);
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(response.json().code).toBe('JOBS_UNAVAILABLE');
     });
 });
@@ -293,7 +354,7 @@ describe('GET /api/tasks authorization', () => {
     it('401s an anonymous caller', async () => {
         const { instance } = await githubHarness(taskStub());
         const response = await instance.inject({ method: 'GET', url: '/api/tasks' });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(response.json().code).toBe('UNAUTHENTICATED');
     });
 
@@ -302,7 +363,7 @@ describe('GET /api/tasks authorization', () => {
         const caller = store.seedMember(ORG, 'octocat');
         const cookie = await signedIn(store, caller);
         const response = await instance.inject({ method: 'GET', url: '/api/tasks', headers: { cookie } });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('accepts a personal access token', async () => {
@@ -314,7 +375,7 @@ describe('GET /api/tasks authorization', () => {
             url: '/api/tasks',
             headers: { authorization: `Bearer ${token}` },
         });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('refuses the worker secret — the read model is a person route', async () => {
@@ -324,7 +385,7 @@ describe('GET /api/tasks authorization', () => {
             url: '/api/tasks',
             headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(response.json().code).toBe('UNAUTHENTICATED');
     });
 
@@ -339,6 +400,6 @@ describe('GET /api/tasks authorization', () => {
             url: '/api/tasks?org=somewhere-else',
             headers: { cookie },
         });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 });

@@ -6,34 +6,29 @@ import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import {
-    CACHE_WATCH_TURNS,
-    cacheCollapse,
-    claimEnv,
     containerName,
-    createDockerRunner,
-    currentActivity,
     dockerArgs,
-    envFileBody,
     envFilePath,
-    claudeTurnsArgs,
     gateEnvArgs,
     gateEnvContainerName,
     gateExecArgs,
-    opencodeCacheProbeArgs,
     opencodeSessionReadoutArgs,
-    parseClaudeCloseRead,
     parseDockerServicePs,
     parseDockerStats,
+} from '../src/docker.js';
+import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
+import { currentActivity, reportTail, stripAnsi, tailBytes } from '../src/runner.js';
+import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
+import {
+    CACHE_WATCH_TURNS,
+    cacheCollapse,
+    parseClaudeCloseRead,
     parseOpencodeCacheProbe,
     parseOpencodeRunOutcome,
-    parseRemoteSessionId,
     readsAgentTurns,
-    remoteSessionArgs,
-    reportTail,
-    stripAnsi,
-    tailBytes,
-    transcriptDir,
-} from '../src/docker.js';
+} from '../src/close-read.js';
+import { createDockerRunner } from '../src/docker-runner.js';
+import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import {
     CREDENTIAL_HELPER,
@@ -52,12 +47,19 @@ import {
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
+/** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
+ *  presence matters to this file's own tests, none of which assert its exact text. */
+const MASTER_PROMPT =
+    'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
+
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
     attempts: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
+    masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
     userId: USER,
@@ -65,6 +67,7 @@ const job: BoardJob = {
 };
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
+const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 
 /** One `docker ps --format '{{json .}}'` line for a service container, the fields the parse reads. */
 const psLine = (service: { name: string; image: string; state: string }): string =>
@@ -83,21 +86,48 @@ const args = (
     env: NodeJS.ProcessEnv = {},
     session: RunSession | null = { id: SESSION, resume: false },
     servicesNetwork: string | null = null
-) => dockerArgs(loadDriverConfig(env), job, session, servicesNetwork, '/tmp/env-file');
+) => dockerArgs(loadDriverConfig(env), job, session, { servicesNetwork: servicesNetwork, envFile: '/tmp/env-file' });
 
 const resumed = (env: NodeJS.ProcessEnv = {}) =>
-    dockerArgs(loadDriverConfig(env), job, { id: SESSION, resume: true }, null, '/tmp/env-file');
+    dockerArgs(loadDriverConfig(env), job, { id: SESSION, resume: true }, { envFile: '/tmp/env-file' });
 
 describe('the docker run arguments', () => {
     it('runs the command as a prompt, after the image', () => {
-        expect(args().slice(-5)).toEqual(['claude-executor', '--session-id', SESSION, '-p', 'fix the failing build']);
+        expect(args().slice(-9)).toEqual([
+            'claude-executor',
+            '--session-id',
+            SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+            '-p',
+            'fix the failing build',
+        ]);
+    });
+
+    // Parity pin, the docker half of the pair: the prompt is delivered on EVERY run, resume
+    // included. The kubernetes runner used to suppress it on a resume that was not a follow-up;
+    // both platforms now render the one plan (runner-plan.ts), and the k8s twin of this case is
+    // pinned in k8s.test.ts ('delivers the command into a resumed session').
+    it('delivers the prompt on a resume too, never only on a fresh run', () => {
+        expect(resumed().slice(-9)).toEqual([
+            'claude-executor',
+            '--resume',
+            SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+            '-p',
+            'fix the failing build',
+        ]);
     });
 
     // The link the UI shows is built from this, so it has to be the id the runner actually uses —
     // which is why it is given to the CLI rather than read back out of it.
-    it('tells the runner which session id to use, in both modes', () => {
+    it('tells the runner which session id to use', () => {
         expect(args()).toEqual(expect.arrayContaining(['--session-id', SESSION]));
-        expect(args({ RUNNER_REMOTE_CONTROL: '1' })).toEqual(expect.arrayContaining(['--session-id', SESSION]));
     });
 
     it("mounts the checkouts volume and starts at the AUTHOR's workspace root", () => {
@@ -120,7 +150,7 @@ describe('the docker run arguments', () => {
     it('refuses a workspace path that is not <org>/<uuid>', () => {
         /*
          * The board is not something this process trusts with a fragment of a command line — the
-         * same rule remoteSessionArgs applies to a session id, and the stakes are higher here:
+         * same rule every board-supplied id is held to, and the stakes are higher here:
          * the value becomes the agent's working directory, and `..` in it points at the parent of
          * every member's tree.
          */
@@ -211,21 +241,17 @@ describe('the docker run arguments', () => {
     });
 
     // The branch reporter posts to the board's API, and the endpoint rides beside the OTEL one:
-    // a URL, not a credential, defaulted from JOB_BOARD_URL and forwarded under Remote Control
-    // too — attribution is as wanted on a drivable session as on a headless one.
+    // a URL, not a credential, defaulted from JOB_BOARD_URL.
     it('points the runner at the board so it can report its branch', () => {
         expect(args()).toEqual(expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://127.0.0.1:8080']));
         expect(args({ RUNNER_STATS_URL: 'http://stats.internal:8080' })).toEqual(
             expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://stats.internal:8080'])
         );
-        expect(args({ RUNNER_REMOTE_CONTROL: '1' })).toEqual(
-            expect.arrayContaining(['-e', 'FACTORY_STATS_URL=http://127.0.0.1:8080'])
-        );
     });
 
     // The claude runner is told the session id before the container starts (the driver mints it),
     // so the reporter never has to scrape a transcript. A resumed session keeps its id — the
-    // parked job's spans must join to the same conversation.
+    // follow-up's spans must join to the same conversation.
     it('tells the claude runner which session to report', () => {
         expect(args()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
         expect(resumed()).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
@@ -233,16 +259,15 @@ describe('the docker run arguments', () => {
 
     it('gives the opencode runner a session id only when one exists', () => {
         const open = (env: NodeJS.ProcessEnv = {}, session: RunSession | null = null) =>
-            dockerArgs(loadDriverConfig({ RUNNER_CLI: 'opencode', ...env }), job, session, null, '/tmp/env-file');
+            dockerArgs(loadDriverConfig(env), opencodeJob, session, { envFile: '/tmp/env-file' });
         // A fresh opencode run has no id yet — the reporter discovers it from the session
         // database. An unvalidated id must never be interpolated.
         expect(open().some((arg) => arg.includes('BELLOWS_SESSION_ID'))).toBe(false);
         const followUp = dockerArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            { ...job, followUp: true },
+            loadDriverConfig({}),
+            { ...opencodeJob, followUp: true },
             { id: SESSION, resume: true },
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         expect(followUp).toEqual(expect.arrayContaining(['-e', `BELLOWS_SESSION_ID=${SESSION}`]));
         // BEFORE the image name: docker stops option parsing there, and an `-e` past it is the
@@ -264,8 +289,10 @@ describe('the docker run arguments', () => {
 
     it('never hands the transcript store to opencode', () => {
         // opencode persists through its own per-member session database; a second store buys
-        // nothing (Remote Control's exclusion is pinned in its own describe).
-        expect(args({ RUNNER_CLI: 'opencode' }, null)).not.toContain(expect.stringContaining('FACTORY_TRANSCRIPT_DIR'));
+        // nothing.
+        expect(dockerArgs(loadDriverConfig({}), opencodeJob, null, { envFile: '/tmp/env-file' })).not.toContain(
+            expect.stringContaining('FACTORY_TRANSCRIPT_DIR')
+        );
     });
 
     // --rm is gone deliberately: cleanup is explicit (a `docker rm` after close), so the runner
@@ -303,7 +330,7 @@ describe('the docker run arguments', () => {
 describe("the board's environment", () => {
     const envJob: BoardJob = {
         ...job,
-        env: { MY_TOKEN: 'board-secret', WORKDIR: '/etc', TRUST_WORKDIR: '1' },
+        env: { MY_TOKEN: 'board-secret', WORKDIR: '/etc' },
     };
 
     it('reads a claim without an env field as no environment', () => {
@@ -319,7 +346,12 @@ describe("the board's environment", () => {
          * the values travel in a --env-file the driver writes and removes, and this process's
          * environment stays exactly the operator's.
          */
-        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            envJob,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
         expect(line).not.toContain('MY_TOKEN');
         expect(line.some((arg) => arg.includes('board-secret'))).toBe(false);
@@ -329,10 +361,28 @@ describe("the board's environment", () => {
         // docker gives `-e` precedence over `--env-file`, so a name the claim also carries must
         // not go out as `-e` — otherwise the driver's own value would silently win.
         const configured = loadDriverConfig({ RUNNER_ENV: 'MY_TOKEN,OTHER' });
-        const line = dockerArgs(configured, envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(configured, envJob, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
         expect(line).toEqual(expect.arrayContaining(['-e', 'OTHER']));
         expect(line).not.toContain('MY_TOKEN');
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
+    });
+
+    // Issue #244: the collision check must read the SAME env the file is actually written from
+    // (`runnerClaimEnv`), or an operator who names OPENCODE_CONFIG_CONTENT in RUNNER_ENV could
+    // have `-e` (driver-process value, almost always unset) win over the reserved-agent merge —
+    // docker gives `-e` precedence over `--env-file`.
+    it('never forwards OPENCODE_CONFIG_CONTENT as -e for an opencode job — the merged value must win', () => {
+        const configured = loadDriverConfig({ RUNNER_ENV: 'OPENCODE_CONFIG_CONTENT' });
+        const line = dockerArgs(configured, opencodeJob, null, { envFile: '/tmp/env-file' });
+        expect(line).not.toEqual(expect.arrayContaining(['-e', 'OPENCODE_CONFIG_CONTENT']));
+    });
+
+    it('still forwards OPENCODE_CONFIG_CONTENT as -e for a claude-code job with no claim env', () => {
+        // Pins that runnerClaimEnv passes non-opencode claims through unchanged: this name is
+        // ordinary for any other executor, and the collision rule must still apply to it.
+        const configured = loadDriverConfig({ RUNNER_ENV: 'OPENCODE_CONFIG_CONTENT' });
+        const line = dockerArgs(configured, job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
+        expect(line).toEqual(expect.arrayContaining(['-e', 'OPENCODE_CONFIG_CONTENT']));
     });
 
     it('refuses to run a claim that carries env with no env file to put it in', () => {
@@ -349,7 +399,12 @@ describe("the board's environment", () => {
         expect(envFileBody(envJob, loadDriverConfig({}))).toBe(
             'MY_TOKEN=board-secret\nRUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n'
         );
-        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            envJob,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
         expect(line.some((arg) => arg.includes('RUNNER_LEASE_TOKEN'))).toBe(false);
     });
@@ -359,7 +414,12 @@ describe("the board's environment", () => {
     // dockerArgs refuses to build that argv.
     it('always needs the env file: the pair rides it even for a claim with no env', () => {
         expect(() => dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false })).toThrow(/no env file/);
-        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            job,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 
@@ -404,10 +464,14 @@ describe("the board's environment", () => {
 
     it('never forwards a name the runner itself claims', () => {
         expect(claimEnv(envJob)).toEqual({ MY_TOKEN: 'board-secret' });
-        const line = dockerArgs(loadDriverConfig({}), envJob, { id: SESSION, resume: false }, null, '/tmp/env-file');
-        // The one WORKDIR on the line is the runner's own, with the mount in it; TRUST_WORKDIR
-        // belongs to the Remote Control branch, which this is not.
-        expect(line.filter((arg) => arg === 'WORKDIR' || arg === 'TRUST_WORKDIR')).toHaveLength(0);
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            envJob,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
+        // The one WORKDIR on the line is the runner's own, with the mount in it.
+        expect(line.filter((arg) => arg === 'WORKDIR')).toHaveLength(0);
         expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
     });
 
@@ -439,30 +503,17 @@ describe("the board's environment", () => {
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
 
-    it('forwards no board env to a Remote Control runner, and writes no env file for one', () => {
-        // The same exclusion RUNNER_ENV obeys: a forwarded credential does not fail there, it
-        // degrades the session in silence.
-        const line = dockerArgs(
-            loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }),
-            envJob,
-            {
-                id: SESSION,
-                resume: false,
-            },
-            null,
-            '/tmp/env-file'
-        );
-        expect(line).not.toContain('--env-file');
-        expect(line).not.toContain('MY_TOKEN');
-        expect(line.some((arg) => arg.includes('board-secret'))).toBe(false);
-    });
-
     it('always writes the env file for the runner — the pair rides it even with no claim env', () => {
         // The claim-less body is exactly the pair: the runner's own credential, nothing else.
         expect(envFileBody(job, loadDriverConfig({}))).toBe(
             'RUNNER_JOB_ID=11111111-1111-4111-8111-111111111111\nRUNNER_LEASE_TOKEN=22222222-2222-4222-8222-222222222222\n'
         );
-        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            job,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 });
@@ -472,76 +523,28 @@ describe('a follow-up run', () => {
 
     /**
      * The one new thing a follow-up asks of the runner: restore the parent conversation AND
-     * deliver the new command into it. A plain resume restores only, because its command is
-     * already in the transcript — a follow-up's command is not, and without the `-p` the
-     * adjustment would never reach the agent.
+     * deliver the new command into it — without the `-p` the adjustment would never reach the
+     * agent.
      */
     it('delivers the command into the restored session', () => {
-        const line = dockerArgs(loadDriverConfig({}), followUp, { id: SESSION, resume: true }, null, '/tmp/env-file');
-        expect(line.slice(-5)).toEqual(['claude-executor', '--resume', SESSION, '-p', 'fix the failing build']);
-        expect(line).not.toContain('--session-id');
-    });
-
-    it('delivers it under Remote Control as the opening prompt of the restored session', () => {
-        const line = dockerArgs(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), followUp, {
-            id: SESSION,
-            resume: true,
-        });
-        expect(line.slice(-5)).toEqual([
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            followUp,
+            { id: SESSION, resume: true },
+            { envFile: '/tmp/env-file' }
+        );
+        expect(line.slice(-9)).toEqual([
+            'claude-executor',
             '--resume',
             SESSION,
-            '--remote-control',
-            containerName(job),
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+            '-p',
             'fix the failing build',
         ]);
-    });
-
-    // The delivered-once rule is not suspended for follow-ups: a PARKED one has its command in
-    // the transcript already, and its resume is an ordinary resume. Only the board knows which
-    // kind of resume a claim is — hence the flag rather than a local guess.
-    it('still omits the command when a parked job is resumed', () => {
-        const line = dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: true }, null, '/tmp/env-file');
-        expect(line.slice(-3)).toEqual(['claude-executor', '--resume', SESSION]);
-        expect(line).not.toContain('fix the failing build');
-    });
-});
-
-describe('reading the remote session id', () => {
-    it('reads the bridge record out of the running container, by session id', () => {
-        const line = remoteSessionArgs(job, SESSION);
-        expect(line.slice(0, 4)).toEqual(['exec', containerName(job), 'sh', '-c']);
-        // The script is the static file; the session id rides as its first positional
-        // parameter, a plain argv value — never interpolated into the script text.
-        expect(line[5]).toBe('sh');
-        expect(line[6]).toBe(SESSION);
-        expect(line[4]).toContain('bridge-session');
-        expect(line[4]).toContain('"$1".jsonl');
-        expect(line[4]).not.toContain(SESSION);
-    });
-
-    // The id arrives from the board on a resume, and a board is not something this process should
-    // trust with a fragment of a shell command.
-    it('refuses a session id that is not a uuid, rather than interpolating it', () => {
-        expect(() => remoteSessionArgs(job, '$(touch /tmp/pwned)')).toThrow('not a uuid');
-    });
-
-    it('pulls the remote id out of the transcript line', () => {
-        const line = JSON.stringify({
-            type: 'bridge-session',
-            sessionId: SESSION,
-            bridgeSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
-        });
-        expect(parseRemoteSessionId(line)).toBe('cse_015tb2nHhHNrBuL7ZDhn9Wx5');
-    });
-
-    // Every one of these is the ordinary case: the bridge has not connected, or the file is being
-    // written as it is read.
-    it.each([
-        ['', 'nothing yet'],
-        ['not json', 'a partial line'],
-        ['{"type":"mode"}', 'another record'],
-    ])('answers null for %p (%s)', (line) => {
-        expect(parseRemoteSessionId(line)).toBeNull();
+        expect(line).not.toContain('--session-id');
     });
 });
 
@@ -609,99 +612,40 @@ describe('the close-time claude-code turn count', () => {
 });
 
 describe('which runs get a close-time turn read', () => {
-    /**
-     * The null posture for Remote Control (the design's stated exception): its conversation
-     * keeps going after the run parks, so any single read would freeze a mid-conversation
-     * number onto the job row. The read is claude-code-headless-only, and this decision is
-     * pure so the posture stays pinned as the runners evolve.
-     */
-    it('reads for a headless claude-code run with a session, and never under Remote Control', () => {
+    /** The read is claude-code-only, and this decision is pure so it stays pinned as the runners evolve. */
+    it('reads for a claude-code run with a session', () => {
         const session = { id: SESSION, resume: false };
-        expect(readsAgentTurns(loadDriverConfig({}), session)).toBe(true);
-        expect(readsAgentTurns(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }), session)).toBe(false);
+        expect(readsAgentTurns(job, session)).toBe(true);
         // Opencode counts in its own readout; there is no second read for it.
-        expect(readsAgentTurns(loadDriverConfig({ RUNNER_CLI: 'opencode' }), session)).toBe(false);
+        expect(readsAgentTurns(opencodeJob, session)).toBe(false);
         // No session minted — nothing to read a transcript for.
-        expect(readsAgentTurns(loadDriverConfig({}), null)).toBe(false);
-        expect(readsAgentTurns(loadDriverConfig({}), { id: 'not-a-uuid', resume: false })).toBe(false);
-    });
-});
-
-describe('a Remote Control runner', () => {
-    const rc = (env: NodeJS.ProcessEnv = {}) => args({ RUNNER_REMOTE_CONTROL: '1', ...env });
-
-    it('starts an interactive session with the command as its opening prompt', () => {
-        expect(rc().slice(-3)).toEqual(['--remote-control', containerName(job), 'fix the failing build']);
-        expect(rc()).not.toContain('-p');
-    });
-
-    /**
-     * `-t` and never `-i -t`. The CLI will not start an interactive session without a tty, but the
-     * driver's stdin is not a terminal, and `docker run -i` from such a process fails outright with
-     * "the input device is not a TTY" — so the pairing that looks obvious is the one that breaks.
-     */
-    it('allocates a tty without attaching stdin to it', () => {
-        expect(rc()).toContain('-t');
-        expect(rc()).not.toContain('-i');
-        expect(args()).not.toContain('-t');
-    });
-
-    /**
-     * The two halves of resuming a parked job. `--resume` keeps the original session id rather than
-     * forking it, so the link the UI shows still opens the session — and the command is NOT
-     * re-delivered, because it is already in the transcript and sending it again would re-run the
-     * work somebody has been driving by hand.
-     */
-    it('restores the session instead of starting one, without re-sending the command', () => {
-        const line = resumed({ RUNNER_REMOTE_CONTROL: '1' });
-        expect(line.slice(-4)).toEqual(['--resume', SESSION, '--remote-control', containerName(job)]);
-        expect(line).not.toContain('--session-id');
-        expect(line).not.toContain('fix the failing build');
-    });
-
-    it('mounts the login volume over the config directory', () => {
-        expect(rc()).toEqual(expect.arrayContaining(['-v', 'claude-executor-auth:/home/node/.claude']));
-        expect(rc({ RUNNER_AUTH_VOLUME: 'other' })).toEqual(expect.arrayContaining(['-v', 'other:/home/node/.claude']));
-        expect(args().join(' ')).not.toContain('/home/node/.claude');
-    });
-
-    /**
-     * The failure this prevents is silent, which is why it is pinned. Remote Control needs a
-     * claude.ai subscription login; given a token instead, `--remote-control` still starts a
-     * perfectly ordinary local session and the only symptom is that it never appears at
-     * claude.ai/code.
-     */
-    it('forwards no credentials, so the volume login is the only one available', () => {
-        expect(rc({ RUNNER_ENV: 'CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY' })).not.toContain(
-            'CLAUDE_CODE_OAUTH_TOKEN'
-        );
-    });
-
-    // An interactive session started by a driver has nobody to answer the trust dialog.
-    it('accepts the trust dialog for the mount', () => {
-        expect(rc()).toEqual(expect.arrayContaining(['-e', 'TRUST_WORKDIR=1']));
-        expect(args()).not.toContain('TRUST_WORKDIR=1');
-    });
-
-    // The transcript store is headless-only, and this runner must never receive the name: its
-    // CLAUDE_CONFIG_DIR is the auth volume, which standby/park depends on for a later --resume.
-    it('never hands the transcript store to Remote Control', () => {
-        expect(rc()).not.toContain(expect.stringContaining('FACTORY_TRANSCRIPT_DIR'));
+        expect(readsAgentTurns(job, null)).toBe(false);
+        expect(readsAgentTurns(job, { id: 'not-a-uuid', resume: false })).toBe(false);
     });
 });
 
 describe('an opencode runner', () => {
-    const oc = (env: NodeJS.ProcessEnv = {}) => args({ RUNNER_CLI: 'opencode', ...env }, null);
+    const oc = (env: NodeJS.ProcessEnv = {}) =>
+        dockerArgs(loadDriverConfig(env), opencodeJob, null, { envFile: '/tmp/env-file' });
 
     // opencode's asymmetry, per the repo's own executor spec: `run --session <id>` CONTINUES an
     // existing session, it cannot adopt one minted in advance. So a fresh run is just
     // `run <command>` — the id it uses is scraped after the run and reported then.
     it('runs the command headless, with no session id at all', () => {
         const line = oc();
-        expect(line.slice(-3)).toEqual(['opencode-executor', 'run', 'fix the failing build']);
+        expect(line.slice(-5)).toEqual(['opencode-executor', 'run', '--agent', 'factory', 'fix the failing build']);
         expect(line).not.toContain('--session-id');
         expect(line).not.toContain('--resume');
         expect(line).not.toContain(SESSION);
+    });
+
+    // The refusal that enforces it, and the docker half of the parity pair: a session with
+    // `resume: false` is an id this driver minted, and opencode cannot adopt one. The k8s twin is
+    // pinned in k8s.test.ts ('refuses to adopt a minted session'); both read the one predicate.
+    it('refuses to adopt a minted session', () => {
+        expect(() =>
+            dockerArgs(loadDriverConfig({}), opencodeJob, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toThrow(/cannot adopt a minted session/);
     });
 
     // The session database has to outlive the container or there is nothing to resume into: a
@@ -711,6 +655,37 @@ describe('an opencode runner', () => {
         expect(oc()).toEqual(expect.arrayContaining(['-e', `XDG_DATA_HOME=/workspaces/bellows/${USER}/.opencode`]));
     });
 
+    // Issue #244: the real runner's env file carries the reserved `factory` agent merged into
+    // OPENCODE_CONFIG_CONTENT — the one place this happens, so a swap back to `claimEnv` here
+    // would silently drop the master prompt from every OpenCode run.
+    describe('the master prompt reaches the real runner only', () => {
+        it('merges the reserved factory agent into the runner env file', () => {
+            const body = envFileBody(opencodeJob, loadDriverConfig({}));
+            expect(body).toContain(
+                `OPENCODE_CONFIG_CONTENT={"agent":{"factory":{"mode":"primary","prompt":${JSON.stringify(MASTER_PROMPT)},"disable":false}}}`
+            );
+        });
+
+        it('preserves the member’s own executor config alongside the reserved agent', () => {
+            const withMemberConfig: BoardJob = {
+                ...opencodeJob,
+                env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: 'anthropic/claude-sonnet' }) },
+            };
+            const body = envFileBody(withMemberConfig, loadDriverConfig({}));
+            const line = body.split('\n').find((l) => l.startsWith('OPENCODE_CONFIG_CONTENT='));
+            const merged = JSON.parse(line!.slice('OPENCODE_CONFIG_CONTENT='.length));
+            expect(merged.model).toBe('anthropic/claude-sonnet');
+            expect(merged.agent.factory).toEqual({ mode: 'primary', prompt: MASTER_PROMPT, disable: false });
+        });
+
+        it('never merges into an aux container’s env (no config argument)', () => {
+            // Sync, gates, publish and block-helper containers never run the agent CLI, so they
+            // must never carry the reserved agent — and calling with no `config` must not throw
+            // even though the claim's masterPrompt-dependent merge would otherwise need one.
+            expect(envFileBody(opencodeJob)).not.toContain('OPENCODE_CONFIG_CONTENT');
+        });
+    });
+
     /**
      * The follow-up: the claim carries the session opencode ITSELF created (scraped and reported
      * when the parent ran), and `run --session <id> <command>` continues that conversation with
@@ -718,20 +693,21 @@ describe('an opencode runner', () => {
      */
     it('continues its own session with the new command on a follow-up', () => {
         const line = dockerArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            { ...job, followUp: true },
+            loadDriverConfig({}),
+            { ...opencodeJob, followUp: true },
             {
                 id: 'ses_f86188c3dffeZGYO4yZq4atba9',
                 resume: true,
             },
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         // The BELLOWS_SESSION_ID env rides before the image (it is a container env, not a CLI
         // flag), naming the SAME conversation the `--session` below restores.
-        expect(line.slice(-5)).toEqual([
+        expect(line.slice(-7)).toEqual([
             'opencode-executor',
             'run',
+            '--agent',
+            'factory',
             '--session',
             'ses_f86188c3dffeZGYO4yZq4atba9',
             'fix the failing build',
@@ -755,12 +731,12 @@ describe('an opencode runner', () => {
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            loadDriverConfig({}),
             (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome).toMatchObject({
             exitCode: 0,
             sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9',
@@ -786,12 +762,12 @@ describe('an opencode runner', () => {
             return Promise.resolve({ stdout: '' });
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
+            loadDriverConfig({}),
             (() => fakeChild('done\n', '', 0)) as unknown as typeof spawn,
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
         expect(outcome.finishReason).toBe('tool-calls');
         expect(outcome.providerError).toBe(
@@ -814,7 +790,7 @@ describe('an opencode runner', () => {
      * RUNNER_SERVICES=0 throughout: the stub routes every `--entrypoint` run to one branch, and
      * these tests are about the SESSION readout, not the bellows one.
      */
-    const ocServicesOff = { RUNNER_CLI: 'opencode', RUNNER_SERVICES: '0' } as const;
+    const ocServicesOff = { RUNNER_SERVICES: '0' } as const;
 
     it('retries a readout that answers nothing, and takes the session when a later try answers', async () => {
         let calls = 0;
@@ -833,7 +809,7 @@ describe('an opencode runner', () => {
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(calls).toBe(2);
         expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
         expect(outcome.readoutError).toBeUndefined();
@@ -854,7 +830,7 @@ describe('an opencode runner', () => {
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(calls).toBe(3);
         expect(outcome.sessionId ?? null).toBeNull();
         expect(outcome.readoutError).toBe('no such column: role');
@@ -871,21 +847,17 @@ describe('an opencode runner', () => {
             exec
         );
 
-        const outcome = await runner.run({ ...job, followUp: false }, null);
+        const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
         expect(outcome.readoutError).toBe('the readout container failed: daemon refused the readout');
     });
 
-    // Standby is a Remote Control feature and opencode cannot be configured for it, so a resume
-    // with nothing to deliver means board state from before a RUNNER_CLI flip. The loop refuses
-    // it first; the runner refuses it too, because a headless run restoring a session without a
-    // command would idle to its deadline.
-    it('refuses to restore a session when there is no command to deliver', () => {
-        expect(() => resumed({ RUNNER_CLI: 'opencode' })).toThrow(/session/);
-        expect(() => oc()).not.toThrow();
-    });
-
-    it('keeps the explicit-image rule', () => {
-        expect(oc({ EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-2)).toEqual(['run', 'fix the failing build']);
+    it('uses the image configured for its selected executor type', () => {
+        expect(oc({ OPENCODE_EXECUTOR_IMAGE: 'registry/oc:2' }).slice(-4)).toEqual([
+            'run',
+            '--agent',
+            'factory',
+            'fix the failing build',
+        ]);
     });
 
     // The claude pins hold unchanged, because nothing about the docker-level posture depends on
@@ -920,17 +892,13 @@ describe('scraping the session opencode used', () => {
     it('refuses to build a readout argv for a claim whose workspace path cannot be asserted', () => {
         // The path lands in the mount's volume-subpath now, so it is asserted before any argv
         // exists — a malformed claim produces no container, not one mounted somewhere unintended.
-        const broken = { ...job, workspacePath: '../../etc' };
-        expect(() => opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), broken, START)).toThrow(
-            /workspace path/
-        );
-        expect(() => opencodeCacheProbeArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), broken)).toThrow(
-            /workspace path/
-        );
+        const broken = { ...opencodeJob, workspacePath: '../../etc' };
+        expect(() => opencodeSessionReadoutArgs(loadDriverConfig({}), broken, START)).toThrow(/workspace path/);
+        expect(() => opencodeCacheProbeArgs(loadDriverConfig({}), broken)).toThrow(/workspace path/);
     });
 
     it('reads the session database out of the member’s data directory, root sessions only', () => {
-        const line = opencodeSessionReadoutArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job, START);
+        const line = opencodeSessionReadoutArgs(loadDriverConfig({}), opencodeJob, START);
         expect(line.slice(0, 10)).toEqual([
             'run',
             '--rm',
@@ -973,8 +941,8 @@ describe('scraping the session opencode used', () => {
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
         const line = opencodeSessionReadoutArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            { ...job, repo: 'Bellows-AI/factory' },
+            loadDriverConfig({}),
+            { ...opencodeJob, repo: 'Bellows-AI/factory' },
             START
         );
         expect(line).toContain(`OPENCODE_DIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
@@ -1081,7 +1049,7 @@ describe('the cache watch', () => {
      * — the live-run twin of the close-time readout. Pure and pinned for the same reason.
      */
     it('probes the newest root session of the member’s data directory, read-only', () => {
-        const line = opencodeCacheProbeArgs(loadDriverConfig({ RUNNER_CLI: 'opencode' }), job);
+        const line = opencodeCacheProbeArgs(loadDriverConfig({}), opencodeJob);
         expect(line.slice(0, 8)).toEqual([
             'run',
             '--rm',
@@ -1182,7 +1150,6 @@ describe('the cache watch', () => {
         const { spawn: childSpawn, close } = openChild();
         const runner = createDockerRunner(
             loadDriverConfig({
-                RUNNER_CLI: 'opencode',
                 RUNNER_CACHE_WATCH: '1',
                 RUNNER_CACHE_WATCH_POLL_MS: '250',
             }),
@@ -1190,7 +1157,7 @@ describe('the cache watch', () => {
             exec
         );
 
-        const pending = runner.run({ ...job, followUp: false }, null);
+        const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         while (!calls.some((a) => a[0] === 'kill')) await new Promise((r) => setTimeout(r, 5));
         close(137);
         const outcome = await pending;
@@ -1207,9 +1174,9 @@ describe('the cache watch', () => {
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const { spawn: childSpawn, close } = openChild();
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_CLI: 'opencode' }), childSpawn, exec);
+        const runner = createDockerRunner(loadDriverConfig({}), childSpawn, exec);
 
-        const pending = runner.run({ ...job, followUp: false }, null);
+        const pending = runner.run({ ...opencodeJob, followUp: false }, null);
         // Two poll periods of a live run, had the watch been armed at the same 250ms the armed
         // test uses — then an ordinary clean exit.
         await new Promise((r) => setTimeout(r, 500));
@@ -1217,6 +1184,27 @@ describe('the cache watch', () => {
         await pending;
 
         // The close-time readout does run; the mid-run probe never does.
+        expect(calls.some((a) => a[0] === 'run' && a.includes('order by id desc'))).toBe(false);
+    });
+
+    it('does not probe Claude Code tasks when the mixed-task driver has the OpenCode watch enabled', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const { spawn: childSpawn, close } = openChild();
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '250' }),
+            childSpawn,
+            exec
+        );
+
+        const pending = runner.run(job, { id: SESSION, resume: false });
+        await new Promise((r) => setTimeout(r, 500));
+        close(0);
+        await pending;
+
         expect(calls.some((a) => a[0] === 'run' && a.includes('order by id desc'))).toBe(false);
     });
 });
@@ -1377,7 +1365,12 @@ describe('the runner env for a gated job', () => {
         expect(envFileBody(gateOnly)).toBe(
             'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n'
         );
-        const line = dockerArgs(loadDriverConfig({}), gateOnly, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            gateOnly,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 
@@ -1388,17 +1381,22 @@ describe('the runner env for a gated job', () => {
     });
 
     it('adds the host gateway mapping so the default gate URL resolves on Linux daemons', () => {
-        expect(dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, null, '/tmp/env-file')).toEqual(
-            expect.arrayContaining(['--add-host', 'host.docker.internal:host-gateway'])
-        );
+        expect(
+            dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toEqual(expect.arrayContaining(['--add-host', 'host.docker.internal:host-gateway']));
         // ... and only for a gated job: an ungated runner's argv must stay byte-identical.
         expect(
-            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file')
+            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
         ).not.toContain('host.docker.internal:host-gateway');
     });
 
     it('never puts a gate value on the command line', () => {
-        const line = dockerArgs(loadDriverConfig({}), gated, { id: SESSION, resume: false }, null, '/tmp/env-file');
+        const line = dockerArgs(
+            loadDriverConfig({}),
+            gated,
+            { id: SESSION, resume: false },
+            { envFile: '/tmp/env-file' }
+        );
         expect(line.some((arg) => arg.includes('tok'))).toBe(false);
         expect(line.some((arg) => arg.includes('host.docker.internal:9099'))).toBe(false);
     });
@@ -1406,13 +1404,14 @@ describe('the runner env for a gated job', () => {
     // Regression pin for the feature boundary: a claim without gates builds exactly the argv it
     // always did.
     it('builds byte-identical argv for a job without gates', () => {
-        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file')).toEqual(
+        expect(
+            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toEqual(
             dockerArgs(
                 loadDriverConfig({}),
                 { ...job, gates: undefined },
                 { id: SESSION, resume: false },
-                null,
-                '/tmp/env-file'
+                { envFile: '/tmp/env-file' }
             )
         );
     });
@@ -1422,11 +1421,10 @@ describe('the runner env for a gated job', () => {
     // var has to reach the runner at all, for this CLI no less than for claude-code.
     it('forwards the OTEL endpoint to the opencode runner too', () => {
         const line = dockerArgs(
-            loadDriverConfig({ RUNNER_CLI: 'opencode', RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }),
-            job,
+            loadDriverConfig({ RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }),
+            opencodeJob,
             null,
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         expect(line).toEqual(expect.arrayContaining(['-e', 'OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318']));
     });
@@ -1549,7 +1547,7 @@ describe('the docker runner', () => {
     });
 
     it('never asks the daemon about a run whose exit code is unambiguous', async () => {
-        const inspect = vitest.fn((args: string[]) => Promise.resolve({ stdout: '' }));
+        const inspect = vitest.fn((_args: string[]) => Promise.resolve({ stdout: '' }));
         const runner = createDockerRunner(
             loadDriverConfig({}),
             child('done\n', '', 0),
@@ -1837,21 +1835,6 @@ describe('the docker runner', () => {
         );
     });
 
-    // The Remote Control posture is untouched: no forwarded credential of any kind, the volume
-    // login is the only one — so gate credentials make no env file appear either.
-    it('writes no env file for a Remote Control runner, gate credentials included', async () => {
-        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }),
-            spawnFn as unknown as typeof spawn,
-            noContainer
-        );
-        await runner.run({ ...job, gateEnv: { BELLOWS_GATE_TOKEN: 'tok' } }, { id: SESSION, resume: false });
-
-        const [, argv] = spawnFn.mock.calls[0]!;
-        expect(argv).not.toContain('--env-file');
-    });
-
     // The lease lost DURING the env-file write: the kill-check just above the write has already
     // passed, and the write's await breaks the synchronous gap the setup promises. Without one
     // more check, the runner spawns over a dead lease — its job-derived container name colliding
@@ -1930,7 +1913,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     const spawnRecording = (stdout: string, code: number | null) => {
         const seen: string[][] = [];
-        const fn = ((command: string, argv: string[]) => {
+        const fn = ((_command: string, argv: string[]) => {
             seen.push(argv);
             const c = new EventEmitter() as ChildProcess;
             const stream = (text: string) => {
@@ -1960,7 +1943,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // scripted daemon, whose `docker run` goes through spawnFn and never through the exec seam.
     const gatedSpawns = (track?: (argv: string[]) => void) => {
         const fires: ((what: 'error' | 'close', payload?: unknown) => void)[] = [];
-        const fn = ((command: string, argv: string[]) => {
+        const fn = ((_command: string, argv: string[]) => {
             track?.(argv);
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
@@ -2112,8 +2095,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
                 { id: SESSION, resume: false },
-                networkName(job),
-                envFilePath(job)
+                { servicesNetwork: networkName(job), envFile: envFilePath(job) }
             )
         );
     });
@@ -2132,8 +2114,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
                 { id: SESSION, resume: false },
-                null,
-                envFilePath(job)
+                { envFile: envFilePath(job) }
             )
         );
         const calls = exec.mock.calls.map((call) => call[0]);
@@ -2421,7 +2402,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // Both children hold their close until released, so the interleaving — A still alive
         // while B stands its fleet up, then A's close landing over it — is the test's to pace.
         const closers: (() => void)[] = [];
-        const gatedSpawn = ((command: string, argv: string[]) => {
+        const gatedSpawn = ((_command: string, _argv: string[]) => {
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
                 const s = new EventEmitter();
@@ -2485,7 +2466,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // Both children hold their close until released, so the interleaving — A still alive
         // while B stands its fleet up, then A's close landing over it — is the test's to pace.
         const closers: (() => void)[] = [];
-        const gatedSpawn = ((command: string, argv: string[]) => {
+        const gatedSpawn = ((_command: string, _argv: string[]) => {
             const c = new EventEmitter() as ChildProcess;
             const stream = () => {
                 const s = new EventEmitter();
@@ -3000,7 +2981,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                     a.some((x) => typeof x === 'string' && x.startsWith('CLAUDE_TRANSCRIPT_DIR='))
             )
         ).toBe(true);
-        expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }, null, envFilePath(job)));
+        expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }, { envFile: envFilePath(job) }));
     });
 });
 
@@ -3051,6 +3032,15 @@ describe('publishing the produced work', () => {
             title: '/fix-a 100',
             issueNumber: null,
         });
+    });
+
+    it("closes the thread root's issue when a follow-up publishes", () => {
+        // `/fix 122` failed its gates; the follow-up `both OK` is the run that publishes.
+        const followUp = { ...job, command: 'both OK', rootCommand: '/fix 122' };
+        expect(publishPlan(followUp, NOW).issueNumber).toBe(122);
+        // A root that names no issue leaves the follow-up's own command to name one.
+        expect(publishPlan({ ...job, command: 'now /fix 9', rootCommand: 'tidy' }, NOW).issueNumber).toBe(9);
+        expect(publishPlan({ ...job, command: 'both OK', rootCommand: 'tidy' }, NOW).issueNumber).toBeNull();
     });
 
     it('prefers the /fix target over an incidental #mention', () => {
@@ -3122,15 +3112,14 @@ describe('publishing the produced work', () => {
             loadDriverConfig({}),
             repoJob,
             { id: SESSION, resume: false },
-            null,
-            '/tmp/env-file'
+            { envFile: '/tmp/env-file' }
         );
         expect(withRepo).toContain(`WORKDIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
         // A command-only job names no repo: no worktree exists, and the member root is where it
         // always started — the argv stays byte-identical to what it was.
-        expect(dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, null, '/tmp/env-file')).toContain(
-            `WORKDIR=/workspaces/bellows/${USER}`
-        );
+        expect(
+            dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
+        ).toContain(`WORKDIR=/workspaces/bellows/${USER}`);
     });
 
     it('refuses to run a repo job whose worktree path cannot be asserted', () => {
@@ -3232,7 +3221,7 @@ describe('publishing the produced work', () => {
         expect(empty.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
     });
 
-    // A claim that CONTINUES a session — a follow-up, or a parked job resumed — is mid-task,
+    // A claim that CONTINUES a session — a follow-up — is mid-task,
     // and git operations that touch the remote belong to the task's beginning and end (issue
     // #58). Its sync is a RESTORE: the script runs with RESTORE=1, the claim env file is not
     // written (restore talks only to the local clone — nothing to credential), and the fetch's
@@ -3256,8 +3245,8 @@ describe('publishing the produced work', () => {
         expect(follow).not.toContain('--env-file');
         expect(follow.some((arg) => arg.startsWith('CRED_HELPER='))).toBe(false);
 
-        // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard:
-        // the session's tree must not move under it either.
+        // A claim carrying a resume session (resumeSessionId without the followUp flag) is the
+        // same mid-task hazard: the session's tree must not move under it either.
         await runner.syncCheckout({ ...repoJob, resumeSessionId: SESSION, env: { GITHUB_TOKEN: 't0k-3n' } });
         const parked = calls.filter((a) => a[0] === 'run')[1]!;
         expect(parked).toEqual(expect.arrayContaining(['-e', 'RESTORE=1']));
@@ -3693,11 +3682,7 @@ describe('publishing the produced work', () => {
             if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = createDockerRunner(
-            loadDriverConfig({ RUNNER_CLI: 'opencode' }),
-            (() => fakeChild('')) as unknown as typeof spawn,
-            exec
-        );
+        const runner = createDockerRunner(loadDriverConfig({}), (() => fakeChild('')) as unknown as typeof spawn, exec);
         return { calls, envBodies, runner };
     };
 
@@ -3735,7 +3720,16 @@ describe('publishing the produced work', () => {
         });
         const result = await runner.publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         expect(shapesOf(calls)).toEqual([
             'probe',
             'switch',
@@ -3785,7 +3779,16 @@ describe('publishing the produced work', () => {
         );
         const result = await runner.publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         // On a task branch already: no switch, no commit (clean tree), push of the unpushed
         // commit, PR found and reused — and no summarizer step, which only a NEW PR gets.
         expect(shapesOf(calls)).toEqual(['probe', 'push', 'pr-view']);
@@ -3799,6 +3802,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'no uncommitted changes and nothing unpushed',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(clean.calls).toHaveLength(1);
 
@@ -3809,6 +3815,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'the checkout has not been cloned yet',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(uncloned.calls).toHaveLength(1);
     });
@@ -3856,7 +3865,16 @@ describe('publishing the produced work', () => {
         });
         const result = await runner.publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
         expect(create?.[create.indexOf('--title') + 1]).toBe(
             '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)'
@@ -3894,5 +3912,169 @@ describe('publishing the produced work', () => {
         expect(create?.[create.indexOf('--body') + 1]).toBe(
             '## Commits\n\n- Fix the sync re-claim fence\n\nCloses #10.\n\nPublished by the factory board after the declared gates passed.'
         );
+    });
+});
+
+describe('the block-helper transport (issue #207)', () => {
+    const NOOP_SCRIPT = lookupHelper('noop')!.scriptBody;
+    const NOOP_VERDICT = JSON.stringify({ schema: 'helper-noop/v1', version: 1, ok: true, output: { echoed: true } });
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory', env: { GITHUB_TOKEN: 'claim-token' } };
+    const plan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
+        helperId: 'noop',
+        phase: 'pre',
+        input: { a: 1 },
+        githubWriting: false,
+        ...over,
+    });
+
+    const runnerWith = (exec: (args: string[]) => Promise<{ stdout: string }>) =>
+        createDockerRunner(loadDriverConfig({}), (() => fakeChild('', '', 0)) as unknown as typeof spawn, exec);
+
+    it('fails an unknown helper id before any container starts', async () => {
+        const exec = vitest.fn(async () => ({ stdout: NOOP_VERDICT }));
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
+        expect(result).toEqual({
+            ok: false,
+            reason: 'unknown_helper',
+            message: expect.stringContaining('not-a-real-helper'),
+        });
+        expect(exec).not.toHaveBeenCalled();
+    });
+
+    it('runs the noop helper end to end, over a named container with --entrypoint node and the script by content', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(repoJob, plan());
+
+        expect(result).toEqual({ ok: true, output: { echoed: true } });
+        const run = calls[0]!;
+        expect(run[0]).toBe('run');
+        // NOT --rm: the container is named and explicitly removed in the finally, the same
+        // discipline the runner container itself uses, precisely so a killed CLI client (the
+        // timeout path) cannot leave a container --rm never had the chance to reap.
+        expect(run).not.toContain('--rm');
+        const nameIdx = run.indexOf('--name');
+        expect(nameIdx).toBeGreaterThan(-1);
+        expect(run[nameIdx + 1]).toMatch(new RegExp(`^factory-helper-${repoJob.id}-${repoJob.leaseToken}-`));
+        expect(run).toEqual(expect.arrayContaining(['--entrypoint', 'node']));
+        expect(run).toEqual(expect.arrayContaining(['-e', NOOP_SCRIPT]));
+        expect(run).toEqual(expect.arrayContaining(['-e', `HELPER_INPUT=${JSON.stringify({ a: 1 })}`]));
+        // The task worktree, when the job names a repo — the same tree the agent run edits.
+        expect(run).toEqual(expect.arrayContaining(['-w', `/workspaces/bellows/${USER}/.worktrees/${job.id}`]));
+        // Attempt-scoped labels, matching every other container this runner starts.
+        expect(run).toEqual(expect.arrayContaining(['--label', `factory.job=${repoJob.id}`]));
+        expect(run).toEqual(expect.arrayContaining(['--label', `factory.lease=${repoJob.leaseToken}`]));
+        // A read-only helper (githubWriting: false) never gets an env file.
+        expect(run).not.toContain('--env-file');
+        // The container is removed explicitly, by the exact name it was given.
+        const rm = calls.find((a) => a[0] === 'rm');
+        expect(rm).toEqual(['rm', '-f', run[nameIdx + 1]]);
+    });
+
+    it('removes the named container even when the run times out, so a killed client never leaks it', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'run') {
+                const err = new Error('command timed out');
+                (err as unknown as { killed: boolean }).killed = true;
+                throw err;
+            }
+            return { stdout: '' };
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
+        const run = calls.find((a) => a[0] === 'run')!;
+        const nameIdx = run.indexOf('--name');
+        const rm = calls.find((a) => a[0] === 'rm');
+        expect(rm).toEqual(['rm', '-f', run[nameIdx + 1]]);
+    });
+
+    it('writes an attempt-scoped env file, carrying a fresh token, only for a github-writing helper', async () => {
+        const calls: string[][] = [];
+        let capturedFile: string | null = null;
+        let capturedBody: string | null = null;
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            const idx = args.indexOf('--env-file');
+            if (idx !== -1) {
+                capturedFile = args[idx + 1]!;
+                // Read the body WHILE it is still on disk — the runner's own finally removes it
+                // the moment this call resolves, the same cleanup every other env file here has.
+                capturedBody = readFileSync(capturedFile, 'utf8');
+            }
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
+
+        expect(result).toEqual({ ok: true, output: { echoed: true } });
+        expect(calls[0]).toContain('--env-file');
+        // The fresh token overlays the claim env (withPublishToken), never the claim's own token.
+        expect(capturedBody).toContain('GITHUB_TOKEN=fresh-install-token');
+        expect(capturedBody).not.toContain('claim-token');
+        // Cleaned up after: no leaked temp file, the same discipline every other env file here has.
+        expect(existsSync(capturedFile!)).toBe(false);
+    });
+
+    it('never puts the token in argv — only ever in the env file', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        await runner.runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
+        expect(calls[0]!.some((a) => a.includes('super-secret-token'))).toBe(false);
+    });
+
+    it('maps a malformed helper answer to a named failure, never a thrown context leak', async () => {
+        const exec = vitest.fn(async () => ({ stdout: 'not json at all' }));
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
+    });
+
+    it('maps an execDocker timeout to a named timeout failure', async () => {
+        const exec = vitest.fn(async () => {
+            const err = new Error('command timed out');
+            (err as unknown as { killed: boolean }).killed = true;
+            throw err;
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.stringContaining('ms bound') });
+    });
+
+    it('maps any other execDocker failure to runner_error, using the tool own output', async () => {
+        const exec = vitest.fn(async () => {
+            const err = new Error('Command failed: docker run ...') as Error & { stderr: string };
+            err.stderr = 'permission denied while running the helper';
+            throw err;
+        });
+        const runner = runnerWith(exec);
+        const result = await runner.runHelper!(job, plan());
+        expect(result).toEqual({
+            ok: false,
+            reason: 'runner_error',
+            message: expect.stringContaining('permission denied'),
+        });
+    });
+
+    it('runs a command-only job (no repo) at the member root, with no -w flag', async () => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            return { stdout: NOOP_VERDICT };
+        });
+        const runner = runnerWith(exec);
+        await runner.runHelper!(job, plan());
+        expect(calls[0]).not.toContain('-w');
     });
 });

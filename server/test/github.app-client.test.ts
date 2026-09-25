@@ -125,7 +125,8 @@ describe('listRepositories', () => {
         );
 
         const listing = await client.listRepositories();
-        expect(listing.repos).toHaveLength(3);
+        const EXPECTED_REPO_COUNT = 3;
+        expect(listing.repos).toHaveLength(EXPECTED_REPO_COUNT);
         expect(requests.some((p) => p.includes('page=2'))).toBe(true);
         expect(requests.some((p) => p.includes('page=3'))).toBe(false);
     });

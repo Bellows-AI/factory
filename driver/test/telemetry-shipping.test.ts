@@ -8,7 +8,7 @@ const read = (relative: string): string => readFileSync(join(ROOT, relative), 'u
 
 describe('runner telemetry shipping', () => {
     it('configures both agents for OTLP/HTTP JSON while keeping prompt and tool bodies private', () => {
-        const claude = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
+        const claude = JSON.parse(read('docker/claude-executor/managed-settings.json')) as {
             env: Record<string, string>;
         };
         const opencode = JSON.parse(read('docker/opencode-executor/opencode-home/otel.json')) as Record<string, string>;
@@ -41,8 +41,12 @@ describe('runner telemetry shipping', () => {
             expect(collector).toMatch(
                 /retry_on_failure:\n\s+enabled: true\n\s+initial_interval: 5s\n\s+max_elapsed_time: 300s/
             );
-            expect(collector).toContain('processors: [filter/drop-cost, attributes/strip-identity, batch]');
-            expect(collector).toContain('processors: [attributes/strip-identity, batch]');
+            // The chart's collector puts memory_limiter first (it runs under a memory limit); the
+            // privacy-preserving part of the pipeline is the same on both.
+            expect(collector).toMatch(
+                /processors: \[(memory_limiter, )?filter\/drop-cost, attributes\/strip-identity, batch\]/
+            );
+            expect(collector).toMatch(/processors: \[(memory_limiter, )?attributes\/strip-identity, batch\]/);
             expect(collector).toContain('exporters: [otlp_http/dashboard]');
         }
     );

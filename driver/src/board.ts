@@ -1,4 +1,18 @@
-import type { ServiceStatus } from './docker.js';
+import { type ExecutorType, isExecutorType } from './executors.js';
+import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import type { HelperPlan } from './helpers.js';
+
+/**
+ * One declared service of the attempt's `.bellows.yaml`, as the platform reports it right now:
+ * the declared name (the DNS name inside the job), the image, and a lowercase state word —
+ * docker's container State, or the pod phase under kubernetes. Platform-native on purpose:
+ * `restarting` and `pending` carry real, platform-specific meaning the panel renders verbatim.
+ */
+export interface ServiceStatus {
+    name: string;
+    image: string;
+    state: string;
+}
 
 export interface BoardJob {
     id: string;
@@ -7,15 +21,28 @@ export interface BoardJob {
     leaseToken: string;
     leaseExpiresAt: string;
     /**
-     * Set when this claim is picking a parked job back up: the runner restores that session rather
-     * than starting one, and the command is not re-delivered — it is already in the transcript.
-     * Absent on a board that predates standby, which is why it is read as `?? null`.
+     * The CLI/image family selected by this task's executor profile. Null means the stamped
+     * executor no longer resolves; the loop fails that task explicitly instead of choosing a
+     * process-wide fallback.
+     */
+    executorType: ExecutorType | null;
+    /**
+     * The board-owned Factory execution context (issue #244) — the master-prompt.ts renderer's
+     * text, delivered through the executor's own system-instruction channel, never concatenated
+     * into `command`. Read defensively as `?? null`, like every board field: a board that predates
+     * the feature, or a render failure, both mean the loop must refuse the launch explicitly
+     * rather than run the agent with no Factory execution context (see loop-run.ts).
+     */
+    masterPrompt: string | null;
+    /**
+     * Set when this claim is a follow-up resuming its parent's session: the runner restores that
+     * session rather than starting one. Read defensively as `?? null`.
      */
     resumeSessionId: string | null;
     /**
      * True when this claim resumes a session AND should still deliver the command into it — a
      * follow-up on a finished task, whose restored transcript is the parent conversation and whose
-     * command is the new adjustment. False on a parked resume, where the delivered-once rule holds.
+     * command is the new adjustment.
      * Read defensively like everything else here: a board that predates follow-ups omits it.
      */
     followUp: boolean;
@@ -47,6 +74,12 @@ export interface BoardJob {
      * it, and the job is then its own root — the correct answer for every non-follow-up.
      */
     rootJobId?: string | null;
+    /**
+     * The thread ROOT job's command — the job's own, unless it is a follow-up. The publisher reads
+     * the task's issue from it: the run that publishes is often a follow-up ("both OK") whose own
+     * command names nothing.
+     */
+    rootCommand: string;
     /**
      * The environment the board resolved for this job — org < workspace < repo, secrets included.
      * Read defensively (`?? {}` at claim): a board that predates the field omits it, and the
@@ -86,6 +119,15 @@ export interface BoardJob {
      * "publish", and every claim without the field behaves byte-identically to before it existed.
      */
     publish?: boolean;
+    /**
+     * Declared pre/post block-helper steps for this row's node (issue #207) — an expanded
+     * workflow `block` node's runtime plan, when its compiler produced one. Read defensively like
+     * every board field added after launch: absent on a board that predates the field, and on
+     * every claim of a workflow-less or `agent`-node task, which is the ordinary case — nothing
+     * here is populated by any producer yet (docs/workflows.md), so this stays empty on every real
+     * claim until a future issue threads a real plan through the compiler and the claim.
+     */
+    helperPlans?: HelperPlan[];
 }
 
 /** Whether the board still recognises this worker as the holder of the job. */
@@ -178,12 +220,8 @@ export interface Board {
             output: string | null;
         }[]
     ): Promise<LeaseState>;
-    /**
-     * Tells the board which agent session this attempt runs as. Called twice under Remote Control:
-     * once at spawn with the local id alone, and again once the bridge has reported the remote one
-     * the Claude UI addresses the session by.
-     */
-    session(job: BoardJob, sessionId: string, remoteSessionId: string | null): Promise<LeaseState>;
+    /** Tells the board which agent session this attempt runs as. */
+    session(job: BoardJob, sessionId: string): Promise<LeaseState>;
     /**
      * Re-reads the gates the job's checkout declares NOW. The claim read the file before the
      * driver's startup sync freshened the checkout, so a repository whose gates file just arrived
@@ -216,7 +254,7 @@ export interface Board {
      * closed the thread (a `done_at` on some member), computed by the board in the SAME
      * lease-guarded transaction as the verdict — which is the signal a worker uses right after a
      * verdict to decide the task worktree can be reclaimed (issue #47). A follow-up still
-     * queued, parked, or running keeps it false; so does a thread that finished but was never
+     * queued or running keeps it false; so does a thread that finished but was never
      * declared done — a failed task's tree is exactly what its next turn continues from, and the
      * tree is the user's to free.
      */
@@ -230,11 +268,28 @@ export interface Board {
             contextCostUsd?: number | null;
             agentTurns?: number | null;
             summary?: string | null;
+            /**
+             * What the publish landed, when a publish did: the board's only trusted record of a
+             * thread's repository — review traffic and the thread's wait key on it. Omitted when
+             * the run published nothing.
+             */
+            publication?: {
+                repo: string;
+                prNumber: number;
+                prUrl: string;
+                headBranch: string;
+                baseBranch: string;
+            } | null;
         }
     ): Promise<{ state: LeaseState; threadDone: boolean }>;
 }
 
 type Fetch = typeof globalThis.fetch;
+
+const HTTP_NO_CONTENT = 204;
+const HTTP_NOT_FOUND = 404;
+const HTTP_CONFLICT = 409;
+const ERROR_BODY_PREVIEW_LENGTH = 200;
 
 export function createBoard({
     url,
@@ -259,7 +314,7 @@ export function createBoard({
         const response = await fetch(`${url}${path}`, {
             method: 'POST',
             headers: {
-                'content-type': 'application/json',
+                [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
                 // Omitted rather than sent empty: a board with no auth would otherwise see a Bearer
                 // header with nothing in it, which is a credential that failed rather than one that
                 // was never offered.
@@ -271,8 +326,10 @@ export function createBoard({
         // heartbeat against a removed thread, an ack for a row that left the queue); everything
         // else outside 2xx is the board being broken or the driver being wrong, and neither should
         // be swallowed into a silent no-op.
-        if (!response.ok && response.status !== 409 && !(allow404 && response.status === 404)) {
-            throw new Error(`${path} answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
+        if (!response.ok && response.status !== HTTP_CONFLICT && !(allow404 && response.status === HTTP_NOT_FOUND)) {
+            throw new Error(
+                `${path} answered ${response.status}: ${(await response.text()).slice(0, ERROR_BODY_PREVIEW_LENGTH)}`
+            );
         }
         return response;
     };
@@ -280,15 +337,23 @@ export function createBoard({
     return {
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
-            if (response.status === 204) return null;
-            const claimed = (await response.json()) as Partial<BoardJob>;
+            if (response.status === HTTP_NO_CONTENT) return null;
+            // Destructured out rather than left in the base spread: an invalid (non-array) value
+            // must not survive under exactOptionalPropertyTypes, which refuses assigning
+            // `undefined` to this optional property directly — the conditional spread below is
+            // the only way to represent "absent".
+            const { helperPlans, ...rest } = (await response.json()) as Partial<BoardJob>;
+            const claimed = rest;
             return {
                 ...(claimed as BoardJob),
+                ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
+                masterPrompt: typeof claimed.masterPrompt === 'string' ? claimed.masterPrompt : null,
                 resumeSessionId: claimed.resumeSessionId ?? null,
                 followUp: claimed.followUp ?? false,
                 userId: claimed.userId ?? null,
                 workspacePath: claimed.workspacePath ?? null,
                 rootJobId: claimed.rootJobId ?? null,
+                executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
                 env: claimed.env ?? {},
             };
         },
@@ -307,15 +372,15 @@ export function createBoard({
             // verdict to. Read after the 409 check is redundant (they are exclusive statuses);
             // both are verdicts, and a defensive read keeps a future where the board blurs them
             // into a decision this side of the fence.
-            if (response.status === 404) return 'removed';
-            if (response.status === 409) return 'lost';
+            if (response.status === HTTP_NOT_FOUND) return 'removed';
+            if (response.status === HTTP_CONFLICT) return 'lost';
             const body = (await response.json()) as { cancelRequested?: boolean };
             return { result: 'held', cancelRequested: body.cancelRequested === true };
         },
 
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
-            if (response.status === 204) return null;
+            if (response.status === HTTP_NO_CONTENT) return null;
             return (await response.json()) as Reclaim;
         },
 
@@ -323,8 +388,8 @@ export function createBoard({
             const response = await post(`/api/reclaims/${id}/ack`, { worker }, true);
             // 409 means this worker's lease on the row ran out — another worker holds it now.
             // 404 means the row already left the queue (acked elsewhere, or the delete landed).
-            if (response.status === 409) return 'lost';
-            if (response.status === 404) return 'missing';
+            if (response.status === HTTP_CONFLICT) return 'lost';
+            if (response.status === HTTP_NOT_FOUND) return 'missing';
             return 'ok';
         },
 
@@ -334,7 +399,7 @@ export function createBoard({
                 output,
                 ...(runtime ? { runtime } : {}),
             });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
         async gates(job, results) {
@@ -342,16 +407,15 @@ export function createBoard({
                 leaseToken: job.leaseToken,
                 gates: results,
             });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
-        async session(job, sessionId, remoteSessionId) {
+        async session(job, sessionId) {
             const response = await post(`/api/jobs/${job.id}/session`, {
                 leaseToken: job.leaseToken,
                 sessionId,
-                remoteSessionId,
             });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
         async rereadGates(job) {
@@ -378,10 +442,13 @@ export function createBoard({
 
         async suspend(job) {
             const response = await post(`/api/jobs/${job.id}/suspend`, { leaseToken: job.leaseToken });
-            return response.status === 409 ? 'lost' : 'held';
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
-        async complete(job, { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary }) {
+        async complete(
+            job,
+            { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, publication }
+        ) {
             const response = await post(`/api/jobs/${job.id}/complete`, {
                 leaseToken: job.leaseToken,
                 status,
@@ -393,10 +460,13 @@ export function createBoard({
                 // unmeasured — the never-zero contract is the driver's to keep too.
                 ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
                 ...(summary ? { summary } : {}),
+                // The identity of what was published, when anything was — the board keys review
+                // traffic and the thread's wait on it.
+                ...(publication ? { publication } : {}),
             });
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — the done answer is false, not unknown.
-            if (response.status === 409) return { state: 'lost', threadDone: false };
+            if (response.status === HTTP_CONFLICT) return { state: 'lost', threadDone: false };
             // Read defensively, like every other board field: anything but a literal true —
             // absent, false, a body that is not the shape we asked for — means "the user may
             // still want this thread's tree", which is the only safe reading of an unclear answer.

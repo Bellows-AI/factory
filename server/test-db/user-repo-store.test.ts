@@ -15,6 +15,9 @@ const BOB = '00000000-0000-4000-8000-00000000b0b0';
 const web = { owner: 'acme', name: 'web' };
 const api = { owner: 'acme', name: 'api' };
 
+/** A limit above every row this suite ever queues, so a claim proves it exhausted the queue. */
+const CLAIM_LIMIT = 5;
+
 const db = useTestDb({
     orgs: [ORG],
     users: [
@@ -88,9 +91,9 @@ describe.skipIf(!enabled)('the user repo store', () => {
     it('claims at most `limit` rows and counts the attempt', async () => {
         await store.select(ALICE, [web, api]);
         expect(await store.claimPending(1)).toHaveLength(1);
-        expect(await store.claimPending(5)).toHaveLength(1);
+        expect(await store.claimPending(CLAIM_LIMIT)).toHaveLength(1);
         // Nothing left queued: both are `cloning` now.
-        expect(await store.claimPending(5)).toHaveLength(0);
+        expect(await store.claimPending(CLAIM_LIMIT)).toHaveLength(0);
         expect((await store.list(ALICE)).every((r) => r.attempts === 1)).toBe(true);
     });
 
@@ -105,7 +108,7 @@ describe.skipIf(!enabled)('the user repo store', () => {
     it('does not claim a repo that was deselected while queued', async () => {
         await store.select(ALICE, [web]);
         await store.select(ALICE, []);
-        expect(await store.claimPending(5)).toHaveLength(0);
+        expect(await store.claimPending(CLAIM_LIMIT)).toHaveLength(0);
     });
 
     it('returns rows a restart stranded in cloning', async () => {

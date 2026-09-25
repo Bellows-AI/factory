@@ -5,6 +5,8 @@ import {
     firstPageError,
     inboxFiltersFromSearch,
     inboxQueryString,
+    MAX_REFRESH_DEPTH,
+    refreshLanding,
 } from '../src/api/useTasks.js';
 
 /**
@@ -37,7 +39,9 @@ describe('inboxFiltersFromSearch', () => {
 
     it('trims the search and caps it at 200 characters', () => {
         expect(inboxFiltersFromSearch('?q=%20%20login%20').q).toBe('login');
-        expect(inboxFiltersFromSearch(`?q=${'x'.repeat(300)}`).q).toHaveLength(200);
+        const OVER_QUERY_MAX = 300;
+        const QUERY_MAX = 200;
+        expect(inboxFiltersFromSearch(`?q=${'x'.repeat(OVER_QUERY_MAX)}`).q).toHaveLength(QUERY_MAX);
         expect(inboxFiltersFromSearch('?q=%20%20').q).toBeNull();
     });
 
@@ -108,23 +112,40 @@ describe('fetchDepthPages', () => {
             if (url.includes('c1')) return page(['b', 'c'], 'c2');
             return page(['d'], null);
         };
-        const rebuilt = await fetchDepthPages(fetchPage, 'state=past', 3);
-        expect(seen).toHaveLength(3);
+        const REQUESTED_DEPTH = 3;
+        const rebuilt = await fetchDepthPages(fetchPage, 'state=past', REQUESTED_DEPTH);
+        expect(seen).toHaveLength(REQUESTED_DEPTH);
         expect(seen[1]).toContain('cursor=c1');
         expect(seen[2]).toContain('cursor=c2');
         // 'b' moved between pages between reads — first occurrence wins.
         expect(rebuilt.items.map((t) => t.id)).toEqual(['a', 'b', 'c', 'd']);
         expect(rebuilt.nextCursor).toBeNull();
-        expect(rebuilt.pages).toBe(3);
+        expect(rebuilt.pages).toBe(REQUESTED_DEPTH);
         expect(rebuilt.navigation).toBe(navigation);
     });
 
     it('stops early when the list shrank below the loaded depth', async () => {
         const fetchPage = async (url: string) => (url.includes('cursor=') ? page([], null) : page(['a'], 'c1'));
-        const rebuilt = await fetchDepthPages(fetchPage, '', 5);
+        const REQUESTED_DEPTH = 5;
+        const rebuilt = await fetchDepthPages(fetchPage, '', REQUESTED_DEPTH);
         expect(rebuilt.items.map((t) => t.id)).toEqual(['a']);
         expect(rebuilt.nextCursor).toBeNull();
         expect(rebuilt.pages).toBe(2);
+    });
+
+    it('reads at most MAX_REFRESH_DEPTH pages however deep the member paged', async () => {
+        // The tick is 3s while anything runs and the chain is serial, so an uncapped depth is a
+        // request-count problem: past the cap the deeper pages go stale rather than re-read.
+        const calls: string[] = [];
+        const fetchPage = async (url: string) => {
+            calls.push(url);
+            return page([`p${calls.length}`], `c${calls.length}`);
+        };
+        const rebuilt = await fetchDepthPages(fetchPage, '', 12);
+        expect(calls).toHaveLength(MAX_REFRESH_DEPTH);
+        expect(rebuilt.pages).toBe(MAX_REFRESH_DEPTH);
+        // The cursor of the LAST page read, so Load more resumes from the capped depth.
+        expect(rebuilt.nextCursor).toBe(`c${MAX_REFRESH_DEPTH}`);
     });
 
     it('reads exactly one page when the depth is one', async () => {
@@ -136,5 +157,56 @@ describe('fetchDepthPages', () => {
         const rebuilt = await fetchDepthPages(fetchPage, 'state=running', 1);
         expect(calls).toHaveLength(1);
         expect(rebuilt.nextCursor).toBe('c1');
+    });
+});
+
+/**
+ * A member who paged past {@link MAX_REFRESH_DEPTH} keeps reading rows the capped rebuild never
+ * re-read. Landing that rebuild as the whole list would make those rows vanish on the next 3s
+ * tick and collapse the loaded depth back to the cap, so the capped landing keeps them.
+ */
+describe('refreshLanding', () => {
+    const summary = (id: string) => ({
+        id,
+        command: `task ${id}`,
+        status: 'running',
+        cancelRequestedAt: null,
+        doneAt: null,
+        repo: null,
+        executor: null,
+        author: null,
+        activity: null,
+        summary: null,
+        createdAt: '2026-09-02T12:00:00.000Z',
+        activityAt: '2026-09-02T12:10:00.000Z',
+    });
+
+    it('keeps the pages past the cap that the rebuild never read', () => {
+        const prev = ['a', 'b', 'c', 'd'].map(summary);
+        const landed = refreshLanding(prev, 4, {
+            items: ['a', 'b', 'c'].map(summary),
+            nextCursor: 'c3',
+            pages: MAX_REFRESH_DEPTH,
+        });
+        expect(landed.capped).toBe(true);
+        expect(landed.items.map((task) => task.id)).toEqual(['a', 'b', 'c', 'd']);
+    });
+
+    it('lands the rebuild as the whole list when it reached the loaded depth', () => {
+        const prev = ['a', 'b', 'c'].map(summary);
+        const landed = refreshLanding(prev, 3, {
+            items: ['x', 'a'].map(summary),
+            nextCursor: 'c3',
+            pages: 3,
+        });
+        expect(landed.capped).toBe(false);
+        expect(landed.items.map((task) => task.id)).toEqual(['x', 'a']);
+    });
+
+    it('lets the depth collapse when the list shrank below it', () => {
+        const prev = ['a', 'b', 'c', 'd'].map(summary);
+        const landed = refreshLanding(prev, 4, { items: [summary('a')], nextCursor: null, pages: 2 });
+        expect(landed.capped).toBe(false);
+        expect(landed.items.map((task) => task.id)).toEqual(['a']);
     });
 });

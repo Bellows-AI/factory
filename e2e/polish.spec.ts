@@ -114,6 +114,14 @@ async function assertRing(target: Locator, label: string) {
     expect(ring.color, `${label} outline color resolves`).not.toBe('transparent');
 }
 
+/**
+ * The inbox filter fields, by their label rather than by a literal id: the page mints its ids with
+ * useId so two mounted copies cannot collide, which means no id here survives a render. Going
+ * through the label exercises the htmlFor wiring that replaced them instead of routing around it.
+ */
+const inboxSearch = (page: Page): Locator => page.locator('.inbox-search').getByLabel('Search');
+const inboxRepo = (page: Page): Locator => page.locator('.inbox-search').getByLabel('Repository');
+
 test.describe('polish (issue 189)', () => {
     for (const theme of ['dark', 'light'] as const) {
         test(`the contrast matrix meets WCAG AA in the ${theme} theme`, async ({ page }) => {
@@ -138,11 +146,11 @@ test.describe('polish (issue 189)', () => {
             await page.goto('/');
             await setTheme(page, theme);
             await assertRing(page.locator('.sidenav-link').first(), 'sidenav link');
-            await assertRing(page.locator('.page-header-actions button', { hasText: 'Refresh' }), 'refresh button');
+            await assertRing(page.locator('#range-select'), 'range dropdown trigger');
             await page.goto('/tasks');
             await setTheme(page, theme);
-            await assertRing(page.locator('#inbox-q'), 'inbox search input');
-            await assertRing(page.locator('#inbox-repo'), 'inbox repository select');
+            await assertRing(inboxSearch(page), 'inbox search input');
+            await assertRing(inboxRepo(page), 'inbox repository select');
             await assertRing(page.locator('.inbox-tab').first(), 'inbox tab');
         });
     }
@@ -165,21 +173,16 @@ test.describe('polish (issue 189)', () => {
         for (const [label, target] of [
             ['app bar trigger', page.locator('.appbar-trigger')],
             ['inbox tab', page.locator('.inbox-tab').first()],
-            ['inbox search input', page.locator('#inbox-q')],
-            ['inbox repository select', page.locator('#inbox-repo')],
+            ['inbox search input', inboxSearch(page)],
+            ['inbox repository select', inboxRepo(page)],
             ['inbox filter button', page.locator('.inbox-search button')],
         ] as const) {
             const box = await target.boundingBox();
             expect(box?.height ?? 0, `${label} touch target`).toBeGreaterThanOrEqual(44);
         }
         await page.goto('/');
-        for (const [label, target] of [
-            ['range preset', page.locator('.range-option').first()],
-            ['refresh button', page.locator('.page-header-actions button', { hasText: 'Refresh' })],
-        ] as const) {
-            const box = await target.boundingBox();
-            expect(box?.height ?? 0, `${label} touch target`).toBeGreaterThanOrEqual(44);
-        }
+        const rangeTriggerBox = await page.locator('#range-select').boundingBox();
+        expect(rangeTriggerBox?.height ?? 0, 'range dropdown touch target').toBeGreaterThanOrEqual(44);
     });
 
     test('forced colors keep keyboard focus visible', async ({ page }) => {
@@ -187,8 +190,8 @@ test.describe('polish (issue 189)', () => {
         await page.goto('/');
         // The system repaint recolors the tokens; the ring is pinned to the system highlight so
         // it survives, and the control kinds the shared rule serves keep an outline.
-        await assertRing(page.locator('.page-header-actions button', { hasText: 'Refresh' }), 'refresh button');
+        await assertRing(page.locator('#range-select'), 'range dropdown trigger');
         await page.goto('/tasks');
-        await assertRing(page.locator('#inbox-repo'), 'inbox repository select');
+        await assertRing(inboxRepo(page), 'inbox repository select');
     });
 });

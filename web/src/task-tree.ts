@@ -17,6 +17,14 @@ export interface TaskStatus {
     status: JobStatus | null;
     cancelRequestedAt: string | null;
     doneAt: string | null;
+    /**
+     * The thread's durable PR-review wait (206), straight off the structured `waitReason` /
+     * `waitTerminalReason` contract — never inferred from output text or a workflow node name.
+     * An open wait (`waitReason` set, `waitTerminalReason` still null) reads as waiting; once
+     * `waitTerminalReason` is set the wait is over and carries no special weight here.
+     */
+    waitReason: string | null;
+    waitTerminalReason: string | null;
 }
 
 /**
@@ -28,27 +36,37 @@ export function taskTitleFromCommand(command: string): string {
     return command.split('\n')[0]!.trim();
 }
 
+/** A terminal verdict's label, with the wait's bounded reason appended once it has one. */
+const withWaitReason = (status: TaskStatus, label: string): string =>
+    status.waitTerminalReason !== null ? `${label} · ${status.waitTerminalReason}` : label;
+
 /**
  * The visible status label: workflow state and execution result as TEXT, never color alone —
- * the dot is supplementary. The issue's table: Running / Queued / Parked / Stopping, then the
+ * the dot is supplementary. The issue's table: Running / Queued / Stopping, then the
  * terminal verdicts, with `· Needs review` marking a result the user has not closed yet. A done
  * task reads Done; `dead` (the board's verdict for a worker that vanished) reads as the failure
  * it is.
+ *
+ * An OPEN PR-review wait (206) reads as `Waiting for review` ahead of Queued/Done/the
+ * terminal verdicts — never running, queued or done while a human is genuinely the blocker — but
+ * behind a live run: `running` stays the loudest state, since the contract never expects the two
+ * to hold at once and a stray wait must not paint an executing task as idle. A wait that has gone
+ * terminal carries no special weight here; its reason rides beside the ordinary needs-review copy.
  */
 export function taskStatusLabel(status: TaskStatus): string {
     if (status.status === null) return '—';
     if (status.status === 'running') return status.cancelRequestedAt !== null ? 'Stopping' : 'Running';
+    if (status.waitReason !== null && status.waitTerminalReason === null) return 'Waiting for review';
     if (status.status === 'queued') return 'Queued';
-    if (status.status === 'standby') return 'Parked';
     if (status.doneAt !== null) return 'Done';
     switch (status.status) {
         case 'succeeded':
-            return 'Succeeded · Needs review';
+            return withWaitReason(status, 'Succeeded · Needs review');
         case 'failed':
         case 'dead':
-            return 'Failed · Needs review';
+            return withWaitReason(status, 'Failed · Needs review');
         case 'stopped':
-            return 'Stopped · Needs review';
+            return withWaitReason(status, 'Stopped · Needs review');
     }
 }
 
@@ -87,12 +105,17 @@ export function taskSummary(id: string, jobs: readonly Job[] | null): string | n
  * failed/dead one is red, and anything finished or declared done is solid green. A stopped task
  * stays on the plain dot — the user ended that turn themselves, and neither a failure's red nor
  * a done task's green would say that.
+ *
+ * An OPEN PR-review wait (206) holds the same grey as parked/queued, ahead of the done/failed
+ * reads — waiting is never green or red — but behind a live run, the same precedence
+ * `taskStatusLabel` applies and for the same reason.
  */
 export function taskDotClass(status: TaskStatus): string {
-    if (status.doneAt !== null || status.status === 'succeeded') return 'sidenav-dot-done';
     if (status.status === 'running')
         return status.cancelRequestedAt !== null ? 'sidenav-dot-stopping' : 'sidenav-dot-running';
-    if (status.status === 'standby' || status.status === 'queued') return 'sidenav-dot-paused';
+    if (status.waitReason !== null && status.waitTerminalReason === null) return 'sidenav-dot-paused';
+    if (status.doneAt !== null || status.status === 'succeeded') return 'sidenav-dot-done';
+    if (status.status === 'queued') return 'sidenav-dot-paused';
     if (status.status === 'failed' || status.status === 'dead') return 'sidenav-dot-failed';
     return '';
 }

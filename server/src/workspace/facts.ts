@@ -29,7 +29,10 @@ const UNKNOWN: CheckoutFacts = { branch: null, lastCommit: null, sizeBytes: null
  * and is allowed to be minutes out of date — nobody makes a decision on it.
  */
 const HEAD_TTL_MS = 30_000;
-const SIZE_TTL_MS = 5 * 60 * 1000;
+const MS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
+const SIZE_TTL_MINUTES = 5;
+const SIZE_TTL_MS = SIZE_TTL_MINUTES * SECONDS_PER_MINUTE * MS_PER_SECOND;
 
 /**
  * How long the size measurement is allowed to take before it is abandoned.
@@ -39,6 +42,9 @@ const SIZE_TTL_MS = 5 * 60 * 1000;
  * minutes is a way to accumulate them.
  */
 const SIZE_TIMEOUT_MS = 20_000;
+
+/** `du -k` reports kibibytes; this converts to bytes for the payload. */
+const BYTES_PER_KIB = 1024;
 
 interface Entry {
     facts: CheckoutFacts;
@@ -92,7 +98,7 @@ async function readSize(dir: string): Promise<number | null> {
     try {
         const { stdout } = await run('du', ['-sk', dir], { timeout: SIZE_TIMEOUT_MS });
         const kib = Number.parseInt(stdout.trim().split(/\s+/)[0] ?? '', 10);
-        return Number.isFinite(kib) ? kib * 1024 : null;
+        return Number.isFinite(kib) ? kib * BYTES_PER_KIB : null;
     } catch {
         // Timed out, or `du` is absent. Null renders as an em dash, which is the honest answer:
         // nobody measured it. Never 0, which would claim an empty checkout.

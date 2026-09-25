@@ -84,6 +84,7 @@ export interface SyntheticSession {
 }
 
 const HOUR = 3_600_000;
+const DAYS_PER_WEEK = 7;
 const DAY = 24 * HOUR;
 
 const AREAS = ['auth', 'billing', 'search', 'ingest', 'ui', 'api', 'metrics', 'cache'] as const;
@@ -92,28 +93,55 @@ const AREAS = ['auth', 'billing', 'search', 'ingest', 'ui', 'api', 'metrics', 'c
  * mulberry32. Small, fast, and — the only property that matters here — identical across Node
  * versions and platforms, which `Math.random()` seeded by anything is not.
  */
+const MULBERRY32_INCREMENT = 0x6d2b79f5;
+const MULBERRY32_SHIFT_A = 15;
+const MULBERRY32_SHIFT_B = 7;
+const MULBERRY32_OR_MASK = 61;
+const MULBERRY32_SHIFT_C = 14;
+/** 2**32 — the normalization divisor that turns the mixed uint32 into a [0, 1) float. */
+const UINT32_SPACE = 4_294_967_296;
+
 function rng(seed: number): () => number {
     let a = seed >>> 0;
     return () => {
-        a = (a + 0x6d2b79f5) >>> 0;
+        a = (a + MULBERRY32_INCREMENT) >>> 0;
         let t = a;
-        t = Math.imul(t ^ (t >>> 15), t | 1);
-        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-        return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+        t = Math.imul(t ^ (t >>> MULBERRY32_SHIFT_A), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> MULBERRY32_SHIFT_B), t | MULBERRY32_OR_MASK);
+        return ((t ^ (t >>> MULBERRY32_SHIFT_C)) >>> 0) / UINT32_SPACE;
     };
 }
 
+const WEEKS_DEFAULT = 26;
+const PER_WEEK_DEFAULT = 6;
+/** Any fixed value works; this one just happens to be the day the generator was written. */
+const SEED_DEFAULT = 20_260_824;
+
+/** How often a week generates no sessions at all — see the comment at its one call site. */
+const DEAD_WEEK_CHANCE = 0.08;
+/** The per-week count wobbles by up to this many sessions either way of `perWeek`. */
+const PER_WEEK_VARIANCE = 2;
+const WEEKDAY_MAX = 6;
+/** Sessions start during a working day, 09:00..18:00. */
+const WORKDAY_START_HOUR = 9;
+const WORKDAY_END_HOUR = 18;
+const SESSION_SPAN_HOURS_MIN = 1;
+const SESSION_SPAN_HOURS_MAX = 40;
+const SCRATCH_SESSION_COUNT = 6;
+const SCRATCH_SESSION_SPAN_MIN = 2;
+const SCRATCH_SESSION_SPAN_MAX = 20;
+
 export function generate(options: SeedOptions): SyntheticData {
     const { repo, now } = options;
-    const weeks = options.weeks ?? 26;
-    const perWeek = options.perWeek ?? 6;
-    const random = rng(options.seed ?? 20_260_824);
+    const weeks = options.weeks ?? WEEKS_DEFAULT;
+    const perWeek = options.perWeek ?? PER_WEEK_DEFAULT;
+    const random = rng(options.seed ?? SEED_DEFAULT);
 
     const pick = <T>(list: readonly T[]): T => list[Math.floor(random() * list.length)] as T;
     const between = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
     const chance = (p: number) => random() < p;
 
-    const start = new Date(now.getTime() - weeks * 7 * DAY);
+    const start = new Date(now.getTime() - weeks * DAYS_PER_WEEK * DAY);
     const sessions: SyntheticSession[] = [];
     const jobs: SyntheticJob[] = [];
     let number = 100;
@@ -125,16 +153,24 @@ export function generate(options: SeedOptions): SyntheticData {
         // The occasional dead week is deliberate: the aggregation seeds every week in the window
         // including the empty ones, and a dataset where every single week is busy never exercises
         // that.
-        const count = chance(0.08) ? 0 : Math.max(1, perWeek + between(-2, 2));
+        const count = chance(DEAD_WEEK_CHANCE)
+            ? 0
+            : Math.max(1, perWeek + between(-PER_WEEK_VARIANCE, PER_WEEK_VARIANCE));
 
         for (let i = 0; i < count; i += 1) {
             number += 1;
-            const createdAt = new Date(start.getTime() + week * 7 * DAY + between(0, 6) * DAY + between(9, 18) * HOUR);
+            const createdAt = new Date(
+                start.getTime() +
+                    week * DAYS_PER_WEEK * DAY +
+                    between(0, WEEKDAY_MAX) * DAY +
+                    between(WORKDAY_START_HOUR, WORKDAY_END_HOUR) * HOUR
+            );
             if (createdAt >= now) continue;
 
             const area = pick(AREAS);
             const branch = `${pick(['feat', 'fix', 'chore'])}/${area}-${number}`;
-            const s = session(repo, branch, createdAt, between(1, 40), random, now);
+            const spanHours = between(SESSION_SPAN_HOURS_MIN, SESSION_SPAN_HOURS_MAX);
+            const s = session({ repo, branch, createdAt, spanHours, random, now });
             sessions.push(s);
             attribute(jobs, s, random);
         }
@@ -143,13 +179,24 @@ export function generate(options: SeedOptions): SyntheticData {
     // A few sessions on scratch branches — work that reached no shared branch, which is a real
     // state and reads as a bug when it is always empty. None of these get board rows: sessions
     // nobody queued are the unattributed figure the dashboard must keep honest.
-    for (let i = 0; i < 6; i += 1) {
-        const at = new Date(now.getTime() - between(1, weeks * 7) * DAY);
-        sessions.push(session(repo, `spike/${pick(AREAS)}-${i}`, at, between(2, 20), random, now));
+    for (let i = 0; i < SCRATCH_SESSION_COUNT; i += 1) {
+        const at = new Date(now.getTime() - between(1, weeks * DAYS_PER_WEEK) * DAY);
+        const spanHours = between(SCRATCH_SESSION_SPAN_MIN, SCRATCH_SESSION_SPAN_MAX);
+        sessions.push(session({ repo, branch: `spike/${pick(AREAS)}-${i}`, createdAt: at, spanHours, random, now }));
     }
 
     return { sessions, jobs };
 }
+
+/** How often a generated session gets a board thread at all. */
+const ATTRIBUTION_CHANCE = 0.75;
+/** How often a job turn came back measured, versus a killed run or a failed read. */
+const TURNS_MEASURED_CHANCE = 0.7;
+const TURNS_MAX = 60;
+/** How often an attributed session also gets a follow-up turn on the same thread. */
+const FOLLOW_UP_CHANCE = 0.25;
+/** The synthetic sha is truncated to this length everywhere a job/session id is built from it. */
+const ID_LENGTH = 32;
 
 /**
  * Gives a session a board thread some of the time: a root job row attributed to a synthetic
@@ -158,11 +205,11 @@ export function generate(options: SeedOptions): SyntheticData {
  */
 function attribute(jobs: SyntheticJob[], s: SyntheticSession, random: () => number): void {
     const chance = (p: number) => random() < p;
-    if (!chance(0.75)) return;
+    if (!chance(ATTRIBUTION_CHANCE)) return;
 
     const member = SYNTHETIC_MEMBERS[Math.floor(random() * SYNTHETIC_MEMBERS.length)]!;
-    const rootId = sha(`job:${s.sessionId}`).slice(0, 32);
-    const turns = () => (chance(0.7) ? Math.floor(random() * 60) + 1 : null);
+    const rootId = sha(`job:${s.sessionId}`).slice(0, ID_LENGTH);
+    const turns = () => (chance(TURNS_MEASURED_CHANCE) ? Math.floor(random() * TURNS_MAX) + 1 : null);
     jobs.push({
         id: rootId,
         rootJobId: rootId,
@@ -174,9 +221,9 @@ function attribute(jobs: SyntheticJob[], s: SyntheticSession, random: () => numb
     });
     // The occasional follow-up: one more job turn on the same thread and session, its own
     // measurement — sometimes missing where the root's was not.
-    if (chance(0.25)) {
+    if (chance(FOLLOW_UP_CHANCE)) {
         jobs.push({
-            id: sha(`job:${s.sessionId}:follow-up`).slice(0, 32),
+            id: sha(`job:${s.sessionId}:follow-up`).slice(0, ID_LENGTH),
             rootJobId: rootId,
             parentJobId: rootId,
             createdBy: member.login,
@@ -187,61 +234,111 @@ function attribute(jobs: SyntheticJob[], s: SyntheticSession, random: () => numb
     }
 }
 
-function session(
-    repo: string,
-    branch: string,
-    createdAt: Date,
-    spanHours: number,
-    random: () => number,
-    now: Date
-): SyntheticSession {
+interface SessionOptions {
+    readonly repo: string;
+    readonly branch: string;
+    readonly createdAt: Date;
+    readonly spanHours: number;
+    readonly random: () => number;
+    readonly now: Date;
+}
+
+const LOOKBACK_HOURS_MIN = 1;
+const LOOKBACK_HOURS_MAX = 6;
+const ACTIVE_SECONDS_MIN = 600;
+const ACTIVE_SECONDS_MAX = 9000;
+const ACTIVE_MULTIPLIER_MIN = 2;
+const ACTIVE_MULTIPLIER_MAX = 5;
+const MS_PER_SECOND = 1000;
+const INPUT_TOKENS_MIN = 4_000;
+const INPUT_TOKENS_MAX = 60_000;
+const OUTPUT_TOKENS_MIN = 1_000;
+const OUTPUT_TOKENS_MAX = 18_000;
+/** Cache reads dwarf fresh input on a long conversation — this is the multiplier that does it. */
+const CACHE_READ_MULTIPLIER_MIN = 8;
+const CACHE_READ_MULTIPLIER_MAX = 30;
+const CACHE_CREATION_MIN = 2_000;
+const CACHE_CREATION_MAX = 40_000;
+const LINES_ADDED_MIN = 10;
+const LINES_ADDED_MAX = 700;
+const LINES_REMOVED_MIN = 2;
+const LINES_REMOVED_MAX = 300;
+const EDITS_ACCEPT_MIN = 2;
+const EDITS_ACCEPT_MAX = 60;
+const EDITS_REJECT_MIN = 0;
+const EDITS_REJECT_MAX = 12;
+/** Sampled roughly every 20s, so the count follows the span rather than being invented. */
+const SAMPLE_INTERVAL_MS = 20_000;
+
+function session(options: SessionOptions): SyntheticSession {
+    const { repo, branch, createdAt, spanHours, random, now } = options;
     const between = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
-    const from = new Date(createdAt.getTime() - between(1, 6) * HOUR);
-    const activeSeconds = between(600, 9000);
+    const from = new Date(createdAt.getTime() - between(LOOKBACK_HOURS_MIN, LOOKBACK_HOURS_MAX) * HOUR);
+    const activeSeconds = between(ACTIVE_SECONDS_MIN, ACTIVE_SECONDS_MAX);
     // Capped at `now`: a session that claims to be still running after the dataset's cutoff
     // would hand its follow-up rows a future created_at, which every range filter then
     // rightly excludes — the task would keep its session but lose its job turns.
     const to = new Date(
-        Math.min(from.getTime() + Math.min(spanHours * HOUR, activeSeconds * 1000 * between(2, 5)), now.getTime())
+        Math.min(
+            from.getTime() +
+                Math.min(
+                    spanHours * HOUR,
+                    activeSeconds * MS_PER_SECOND * between(ACTIVE_MULTIPLIER_MIN, ACTIVE_MULTIPLIER_MAX)
+                ),
+            now.getTime()
+        )
     );
-    const input = between(4_000, 60_000);
+    const input = between(INPUT_TOKENS_MIN, INPUT_TOKENS_MAX);
 
     return {
-        sessionId: sha(`${repo}:${branch}:${createdAt.toISOString()}`).slice(0, 32),
+        sessionId: sha(`${repo}:${branch}:${createdAt.toISOString()}`).slice(0, ID_LENGTH),
         repo,
         branch,
         firstSeen: from.toISOString(),
         lastSeen: to.toISOString(),
-        // Sampled roughly every 20s, so the count follows the span rather than being invented.
-        samples: Math.max(1, Math.round((to.getTime() - from.getTime()) / 20_000)),
+        samples: Math.max(1, Math.round((to.getTime() - from.getTime()) / SAMPLE_INTERVAL_MS)),
         fields: {
             tokens_input: input,
-            tokens_output: between(1_000, 18_000),
-            // Cache reads dwarf fresh input on a long conversation, which is what makes the token
-            // panel's split worth drawing at all.
-            tokens_cacheRead: input * between(8, 30),
-            tokens_cacheCreation: between(2_000, 40_000),
-            lines_added: between(10, 700),
-            lines_removed: between(2, 300),
-            edits_accept: between(2, 60),
-            edits_reject: between(0, 12),
+            tokens_output: between(OUTPUT_TOKENS_MIN, OUTPUT_TOKENS_MAX),
+            tokens_cacheRead: input * between(CACHE_READ_MULTIPLIER_MIN, CACHE_READ_MULTIPLIER_MAX),
+            tokens_cacheCreation: between(CACHE_CREATION_MIN, CACHE_CREATION_MAX),
+            lines_added: between(LINES_ADDED_MIN, LINES_ADDED_MAX),
+            lines_removed: between(LINES_REMOVED_MIN, LINES_REMOVED_MAX),
+            edits_accept: between(EDITS_ACCEPT_MIN, EDITS_ACCEPT_MAX),
+            edits_reject: between(EDITS_REJECT_MIN, EDITS_REJECT_MAX),
             active_seconds: activeSeconds,
         },
     };
 }
 
+const SHA_SEED_H1 = 0xdeadbeef;
+const SHA_SEED_H2 = 0x41c6ce57;
+const SHA_MIX_H1 = 2_654_435_761;
+const SHA_MIX_H2 = 1_597_334_677;
+const SHA_FINAL_MIX_1 = 2_246_822_507;
+const SHA_FINAL_MIX_2 = 3_266_489_909;
+const SHA_FINAL_SHIFT_16 = 16;
+const SHA_FINAL_SHIFT_13 = 13;
+const HEX_RADIX = 16;
+const HEX_WIDTH = 8;
+const SHA_OUTPUT_LENGTH = 40;
+
 /** Not cryptographic and never claims to be — it only has to be stable and look like a sha. */
 function sha(input: string): string {
-    let h1 = 0xdeadbeef;
-    let h2 = 0x41c6ce57;
+    let h1 = SHA_SEED_H1;
+    let h2 = SHA_SEED_H2;
     for (let i = 0; i < input.length; i += 1) {
         const ch = input.charCodeAt(i);
-        h1 = Math.imul(h1 ^ ch, 2_654_435_761);
-        h2 = Math.imul(h2 ^ ch, 1_597_334_677);
+        h1 = Math.imul(h1 ^ ch, SHA_MIX_H1);
+        h2 = Math.imul(h2 ^ ch, SHA_MIX_H2);
     }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2_246_822_507) ^ Math.imul(h2 ^ (h2 >>> 13), 3_266_489_909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2_246_822_507) ^ Math.imul(h1 ^ (h1 >>> 13), 3_266_489_909);
-    const a = (h2 >>> 0).toString(16).padStart(8, '0');
-    const b = (h1 >>> 0).toString(16).padStart(8, '0');
-    return `${a}${b}${a}${b}${a}`.slice(0, 40);
+    h1 =
+        Math.imul(h1 ^ (h1 >>> SHA_FINAL_SHIFT_16), SHA_FINAL_MIX_1) ^
+        Math.imul(h2 ^ (h2 >>> SHA_FINAL_SHIFT_13), SHA_FINAL_MIX_2);
+    h2 =
+        Math.imul(h2 ^ (h2 >>> SHA_FINAL_SHIFT_16), SHA_FINAL_MIX_1) ^
+        Math.imul(h1 ^ (h1 >>> SHA_FINAL_SHIFT_13), SHA_FINAL_MIX_2);
+    const a = (h2 >>> 0).toString(HEX_RADIX).padStart(HEX_WIDTH, '0');
+    const b = (h1 >>> 0).toString(HEX_RADIX).padStart(HEX_WIDTH, '0');
+    return `${a}${b}${a}${b}${a}`.slice(0, SHA_OUTPUT_LENGTH);
 }

@@ -10,18 +10,26 @@
 # the local cluster with the stub executor image, queues a job, and watches it come back succeeded
 # — real pods, no Claude, no credential.
 #
-# Everything it creates it removes: one helm release, its claims.
+# Everything it creates it removes: two helm releases — the app and the local state it runs against
+# (charts/factory-local-state: the database and the workspaces claim) — and the state's claims.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 RELEASE="factory-k8s-test-$(date +%s)"
+# The app chart deploys no database; locally the state chart stands in for the managed one. Its
+# object names are its release name plus a fixed suffix, so the app release is pointed at them the
+# same way values-local.yaml points `dev` at `factory-state`.
+STATE_RELEASE="$RELEASE-state"
+STATE_SETS=(
+    --set "database.url=postgres://factory:factory@$STATE_RELEASE-timescale:5432/factory_dev"
+    --set "workspaces.existingClaim=$STATE_RELEASE-workspaces"
+)
 NAMESPACE="${NAMESPACE:-default}"
 DASH_IMAGE="${DASH_IMAGE:-factory-ai}"
 DRIVER_IMAGE="${DRIVER_IMAGE:-factory-driver}"
 STUB_IMAGE="${STUB_IMAGE:-echo-executor}"
-COLLECTOR_IMAGE="${COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib}"
 
 pass=0
 fail=0
@@ -54,15 +62,20 @@ expect_not_contains() { # expect_not_contains <name> <haystack> <needle>
 cleanup() {
     if [ "${installed:-}" = '1' ]; then
         helm uninstall "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
-        kubectl delete pvc -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
         # The runner Jobs were created at runtime by the driver, not by the release, so the
         # uninstall leaves them — and their pods — behind. On this test cluster, every Job carrying
-        # the factory.job label is one of ours.
+        # the factory.job label is one of ours. They go BEFORE the claims: a runner pod that still
+        # mounts the workspaces claim holds it under pvc-protection, and a waiting claim delete
+        # issued first blocks forever on a pod whose delete it never reaches.
         kubectl delete jobs -l factory.job -n "$NAMESPACE" >/dev/null 2>&1
+    fi
+    if [ "${state_installed:-}" = '1' ]; then
+        helm uninstall "$STATE_RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
+        kubectl delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" -n "$NAMESPACE" --wait=false >/dev/null 2>&1
         # Block until the claims are really gone, not just terminating: the next run of this script
-        # builds its own release, and an RWO volume still attached to a dying pod would hold the
+        # builds its own releases, and an RWO volume still attached to a dying pod would hold the
         # fresh dashboard pod in Pending for its whole timeout.
-        kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$RELEASE" \
+        kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" \
             -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     fi
     rm -rf "$work"
@@ -78,11 +91,18 @@ command -v helm >/dev/null || {
 
 echo '# chart'
 
-helm lint charts/factory >/dev/null 2>&1 && ok 'helm lint passes' || bad 'helm lint passes' 'lint failed'
+# Linted with the local profile: the app chart's defaults carry no database.url, which is required.
+helm lint charts/factory -f charts/factory/values-local.yaml >/dev/null 2>&1 && ok 'helm lint passes' ||
+    bad 'helm lint passes' 'lint failed'
+helm lint charts/factory-local-state >/dev/null 2>&1 && ok 'helm lint passes on the local state chart' ||
+    bad 'helm lint passes on the local state chart' 'lint failed'
 
 # Rendered with the local profile, which is the shape the cluster phase installs: offline auth,
-# ReadWriteOnce claim, stub executor.
-render() { helm template "$RELEASE" charts/factory -f charts/factory/values-local.yaml --namespace "$NAMESPACE"; }
+# the state release's database and claim, stub executor.
+render() {
+    helm template "$RELEASE" charts/factory -f charts/factory/values-local.yaml "${STATE_SETS[@]}" \
+        --namespace "$NAMESPACE"
+}
 render >"$work/rendered.yaml" || {
     echo 'test-k8s: helm template failed'
     exit 1
@@ -119,7 +139,7 @@ expect_not_contains 'the collector config stays inside its block scalar' "$(cat 
 # rule — the executor reading its credentials from RUNNER_CREDENTIALS_SECRET — is pinned in
 # driver/test/k8s.test.ts, where the runner spec lives.)
 credentials_clean=1
-for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN; do
+for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN DATABASE_URL; do
     next="$(grep -A1 -- "- name: $cred\$" "$work/rendered.yaml" | sed -n '2p' | tr -d ' ')"
     if [ "$next" = 'valueFrom:' ]; then
         continue
@@ -168,28 +188,28 @@ expect_contains     'the driver role reads the runner vitals' "$rbac" \
       verbs: ['get']"
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
-# The dashboard writes checkouts into the same claim the runners mount.
+# The dashboard writes checkouts into the same claim the runners mount — the state release's, so an
+# app reinstall keeps them — and the app release creates no claim of its own.
 expect_contains 'the dashboard mounts the workspaces claim' "$(cat "$work/rendered.yaml")" \
-    "claimName: $RELEASE-factory-workspaces"
+    "claimName: $STATE_RELEASE-workspaces"
 expect_contains 'the driver is told that claim name'        "$(cat "$work/rendered.yaml")" \
-    "value: \"$RELEASE-factory-workspaces\""
+    "value: \"$STATE_RELEASE-workspaces\""
+expect_not_contains 'the app release creates no claim' "$(cat "$work/rendered.yaml")" \
+    'kind: PersistentVolumeClaim'
 
 # The service selects the DASHBOARD and only the dashboard. The shared instance labels alone also
-# match the driver and timescale pods, and a port-forward landing on the driver fails on a missing
+# match the driver pod, and a port-forward landing on the driver fails on a missing
 # named port — or worse, on a probe against the wrong container.
 service_selector="$(awk '/^# Source: factory\/templates\/service.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains    'the service selects the dashboard component' "$service_selector" 'component: dashboard'
 expect_not_contains 'the service never selects the driver'       "$service_selector" 'component: driver'
 
-# The DRIVER has its own headless Service — the runner's DNS name for the ad-hoc gate endpoint.
-# One driver per release: the board secret is the deployment's driver credential, not an org
-# binding, so there is exactly one Deployment and one gate Service.
-driver_service="$(awk '/^# Source: factory\/templates\/driver-service.yaml/,/^---/' "$work/rendered.yaml")"
-expect_contains 'the driver service is headless'        "$driver_service" 'clusterIP: None'
-expect_contains 'the driver service selects the driver' "$driver_service" 'component: driver'
-expect_not_contains 'the driver service is not org-suffixed' "$driver_service" 'app.kubernetes.io/org:'
-expect_contains 'the runner is told the driver service name' "$(cat "$work/rendered.yaml")" \
-    "value: http://$RELEASE-factory-driver"
+# The gate endpoint is advertised at the driver POD's own IP: a Service name resolves to every
+# driver replica — and, mid-rollout, to the old and new pod both — while the ephemeral port the
+# driver appends is open on exactly one of them.
+expect_contains 'the driver learns its pod IP'             "$(cat "$work/rendered.yaml")" 'fieldPath: status.podIP'
+expect_contains 'the runner is told the driver pod IP'     "$(cat "$work/rendered.yaml")" 'value: http://$(POD_IP)'
+expect_not_contains 'the chart ships no headless driver Service' "$(cat "$work/rendered.yaml")" 'clusterIP: None'
 # The Secret carries the one shared key: the dashboard validates it, the driver presents it.
 expect_contains 'the secret renders the shared board secret key' "$(cat "$work/rendered.yaml")" \
     'job-board-token:'
@@ -216,16 +236,171 @@ else
     ok 'the driver forwards no ingest token'
 fi
 
-# The dashboard pod must not start its server until the in-chart database accepts connections: the
-# server's migration retry gives up after ~45s and then serves every DB-backed route as a 500
-# forever — a state no amount of client-side polling recovers. On a cold cluster the database
-# image pulls for minutes, so the wait has to live in the pod spec, as an init container running
-# the same pg_isready the database pod's readiness probe runs.
+# The dashboard pod must not start its server until the database accepts connections: the server's
+# migration retry gives up after ~45s and then serves every DB-backed route as a 500 forever — a
+# state no amount of client-side polling recovers. On a cold cluster the database image pulls for
+# minutes, and a managed database can be mid-failover, so the wait has to live in the pod spec, as
+# an init container running pg_isready against the very URL the server reads.
 dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains 'the dashboard waits for the database before starting' "$dashboard" \
     'wait-for-database'
 expect_contains 'the wait is an init container, not a sidecar' "$dashboard" 'initContainers:'
-expect_contains 'the wait is the database readiness predicate' "$dashboard" 'pg_isready'
+expect_contains 'the wait probes the URL the server reads' "$dashboard" 'pg_isready -q -d "$DATABASE_URL"'
+
+# Production runs no database in the cluster: the app chart has no database objects to switch on,
+# and without a URL it refuses to render rather than boot a server with nowhere to write.
+expect_not_contains 'the app chart deploys no database' "$(cat "$work/rendered.yaml")" 'component: timescale'
+if helm template "$RELEASE" charts/factory >/dev/null 2>&1; then
+    bad 'the app chart refuses to render without database.url' 'helm template succeeded with no database.url'
+else
+    ok 'the app chart refuses to render without database.url'
+fi
+
+# The state chart: one database writer on one claim, so its Deployment recreates rather than rolls.
+state="$(helm template "$STATE_RELEASE" charts/factory-local-state --namespace "$NAMESPACE")"
+expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-timescale"
+expect_contains 'the state chart names the workspaces claim'  "$state" "name: $STATE_RELEASE-workspaces"
+expect_contains 'the state database never runs two writers'   "$state" 'type: Recreate'
+
+# --- The review hardening: every item pinned so a revert fails here, not in production ---------
+
+# A complete github-mode value set: the chart's own defaults, which is what production renders.
+SECRET32="$(printf '%032d' 0)"
+GH_SETS=(
+    --set database.url=postgres://u:p@db:5432/factory
+    --set auth.publicUrl=https://factory.example
+    --set auth.oauthClientId=client
+    --set secret.oauthClientSecret=secret
+    --set "secret.sessionSecret=$SECRET32"
+    --set "secret.jobBoardToken=$SECRET32"
+    --set github.appId=1
+    --set github.appPrivateKey=pem
+)
+gh_render() { helm template "$RELEASE" charts/factory "${GH_SETS[@]}" --namespace "$NAMESPACE" "$@" 2>&1; }
+gh="$(gh_render)"
+
+# Images carry a tag: the chart's appVersion by default, so an upgrade to a new build changes the
+# pod spec and rolls the pods. The collector is pinned — its config keys move between releases.
+app_version="$(awk '/^appVersion:/ { gsub(/[^0-9.]/, "", $2); print $2 }' charts/factory/Chart.yaml)"
+expect_contains 'the dashboard image defaults to the appVersion tag' "$gh" "image: factory-ai:$app_version"
+expect_contains 'the driver image defaults to the appVersion tag'    "$gh" "image: factory-driver:$app_version"
+expect_not_contains 'no chart image is untagged or :latest'           "$gh" 'opentelemetry-collector-contrib:latest'
+COLLECTOR_IMAGE="$(awk '$1 == "image:" && /opentelemetry-collector-contrib/ { print $2; exit }' "$work/rendered.yaml")"
+case "$COLLECTOR_IMAGE" in
+*:[0-9]*) ok 'the collector image is pinned to a version' ;;
+*) bad 'the collector image is pinned to a version' "got '$COLLECTOR_IMAGE'" ;;
+esac
+
+# A changed Secret or collector config rolls the pods that read it at start.
+expect_contains 'pods roll on a Secret change'        "$gh" 'checksum/secret:'
+expect_contains 'the collector rolls on a config change' "$gh" 'checksum/config:'
+
+# One dashboard, replaced not rolled: an in-process workspace writer, unlocked migrations, and an
+# RWO claim that cannot attach twice.
+gh_dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$gh")"
+expect_contains 'the dashboard runs exactly one replica' "$gh_dashboard" 'replicas: 1'
+expect_contains 'the dashboard is recreated, never rolled' "$gh_dashboard" 'type: Recreate'
+# Readiness is the migrations; liveness is the process. A database outage must not restart-loop.
+expect_contains 'the dashboard starts on /api/ready'  "$gh_dashboard" 'startupProbe:'
+expect_contains 'readiness reads the migrations'      "$gh_dashboard" 'path: /api/ready'
+expect_contains 'liveness reads the process only'     "$gh_dashboard" 'path: /api/health'
+expect_contains 'the database wait gives up visibly'  "$gh_dashboard" 'WAIT_TIMEOUT_SECONDS'
+
+# Every chart pod runs unprivileged on a read-only root, and only the driver holds a token.
+[ "$(grep -c 'runAsNonRoot: true' <<<"$gh")" -ge 3 ] && ok 'every chart pod runs as non-root' ||
+    bad 'every chart pod runs as non-root' "$(grep -c 'runAsNonRoot: true' <<<"$gh") of 3"
+[ "$(grep -c 'readOnlyRootFilesystem: true' <<<"$gh")" -ge 4 ] && ok 'every chart container has a read-only root' ||
+    bad 'every chart container has a read-only root' "$(grep -c 'readOnlyRootFilesystem: true' <<<"$gh") of 4"
+[ "$(grep -c 'automountServiceAccountToken: false' <<<"$gh")" -ge 2 ] &&
+    ok 'the dashboard and collector mount no ServiceAccount token' ||
+    bad 'the dashboard and collector mount no ServiceAccount token' 'fewer than 2'
+gh_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$gh")"
+expect_contains 'the driver has a liveness probe'      "$gh_driver" 'livenessProbe:'
+expect_contains 'the driver writes the heartbeat it reads' "$gh_driver" 'DRIVER_HEARTBEAT_FILE'
+expect_contains 'the driver drains before SIGKILL'     "$gh_driver" 'terminationGracePeriodSeconds: 600'
+
+# Selectors hold only name/instance/component: they are immutable, so a chart-version label in
+# one would make every upgrade an apiserver refusal.
+selectors="$(grep -A4 'matchLabels:' <<<"$gh_dashboard$gh_driver")"
+expect_not_contains 'selectors carry no version label'  "$selectors" 'app.kubernetes.io/version'
+expect_not_contains 'selectors carry no managed-by'     "$selectors" 'managed-by'
+
+# The checkouts survive `helm uninstall` when the chart created their claim.
+expect_contains 'the chart-created claim is kept on uninstall' "$gh" 'helm.sh/resource-policy: keep'
+
+# The collector always sends the ingest header by reference: with secret.existingSecret the token
+# is in the Secret while telemetry.ingestToken is empty, and a header gated on the value would
+# leave an authenticated board answering every export 401.
+byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set secret.existingSecret=mine \
+    --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 2>&1)"
+expect_contains 'the collector sends the ingest header with a managed Secret' "$byo" \
+    'X-Factory-Ingest-Token: ${env:INGEST_TOKEN}'
+# Every key but database-url is optional, so a managed Secret carries only what its mode needs.
+[ "$(grep -c 'optional: true' <<<"$byo")" -ge 8 ] && ok 'managed-Secret keys are optional' ||
+    bad 'managed-Secret keys are optional' "$(grep -c 'optional: true' <<<"$byo") optional refs"
+
+# Render-time refusals: half-configured values fail here, not as a crash loop.
+refuses() { # refuses <name> <needle> <helm args...>
+    local name="$1" needle="$2"
+    shift 2
+    local out
+    if out="$(helm template "$RELEASE" charts/factory "$@" 2>&1)"; then
+        bad "$name" 'helm template succeeded'
+    else
+        expect_contains "$name" "$out" "$needle"
+    fi
+}
+refuses 'github mode refuses a missing publicUrl' 'auth.publicUrl' "${GH_SETS[@]}" --set auth.publicUrl=
+refuses 'github mode refuses a short session secret' 'secret.sessionSecret' "${GH_SETS[@]}" --set secret.sessionSecret=short
+refuses 'github mode refuses a missing board token' 'secret.jobBoardToken' "${GH_SETS[@]}" --set secret.jobBoardToken=
+refuses 'a missing App id is refused unless offline' 'github.appId' "${GH_SETS[@]}" --set github.appId=
+refuses 'an open board needs the public-bind hatch' 'allowPublicBind' "${GH_SETS[@]}" --set auth.mode=none
+refuses 'no Secret at all is refused' 'secret.existingSecret' "${GH_SETS[@]}" --set secret.create=false
+
+# Names stay valid DNS labels however long the release name: truncation leaves room for suffixes.
+long="$(helm template "release-name-that-is-deliberately-far-too-long-for-a-dns-label" charts/factory \
+    "${GH_SETS[@]}" 2>&1)"
+too_long="$(grep -E '^    name: ' <<<"$long" | awk '{ if (length($2) > 63) print $2 }' | grep -v 'admission' || true)"
+[ -z "$too_long" ] && ok 'every object name fits a DNS label' || bad 'every object name fits a DNS label' "$too_long"
+
+# Pull secrets reach the chart's pods and every pod the driver specs.
+pulled="$(gh_render --set 'imagePullSecrets={regcred}')"
+expect_contains 'chart pods name the pull secret'      "$pulled" 'name: "regcred"'
+expect_contains 'the driver forwards the pull secret'  "$pulled" 'value: "regcred"'
+
+# The runner Secret has a key for every forwarded name, valued or not.
+runner_secret="$(gh_render --set-string "runner.env=ONE\,TWO" --set runner.credentials.ONE=x)"
+expect_contains 'the runner Secret keys every forwarded name' "$runner_secret" 'TWO: ""'
+
+# Isolation. The Role cannot scope by name, so an admission policy bound to the driver's identity
+# does: pod specs may reference only per-attempt Secrets, deletes reach only factory.job objects.
+admission="$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/' "$work/rendered.yaml")"
+expect_contains 'the admission policy binds the driver identity' "$admission" \
+    "system:serviceaccount:$NAMESPACE:$RELEASE-factory-driver"
+expect_contains 'the admission policy names the per-attempt Secret pattern' "$admission" \
+    '^factory-(job|sync|publish|helper|gate)-[a-z0-9-]+-env$'
+expect_contains 'the admission policy fences deletes by label' "$admission" "'factory.job' in variables.target.metadata.labels"
+expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
+expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
+expect_contains 'the admission policy scopes workspace mounts to a member subPath' "$admission" \
+    "m.subPath.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\$')"
+expect_contains 'the admission policy refuses subPathExpr on workspace mounts' "$admission" '!has(m.subPathExpr)'
+# A pull secret is for the kubelet only: it may appear under imagePullSecrets, never where a
+# container can read it (volumes, env, envFrom).
+pulled="$(gh_render --set 'imagePullSecrets={probe-regcred}' |
+    awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/')"
+expect_contains 'the admission policy lets pods pull with a configured pull secret' \
+    "$(grep -A1 'name: pullSecrets' <<<"$pulled")" 'probe-regcred'
+expect_not_contains 'the admission policy never lets a container read a pull secret' \
+    "$(grep -A1 'name: allowed' <<<"$pulled")" 'probe-regcred'
+netpol="$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' "$work/rendered.yaml")"
+expect_contains 'the runner policy selects this release only' "$netpol" "app.kubernetes.io/instance: $RELEASE"
+expect_contains 'the runner policy blocks the metadata endpoint' "$netpol" '169.254.0.0/16'
+expect_contains 'the runner policy is both directions' "$netpol" 'policyTypes: [Ingress, Egress]'
+expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpol" \
+    $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
+expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
+expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
 
 # --- Phase two: the cluster -------------------------------------------------------------------
 
@@ -341,12 +516,17 @@ for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE" "$COLLECTOR_IMAGE"; do
     }
 done
 
-echo "installing the release $RELEASE"
-helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml \
-    --set "dashboard.image=$DASH_IMAGE" \
-    --set "driver.image=$DRIVER_IMAGE" \
-    --set "driver.executorImage=$STUB_IMAGE" \
-    --set "collector.image=$COLLECTOR_IMAGE" \
+echo "installing the releases $STATE_RELEASE and $RELEASE"
+helm install "$STATE_RELEASE" charts/factory-local-state -n "$NAMESPACE" >/dev/null || {
+    echo 'test-k8s: helm install of the state chart failed'
+    exit 1
+}
+state_installed=1
+helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml "${STATE_SETS[@]}" \
+    --set "dashboard.image.repository=$DASH_IMAGE" \
+    --set "driver.image.repository=$DRIVER_IMAGE" \
+    --set "driver.executorImages.claudeCode=$STUB_IMAGE" \
+    --set "driver.executorImages.opencode=$STUB_IMAGE" \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1
@@ -360,7 +540,7 @@ installed=1
 # queueing before it is available fails every POST no matter how long the queue step polls.
 kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
-    "deployment/$RELEASE-factory-timescale" "deployment/$RELEASE-factory-collector" \
+    "deployment/$STATE_RELEASE-timescale" "deployment/$RELEASE-factory-collector" \
     -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
@@ -387,6 +567,25 @@ done
     exit 1
 }
 
+# A task runs only under an executor from its author's own list — there is no global fallback, and
+# a claim whose label matches nothing is failed by the driver — so the fresh database needs one
+# before anything is queued. The PUT replaces the whole list, so repeating it is harmless: it
+# retries through the same migration grace the queue loop below allows.
+configured=""
+for _ in $(seq 1 60); do
+    [ "$(node -e '
+fetch(process.argv[1], { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }] }) })
+    .then((r) => process.stdout.write(String(r.status)))
+    .catch(() => process.stdout.write("000"));
+' "$BASE/api/workspace/executors")" = '200' ] && {
+        configured=1
+        break
+    }
+    sleep 1
+done
+[ -n "$configured" ] && ok 'the board stores the task executor' ||
+    bad 'the board stores the task executor' 'PUT /api/workspace/executors never answered 200'
+
 # The wait above covers the cold case (database image still pulling); this poll covers the
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
 # still land inside it. The server adopts the database on the attempt that works; the script
@@ -407,7 +606,7 @@ reconcile=0
 for _ in $(seq 1 60); do
     if [ "$reconcile" = '0' ]; then
         response="$(node -e '
-fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster" }) })
+fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster", executor: "claude" }) })
     .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id); })
     .catch(() => process.stdout.write("000|"));
 ' "$BASE/api/jobs")"
@@ -469,6 +668,47 @@ expect_contains 'the prompt reached the pod' "$result" 'hello from the cluster'
 # factory.job label the spec stamps on it (the release labels belong to the chart's objects).
 job_object="$(kubectl get jobs -l factory.job -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 [ "${job_object:-0}" -ge 1 ] && ok 'a runner Job object exists' || bad 'a runner Job object exists' "none found"
+
+# The admission policy, against the real apiserver. The job above proves it admits what the driver
+# specs; these prove it refuses what the Role alone would allow. Server-side dry runs as the
+# driver's own ServiceAccount: admission runs in full, nothing is persisted.
+DRIVER_SA="system:serviceaccount:$NAMESPACE:$RELEASE-factory-driver"
+probe_pod() { # probe_pod <name> <extra spec lines> — a pod otherwise shaped like the driver's own
+    cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+    name: admission-probe-$1
+    labels: {factory.job: admission-probe}
+spec:
+    automountServiceAccountToken: false
+    restartPolicy: Never
+$2
+EOF
+}
+as_driver() { kubectl create --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server -f - 2>&1; }
+
+allowed="$(probe_pod ok '    containers: [{name: c, image: alpine, envFrom: [{secretRef: {name: factory-job-probe-env}}]}]' | as_driver)"
+expect_contains 'the policy admits a pod reading a per-attempt Secret' "$allowed" 'created (server dry run)'
+stolen="$(probe_pod steal "    containers: [{name: c, image: alpine, envFrom: [{secretRef: {name: $RELEASE-factory-dashboard}}]}]" | as_driver)"
+expect_contains 'the policy refuses a pod reading the dashboard Secret' "$stolen" 'may read only its own per-attempt Secrets'
+mounted="$(probe_pod mount "    containers: [{name: c, image: alpine}]
+    volumes: [{name: s, secret: {secretName: $RELEASE-factory-dashboard}}]" | as_driver)"
+expect_contains 'the policy refuses a pod mounting the dashboard Secret' "$mounted" 'may mount only the workspaces claim'
+host="$(probe_pod host '    containers: [{name: c, image: alpine}]
+    volumes: [{name: h, hostPath: {path: /}}]' | as_driver)"
+expect_contains 'the policy refuses a hostPath pod' "$host" 'may mount only the workspaces claim'
+member="$(probe_pod member "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w, subPath: probe/44444444-4444-4444-8444-444444444444}]}]
+    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
+expect_contains 'the policy admits a pod mounting a member workspace subPath' "$member" 'created (server dry run)'
+root="$(probe_pod root "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w}]}]
+    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
+expect_contains 'the policy refuses a pod mounting the workspaces claim root' "$root" 'only at a member subPath'
+expr="$(probe_pod expr "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w, subPathExpr: '\$(HOME)'}]}]
+    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
+expect_contains 'the policy refuses a subPathExpr workspace mount' "$expr" 'only at a member subPath'
+deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
+expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
 
 kill "$pf_pid" 2>/dev/null
 

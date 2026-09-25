@@ -29,7 +29,7 @@ check() { # check <name> <expected substring> <docker args...>
 }
 
 echo "building $IMAGE"
-docker build -q -t "$IMAGE" "$HERE" >/dev/null || { echo "build failed"; exit 1; }
+docker build -q --build-context skills="$HERE/../skills" -t "$IMAGE" "$HERE" >/dev/null || { echo "build failed"; exit 1; }
 
 run() { docker run --rm -v "$REPO:/workspace" "$@"; }
 
@@ -46,45 +46,62 @@ check 'honours WORKDIR'        '/workspace/server' run -e WORKDIR=/workspace/ser
     'cd "$WORKDIR" && pwd'
 check 'rejects bad WORKDIR'    'does not exist'   run -e WORKDIR=/nope "$IMAGE" --version
 
-# Both prompts an unattended container cannot answer. Onboarding is settled at build time; trust is
-# opt-in per run, so the default must still be false.
+# A prompt an unattended container cannot answer, settled at build time.
 check 'onboarding done'   'true'  run --entrypoint node "$IMAGE" -e \
     'console.log(require(process.env.CLAUDE_CONFIG_DIR + "/.claude.json").hasCompletedOnboarding)'
-check 'trust is opt-in'   'false' run --entrypoint sh "$IMAGE" -c \
-    'claude-executor --version >/dev/null; node -e "const c=require(process.env.CLAUDE_CONFIG_DIR+\"/.claude.json\"); console.log(Boolean((c.projects||{})[\"/workspace\"]))"'
-check 'TRUST_WORKDIR opts in' 'true' run -e TRUST_WORKDIR=1 --entrypoint sh "$IMAGE" -c \
-    'claude-executor --version >/dev/null; node -e "const c=require(process.env.CLAUDE_CONFIG_DIR+\"/.claude.json\"); console.log(Boolean(c.projects[\"/workspace\"].hasTrustDialogAccepted))"'
 
 # The driver's RUNNER_OTEL_ENDPOINT override arrives as OTEL_EXPORTER_OTLP_ENDPOINT. Claude Code's
-# settings.json env block overrides the container environment, so the forwarded value would be
-# silently defeated by the baked http://collector:4318 — the entrypoint rewrites the settings value
-# when it is set, the same way the opencode executor patches otel.json. The config directory is
-# bind-mounted so the patched file can be read back on the host; `--version` runs the entrypoint's
+# settings env blocks override the container environment, so the forwarded value would be silently
+# defeated by the baked http://collector:4318 — the entrypoint rewrites the managed settings value
+# when it is set, the same way the opencode executor patches otel.json. The managed file is
+# bind-mounted so the patched copy can be read back on the host; `--version` runs the entrypoint's
 # rewrite then exits the CLI with no credential needed.
-CNF="$(mktemp -d)"
-cp "$HERE/claude-home/settings.json" "$CNF/settings.json"
-printf '{"hasCompletedOnboarding":true,"theme":"dark"}\n' > "$CNF/.claude.json"
-chmod -R a+rwX "$CNF"
+MANAGED="$(mktemp -d)"
+cp "$HERE/managed-settings.json" "$MANAGED/managed-settings.json"
+chmod -R a+rwX "$MANAGED"
 docker run --rm \
-    -e CLAUDE_CONFIG_DIR=/claude-otel-test \
     -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
-    -v "$CNF:/claude-otel-test" \
+    -v "$MANAGED/managed-settings.json:/etc/claude-code/managed-settings.json" \
     -v "$REPO:/workspace" \
     "$IMAGE" --version >/dev/null 2>&1
-patched="$(cat "$CNF/settings.json")"
-rm -rf "$CNF"
+patched="$(cat "$MANAGED/managed-settings.json")"
+rm -rf "$MANAGED"
 if node -e \
     'const c = JSON.parse(process.argv[1]); process.exit(c?.env?.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector.example:4318" ? 0 : 1)' \
     "$patched" >/dev/null 2>&1; then
-    printf 'ok   %s\n' 'the entrypoint rewrites settings.json from OTEL_EXPORTER_OTLP_ENDPOINT'
+    printf 'ok   %s\n' 'the entrypoint rewrites managed-settings.json from OTEL_EXPORTER_OTLP_ENDPOINT'
     pass=$((pass + 1))
 else
-    printf 'FAIL %s\n     patched settings: %s\n' 'the entrypoint rewrites settings.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
+    printf 'FAIL %s\n     patched settings: %s\n' 'the entrypoint rewrites managed-settings.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
     fail=$((fail + 1))
 fi
 
-# A volume at CLAUDE_CONFIG_DIR is what makes a Remote Control login survive the container, and it
-# mounts empty over the baked configuration. Seeding is therefore load-bearing, not a nicety.
+# The checkout's own .claude/settings.json must not steer telemetry. A target repo that points
+# OTEL_EXPORTER_OTLP_ENDPOINT at 127.0.0.1:4318 for host development used to win over the runner's
+# user-scope value, so every export went to the container's loopback and was lost without a word.
+# Proved against the real CLI: two sinks inside the container, the checkout pointing at one, the
+# driver's endpoint at the other. The CLI exports its startup metrics even unauthenticated, so no
+# credential is needed; only the forwarded endpoint may receive anything.
+CHECKOUT="$(mktemp -d)"
+mkdir -p "$CHECKOUT/.claude"
+printf '{"env":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://127.0.0.1:4318"}}\n' > "$CHECKOUT/.claude/settings.json"
+chmod -R a+rwX "$CHECKOUT"
+SINK='for (const p of [4318, 4999]) require("http").createServer((q, r) => { console.log("SINK:" + p); q.resume(); q.on("end", () => r.end("{}")); }).listen(p)'
+sinks="$(docker run --rm \
+    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4999 \
+    -v "$CHECKOUT:/workspace" \
+    --entrypoint sh "$IMAGE" -c "node -e '$SINK' & sleep 1; timeout 30 claude-executor -p hello >/dev/null 2>&1; sleep 12" 2>&1)"
+rm -rf "$CHECKOUT"
+if [[ "$sinks" == *"SINK:4999"* && "$sinks" != *"SINK:4318"* ]]; then
+    printf 'ok   %s\n' "the checkout's .claude/settings.json cannot redirect telemetry"
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     sinks: %s\n' "the checkout's .claude/settings.json cannot redirect telemetry" "${sinks:0:400}"
+    fail=$((fail + 1))
+fi
+
+# An empty CLAUDE_CONFIG_DIR — the transcript store's per-thread directory, or a volume mounted over
+# the baked configuration — hides everything baked. Seeding is therefore load-bearing, not a nicety.
 VOL="claude-executor-test-$$"
 check 'seeds an empty volume' 'backend-fix' docker run --rm -v "$VOL:/home/node/.claude" \
     --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null; ls "$CLAUDE_CONFIG_DIR"/skills'
@@ -121,7 +138,7 @@ check 'context-mode responds' '"name":"context-mode"' run -i --entrypoint sh "$I
 # was baked into the image. It runs whether or not a token is available, with the token withheld.
 check 'unauthenticated by design' 'Not logged in' run "$IMAGE" -p 'hello'
 
-# Fall back to the repo's .env for the live prompt, reading only that one key — see run.sh.
+# Fall back to the repo's .env for the live prompt, reading only that one key.
 token="${CLAUDE_CODE_OAUTH_TOKEN:-}"
 if [[ -z "$token" && -f "$REPO/.env" ]]; then
     token="$(grep -m1 -E '^[[:space:]]*CLAUDE_CODE_OAUTH_TOKEN=' "$REPO/.env" | cut -d= -f2- | tr -d '"'\''' | xargs)"
@@ -133,6 +150,46 @@ if [[ -n "${token}${ANTHROPIC_API_KEY:-}" ]]; then
         -p 'Reply with exactly EXECUTOR_OK and nothing else.'
 else
     echo 'note: no token in the environment or .env — skipped the live prompt'
+fi
+
+# The member's own executor config (CLAUDE_CODE_CONFIG_CONTENT, #212): model and env additions
+# merge into the baked settings.json, but a member cannot use it to strip the runner's hooks/
+# plugins fence. Telemetry keys a member sets land in user scope and lose to managed settings, so
+# the merge never touches managed-settings.json.
+CNF="$(mktemp -d)"
+cp "$HERE/claude-home/settings.json" "$CNF/settings.json"
+printf '{"hasCompletedOnboarding":true,"theme":"dark"}\n' > "$CNF/.claude.json"
+chmod -R a+rwX "$CNF"
+MEMBER_CONFIG='{"model":"claude-member-model","hooks":{"PreToolUse":[]},"enabledPlugins":["evil"],"extraKnownMarketplaces":["evil"],"env":{"CLAUDE_CODE_ENABLE_TELEMETRY":"0","OTEL_LOG_USER_PROMPTS":"1","OTEL_EXPORTER_OTLP_ENDPOINT":"http://member-supplied:4318","ANTHROPIC_API_KEY":"member-token"}}'
+docker run --rm \
+    -e CLAUDE_CONFIG_DIR=/claude-member-test \
+    -e CLAUDE_CODE_CONFIG_CONTENT="$MEMBER_CONFIG" \
+    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
+    -v "$CNF:/claude-member-test" \
+    -v "$REPO:/workspace" \
+    --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null 2>&1; cp /etc/claude-code/managed-settings.json "$CLAUDE_CONFIG_DIR/managed.out"'
+patched="$(cat "$CNF/settings.json")"
+managed="$(cat "$CNF/managed.out")"
+rm -rf "$CNF"
+if node -e '
+    const c = JSON.parse(process.argv[1]);
+    const m = JSON.parse(process.argv[3]);
+    const ok =
+        c.model === "claude-member-model" &&
+        c.env.ANTHROPIC_API_KEY === "member-token" &&
+        c.enabledPlugins === undefined &&
+        c.extraKnownMarketplaces === undefined &&
+        JSON.stringify(c.hooks) === JSON.stringify(require(process.argv[2]).hooks) &&
+        m.env.CLAUDE_CODE_ENABLE_TELEMETRY === "1" &&
+        m.env.OTEL_LOG_USER_PROMPTS === "0" &&
+        m.env.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector.example:4318";
+    process.exit(ok ? 0 : 1);
+' "$patched" "$HERE/claude-home/settings.json" "$managed" >/dev/null 2>&1; then
+    printf 'ok   %s\n' 'CLAUDE_CODE_CONFIG_CONTENT merges member settings without touching managed telemetry, hooks or plugins'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     patched settings: %s\n     managed: %s\n' 'CLAUDE_CODE_CONFIG_CONTENT merges member settings without touching managed telemetry, hooks or plugins' "$patched" "$managed"
+    fail=$((fail + 1))
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

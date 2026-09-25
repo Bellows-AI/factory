@@ -5,20 +5,17 @@ import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
+import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-types.js';
 import type {
-    Claim,
     FollowUpRefusal,
-    GateReport,
-    Job,
-    JobStatus,
     JobStore,
     LeaseResult,
     ReclaimClaim,
     RemoveResult,
-    RuntimeVitals,
     StopResult,
-} from '../src/db/job-store.js';
+} from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
+import { DEFAULT_ENTRY_NODE, DEFAULT_WORKFLOW_NAME, compileDefaultWorkflow } from '../src/db/default-workflow.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -42,7 +39,14 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
     /** The workflow triple the create was handed, when one resolved — null when none did. */
-    workflowTargets: { id: string; name: string; node: string; snapshot: unknown }[];
+    workflowTargets: {
+        id: string | null;
+        name: string;
+        node: string;
+        snapshot: unknown;
+        params?: unknown;
+        defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean };
+    }[];
     listed: { status?: JobStatus | 'terminal'; repo?: string | undefined; limit: number }[];
     completed: {
         id: string;
@@ -52,7 +56,7 @@ interface StoreStub extends JobStore {
         agentTurns: number | null;
         summary: string | null;
     }[];
-    sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
+    sessions: { id: string; sessionId: string }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
@@ -119,7 +123,7 @@ function stubStore(
             boom();
             stub.suspended.push(id);
             const result = options.verdict ?? 'ok';
-            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'standby' } : { result };
+            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'stopped' } : { result };
         },
         async create(command, createdBy, target) {
             boom();
@@ -176,9 +180,9 @@ function stubStore(
             stub.reclaimAcks.push({ id, worker });
             return options.ackReclaim ?? 'ok';
         },
-        async session(id, _token, sessionId, remoteSessionId) {
+        async session(id, _token, sessionId) {
             boom();
-            stub.sessions.push({ id, sessionId, remoteSessionId });
+            stub.sessions.push({ id, sessionId });
             return options.verdict ?? 'ok';
         },
         async progress(id: string, _token: string, output: string, runtime: RuntimeVitals | null) {
@@ -472,11 +476,12 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(jobs.created).toEqual([]);
     });
 
-    // The no-workflow identity: a body without a workflow field names no process, so the member's
-    // words ARE the command and the workflow store is not read at all — no resolution, no default
-    // to fall back to. The row and claim carry no workflow triple; the claim's own shape is
-    // pinned by the db suite, which asserts `publish` is ABSENT on a workflow-less claim.
-    it('runs the raw prompt, reading no workflows, when the body names none', async () => {
+    // The code-owned default identity (issue #209): a body without a workflow field names no
+    // CUSTOM process, so the named-workflow store is not read at all — but it is no longer
+    // workflow-less: the default workflow resolves instead, with no saved-settings store
+    // configured here, both optional blocks default on (`BOTH_ENABLED`). The entry's prompt is
+    // exactly `{{command}}`, so the root command still reads as the member's raw words.
+    it("runs the raw prompt as the default workflow's entry, reading no NAMED workflows, when the body names none", async () => {
         const jobs = stubStore();
         const workflows = stubWorkflows();
         const instance = await harnessWith(jobs, workflows);
@@ -485,7 +490,16 @@ describe('POST /api/jobs workflow resolution', () => {
 
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual([]);
-        expect(jobs.workflowTargets).toEqual([]);
+        expect(jobs.workflowTargets).toEqual([
+            {
+                id: null,
+                name: DEFAULT_WORKFLOW_NAME,
+                node: DEFAULT_ENTRY_NODE,
+                snapshot: compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }),
+                params: {},
+                defaultOptions: { reviewReconciliation: true, mergeConflictAutofix: true },
+            },
+        ]);
         expect(jobs.commands).toEqual(['echo hi']);
     });
 });
@@ -573,10 +587,12 @@ describe('POST /api/jobs workflow parameters', () => {
         // The name came off the record the store resolved, never off the body.
         expect(jobs.workflowTargets[0]!.name).toBe('fix-issue');
 
-        // A body naming no workflow ignores the field entirely: no resolution, no workflow triple.
+        // A body naming no CUSTOM workflow ignores a client-supplied workflowName entirely — but
+        // it is no longer workflow-less: it resolves the code-owned default instead (issue #209).
         const ghost = await post(instance, '/api/jobs', { command: 'echo hi', workflowName: 'ghost' });
         expect(ghost.statusCode).toBe(201);
-        expect(jobs.workflowTargets).toHaveLength(1);
+        expect(jobs.workflowTargets).toHaveLength(2);
+        expect(jobs.workflowTargets[1]!.name).toBe(DEFAULT_WORKFLOW_NAME);
     });
 
     it('refuses an interpolated root command over the cap with BAD_COMMAND', async () => {
@@ -804,7 +820,7 @@ describe('POST /api/jobs/:id/session', () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(store.sessions).toEqual([{ id: ID, sessionId: SESSION, remoteSessionId: null }]);
+        expect(store.sessions).toEqual([{ id: ID, sessionId: SESSION }]);
     });
 
     /**
@@ -821,35 +837,6 @@ describe('POST /api/jobs/:id/session', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.sessions[0]?.sessionId).toBe(ses);
-    });
-
-    // The second report of an attempt. The remote id is assigned by Anthropic's backend when the
-    // bridge connects, so it can only ever arrive after the run has started.
-    it('records the remote session id when the bridge has reported one', async () => {
-        const store = stubStore({ verdict: 'ok' });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/session`, {
-            leaseToken: TOKEN,
-            sessionId: SESSION,
-            remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(store.sessions[0]?.remoteSessionId).toBe('cse_015tb2nHhHNrBuL7ZDhn9Wx5');
-    });
-
-    // Deliberately not shape-checked: it is an opaque token minted elsewhere, and pinning `cse_`
-    // here would break on the day it changes.
-    it('takes any reasonable string as the remote id, but not junk', async () => {
-        const instance = await harnessWith(stubStore());
-        const send = (remoteSessionId: unknown) =>
-            post(instance, `/api/jobs/${ID}/session`, { leaseToken: TOKEN, sessionId: SESSION, remoteSessionId });
-
-        expect((await send('anything-at-all')).statusCode).toBe(200);
-        expect((await send('   ')).statusCode).toBe(400);
-        expect((await send(42)).statusCode).toBe(400);
-        expect((await send('x'.repeat(257))).statusCode).toBe(400);
     });
 
     // Same rule as every other worker write: a superseded worker must not relabel the run that
@@ -1156,13 +1143,6 @@ describe('POST /api/jobs/:id/suspend', () => {
         expect(store.suspended).toEqual([ID]);
     });
 
-    it('lands the Remote Control idle park on standby', async () => {
-        const instance = await harnessWith(stubStore({ verdict: 'ok' }));
-        const response = await post(instance, `/api/jobs/${ID}/suspend`, { leaseToken: TOKEN });
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, status: 'standby' });
-    });
-
     it('refuses a park from a worker whose lease was reclaimed', async () => {
         const instance = await harnessWith(stubStore({ verdict: 'lost' }));
         const response = await post(instance, `/api/jobs/${ID}/suspend`, { leaseToken: TOKEN });
@@ -1179,19 +1159,6 @@ describe('POST /api/jobs/:id/stop', () => {
     // A queued job never started, so stopping it IS settling it — the turn ends before it began,
     // and the session (there is none yet) is untouched.
     it('settles a queued task directly', async () => {
-        const store = stubStore({ stop: { result: 'stopped' } });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, `/api/jobs/${ID}/stop`, {});
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, status: 'stopped' });
-        expect(store.stopped).toEqual([{ id: ID, stoppedBy: null }]);
-    });
-
-    // A parked task settles the same way: stopping it is the verdict that ends its stay. The
-    // second stop of the same task is the store's conflict to answer — it already ended.
-    it('settles an already-parked task directly too', async () => {
         const store = stubStore({ stop: { result: 'stopped' } });
         const instance = await harnessWith(store);
 
@@ -1753,7 +1720,6 @@ describe('GET /api/jobs', () => {
         stoppedBy: null,
         doneBy: null,
         sessionId: '33333333-3333-4333-8333-333333333333',
-        remoteSessionId: 'cse_015tb2nHhHNrBuL7ZDhn9Wx5',
         exitCode: 0,
         output: 'hello',
         summary: null,

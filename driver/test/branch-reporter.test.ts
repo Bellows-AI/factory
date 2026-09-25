@@ -4,7 +4,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AddressInfo } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
@@ -92,12 +92,14 @@ const gitRepo = (): string => {
 const NODE_ARGS = ['--disable-warning=ExperimentalWarning'];
 
 /**
- * The suite can run inside a task whose own environment carries BELLOWS_SESSION_ID. Every child
- * here starts from this scrubbed copy (a test's explicit env still wins), so the reporter under
- * test exercises discovery unless a test hands an id on purpose.
+ * The suite can run inside a task whose own environment carries BELLOWS_SESSION_ID, and — when
+ * that task is itself a driver-run job, as a Factory board task is — RUNNER_JOB_ID and
+ * RUNNER_LEASE_TOKEN too. Every child here starts from this scrubbed copy (a test's explicit env
+ * still wins), so the reporter under test exercises discovery, and the attempt-pair test sees a
+ * genuinely bare environment, unless a test hands an id on purpose.
  */
 const OUTER_ENV: Record<string, string> = (() => {
-    const { BELLOWS_SESSION_ID: _handed, ...rest } = process.env;
+    const { BELLOWS_SESSION_ID: _session, RUNNER_JOB_ID: _job, RUNNER_LEASE_TOKEN: _lease, ...rest } = process.env;
     return rest;
 })();
 
@@ -119,7 +121,7 @@ const run = (
         child.on('close', (status) => resolve({ status, stdout, stderr }));
     });
 
-describe('the branch reporter', () => {
+describe('the branch reporter: wire shape and redirects', () => {
     it('posts the plugin’s exact wire shape for the session it was given', async () => {
         const { url, requests } = await board();
         const dir = gitRepo();
@@ -187,8 +189,10 @@ describe('the branch reporter', () => {
     // only selected headers cross-origin, so the pair would stay eligible for forwarding to
     // whatever the Location points at. The request is refused, not followed.
     it('does not follow a redirect, and never sends the credential to the redirect target', async () => {
-        const { url, requests } = await board(200, [
-            { status: 302, headers: { location: '/api/sessions/branch-target' } },
+        const OK_STATUS = 200;
+        const REDIRECT_STATUS = 302;
+        const { url, requests } = await board(OK_STATUS, [
+            { status: REDIRECT_STATUS, headers: { location: '/api/sessions/branch-target' } },
         ]);
         const dir = gitRepo();
         try {
@@ -210,7 +214,9 @@ describe('the branch reporter', () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+});
 
+describe('the branch reporter: endpoint and git state', () => {
     it('is inert without an endpoint: silent, successful, and asks nothing', async () => {
         const { requests } = await board();
         const dir = gitRepo();
@@ -230,7 +236,9 @@ describe('the branch reporter', () => {
 
     // Telemetry degrades alone: a board that refuses (401 on a token mismatch, 500 on a bad
     // night) must never read as a failed run. The reporter's whole error path is silence.
-    it.each([401, 500])('survives a %d from the board, silently', async (refused) => {
+    const UNAUTHORIZED_STATUS = 401;
+    const SERVER_ERROR_STATUS = 500;
+    it.each([UNAUTHORIZED_STATUS, SERVER_ERROR_STATUS])('survives a %d from the board, silently', async (refused) => {
         const { url, requests } = await board(refused);
         const dir = gitRepo();
         try {
@@ -284,7 +292,9 @@ describe('the branch reporter', () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+});
 
+describe('the branch reporter: opencode session discovery', () => {
     // A fresh opencode run is given no session id: the reporter discovers it live, the same way
     // the close-time readout does — the newest ROOT session recorded in THIS run's own working
     // directory (subagents create children, and the database is per member, so a newer root
@@ -358,14 +368,16 @@ describe('the branch reporter', () => {
             rmSync(data, { recursive: true, force: true });
         }
     });
+});
 
+describe('the branch reporter: loop mode', () => {
     // Loop mode is what the entrypoint launches: the first report lands immediately (the run may
     // be short), the process stays alive and silent, and the close-time `--once` sample is a
     // separate invocation tested above.
     it('reports immediately in loop mode and stays silent while it waits', async () => {
         const { url, waitForRequest } = await board();
         const dir = gitRepo();
-        let child;
+        let child: ReturnType<typeof spawn> | undefined;
         try {
             child = spawn(process.execPath, [...NODE_ARGS, CLAUDE_REPORTER], {
                 cwd: dir,
@@ -380,7 +392,8 @@ describe('the branch reporter', () => {
             expect(first.body).toMatchObject({ agent: 'claude-code', sessionId: SESSION });
             // Still running, and having said nothing: the loop must outlive the report it came
             // for, because branch moves and session changes are exactly what it exists to catch.
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            const STILL_RUNNING_SETTLE_MS = 100;
+            await new Promise((resolve) => setTimeout(resolve, STILL_RUNNING_SETTLE_MS));
             expect(child.exitCode).toBeNull();
             expect(stdout).toBe('');
             expect(stderr).toBe('');
@@ -392,59 +405,71 @@ describe('the branch reporter', () => {
 
     // The boundary between two conversations is what must not blur into one span: the loop
     // reports a CHANGED session id immediately, whatever the sampling interval says.
-    it('reports a changed session id immediately, not on the next interval', async () => {
-        const { url, requests } = await board();
-        const dir = gitRepo();
-        const data = tempDir();
-        mkdirSync(join(data, 'opencode'), { recursive: true });
-        const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
-        db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
-        db.prepare('insert into session values (?, ?, ?, ?)').run('ses_first', null, '2026-01-01 00:00:00.000', dir);
-        const untilRequest = (count: number) =>
-            new Promise<void>((resolve, reject) => {
-                const startedAt = Date.now();
-                const poll = () => {
-                    if (requests.length >= count) return resolve();
-                    if (Date.now() - startedAt > 4_000) {
-                        return reject(
-                            new Error(
-                                `never saw ${count} reports; got ${JSON.stringify(requests.map((r) => r.body?.sessionId))}`
-                            )
-                        );
-                    }
-                    setTimeout(poll, 50);
-                };
-                poll();
-            });
-        try {
-            const child = spawn(process.execPath, [...NODE_ARGS, OPENCODE_REPORTER], {
-                cwd: dir,
-                env: { ...OUTER_ENV, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
-                stdio: ['ignore', 'pipe', 'pipe'],
-            });
-            let stderr = '';
-            child.stderr.on('data', (chunk) => (stderr += chunk));
+    const TEST_TIMEOUT_MS = 15_000;
+    it(
+        'reports a changed session id immediately, not on the next interval',
+        async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            const data = tempDir();
+            mkdirSync(join(data, 'opencode'), { recursive: true });
+            const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
+            db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
+            db.prepare('insert into session values (?, ?, ?, ?)').run(
+                'ses_first',
+                null,
+                '2026-01-01 00:00:00.000',
+                dir
+            );
+            const POLL_TIMEOUT_MS = 4_000;
+            const POLL_INTERVAL_MS = 50;
+            const untilRequest = (count: number) =>
+                new Promise<void>((resolve, reject) => {
+                    const startedAt = Date.now();
+                    const poll = () => {
+                        if (requests.length >= count) return resolve();
+                        if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+                            return reject(
+                                new Error(
+                                    `never saw ${count} reports; got ${JSON.stringify(requests.map((r) => r.body?.sessionId))}`
+                                )
+                            );
+                        }
+                        setTimeout(poll, POLL_INTERVAL_MS);
+                    };
+                    poll();
+                });
             try {
-                await untilRequest(1);
-                expect(requests[0].body?.sessionId).toBe('ses_first');
-                // The row appears AFTER the first report — mid-loop, the state a live run is in
-                // when its conversation starts — and the change must be reported on the very
-                // next discovery, not a full sampling cycle later.
-                db.prepare('insert into session values (?, ?, ?, ?)').run(
-                    'ses_second',
-                    null,
-                    '2026-01-02 00:00:00.000',
-                    dir
-                );
-                await untilRequest(2);
-                expect(requests[1].body?.sessionId).toBe('ses_second');
-                expect(stderr).toBe('');
+                const child = spawn(process.execPath, [...NODE_ARGS, OPENCODE_REPORTER], {
+                    cwd: dir,
+                    env: { ...OUTER_ENV, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                });
+                let stderr = '';
+                child.stderr.on('data', (chunk) => (stderr += chunk));
+                try {
+                    await untilRequest(1);
+                    expect(requests[0].body?.sessionId).toBe('ses_first');
+                    // The row appears AFTER the first report — mid-loop, the state a live run is in
+                    // when its conversation starts — and the change must be reported on the very
+                    // next discovery, not a full sampling cycle later.
+                    db.prepare('insert into session values (?, ?, ?, ?)').run(
+                        'ses_second',
+                        null,
+                        '2026-01-02 00:00:00.000',
+                        dir
+                    );
+                    await untilRequest(2);
+                    expect(requests[1].body?.sessionId).toBe('ses_second');
+                    expect(stderr).toBe('');
+                } finally {
+                    child.kill();
+                }
             } finally {
-                child.kill();
+                rmSync(dir, { recursive: true, force: true });
+                rmSync(data, { recursive: true, force: true });
             }
-        } finally {
-            rmSync(dir, { recursive: true, force: true });
-            rmSync(data, { recursive: true, force: true });
-        }
-    }, 15_000);
+        },
+        TEST_TIMEOUT_MS
+    );
 });

@@ -4,7 +4,10 @@ import {
     DEFAULT_RANGE,
     applyDraft,
     clearRange,
+    draftProblem,
     draftValid,
+    presetChange,
+    rangeLabel,
     RangeDraft,
     RangeSelector,
     rangeQuery,
@@ -12,6 +15,8 @@ import {
 } from '../src/components/RangeSelector.js';
 import type { ScopeSelection } from '../src/components/RangeSelector.js';
 import { ScopeToggle } from '../src/components/ScopeToggle.js';
+
+const NOW = new Date('2026-08-21T12:00:00.000Z');
 
 describe('rangeQuery', () => {
     it('sends the preset alone', () => {
@@ -34,31 +39,87 @@ describe('rangeQuery', () => {
     });
 });
 
+describe('rangeLabel', () => {
+    it('labels a preset by its rolling name, never the resolved dates', () => {
+        // Rolling presets are lookbacks, not calendar periods: "7 days" says what it does,
+        // "this week" on a Tuesday would not.
+        expect(rangeLabel({ ...DEFAULT_RANGE, preset: 'month' }, NOW)).toBe('30 days');
+        expect(rangeLabel({ ...DEFAULT_RANGE, preset: 'all' }, NOW)).toBe('All time');
+        expect(rangeLabel({ ...DEFAULT_RANGE, preset: 'day' }, NOW)).toBe('Today');
+    });
+
+    it('labels a committed custom window by the days it covers', () => {
+        expect(rangeLabel({ preset: 'custom', from: '2026-07-01', to: '2026-08-01' }, NOW)).toBe('Jul 1 – Aug 1');
+        expect(rangeLabel({ preset: 'custom', from: '2026-07-01', to: '' }, NOW)).toBe('Since Jul 1');
+    });
+
+    it('labels a boundless custom selection as Custom', () => {
+        // Picked but not yet typed into: the trigger should not lie about a window that was
+        // never committed.
+        expect(rangeLabel({ preset: 'custom', from: '', to: '' }, NOW)).toBe('Custom');
+    });
+});
+
+describe('presetChange', () => {
+    it('commits a preset, carrying any custom bounds along unused', () => {
+        expect(presetChange({ preset: 'custom', from: '2026-07-01', to: '2026-08-01' }, 'week')).toEqual({
+            preset: 'week',
+            from: '2026-07-01',
+            to: '2026-08-01',
+        });
+    });
+
+    it('returns null for custom — Custom opens the picker, it never commits by itself', () => {
+        expect(presetChange(DEFAULT_RANGE, 'custom')).toBeNull();
+    });
+});
+
+describe('draftProblem', () => {
+    const today = '2026-09-20';
+
+    it('names a crossed range', () => {
+        expect(draftProblem({ from: '2026-09-02', to: '2026-09-01' }, today)).toBe(
+            'The start date must be on or before the end date.'
+        );
+    });
+
+    it('names a future bound', () => {
+        expect(draftProblem({ from: '2030-01-01', to: '' }, today)).toBe("Dates can't be later than today.");
+        expect(draftProblem({ from: '2026-09-01', to: '2026-09-25' }, today)).toBe("Dates can't be later than today.");
+    });
+
+    it('is silent for an empty or a genuinely valid draft', () => {
+        expect(draftProblem({ from: '', to: '' }, today)).toBeNull();
+        expect(draftProblem({ from: '2026-09-01', to: '' }, today)).toBeNull();
+        expect(draftProblem({ from: '2026-09-01', to: '2026-09-19' }, today)).toBeNull();
+    });
+});
+
 describe('RangeSelector', () => {
     const render = (range = DEFAULT_RANGE) => renderToStaticMarkup(<RangeSelector range={range} onChange={() => {}} />);
 
-    it('offers every preset under a labeled Range group, with truthful rolling labels', () => {
-        // Rolling presets are lookbacks, not calendar periods: "7 days" says what it does,
-        // "this week" on a Tuesday would not.
+    it('renders one labeled Range dropdown showing the current selection', () => {
         const html = render({ ...DEFAULT_RANGE, preset: 'month' });
-        for (const label of ['Range', 'Today', '7 days', '14 days', '30 days', 'All time', 'Custom']) {
-            expect(html).toContain(label);
-        }
-        expect(html).toContain('range-option active');
-        expect(html).toContain('aria-checked="true"');
+        expect(html).toContain('<legend');
+        expect(html).toContain('>Range<');
+        expect(html).toContain('id="range-select"');
+        expect(html).toContain('aria-haspopup="listbox"');
+        expect(html).toContain('aria-expanded="false"');
+        expect(html).toContain('>30 days</button>');
+        // The preset-buttons row is gone: no radio semantics, no range-option class.
+        expect(html).not.toContain('role="radio"');
+        expect(html).not.toContain('range-option');
     });
 
-    it('keeps the custom dates in a popover, not the toolbar row', () => {
+    it('keeps the custom dates out of the toolbar row entirely', () => {
         const html = render({ preset: 'custom', from: '', to: '' });
         expect(html).not.toContain('type="date"');
-        // The trigger announces the popover state and owns the expansion.
-        expect(html).toContain('aria-expanded');
+        expect(html).toContain('>Custom</button>');
     });
 
-    it('marks the Custom trigger active when a custom range is committed', () => {
-        const html = render({ preset: 'custom', from: '2026-08-01', to: '2026-08-07' });
-        expect(html).toMatch(/Custom/);
-        expect(html).toContain('range-option active');
+    it('shows the committed custom window on the trigger, not the word Custom', () => {
+        const html = render({ preset: 'custom', from: '2026-08-14', to: '2026-08-20' });
+        expect(html).toContain('>Aug 14–20</button>');
     });
 });
 
@@ -123,10 +184,33 @@ describe('RangeDraft', () => {
         expect(html).toContain('max="2026-09-20"');
     });
 
-    it('renders Apply and Clear; Apply is disabled while the draft is invalid', () => {
-        expect(render()).toContain('Apply range');
-        expect(render()).toContain('Clear');
-        expect(render({ from: '2026-09-02', to: '2026-09-01' })).toContain('disabled=""');
+    it('labels the two fields Start date and End date', () => {
+        const html = render();
+        expect(html).toContain('Start date');
+        expect(html).toContain('End date');
+    });
+
+    it('offers Clear, Cancel and a primary Apply range, in that order', () => {
+        const html = render();
+        expect(html).toContain('Clear');
+        expect(html).toContain('Cancel');
+        expect(html).toContain('Apply range');
+        expect(html.indexOf('Clear')).toBeLessThan(html.indexOf('Cancel'));
+        expect(html.indexOf('Cancel')).toBeLessThan(html.indexOf('Apply range'));
+        expect(html).toMatch(/class="primary"[^>]*>Apply range/);
+    });
+
+    it('disables Apply and explains a crossed range', () => {
+        const html = render({ from: '2026-09-02', to: '2026-09-01' });
+        expect(html).toContain('disabled=""');
+        expect(html).toContain('The start date must be on or before the end date.');
+    });
+
+    it('shows no error line for a valid or an empty draft', () => {
+        // Not just the message text: the line itself must not be mounted, or an empty draft
+        // still reserves the space a real error would take.
+        expect(render()).not.toContain('status error');
+        expect(render({ from: '', to: '' })).not.toContain('status error');
     });
 });
 
@@ -156,22 +240,18 @@ describe('ScopeToggle', () => {
     const renderToggle = (scope: ScopeSelection) =>
         renderToStaticMarkup(<ScopeToggle scope={scope} onChange={() => {}} />);
 
-    it('carries a visible Scope label', () => {
-        expect(renderToggle('org')).toContain('Scope');
+    it('renders one labeled Scope dropdown, no radio semantics', () => {
+        const html = renderToggle('org');
+        expect(html).toContain('<legend');
+        expect(html).toContain('>Scope<');
+        expect(html).toContain('id="scope-select"');
+        expect(html).toContain('aria-haspopup="listbox"');
+        expect(html).not.toContain('role="radio"');
+        expect(html).not.toContain('range-option');
     });
 
-    it('offers Org and Me and marks the active one', () => {
-        // The RadioGroup renders real buttons in the radiogroup role; `aria-checked` is how the
-        // state is read, not aria-pressed.
-        expect(renderToggle('org')).toContain('Org');
-        expect(renderToggle('org')).toContain('Me');
-        expect(renderToggle('org')).toContain('aria-checked="true"');
-        expect(renderToggle('mine')).toMatch(/Me<\/button>/);
-    });
-
-    it('marks org active only when org is selected', () => {
-        // The `active` class is how the state is seen; both buttons render either way.
-        const org = renderToggle('org');
-        expect(org).toContain('Org</button>');
+    it('shows the selected scope on the trigger, spelled out in full', () => {
+        expect(renderToggle('org')).toContain('>Organization</button>');
+        expect(renderToggle('mine')).toContain('>Personal</button>');
     });
 });

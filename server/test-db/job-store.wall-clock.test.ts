@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/job-store.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -17,7 +18,15 @@ const ORG = 'test-org';
  * eventually would. Re-planted before every test, because `created_by` is a uuid foreign key.
  */
 const AUTHOR = randomUUID();
-const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, 8), 16);
+/** Turns a slice of a uuid into a plausible github id — hex digits, parsed as base 16. */
+const UUID_HEX_SLICE_LENGTH = 8;
+const HEX_RADIX = 16;
+const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX);
+
+/** A lease long enough that nothing in this suite outlives it by accident. */
+const LEASE_SECONDS = 300;
+/** How far back the stop-banking cases backdate their claim's start. */
+const STOPPED_RUN_MINUTES_AGO = 4;
 
 const db = useTestDb({ max: 8, users: [{ id: AUTHOR, githubUserId: AUTHOR_GITHUB_ID, login: 'wall-clock-cat' }] });
 
@@ -37,7 +46,7 @@ beforeAll(async () => {
 const craft = async (
     shape: {
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         startedMinutesAgo?: number;
         wallClockMs?: number;
     } = {}
@@ -79,7 +88,7 @@ const wallOf = async (id: string): Promise<number | null> => {
  * what every duration assertion below measures without a sleep. */
 const claimBackdated = async (minutes: number): Promise<{ id: string; token: string }> => {
     const id = await craft({ status: 'running' });
-    const { leaseToken } = (await store.claim('w1', 300))!;
+    const { leaseToken } = (await store.claim('w1', LEASE_SECONDS))!;
     await sql`update job set started_at = now() - (${minutes} * interval '1 minute') where id = ${id}`;
     return { id, token: leaseToken };
 };
@@ -94,20 +103,22 @@ describe.skipIf(!enabled)('the task wall clock', () => {
 
         expect((await store.get(id))?.status).toBe('succeeded');
         const wall = await wallOf(id);
-        expect(wall).toBeGreaterThanOrEqual(599_000);
-        expect(wall).toBeLessThan(660_000);
+        const TEN_MINUTES_LOWER_BOUND_MS = 599_000;
+        const TEN_MINUTES_UPPER_BOUND_MS = 660_000;
+        expect(wall).toBeGreaterThanOrEqual(TEN_MINUTES_LOWER_BOUND_MS);
+        expect(wall).toBeLessThan(TEN_MINUTES_UPPER_BOUND_MS);
         // The single read does not serve the total — the thread read is the task view's source.
         expect((await store.get(id))?.taskWallClockMs).toBeNull();
     });
 
     it('a re-claim keeps counting the segment it supersedes', async () => {
         const id = await craft({ status: 'running' });
-        await store.claim('w1', 300);
+        await store.claim('w1', LEASE_SECONDS);
         await sql`update job set started_at = now() - interval '5 minutes',
                   lease_expires_at = now() - interval '1 second' where id = ${id}`;
         // The first attempt's lease has expired: the second claim banks its five minutes before
         // resetting started_at for the attempt it is about to run.
-        await store.claim('w2', 300);
+        await store.claim('w2', LEASE_SECONDS);
         await sql`update job set started_at = now() - interval '3 minutes' where id = ${id}`;
         const second = await sql<{ lease_token: string }[]>`select lease_token from job where id = ${id}`;
 
@@ -116,75 +127,87 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         ).toMatchObject({ result: 'ok' });
 
         const wall = await wallOf(id);
-        expect(wall).toBeGreaterThanOrEqual(479_000);
-        expect(wall).toBeLessThan(540_000);
+        const EIGHT_MINUTES_LOWER_BOUND_MS = 479_000;
+        const EIGHT_MINUTES_UPPER_BOUND_MS = 540_000;
+        expect(wall).toBeGreaterThanOrEqual(EIGHT_MINUTES_LOWER_BOUND_MS);
+        expect(wall).toBeLessThan(EIGHT_MINUTES_UPPER_BOUND_MS);
     });
 
     it('a row retired dead keeps its last segment', async () => {
         const id = await craft({ status: 'running' });
-        await store.claim('w1', 300);
+        await store.claim('w1', LEASE_SECONDS);
         // Burn the last attempt, expire the lease, backdate the start: the next claim retires the
         // row dead, and the six minutes it ran first must survive the retirement.
         await sql`update job set attempts = max_attempts, lease_expires_at = now() - interval '1 second',
                   started_at = now() - interval '6 minutes' where id = ${id}`;
 
-        expect(await store.claim('w2', 300)).toBeNull();
+        expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
         expect((await store.get(id))?.status).toBe('dead');
 
         const wall = await wallOf(id);
-        expect(wall).toBeGreaterThanOrEqual(359_000);
-        expect(wall).toBeLessThan(420_000);
+        const SIX_MINUTES_LOWER_BOUND_MS = 359_000;
+        const SIX_MINUTES_UPPER_BOUND_MS = 420_000;
+        expect(wall).toBeGreaterThanOrEqual(SIX_MINUTES_LOWER_BOUND_MS);
+        expect(wall).toBeLessThan(SIX_MINUTES_UPPER_BOUND_MS);
     });
 
     it('stopping a run records its time when the worker parks it stopped', async () => {
-        const { id, token } = await claimBackdated(4);
+        const { id, token } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
         expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
 
         expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
 
         const wall = await wallOf(id);
-        expect(wall).toBeGreaterThanOrEqual(239_000);
-        expect(wall).toBeLessThan(300_000);
+        const FOUR_MINUTES_LOWER_BOUND_MS = 239_000;
+        const FOUR_MINUTES_UPPER_BOUND_MS = 300_000;
+        expect(wall).toBeGreaterThanOrEqual(FOUR_MINUTES_LOWER_BOUND_MS);
+        expect(wall).toBeLessThan(FOUR_MINUTES_UPPER_BOUND_MS);
     });
 
     // The stop nobody delivered: the claim settles the stamped run stopped (issue #152), and the
     // settle banks the segment the attempt actually ran — the same banking the suspend park
     // makes on the delivered path.
     it('the claim settles a stamped expired run stopped, banking its last segment', async () => {
-        const { id } = await claimBackdated(4);
+        const { id } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
         expect(await store.stop(id, null)).toMatchObject({ result: 'requested' });
         await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
 
-        expect(await store.claim('w2', 300)).toBeNull();
+        expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
 
         expect((await store.get(id))?.status).toBe('stopped');
         const wall = await wallOf(id);
-        expect(wall).toBeGreaterThanOrEqual(239_000);
-        expect(wall).toBeLessThan(300_000);
+        const FOUR_MINUTES_LOWER_BOUND_MS = 239_000;
+        const FOUR_MINUTES_UPPER_BOUND_MS = 300_000;
+        expect(wall).toBeGreaterThanOrEqual(FOUR_MINUTES_LOWER_BOUND_MS);
+        expect(wall).toBeLessThan(FOUR_MINUTES_UPPER_BOUND_MS);
     });
 
     // The stop that lands without a worker banks the same way: the row was running for real up
     // to the settle, whichever side of the lease expiry the landing takes.
     it('stopping in place after the lease died banks the run too', async () => {
-        const { id } = await claimBackdated(4);
+        const { id } = await claimBackdated(STOPPED_RUN_MINUTES_AGO);
         await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
 
         expect(await store.stop(id, null)).toEqual({ result: 'stopped' });
 
         expect((await store.get(id))?.status).toBe('stopped');
         const wall = await wallOf(id);
-        expect(wall).toBeGreaterThanOrEqual(239_000);
-        expect(wall).toBeLessThan(300_000);
+        const FOUR_MINUTES_LOWER_BOUND_MS = 239_000;
+        const FOUR_MINUTES_UPPER_BOUND_MS = 300_000;
+        expect(wall).toBeGreaterThanOrEqual(FOUR_MINUTES_LOWER_BOUND_MS);
+        expect(wall).toBeLessThan(FOUR_MINUTES_UPPER_BOUND_MS);
     });
 
-    it('the idle park records the run time too — the segment it ends was real', async () => {
+    it('the park records the run time too — the segment it ends was real', async () => {
         const { id, token } = await claimBackdated(2);
 
-        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'standby' });
+        expect(await store.suspend(id, token)).toEqual({ result: 'ok', status: 'stopped' });
 
         const wall = await wallOf(id);
-        expect(wall).toBeGreaterThanOrEqual(119_000);
-        expect(wall).toBeLessThan(180_000);
+        const TWO_MINUTES_LOWER_BOUND_MS = 119_000;
+        const TWO_MINUTES_UPPER_BOUND_MS = 180_000;
+        expect(wall).toBeGreaterThanOrEqual(TWO_MINUTES_LOWER_BOUND_MS);
+        expect(wall).toBeLessThan(TWO_MINUTES_UPPER_BOUND_MS);
     });
 
     it('stopping a task that never ran records nothing', async () => {
@@ -200,7 +223,7 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         // A queued row has no segment behind it: the claim starts its first attempt, and a clock
         // of zero there would claim a measurement that was never made. Null until something runs.
         const id = await craft();
-        expect(await store.claim('w1', 300)).not.toBeNull();
+        expect(await store.claim('w1', LEASE_SECONDS)).not.toBeNull();
 
         expect(await wallOf(id)).toBeNull();
         for (const job of (await store.thread(id)) ?? []) {
@@ -213,8 +236,11 @@ describe.skipIf(!enabled)('the task wall clock', () => {
         const second = await craft({ parent: root, status: 'failed', wallClockMs: 30_000 });
         const third = await craft({ parent: root, status: 'stopped' });
 
+        const EXPECTED_TASK_WALL_CLOCK_MS = 90_000;
         for (const id of [root, second, third]) {
-            expect((await store.thread(id))?.every((job) => job.taskWallClockMs === 90_000)).toBe(true);
+            expect((await store.thread(id))?.every((job) => job.taskWallClockMs === EXPECTED_TASK_WALL_CLOCK_MS)).toBe(
+                true
+            );
         }
     });
 

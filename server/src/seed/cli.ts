@@ -19,6 +19,7 @@ import { LOCAL_ORG_ID } from '../config.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
 import { generate, SYNTHETIC_MEMBERS } from './synthetic.js';
+import { CLAUDE_CODE } from '@factory-ai/core';
 
 /**
  * A database whose name ends here is understood to be disposable.
@@ -27,6 +28,8 @@ import { generate, SYNTHETIC_MEMBERS } from './synthetic.js';
  * whatever DATABASE_URL happened to be exported, and there is no undo.
  */
 const DISPOSABLE = /_(seed|synthetic|demo|e2e|test)$/;
+
+const MS_PER_DAY = 86_400_000;
 
 function databaseName(url: string): string {
     return new URL(url).pathname.replace(/^\//, '');
@@ -78,8 +81,16 @@ const sql = postgres(config.databaseUrl, { max: 4 });
 try {
     // Seeding is an AUTH_MODE=none affair: one local organization, no GitHub anything. The
     // browser check's github-mode board signs in against the stub IdP and materializes its own
-    // installation org, so nothing to plant here for it either (#99).
+    // installation org, so nothing to plant here for it either (#99) — unless SEED_ORGS names
+    // those orgs: the auth-project server then needs one stored session_branch row per stub
+    // org so the stored fallback (stored-repos.ts, org-scoped) offers the seeded repository to
+    // the signed-in member. Only the branch side channel is planted — no metric points and no
+    // jobs — so those orgs' dashboards still truthfully read empty.
     console.log(`[seed] organization ${LOCAL_ORG_ID} (local)`);
+    const seedOrgs = (process.env.SEED_ORGS ?? '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => /^[\w-]+$/.test(id));
     await migrate(sql, {
         localUser: true,
         attempts: 5,
@@ -92,14 +103,14 @@ try {
     for (const s of data.sessions) {
         await sql`
             insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
-            values (${LOCAL_ORG_ID}, 'claude-code', ${s.sessionId}, ${s.repo}, ${s.branch}, null,
+            values (${LOCAL_ORG_ID}, ${CLAUDE_CODE}, ${s.sessionId}, ${s.repo}, ${s.branch}, null,
                     ${new Date(s.firstSeen)}, ${new Date(s.lastSeen)}, ${s.samples})
             on conflict (org_id, agent, session_id, repo, branch) do nothing
         `;
 
         const mid = new Date((Date.parse(s.firstSeen) + Date.parse(s.lastSeen)) / 2);
         const rows = Object.entries(s.fields).map(([field, value]) => ({
-            agent: 'claude-code',
+            agent: CLAUDE_CODE,
             metric: metricFor(field),
             field,
             session_id: s.sessionId,
@@ -117,6 +128,16 @@ try {
         }));
         await sql`insert into metric_point ${sql(rows)} on conflict do nothing`;
     }
+
+    for (const org of seedOrgs) {
+        await sql`
+            insert into session_branch (org_id, agent, session_id, repo, branch, head_sha, first_seen, last_seen, samples)
+            values (${org}, ${CLAUDE_CODE}, ${`seed-${org}`}, ${repo}, 'main', null,
+                    ${new Date(now.getTime() - MS_PER_DAY)}, ${now}, 1)
+            on conflict (org_id, agent, session_id, repo, branch) do nothing
+        `;
+    }
+    if (seedOrgs.length > 0) console.log(`[seed] stored repos for orgs: ${seedOrgs.join(', ')}`);
 
     // Board rows: the synthetic members and the job threads that attribute a subset of the
     // sessions to them. This is the half that makes the attribution join, the per-task panel

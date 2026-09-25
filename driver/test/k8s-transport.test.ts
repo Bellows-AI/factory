@@ -3,14 +3,16 @@ import type { readFileSync } from 'node:fs';
 import type { request as httpsRequest } from 'node:https';
 import type { RequestOptions } from 'node:https';
 import { describe, expect, it, vi } from 'vitest';
-import { OUTPUT_LIMIT } from '../src/docker.js';
-import { inClusterRequest } from '../src/k8s.js';
+import { OUTPUT_LIMIT } from '../src/runner.js';
+import { inClusterRequest } from '../src/k8s-transport.js';
 
 interface TransportCall {
     options: RequestOptions;
     writes: string[];
     request: EventEmitter;
 }
+
+const OK_STATUS = 200;
 
 function fakeTransport(plans: { status?: number; chunks?: string[]; timeout?: boolean }[]) {
     const calls: TransportCall[] = [];
@@ -30,7 +32,7 @@ function fakeTransport(plans: { status?: number; chunks?: string[]; timeout?: bo
                     return req;
                 }
                 const response = new EventEmitter();
-                Object.assign(response, { statusCode: plan.status ?? 200, setEncoding: vi.fn() });
+                Object.assign(response, { statusCode: plan.status ?? OK_STATUS, setEncoding: vi.fn() });
                 respond(response);
                 queueMicrotask(() => {
                     for (const chunk of plan.chunks ?? []) response.emit('data', chunk);
@@ -106,7 +108,8 @@ describe('the in-cluster kubernetes transport', () => {
     });
 
     it('keeps only a bounded response tail when the API sends an oversized log line', async () => {
-        const transport = fakeTransport([{ chunks: [`prefix-${'x'.repeat(4 * OUTPUT_LIMIT)}`] }]);
+        const OVERSIZED_MULTIPLIER = 4;
+        const transport = fakeTransport([{ chunks: [`prefix-${'x'.repeat(OVERSIZED_MULTIPLIER * OUTPUT_LIMIT)}`] }]);
         const readFile = (() => 'credential') as typeof readFileSync;
         const request = inClusterRequest({
             env: { KUBERNETES_SERVICE_HOST: '10.0.0.1' },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Job, JobStatus, TaskListFilters } from '../src/db/job-store.js';
+import type { Job, JobStatus } from '../src/db/job-store-types.js';
+import type { TaskListFilters } from '../src/db/job-store-types.js';
 import { activityAtOf, decodeCursor, encodeCursor, memoryTaskList, taskBucket } from '../src/db/task-summary.js';
 
 /** ISO stamps count backwards from a fixed base — `at(60)` is an hour before `at(5)`. */
@@ -26,7 +27,6 @@ const job = (overrides: Partial<Job> & { id: string }): Job => ({
     stoppedBy: null,
     doneBy: null,
     sessionId: null,
-    remoteSessionId: null,
     exitCode: null,
     output: null,
     summary: null,
@@ -59,23 +59,44 @@ const task = (
 ];
 
 describe('taskBucket', () => {
-    it('buckets queued, running and standby as running, done stamp or not', () => {
-        for (const status of ['queued', 'running', 'standby'] as const) {
-            expect(taskBucket(status, null)).toBe('running');
-            expect(taskBucket(status, at(5))).toBe('running');
+    it('buckets queued and running as running, done stamp or not', () => {
+        for (const status of ['queued', 'running'] as const) {
+            expect(taskBucket(status, null, null, null)).toBe('running');
+            expect(taskBucket(status, at(5), null, null)).toBe('running');
         }
     });
 
     it('buckets a terminal run without the user done as review', () => {
         for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
-            expect(taskBucket(status, null)).toBe('review');
+            expect(taskBucket(status, null, null, null)).toBe('review');
         }
     });
 
     it('buckets a terminal run the user declared done as past', () => {
         for (const status of ['succeeded', 'failed', 'dead', 'stopped'] as const) {
-            expect(taskBucket(status as JobStatus, at(5))).toBe('past');
+            expect(taskBucket(status as JobStatus, at(5), null, null)).toBe('past');
         }
+    });
+
+    it('buckets a non-terminal status with an open wait as review, not running', () => {
+        // A thread parked on an open PR-review wait is not terminal by status (it may be any
+        // non-terminal status the wait-entry mechanism uses), but it is exactly the actionable
+        // "needs a human" case review exists for.
+        for (const status of ['queued', 'running'] as const) {
+            expect(taskBucket(status, null, 'review', null)).toBe('review');
+        }
+    });
+
+    it('buckets an open wait as past when the task is already done, never running', () => {
+        expect(taskBucket('queued', at(5), 'review', null)).toBe('past');
+    });
+
+    it('falls back to the status-based bucket once a wait has gone terminal', () => {
+        // A wait that finished or was cancelled (waitTerminalReason set) no longer overrides the
+        // bucket — the ordinary terminal/done rules decide, exactly as with no wait at all.
+        expect(taskBucket('queued', null, 'review', 'exhausted')).toBe('running');
+        expect(taskBucket('succeeded', null, 'review', 'exhausted')).toBe('review');
+        expect(taskBucket('succeeded', at(5), 'review', 'exhausted')).toBe('past');
     });
 });
 
@@ -218,6 +239,11 @@ describe('memoryTaskList', () => {
             author: { id: 'u1', login: 'cat', name: 'Cat', avatarUrl: null },
             activity: 'the live line',
             summary: null,
+            // The in-memory engine carries no PR-wait rows; the SQL engine's lateral join
+            // populates these for a thread that ever waited.
+            waitReason: null,
+            waitingSince: null,
+            waitTerminalReason: null,
             createdAt: at(60),
             activityAt: at(20),
         });

@@ -1,45 +1,53 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claudeTurnsScript } from '../src/docker.js';
-import { CONTAINER_GONE } from '../src/exec-codes.js';
-import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s.js';
+import { claudeTurnsScript } from '../src/container-scripts.js';
+import { lookupHelper } from '../src/helpers.js';
+import type { HelperPlan } from '../src/helpers.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import { POLL_MAX_CONSECUTIVE_FAILURES, parseServicePods, parsePodMetrics } from '../src/k8s-transport.js';
 import {
-    POLL_MAX_CONSECUTIVE_FAILURES,
     bellowsJobSpec,
-    claimName,
     claudeTurnsJobName,
     claudeTurnsJobSpec,
-    createKubernetesGateManager,
-    createKubernetesRunner,
     envBodyToData,
     gateEnvSecretName,
-    gateJobName,
     gateJobSpec,
-    jobPath,
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
-    parseServicePods,
-    parsePodMetrics,
+    runnerJobName,
+    runnerJobSpec,
+    secretName,
+} from '../src/k8s-podspec.js';
+import {
+    claimName,
+    helperEnvSecretName,
+    helperJobName,
+    helperJobSpec,
+    jobPath,
     publishEnvSecretName,
     publishStepJobName,
     publishStepJobSpec,
-    runnerJobName,
-    runnerJobSpec,
     reclaimJobName,
     reclaimJobSpec,
-    secretName,
     serviceDnsSpec,
     servicePodSpec,
     syncEnvSecretName,
     syncJobName,
     syncJobSpec,
-} from '../src/k8s.js';
+} from '../src/k8s-auxspec.js';
+import { createKubernetesGateManager } from '../src/k8s-gates.js';
+import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
+
+/** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
+ *  presence matters to this file's own tests, none of which assert its exact text. */
+const MASTER_PROMPT =
+    'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
 
 const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
@@ -47,6 +55,8 @@ const job: BoardJob = {
     attempts: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
+    masterPrompt: MASTER_PROMPT,
     resumeSessionId: null,
     followUp: false,
     userId: USER,
@@ -54,6 +64,7 @@ const job: BoardJob = {
 };
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
+const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
 
 const spec = (env: NodeJS.ProcessEnv = {}) =>
     runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), job, { id: SESSION, resume: false });
@@ -79,19 +90,37 @@ describe('the runner job spec', () => {
         expect(spec().spec.template.spec.containers[0].args).toEqual([
             '--session-id',
             SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
             '-p',
             'fix the failing build',
         ]);
     });
 
-    // The command is delivered once. On a resume it is already in the transcript, and sending it
-    // again would re-run the work somebody has been driving by hand.
-    it('restores a resumed session without re-sending the command', () => {
-        expect(resumedSpec().spec.template.spec.containers[0].args).toEqual(['--resume', SESSION]);
+    // Parity, decided in docker's favour: the prompt is delivered on EVERY run, resume included.
+    // This platform used to suppress it on a resume that was not a follow-up, and docker never
+    // did — one of the two had to be wrong, and a restored conversation that receives no prompt
+    // idles to the deadline. The Factory execution context rides every claim either way, so a
+    // resumed conversation always rebuilds it fresh (issue #244). The docker twin of this case is
+    // pinned in docker.test.ts ('delivers the prompt on a resume too').
+    it('delivers the command into a resumed session, exactly as the docker runner does', () => {
+        expect(resumedSpec().spec.template.spec.containers[0].args).toEqual([
+            '--resume',
+            SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
+            '-p',
+            'fix the failing build',
+        ]);
     });
 
-    // The docker runner's follow-up rule, unchanged on this platform: a follow-up restores the
-    // parent conversation AND delivers the adjustment into it.
+    // The follow-up arm of the same rule: it restores the parent conversation AND delivers the
+    // adjustment into it. Identical to the resume case above now that the two agree — kept
+    // separate because the follow-up flag is the one a board change could move independently.
     it('delivers the command into the restored session on a follow-up', () => {
         const followUpSpec = runnerJobSpec(
             loadDriverConfig({ EXECUTOR: 'kubernetes' }),
@@ -101,6 +130,10 @@ describe('the runner job spec', () => {
         expect(followUpSpec.spec.template.spec.containers[0].args).toEqual([
             '--resume',
             SESSION,
+            '--append-system-prompt',
+            MASTER_PROMPT,
+            '--system-prompt-snapshot',
+            'off',
             '-p',
             'fix the failing build',
         ]);
@@ -156,8 +189,7 @@ describe('the runner job spec', () => {
 
     // Executor parity for the transcript store (issue #55): the same name with the same
     // driver-composed path the docker argv carries for the same claim, so persistence does not
-    // depend on which executor ran the job. Headless claude-code only — Remote Control has no
-    // counterpart on this platform, and opencode is pinned just below.
+    // depend on which executor ran the job. Claude-code only — opencode is pinned just below.
     it('carries the transcript store for claude-code, the same path docker composes', () => {
         const container = spec().spec.template.spec.containers[0];
         expect(container.env).toContainEqual({
@@ -170,7 +202,7 @@ describe('the runner job spec', () => {
     });
 
     it('never carries the transcript store for opencode', () => {
-        const ocSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode' }), job, null);
+        const ocSpec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null);
         expect(ocSpec.spec.template.spec.containers[0].env.some((e) => e.name === 'FACTORY_TRANSCRIPT_DIR')).toBe(
             false
         );
@@ -192,7 +224,7 @@ describe('the runner job spec', () => {
     it('refuses a workspace path that is not <org>/<uuid>', () => {
         /*
          * The board is not something this process trusts with a fragment of a command line — the
-         * same rule remoteSessionArgs applies to a session id, and the stakes are higher here:
+         * same rule every board-supplied id is held to, and the stakes are higher here:
          * the value becomes the agent's working directory, and `..` in it points at the parent of
          * every member's tree.
          */
@@ -364,13 +396,13 @@ describe('the runner job spec', () => {
             value: SESSION,
         });
         const opencode = (env: NodeJS.ProcessEnv = {}) =>
-            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode', ...env }), job, null).spec
-                .template.spec.containers[0];
+            runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', ...env }), opencodeJob, null).spec.template.spec
+                .containers[0];
         expect(opencode().env.some((entry) => entry.name === 'BELLOWS_SESSION_ID')).toBe(false);
         expect(
             runnerJobSpec(
-                loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_CLI: 'opencode' }),
-                { ...job, followUp: true },
+                loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+                { ...opencodeJob, followUp: true },
                 { id: SESSION, resume: true }
             ).spec.template.spec.containers[0].env
         ).toContainEqual({ name: 'BELLOWS_SESSION_ID', value: SESSION });
@@ -474,10 +506,6 @@ interface Call {
     path: string;
     body?: unknown;
 }
-
-type Route = (path: string, body?: unknown) => K8sResponse | Promise<K8sResponse>;
-
-const ANSWER: Record<string, Route> = {};
 
 const namespace = 'factory';
 
@@ -805,7 +833,9 @@ describe('the worktree sync', () => {
             stringData: { CORE_TOKEN: 'shh' },
         });
         // The Job the sync POSTs is the sync's own, named after this attempt.
-        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(syncJobName(envJob));
+        expect((jobPost?.body as { metadata?: { name?: string } } | undefined)?.metadata?.name).toBe(
+            syncJobName(envJob)
+        );
         const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
         expect(order.indexOf(`POST ${secretsPath}`)).toBeLessThan(order.indexOf(`POST ${jobsPath(namespace)}`));
         // Reaped with the verdict, the same accepted-leak posture the runner env Secret has.
@@ -838,7 +868,9 @@ describe('the worktree sync', () => {
         expect(result).toEqual({ ok: true, reason: null });
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
         const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
-        expect((jobPost?.body as { metadata?: { name?: string } }).metadata?.name).toBe(syncJobName(followJob));
+        expect((jobPost?.body as { metadata?: { name?: string } } | undefined)?.metadata?.name).toBe(
+            syncJobName(followJob)
+        );
         expect(JSON.stringify(jobPost?.body)).toContain('"name":"RESTORE","value":"1"');
         // The checkout claim is taken and, on success, held through the run as ever.
         const order = calls.map((call) => `${call.method} ${(call.path ?? '').split('?')[0]}`);
@@ -989,7 +1021,7 @@ describe('the worktree sync', () => {
         const release = calls.find((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
         expect(release).toBeDefined();
         // The uid precondition is what keeps a stale release from reaching a newer claim.
-        expect((release?.body as { preconditions?: { uid?: string } }).preconditions?.uid).toBeDefined();
+        expect((release?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toBeDefined();
     });
 
     /*
@@ -1231,11 +1263,9 @@ describe('publishing the produced work', () => {
     const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
 
     it('runs one step as an aux Job in the worktree, fenced by the attempt labels', () => {
-        const spec = publishStepJobSpec(
-            cfg(),
-            ISSUE_JOB,
-            2,
-            {
+        const spec = publishStepJobSpec(cfg(), ISSUE_JOB, {
+            step: 2,
+            publish: {
                 label: 'git push',
                 entrypoint: 'git',
                 args: [
@@ -1250,9 +1280,9 @@ describe('publishing the produced work', () => {
                 env: true,
                 inRepo: true,
             },
-            publishEnvSecretName(ISSUE_JOB),
-            WT
-        );
+            envSecret: publishEnvSecretName(ISSUE_JOB),
+            repo: WT,
+        });
         expect(spec.metadata.name).toBe(publishStepJobName(ISSUE_JOB, 2));
         expect(spec.metadata.labels).toEqual({ 'factory.job': ISSUE_JOB.id, 'factory.lease': ISSUE_JOB.leaseToken });
         expect(spec.spec.template.metadata.labels).toEqual(spec.metadata.labels);
@@ -1286,11 +1316,9 @@ describe('publishing the produced work', () => {
     });
 
     it('takes no workingDir and only the REPO literal for the probe', () => {
-        const probe = publishStepJobSpec(
-            cfg(),
-            ISSUE_JOB,
-            1,
-            {
+        const probe = publishStepJobSpec(cfg(), ISSUE_JOB, {
+            step: 1,
+            publish: {
                 label: 'probe',
                 entrypoint: 'node',
                 args: ['-e', gitProbeScript],
@@ -1298,23 +1326,21 @@ describe('publishing the produced work', () => {
                 envLiterals: { REPO: WT },
                 inRepo: false,
             },
-            publishEnvSecretName(ISSUE_JOB),
-            WT
-        ).spec.template.spec.containers[0];
+            envSecret: publishEnvSecretName(ISSUE_JOB),
+            repo: WT,
+        }).spec.template.spec.containers[0];
         expect(probe.workingDir).toBeUndefined();
         expect(probe.envFrom).toBeUndefined();
         expect(probe.env).toEqual([{ name: 'REPO', value: WT }]);
     });
 
     it('names no Secret at all for a step that needs no env', () => {
-        const plain = publishStepJobSpec(
-            cfg(),
-            ISSUE_JOB,
-            4,
-            { label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true },
-            publishEnvSecretName(ISSUE_JOB),
-            WT
-        ).spec.template.spec.containers[0];
+        const plain = publishStepJobSpec(cfg(), ISSUE_JOB, {
+            step: 4,
+            publish: { label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true },
+            envSecret: publishEnvSecretName(ISSUE_JOB),
+            repo: WT,
+        }).spec.template.spec.containers[0];
         expect(plain.envFrom).toBeUndefined();
         expect(plain.env).toBeUndefined();
     });
@@ -1378,7 +1404,16 @@ describe('publishing the produced work', () => {
         ]);
         const result = await runner(request).publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
         expect(posted.map((call) => (call.body as { metadata?: { name?: string } }).metadata?.name)).toEqual(
             [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => publishStepJobName(ISSUE_JOB, n))
@@ -1500,6 +1535,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'the checkout has not been cloned yet',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
@@ -1531,6 +1569,9 @@ describe('publishing the produced work', () => {
             branch: null,
             prUrl: null,
             reason: 'no uncommitted changes and nothing unpushed',
+            repository: null,
+            baseBranch: null,
+            prNumber: null,
         });
         expect(
             calls.filter(
@@ -1560,7 +1601,16 @@ describe('publishing the produced work', () => {
         ]);
         const result = await runner(request).publishGit(ISSUE_JOB);
 
-        expect(result).toEqual({ ok: true, published: true, branch: 'fix/10', prUrl: PR_URL, reason: null });
+        expect(result).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
         expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(3);
     });
 
@@ -1792,7 +1842,6 @@ describe('the kubernetes runner', () => {
             exitCode: 0,
             output: 'did the work\n',
             timedOut: false,
-            idled: false,
             started: true,
         });
     });
@@ -1845,6 +1894,32 @@ describe('the kubernetes runner', () => {
         // The Secret is never empty now: the runner's own branch-ingest credential is always in it.
         expect(secretPost?.body).toMatchObject({
             stringData: { RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken },
+        });
+    });
+
+    // Issue #244: the per-attempt Secret and the pod spec's env NAMES must agree on
+    // OPENCODE_CONFIG_CONTENT — one merge (runnerClaimEnv), never two, or the two could drift the
+    // way `secretEnv`/`runnerEnv` used `claimEnv` independently before this change.
+    it('merges the reserved factory agent into the runner Secret and references it by name in the pod spec', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request).run(opencodeJob, null);
+
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
+        expect(JSON.parse(stringData.OPENCODE_CONFIG_CONTENT ?? '{}')).toEqual({
+            agent: { factory: { mode: 'primary', prompt: MASTER_PROMPT, disable: false } },
+        });
+
+        const jobPost = calls.find((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        const env = (jobPost?.body as { spec?: { template?: { spec?: { containers?: { env?: unknown[] }[] } } } })?.spec
+            ?.template?.spec?.containers?.[0]?.env as {
+            name: string;
+            valueFrom?: { secretKeyRef?: { key: string } };
+        }[];
+        expect(env).toContainEqual({
+            name: 'OPENCODE_CONFIG_CONTENT',
+            valueFrom: { secretKeyRef: { name: secretName(opencodeJob), key: 'OPENCODE_CONFIG_CONTENT' } },
         });
     });
 
@@ -1997,7 +2072,6 @@ describe('the kubernetes runner', () => {
             exitCode: 0,
             output: 'did the work\n',
             timedOut: false,
-            idled: false,
             started: true,
         });
     });
@@ -3167,7 +3241,6 @@ describe('the kubernetes runner', () => {
      * attempt-scoped Job and standing down — never by touching anything of the winner's.
      */
     it('stands down and removes its own Job when the claim is taken over between the Job POST and the verify', async () => {
-        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
         const claimPath = claimPathFor(job.id);
         const calls: Call[] = [];
         let jobPosted = false;
@@ -3927,7 +4000,6 @@ describe('the kubernetes runner', () => {
      * must not turn a no-op release into a delete of a claim this attempt does not hold.
      */
     it('leaves a taken-over claim untouched when the stand-down deletes nothing', async () => {
-        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
         const claimPath = claimPathFor(job.id);
         const calls: Call[] = [];
         let jobPosted = false;
@@ -4567,13 +4639,6 @@ describe('the kubernetes runner', () => {
         const { request } = fakeRequest();
         await expect(runner(request).kill({ ...job, id: 'not-a-uuid' })).rejects.toThrow(/not a uuid/);
     });
-
-    // Remote Control is refused at config under this executor, and the loop only polls the remote
-    // id under Remote Control — so the honest answer here is the interface's own null.
-    it('answers null for the remote session id', async () => {
-        const { request } = fakeRequest();
-        expect(await runner(request).remoteSessionId(job, SESSION)).toBeNull();
-    });
 });
 
 // ==============================================================================================
@@ -4590,18 +4655,16 @@ const gatedConfig = loadDriverConfig({
 
 describe('the gate job spec', () => {
     const ROOT_KEY = '55555555-5555-4555-8555-555555555555';
-    const gateSpec = (overrides: Parameters<typeof gateJobSpec>[6] = 1, envSecret: string | null = 'the-secret') =>
-        gateJobSpec(
-            gatedConfig,
-            job,
-            `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            'node:24',
-            'test',
-            'npm test',
-            overrides,
-            envSecret,
-            30_000
-        );
+    const gateSpec = (overrides = 1, envSecret: string | null = 'the-secret') =>
+        gateJobSpec(gatedConfig, job, {
+            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            image: 'node:24',
+            gateName: 'test',
+            command: 'npm test',
+            run: overrides,
+            envSecretName: envSecret,
+            gateTimeoutMs: 30_000,
+        });
 
     it('is a batch/v1 Job named after the job id, lease and gate, unique per run', () => {
         expect(gateSpec().apiVersion).toBe('batch/v1');
@@ -4678,17 +4741,15 @@ describe('the gate job spec', () => {
     });
 
     it('sanitizes a hostile gate name into a legal k8s name without carrying it raw', () => {
-        const s = gateJobSpec(
-            gatedConfig,
-            job,
-            `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-            'node:24',
-            'UPPER Case!!',
-            'npm test',
-            1,
-            null,
-            30_000
-        );
+        const s = gateJobSpec(gatedConfig, job, {
+            key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+            image: 'node:24',
+            gateName: 'UPPER Case!!',
+            command: 'npm test',
+            run: 1,
+            envSecretName: null,
+            gateTimeoutMs: 30_000,
+        });
         expect(s.metadata.name).toMatch(/^factory-gate-[a-z0-9.-]+-[0-9a-f]{16}$/);
         expect(s.metadata.name).not.toContain('UPPER');
         expect(s.metadata.name).not.toContain('Case');
@@ -4697,20 +4758,26 @@ describe('the gate job spec', () => {
     it('refuses a checkout key or image that is not the shape the board legally produces', () => {
         expect(() => gateSpec(1, null)).not.toThrow();
         expect(() =>
-            gateJobSpec(gatedConfig, job, '../other-member/repo', 'node:24', 'test', 'npm test', 1, null, 30_000)
+            gateJobSpec(gatedConfig, job, {
+                key: '../other-member/repo',
+                image: 'node:24',
+                gateName: 'test',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            })
         ).toThrow(/checkout key/);
         expect(() =>
-            gateJobSpec(
-                gatedConfig,
-                job,
-                `bellows/${USER}/.worktrees/${ROOT_KEY}`,
-                '-flag-image',
-                'test',
-                'npm test',
-                1,
-                null,
-                30_000
-            )
+            gateJobSpec(gatedConfig, job, {
+                key: `bellows/${USER}/.worktrees/${ROOT_KEY}`,
+                image: '-flag-image',
+                gateName: 'test',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            })
         ).toThrow(/image reference/);
     });
 });
@@ -4841,6 +4908,23 @@ describe('the kubernetes gate manager', () => {
 
     it('rejects with the harness code when the cluster refuses the run', async () => {
         const { request } = gateFake({ jobCreate: { status: 403, body: 'forbidden' } });
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
+    });
+
+    // Verified bug (docs/plans/k8s-runner-prune.md Step 0): a transport failure that exhausts the
+    // status-poll retries used to rethrow the raw error with no CONTAINER_GONE code, while the
+    // 429/5xx exhaustion arm already wrapped it — so `gates.ts`'s ad-hoc endpoint (which maps
+    // CONTAINER_GONE to 409) answered 500 for a kubernetes API-server outage where docker answers
+    // 409 for the same harness failure.
+    it('rejects with the harness code when the api server cannot be reached at all', async () => {
+        const request: K8sRequest = (method, path) => {
+            if (path === `/api/v1/namespaces/${namespace}/secrets`) return Promise.resolve({ status: 201, body: '{}' });
+            if (path === jobsPath(namespace)) return Promise.resolve({ status: 201, body: '{}' });
+            if (path.startsWith(`${jobsPath(namespace)}/`)) return Promise.reject(new Error('ECONNREFUSED'));
+            return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
+        };
         const m = manager(request);
         await m.acquire(KEY, 'node:24', '', job);
         await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
@@ -4987,7 +5071,6 @@ describe('the service pod and DNS specs', () => {
 });
 
 describe('the kubernetes services flow', () => {
-    const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
     const BELLOWS_OUTPUT =
         '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
 
@@ -5130,14 +5213,14 @@ describe('the kubernetes services flow', () => {
             if (path.startsWith(`${jobsPath(namespace)}/`) && decodeURIComponent(path).includes('factory-bellows')) {
                 return Promise.resolve({ status: 404, body: '{}' });
             }
-            return servicesFake().request(method, path, body);
+            return request(method, path, body);
         };
         await expect(servicesRunner(failing).run(job, { id: SESSION, resume: false })).rejects.toThrow();
     });
 });
 
 /**
- * RUNNER_CLI=opencode under EXECUTOR=kubernetes: the same `run [--session <id>] <command>` argv
+ * An opencode-selected task under EXECUTOR=kubernetes: the same `run [--session <id>] <command>` argv
  * the docker runner composes, a session database persisted on the PVC, and the close-time
  * session scrape as an aux Job. The spec tests pin the shapes; the runner tests pin that the
  * scrape rides the run's outcome the way docker's verdict does.
@@ -5154,30 +5237,26 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
     it('mounts nothing broader than the member subtree — every spec names the exact target', () => {
         const specs = [
             runnerJobSpec(cfg(), job, { id: SESSION, resume: false }),
-            gateJobSpec(
-                cfg(),
-                job,
-                `bellows/${USER}/.worktrees/${job.id}`,
-                'node:24',
-                't',
-                'npm test',
-                1,
-                null,
-                30_000
-            ),
+            gateJobSpec(cfg(), job, {
+                key: `bellows/${USER}/.worktrees/${job.id}`,
+                image: 'node:24',
+                gateName: 't',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            }),
             bellowsJobSpec(cfg(), job),
             opencodeReadoutJobSpec(cfg(), job, '2026-09-01T00:00:00Z'),
             claudeTurnsJobSpec(cfg(), job, SESSION, '2026-09-01T00:00:00Z'),
             syncJobSpec(cfg(), repoJob, null),
             reclaimJobSpec(cfg(), repoJob),
-            publishStepJobSpec(
-                cfg(),
-                repoJob,
-                1,
-                { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                null,
-                '/wt'
-            ),
+            publishStepJobSpec(cfg(), repoJob, {
+                step: 1,
+                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                envSecret: null,
+                repo: '/wt',
+            }),
         ];
         for (const s of specs) {
             const mount = s.spec.template.spec.containers[0].volumeMounts.find((m) => m.name === 'workspaces');
@@ -5200,10 +5279,12 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
             publishStepJobSpec(
                 cfg(),
                 { ...broken, repo: 'Bellows-AI/factory' },
-                1,
-                { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
-                null,
-                '/wt'
+                {
+                    step: 1,
+                    publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                    envSecret: null,
+                    repo: '/wt',
+                }
             )
         ).toThrow(/workspace path/);
     });
@@ -5212,25 +5293,31 @@ describe("scoping the kubernetes mounts to the job's own subtree", () => {
 describe('the runner job spec under opencode', () => {
     const ocConfig = loadDriverConfig({
         EXECUTOR: 'kubernetes',
-        RUNNER_CLI: 'opencode',
         K8S_NAMESPACE: namespace,
         RUNNER_SERVICES: '0',
     });
 
     it('runs a fresh job headless, with no session argv at all', () => {
-        const spec = runnerJobSpec(ocConfig, job, null);
+        const spec = runnerJobSpec(ocConfig, opencodeJob, null);
         const container = spec.spec.template.spec.containers[0];
-        expect(container.args).toEqual(['run', 'fix the failing build']);
+        expect(container.args).toEqual(['run', '--agent', 'factory', 'fix the failing build']);
     });
 
     it('restores a follow-up session with run --session, the id the CLI itself minted', () => {
-        const spec = runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'ses_abc123', resume: true });
+        const spec = runnerJobSpec(ocConfig, { ...opencodeJob, followUp: true }, { id: 'ses_abc123', resume: true });
         const container = spec.spec.template.spec.containers[0];
-        expect(container.args).toEqual(['run', '--session', 'ses_abc123', 'fix the failing build']);
+        expect(container.args).toEqual([
+            'run',
+            '--agent',
+            'factory',
+            '--session',
+            'ses_abc123',
+            'fix the failing build',
+        ]);
     });
 
     it('persists the session database on the workspaces volume, under the member tree', () => {
-        const spec = runnerJobSpec(ocConfig, job, null);
+        const spec = runnerJobSpec(ocConfig, opencodeJob, null);
         const xdg = spec.spec.template.spec.containers[0].env.find((e) => e.name === 'XDG_DATA_HOME');
         expect(xdg).toEqual({
             name: 'XDG_DATA_HOME',
@@ -5252,15 +5339,19 @@ describe('the runner job spec under opencode', () => {
         expect(spec.spec.template.spec.containers[0].env.some((e) => e.name === 'XDG_DATA_HOME')).toBe(false);
     });
 
-    it('refuses to restore a session for anything but a follow-up, as dockerArgs does', () => {
-        expect(() => runnerJobSpec(ocConfig, job, { id: 'ses_abc123', resume: true })).toThrow(
-            /restores a session only for a follow-up/
+    // The unified predicate is docker's: opencode mints its own ids and cannot ADOPT one minted
+    // in advance, which is exactly what a session with `resume: false` is. This platform used to
+    // refuse on `!job.followUp` instead, which rejected a legitimate resumed claim and accepted a
+    // minted one — the opposite of the rule the CLI actually has.
+    it('refuses to adopt a minted session, as dockerArgs does', () => {
+        expect(() => runnerJobSpec(ocConfig, opencodeJob, { id: 'ses_abc123', resume: false })).toThrow(
+            /cannot adopt a minted session/
         );
     });
 
     it('refuses a session id that is not a safe token, before it reaches argv', () => {
         expect(() =>
-            runnerJobSpec(ocConfig, { ...job, followUp: true }, { id: 'bad id; rm -rf', resume: true })
+            runnerJobSpec(ocConfig, { ...opencodeJob, followUp: true }, { id: 'bad id; rm -rf', resume: true })
         ).toThrow(/not a safe token/);
     });
 });
@@ -5268,7 +5359,6 @@ describe('the runner job spec under opencode', () => {
 describe('the opencode session readout job', () => {
     const config = loadDriverConfig({
         EXECUTOR: 'kubernetes',
-        RUNNER_CLI: 'opencode',
         K8S_NAMESPACE: namespace,
         RUNNER_SERVICES: '0',
     });
@@ -5448,7 +5538,6 @@ describe('the kubernetes runner under opencode', () => {
         createKubernetesRunner(
             loadDriverConfig({
                 EXECUTOR: 'kubernetes',
-                RUNNER_CLI: 'opencode',
                 K8S_NAMESPACE: namespace,
                 RUNNER_SERVICES: '0',
             }),
@@ -5467,7 +5556,7 @@ describe('the kubernetes runner under opencode', () => {
                 summary: 'Fixed the flaky test',
             }),
         });
-        const outcome = await ocRunner(request).run(job, null);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
 
         expect(outcome.sessionId).toBe('ses_n3w');
         expect(outcome.finishReason).toBe('stop');
@@ -5505,7 +5594,7 @@ describe('the kubernetes runner under opencode', () => {
                 error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
             }),
         });
-        const outcome = await ocRunner(request).run(job, null);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
 
         expect(outcome.sessionId).toBe('ses_n3w');
         expect(outcome.finishReason).toBe('tool-calls');
@@ -5528,16 +5617,16 @@ describe('the kubernetes runner under opencode', () => {
                     body: scrapeRuns < 3 ? '' : JSON.stringify({ id: 'ses_late', finish: 'stop' }),
                 });
             }
-            return opencodeFake().request(method, path, body);
+            return request(method, path, body);
         };
-        const outcome = await ocRunner(flaky).run(job, null);
+        const outcome = await ocRunner(flaky).run(opencodeJob, null);
         expect(scrapeRuns).toBe(3);
         expect(outcome.sessionId).toBe('ses_late');
     });
 
     it('fails no verdict when the scrape cannot run: the error rides readoutError instead', async () => {
         const { request, calls } = opencodeFake({ status: 'failed' });
-        const outcome = await ocRunner(request).run(job, null);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
 
         // The run's own verdict is untouched; only the follow-up-ability was lost, said out loud.
         expect(outcome.exitCode).toBe(0);
@@ -5561,5 +5650,229 @@ describe('the kubernetes runner under opencode', () => {
                     (c.body as { metadata?: { name?: string } })?.metadata?.name?.startsWith('factory-ocread-')
             )
         ).toBe(false);
+    });
+});
+
+describe('the block-helper transport (issue #207)', () => {
+    const NOOP_DESCRIPTOR = lookupHelper('noop')!;
+    const NOOP_VERDICT = JSON.stringify({ schema: 'helper-noop/v1', version: 1, ok: true, output: { echoed: true } });
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory', env: { GITHUB_TOKEN: 'claim-token' } };
+    const WT = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
+    const plan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
+        helperId: 'noop',
+        phase: 'pre',
+        input: { a: 1 },
+        githubWriting: false,
+        ...over,
+    });
+    const secretsPathFor = `/api/v1/namespaces/${namespace}/secrets`;
+
+    const NONCE = '77777777-7777-4777-8777-777777777777';
+
+    it('builds the aux Job spec: content-passed script, literal bounded input, task worktree', () => {
+        const withRepo = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), repoJob, {
+            plan: plan(),
+            descriptor: NOOP_DESCRIPTOR,
+            envSecret: null,
+            nonce: NONCE,
+        });
+        expect(withRepo.metadata.name).toBe(helperJobName(repoJob, plan(), NONCE));
+        expect(withRepo.metadata.labels).toEqual({ 'factory.job': repoJob.id, 'factory.lease': repoJob.leaseToken });
+        const container = withRepo.spec.template.spec.containers[0];
+        expect(container.command).toEqual(['node', '-e', NOOP_DESCRIPTOR.scriptBody]);
+        expect(container.env).toEqual([{ name: 'HELPER_INPUT', value: JSON.stringify({ a: 1 }) }]);
+        expect(container.envFrom).toBeUndefined();
+        expect(container.workingDir).toBe(WT);
+        expect(withRepo.spec.template.spec.automountServiceAccountToken).toBe(false);
+        expect(withRepo.spec.backoffLimit).toBe(0);
+        expect(withRepo.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+
+        // A command-only job (no repo): no working directory, the member root's own mount.
+        const noRepo = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, {
+            plan: plan(),
+            descriptor: NOOP_DESCRIPTOR,
+            envSecret: null,
+            nonce: NONCE,
+        }).spec.template.spec.containers[0];
+        expect(noRepo.workingDir).toBeUndefined();
+    });
+
+    it('references the env Secret by name only, never a credential value, when one is given', () => {
+        const secret = helperEnvSecretName(repoJob, plan({ githubWriting: true }), NONCE);
+        const withSecret = helperJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), repoJob, {
+            plan: plan({ githubWriting: true }),
+            descriptor: NOOP_DESCRIPTOR,
+            envSecret: secret,
+            nonce: NONCE,
+        });
+        expect(withSecret.spec.template.spec.containers[0].envFrom).toEqual([{ secretRef: { name: secret } }]);
+        expect(JSON.stringify(withSecret)).not.toContain('claim-token');
+    });
+
+    it('pre and post plans of the same helper never collide on a Job name, even with the same nonce', () => {
+        expect(helperJobName(job, plan({ phase: 'pre' }), NONCE)).not.toBe(
+            helperJobName(job, plan({ phase: 'post' }), NONCE)
+        );
+    });
+
+    it('two plans of the same phase and helper never collide, because each call mints its own nonce', () => {
+        // The naming collision a bare (job, plan) hash would have: nothing but the nonce tells
+        // two identical-looking plans of one phase apart, so this is the pin that actually
+        // matters — see helperJobName's own comment for the failure this closes.
+        expect(helperJobName(job, plan(), '11111111-1111-4111-8111-000000000001')).not.toBe(
+            helperJobName(job, plan(), '11111111-1111-4111-8111-000000000002')
+        );
+    });
+
+    it('fails an unknown helper id before any Job or Secret is created', async () => {
+        const { request, calls } = fakeRequest();
+        const result = await runner(request).runHelper!(job, plan({ helperId: 'not-a-real-helper' }));
+        expect(result).toEqual({
+            ok: false,
+            reason: 'unknown_helper',
+            message: expect.stringContaining('not-a-real-helper'),
+        });
+        expect(calls.length).toBe(0);
+    });
+
+    it('runs the noop helper end to end as an aux Job, and cleans it up', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: true, output: { echoed: true } });
+        // The name is minted fresh per call (a nonce, not a bare (job, plan) hash — see
+        // helperJobName), so it is read off the actual create rather than precomputed.
+        const jobPost = calls.find((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(jobPost).toBeDefined();
+        const jobName = (jobPost!.body as { metadata: { name: string } }).metadata.name;
+        expect(calls.some((c) => c.method === 'DELETE' && c.path.startsWith(jobPath(namespace, jobName)))).toBe(true);
+        // A read-only helper creates no Secret.
+        expect(calls.some((c) => c.path === secretsPathFor && c.method === 'POST')).toBe(false);
+    });
+
+    it('creates an attempt-scoped Secret only for a github-writing helper, and reaps it', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        await runner(request).runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-install-token');
+        const secretPost = calls.find((c) => c.method === 'POST' && c.path === secretsPathFor);
+        expect(secretPost).toBeDefined();
+        const body = secretPost!.body as { metadata: { name: string }; stringData?: Record<string, string> };
+        expect(body.stringData?.GITHUB_TOKEN).toBe('fresh-install-token');
+        const secretName = body.metadata.name;
+        expect(calls.some((c) => c.method === 'DELETE' && c.path === `${secretsPathFor}/${secretName}`)).toBe(true);
+    });
+
+    it('never puts the token in the Job container command/args — only ever in the Secret', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        await runner(request).runHelper!(repoJob, plan({ githubWriting: true }), 'super-secret-token');
+        const jobPost = calls.find((c) => c.method === 'POST' && c.path === jobsPath(namespace));
+        expect(jobPost).toBeDefined();
+        expect(JSON.stringify(jobPost!.body)).not.toContain('super-secret-token');
+    });
+
+    it('mints a fresh Job/Secret name on every call, even for the identical plan run twice in a row', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        await runner(request).runHelper!(job, plan());
+        await runner(request).runHelper!(job, plan());
+        const names = calls
+            .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
+            .map((c) => (c.body as { metadata: { name: string } }).metadata.name);
+        expect(names).toHaveLength(2);
+        expect(names[0]).not.toBe(names[1]);
+    });
+
+    it('reports a named timeout failure when the kubelet deadline ends the Job', async () => {
+        const { request } = fakeRequest({ job: FAKE.failed, log: { status: 200, body: 'ran out of time' } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'timeout', message: expect.any(String) });
+    });
+
+    it('reports runner_error for an ordinary non-zero exit, distinct from a timeout', async () => {
+        const { request } = fakeRequest({
+            job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: { containerStatuses: [{ state: { terminated: { exitCode: 1 } } }] },
+                        },
+                    ],
+                }),
+            },
+            log: { status: 200, body: 'boom' },
+        });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('boom') });
+    });
+
+    it('reports runner_error when the API server refuses the Secret create', async () => {
+        const { request } = fakeRequest({ secretCreate: { status: 500, body: 'server error' } });
+        const result = await runner(request).runHelper!(repoJob, plan({ githubWriting: true }), 'fresh-token');
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('500') });
+    });
+
+    it('reports runner_error for a thrown transport failure, never letting it escape as an exception', async () => {
+        const request: K8sRequest = async () => {
+            throw new Error('the api server connection reset');
+        };
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({
+            ok: false,
+            reason: 'runner_error',
+            message: expect.stringContaining('connection reset'),
+        });
+    });
+
+    it('reports malformed_output for stdout that is not the versioned verdict', async () => {
+        const { request } = fakeRequest({ log: { status: 200, body: 'not json at all' } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'malformed_output', message: expect.any(String) });
+    });
+
+    it('reports runner_error when the API server refuses the Job create', async () => {
+        const { request } = fakeRequest({ create: { status: 500, body: 'server error' } });
+        const result = await runner(request).runHelper!(job, plan());
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('500') });
+    });
+});
+
+// A private registry is the normal case in a cluster, and every pod this driver specs pulls on its
+// own: the runner, each aux Job (sync shown — they all share `auxJobSpec`) and each service pod.
+describe('RUNNER_IMAGE_PULL_SECRETS', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const withSecrets = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_IMAGE_PULL_SECRETS: 'regcred, mirror ,' });
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+
+    it('names every configured secret on the runner, aux and service pod specs', () => {
+        const expected = [{ name: 'regcred' }, { name: 'mirror' }];
+        expect(
+            runnerJobSpec(withSecrets, job, { id: SESSION, resume: false }).spec.template.spec.imagePullSecrets
+        ).toEqual(expected);
+        expect(syncJobSpec(withSecrets, repoJob, null).spec.template.spec.imagePullSecrets).toEqual(expected);
+        expect(servicePodSpec(withSecrets, job, service).spec.imagePullSecrets).toEqual(expected);
+    });
+
+    it('leaves the field off entirely when none are configured', () => {
+        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
+        expect(spec().spec.template.spec).not.toHaveProperty('imagePullSecrets');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('imagePullSecrets');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('imagePullSecrets');
+    });
+});
+
+// The chart's runner NetworkPolicy selects by release, so every pod the driver specs must carry
+// the release label — not only the runner Job object, which is what bulk cleanup reads.
+describe('K8S_RELEASE on pod templates', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const released = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_RELEASE: 'dev' });
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const instance = { 'app.kubernetes.io/instance': 'dev' };
+
+    it('labels the runner, aux and service pods with the release', () => {
+        expect(
+            runnerJobSpec(released, job, { id: SESSION, resume: false }).spec.template.metadata.labels
+        ).toMatchObject(instance);
+        expect(syncJobSpec(released, repoJob, null).spec.template.metadata.labels).toMatchObject(instance);
+        expect(servicePodSpec(released, job, service).metadata.labels).toMatchObject(instance);
     });
 });

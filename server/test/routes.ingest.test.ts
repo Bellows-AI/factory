@@ -6,6 +6,15 @@ import type { MetricRow } from '../src/telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
 import { githubAuth, memoryAuthStore, stubTelemetryClient, testConfig } from './helpers.js';
 
+const HTTP_OK = 200;
+const HTTP_ACCEPTED = 202;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_NOT_FOUND = 404;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
+const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
@@ -126,7 +135,7 @@ describe('POST /api/otlp/v1/metrics', () => {
             headers: json,
             payload: otlpBody,
         });
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode).toBe(HTTP_OK);
         expect(res.json()).toEqual({ partialSuccess: {} });
         expect(store.metrics).toHaveLength(1);
         expect(store.metrics[0]?.field).toBe('tokens_input');
@@ -142,7 +151,7 @@ describe('POST /api/otlp/v1/metrics', () => {
             headers: json,
             payload: { resourceMetrics: [] },
         });
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode).toBe(HTTP_OK);
         expect(store.metrics).toEqual([]);
     });
 
@@ -154,18 +163,19 @@ describe('POST /api/otlp/v1/metrics', () => {
             headers: { 'content-type': 'application/x-protobuf' },
             payload: 'binary',
         });
-        expect(res.statusCode).toBe(415);
+        expect(res.statusCode).toBe(HTTP_UNSUPPORTED_MEDIA_TYPE);
     });
 
     it('rejects a body over the limit', async () => {
+        const OVER_BODY_LIMIT_BYTES = 1_100_000;
         const instance = await harnessWith(stubStore());
         const res = await instance.inject({
             method: 'POST',
             url: '/api/otlp/v1/metrics',
             headers: json,
-            payload: { blob: 'x'.repeat(1_100_000) },
+            payload: { blob: 'x'.repeat(OVER_BODY_LIMIT_BYTES) },
         });
-        expect(res.statusCode).toBe(413);
+        expect(res.statusCode).toBe(HTTP_PAYLOAD_TOO_LARGE);
     });
 
     it('answers 503 only for a genuine write failure', async () => {
@@ -178,7 +188,7 @@ describe('POST /api/otlp/v1/metrics', () => {
             headers: json,
             payload: otlpBody,
         });
-        expect(res.statusCode).toBe(503);
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
     });
 
     it('answers 200, not 5xx, for a body it cannot understand', async () => {
@@ -192,7 +202,7 @@ describe('POST /api/otlp/v1/metrics', () => {
                 headers: json,
                 payload,
             });
-            expect(res.statusCode).toBe(200);
+            expect(res.statusCode).toBe(HTTP_OK);
         }
         expect(store.metrics).toEqual([]);
     });
@@ -206,7 +216,7 @@ describe('POST /api/otlp/v1/metrics', () => {
             headers: json,
             payload: otlpBody,
         });
-        expect(res.statusCode).toBe(404);
+        expect(res.statusCode).toBe(HTTP_NOT_FOUND);
     });
 });
 
@@ -230,7 +240,7 @@ describe('POST /api/sessions/branch', () => {
             headers: json,
             payload: report,
         });
-        expect(res.statusCode).toBe(202);
+        expect(res.statusCode).toBe(HTTP_ACCEPTED);
         expect(store.branches[0]?.report).toEqual(report);
         // No auth hook in this harness (the route-test mode): the org is the LOCAL_ORG_ID
         // semantic orgOf answers for a null principal.
@@ -250,7 +260,7 @@ describe('POST /api/sessions/branch', () => {
             headers: { ...json, ...pair },
             payload: { ...report, repo: 'someone-elses/poisoned-repo' },
         });
-        expect(res.statusCode).toBe(202);
+        expect(res.statusCode).toBe(HTTP_ACCEPTED);
         expect(store.branches[0]?.orgId).toBe(CREDENTIAL_ORG);
         expect(store.branches[0]?.report.repo).toBe('someone-elses/poisoned-repo');
     });
@@ -264,7 +274,7 @@ describe('POST /api/sessions/branch', () => {
             headers: json,
             payload: { garbage: true },
         });
-        expect(res.statusCode).toBe(401);
+        expect(res.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(res.json().code).toBe('UNAUTHENTICATED');
     });
 
@@ -276,7 +286,7 @@ describe('POST /api/sessions/branch', () => {
             headers: { ...json, ...pair },
             payload: { ...report, at: 'not-a-date' },
         });
-        expect(res.statusCode).toBe(400);
+        expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
     });
 
     it('accepts a null branch for a detached HEAD', async () => {
@@ -288,7 +298,7 @@ describe('POST /api/sessions/branch', () => {
             headers: json,
             payload: { ...report, branch: null, headSha: null },
         });
-        expect(res.statusCode).toBe(202);
+        expect(res.statusCode).toBe(HTTP_ACCEPTED);
         expect(store.branches[0]?.report.branch).toBeNull();
     });
 
@@ -301,7 +311,7 @@ describe('POST /api/sessions/branch', () => {
             headers: json,
             payload: { ...report, branch: 'HEAD' },
         });
-        expect(res.statusCode).toBe(400);
+        expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
     });
 
     it('answers 400, never 5xx, on a malformed body', async () => {
@@ -322,7 +332,7 @@ describe('POST /api/sessions/branch', () => {
                 headers: json,
                 payload,
             });
-            expect(res.statusCode).toBe(400);
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
         }
     });
 
@@ -349,6 +359,6 @@ describe('POST /api/otlp/v1/logs', () => {
             headers: json,
             payload: { resourceLogs: [] },
         });
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode).toBe(HTTP_OK);
     });
 });

@@ -15,11 +15,14 @@ export const OAUTH_TTL_SECONDS = 600;
 
 const b64url = (buffer: Buffer): string => buffer.toString('base64url');
 
+/** CSPRNG bytes minted into a session token, before base64url encoding. */
+const SESSION_TOKEN_BYTES = 32;
+
 /**
  * 32 bytes from the CSPRNG. The token is opaque and carries no claims: what a session means is a
  * row, so a stolen cookie can be revoked rather than merely waited out.
  */
-export const mintToken = (): string => b64url(randomBytes(32));
+export const mintToken = (): string => b64url(randomBytes(SESSION_TOKEN_BYTES));
 
 /**
  * What is stored. The session table holds this, never the token itself — the row is a bearer
@@ -88,9 +91,12 @@ interface StatePayload {
  * that matters — the login entry point keeps working while migrations are still retrying, the same
  * instinct that keeps /api/health off the database.
  */
+/** CSPRNG bytes minted into the state nonce, before base64url encoding. */
+const STATE_NONCE_BYTES = 16;
+
 export function encodeState(returnTo: string, secret: string, org?: string, reselect = false): string {
     const payload: StatePayload = {
-        n: b64url(randomBytes(16)),
+        n: b64url(randomBytes(STATE_NONCE_BYTES)),
         r: safeReturnPath(returnTo),
         ...(org ? { o: org } : {}),
         ...(reselect ? { x: 1 as const } : {}),

@@ -3,7 +3,7 @@ import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
 import { LOCAL_ORG_ID, resolveConfig, type GitHubConfig } from './config.js';
-import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store.js';
+import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { createOrgRegistry } from './orgs.js';
 import { createPostgresStore } from './telemetry/store.js';
@@ -97,6 +97,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     const app = await buildApp({
         config,
         orgs,
+        ready,
         store,
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
@@ -114,7 +115,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
 
     // Warm every known org's cache at boot so the first visitor does not eat the cold read. Fired,
     // not awaited: a cold database must not hold `listen()`.
-    void ready.then(() => orgs.warmAll()).catch(() => {});
+    void ready.then(() => orgs.warmAll()).catch((e: Error) => console.error(`[orgs] warm failed: ${e.message}`));
 
     await app.listen({ port: config.port, host: config.host });
 }

@@ -1,11 +1,14 @@
 {{/*
 The driver — this is the "operator for runners": a process that watches the job board and
 reconciles a runner Job per claimed job, in this namespace, with no CRD and no second control
-loop. Its ServiceAccount carries exactly the Role above.
+loop. Its ServiceAccount carries exactly the Role in driver-rbac.yaml, fenced further by the
+admission policy in driver-admission.yaml.
 
-One driver per deployment: the board secret is the deployment's driver credential, not an org
-binding — a claim is offered every organization's queue, and the org a call operates on comes
-from the job row it names. The dashboard holds the same secret and validates against it.
+The board secret is the deployment's driver credential, not an org binding — a claim is offered
+every organization's queue, and the org a call operates on comes from the job row it names. The
+dashboard holds the same secret and validates against it. More than one replica is safe: each
+driver claims under its own pod name, advertises its own pod IP for gates, and the checkout claim
+fences drivers from each other.
 */}}
 apiVersion: apps/v1
 kind: Deployment
@@ -18,18 +21,34 @@ spec:
     replicas: {{ $.Values.driver.replicas }}
     selector:
         matchLabels:
-            {{- include "factory.labels" $ | nindent 12 }}
+            {{- include "factory.selectorLabels" $ | nindent 12 }}
             app.kubernetes.io/component: driver
     template:
         metadata:
             labels:
                 {{- include "factory.labels" $ | nindent 16 }}
                 app.kubernetes.io/component: driver
+            annotations:
+                {{- include "factory.secretChecksum" $ | nindent 16 }}
+                {{- with $.Values.podAnnotations }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
         spec:
             serviceAccountName: {{ include "factory.fullname" $ }}-driver
+            # A drain lets in-flight jobs finish before exit; see driver.terminationGracePeriodSeconds.
+            terminationGracePeriodSeconds: {{ $.Values.driver.terminationGracePeriodSeconds }}
+            securityContext:
+                # The image runs as root only for the docker socket, which this executor never
+                # mounts; under kubernetes it is `node`, like the dashboard.
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                seccompProfile:
+                    type: RuntimeDefault
+            {{- include "factory.podScheduling" $ | nindent 12 }}
             containers:
                 - name: driver
-                  image: {{ $.Values.driver.image }}
+                  image: {{ include "factory.image" (list $ $.Values.driver.image) }}
                   imagePullPolicy: {{ $.Values.driver.imagePullPolicy }}
                   env:
                       # The board, by its in-cluster service name. The driver is a client of the HTTP
@@ -53,24 +72,35 @@ spec:
                         valueFrom:
                             fieldRef:
                                 fieldPath: metadata.namespace
-                      # Names this release on every runner Job's labels, so a shared namespace's
-                      # bulk cleanups (`make stop`, kubectl delete jobs -l instance=<name>) never
-                      # sweep a neighbor release's runners.
+                      # Names this release on every runner Job and pod, so a shared namespace's bulk
+                      # cleanups (`make stop`, kubectl delete jobs -l instance=<name>) never sweep a
+                      # neighbor release's runners, and the runner NetworkPolicy confines only these.
                       - name: K8S_RELEASE
                         value: {{ $.Release.Name | quote }}
+                      # The claim's worker name. Defaulted it is `driver-<pid>` — pid 1 in every
+                      # container, so every replica would claim as `driver-1`, and the board's
+                      # claimed_by fences (the reclaim ack among them) could not tell them apart.
+                      - name: DRIVER_WORKER
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.name
                       - name: EXECUTOR
                         value: kubernetes
-                      # Which CLI the runner image speaks — claude-code, or opencode's headless
-                      # `run [--session <id>] <command>`. Read docs/jobs.md before switching it:
-                      # executorImage must speak the same dialect.
-                      - name: RUNNER_CLI
-                        value: {{ $.Values.driver.runnerCli | quote }}
-                      - name: EXECUTOR_IMAGE
-                        value: {{ $.Values.driver.executorImage | quote }}
+                      # Image locations only. The claimed task's selected executor profile chooses
+                      # the CLI/image pair for that run.
+                      - name: CLAUDE_EXECUTOR_IMAGE
+                        value: {{ $.Values.driver.executorImages.claudeCode | quote }}
+                      - name: OPENCODE_EXECUTOR_IMAGE
+                        value: {{ $.Values.driver.executorImages.opencode | quote }}
                       # Runner pods pull like the driver's own: IfNotPresent, so a side-loaded
                       # executor image is used rather than reached for.
                       - name: RUNNER_IMAGE_PULL_POLICY
                         value: {{ $.Values.driver.imagePullPolicy | quote }}
+                      {{- with $.Values.imagePullSecrets }}
+                      # Every pod the driver specs pulls with the chart's own pull secrets.
+                      - name: RUNNER_IMAGE_PULL_SECRETS
+                        value: {{ join "," . | quote }}
+                      {{- end }}
                       # The claim the checkouts live on — the same one the dashboard writes to.
                       - name: WORKSPACE_VOLUME
                         value: {{ include "factory.workspaceClaim" $ | quote }}
@@ -84,15 +114,23 @@ spec:
                         value: {{ $.Values.driver.leaseSeconds | quote }}
                       - name: DRIVER_JOB_TIMEOUT_MS
                         value: {{ $.Values.driver.jobTimeoutMs | quote }}
-                      # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port;
-                      # the runner reaches it by this headless Service name and the driver
-                      # appends the bound port to the URL. The listener binds all interfaces —
-                      # loopback would leave it reachable from nothing inside the pod. See
-                      # docs/jobs.md, Gates.
+                      # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port; the
+                      # runner reaches it at THIS pod's IP, the driver appending the bound port. A
+                      # Service name would resolve to every driver replica — and, during a rollout,
+                      # to the old and new pod both — and land a gate call on a driver that never
+                      # opened that port. The listener binds all interfaces: loopback would leave it
+                      # reachable from nothing outside the pod. See docs/jobs.md, Gates.
+                      - name: POD_IP
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: status.podIP
                       - name: GATE_ADVERTISE_URL
-                        value: http://{{ include "factory.fullname" $ }}-driver
+                        value: http://$(POD_IP)
                       - name: GATE_LISTEN_HOST
                         value: 0.0.0.0
+                      # Touched every 10s by a timer; the liveness probe below reads its age.
+                      - name: DRIVER_HEARTBEAT_FILE
+                        value: /tmp/heartbeat
                       # Auxiliary services (.bellows.yaml): on by default, '0' in values opts out,
                       # here as everywhere.
                       - name: RUNNER_SERVICES
@@ -110,7 +148,7 @@ spec:
                       - name: RUNNER_OTEL_ENDPOINT
                         value: {{ $otelEndpoint | quote }}
                       {{- end }}
-                      {{- if or $.Values.runner.credentialsExistingSecret $.Values.secret.create }}
+                      {{- if include "factory.runnerSecretEnabled" $ }}
                       - name: RUNNER_CREDENTIALS_SECRET
                         value: {{ include "factory.runnerSecretName" $ | quote }}
                       - name: RUNNER_ENV
@@ -118,5 +156,22 @@ spec:
                       {{- end }}
                   {{- with $.Values.driver.resources }}
                   resources:
-                      {{- toYaml . | nindent 20 }}
+                      {{- toYaml . | nindent 22 }}
                   {{- end }}
+                  {{- include "factory.containerSecurityContext" $ | nindent 18 }}
+                  # The driver serves no HTTP of its own, so liveness is the heartbeat file's age:
+                  # a wedged event loop stops the timer, a long drain does not.
+                  livenessProbe:
+                      exec:
+                          command:
+                              - sh
+                              - -c
+                              - test $(( $(date +%s) - $(stat -c %Y /tmp/heartbeat) )) -lt 60
+                      initialDelaySeconds: 30
+                      periodSeconds: 30
+                  volumeMounts:
+                      - name: tmp
+                        mountPath: /tmp
+            volumes:
+                - name: tmp
+                  emptyDir: {}

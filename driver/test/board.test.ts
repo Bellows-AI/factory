@@ -73,7 +73,8 @@ describe('the worker token', () => {
         await board.suspend(job);
         await board.complete(job, { status: 'succeeded', exitCode: 0, output: '' });
 
-        expect(calls).toHaveLength(5);
+        const EXPECTED_WRITE_CALLS = 5;
+        expect(calls).toHaveLength(EXPECTED_WRITE_CALLS);
         for (const call of calls) expect(call.headers.authorization).toBe('Bearer fwt_abc');
     });
 
@@ -152,6 +153,20 @@ describe('the worker token', () => {
 });
 
 describe('the claimed job', () => {
+    it('carries a known executor type and refuses to invent one for a missing or unknown value', async () => {
+        const { fetch } = recorder(() => claimed({ executorType: 'opencode' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.executorType).toBe('opencode');
+
+        const { fetch: unknown } = recorder(() => claimed({ executorType: 'other' }));
+        const unknownBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: unknown });
+        expect((await unknownBoard.claim('driver-1'))?.executorType).toBeNull();
+
+        const { fetch: missing } = recorder(() => claimed());
+        const missingBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: missing });
+        expect((await missingBoard.claim('driver-1'))?.executorType).toBeNull();
+    });
+
     it('carries the account that queued it', async () => {
         const { fetch } = recorder(() => claimed({ userId: 'user-7' }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
@@ -184,6 +199,17 @@ describe('the claimed job', () => {
         expect(job?.resumeSessionId).toBe('session-1');
     });
 
+    it("passes the thread root's command through as the board sent it, with no fallback", async () => {
+        const { fetch } = recorder(() => claimed({ rootCommand: '/fix 122' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.rootCommand).toBe('/fix 122');
+
+        // The board always sends it; nothing papers over a payload that lacks it.
+        const { fetch: bare } = recorder(() => claimed());
+        const bareBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
+        expect((await bareBoard.claim('driver-1'))?.rootCommand).toBeUndefined();
+    });
+
     it('carries the environment the board resolved, reading a missing one as empty', async () => {
         const { fetch } = recorder(() => claimed({ env: { CORE: 'value' } }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
@@ -193,6 +219,47 @@ describe('the claimed job', () => {
         const { fetch: bare } = recorder(() => claimed());
         const oldBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
         expect((await oldBoard.claim('driver-1'))?.env).toEqual({});
+    });
+
+    // Issue #207: declared block-helper plans, read the same way every field added after launch
+    // is — a board that predates the field, or a job with none, simply omits it.
+    it('carries the declared block-helper plans, reading a missing field as absent', async () => {
+        const plans = [{ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }];
+        const { fetch } = recorder(() => claimed({ helperPlans: plans }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.helperPlans).toEqual(plans);
+
+        const { fetch: bare } = recorder(() => claimed());
+        const oldBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: bare });
+        expect((await oldBoard.claim('driver-1'))?.helperPlans).toBeUndefined();
+    });
+
+    it('drops a malformed (non-array) helperPlans value rather than passing it through', async () => {
+        const { fetch } = recorder(() => claimed({ helperPlans: 'not-an-array' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.helperPlans).toBeUndefined();
+    });
+
+    // Issue #244: the board-owned Factory execution context. Read defensively like every other
+    // field added after launch — a board that predates it, or a malformed value, both read as
+    // null, which the loop refuses the launch for explicitly (loop-run.test.ts) rather than
+    // running the agent with no contract.
+    it('carries the master prompt the board rendered', async () => {
+        const { fetch } = recorder(() => claimed({ masterPrompt: 'Factory execution contract (v1)' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.masterPrompt).toBe('Factory execution contract (v1)');
+    });
+
+    it('reads a missing masterPrompt as null rather than undefined', async () => {
+        const { fetch } = recorder(() => claimed());
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.masterPrompt).toBeNull();
+    });
+
+    it('reads a malformed (non-string) masterPrompt as null rather than passing it through', async () => {
+        const { fetch } = recorder(() => claimed({ masterPrompt: 42 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.masterPrompt).toBeNull();
     });
 });
 

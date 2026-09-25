@@ -44,7 +44,10 @@ function queueWith(options: { fail?: (name: string) => boolean; hold?: (name: st
             mkdirSync(dest, { recursive: true });
             mkdirSync(join(dest, '.git'), { recursive: true });
         },
-        onIdle: () => idle.splice(0).forEach((resolve) => resolve()),
+        onIdle: () =>
+            idle.splice(0).forEach((resolve) => {
+                resolve();
+            }),
     });
     /** Resolves after the next pass finishes, so nothing here waits on a real timer. */
     const settled = () => new Promise<void>((resolve) => idle.push(resolve));
@@ -123,7 +126,8 @@ describe('the clone queue', () => {
 
         queue.kick();
         // Long enough for several passes to come and go while `aslow` is still running.
-        await new Promise((r) => setTimeout(r, 100));
+        const QUEUE_DRAIN_DELAY_MS = 100;
+        await new Promise((r) => setTimeout(r, QUEUE_DRAIN_DELAY_MS));
         expect(cloned.filter((name) => name !== 'aslow').sort()).toEqual(['b', 'c', 'd']);
 
         const done = settled();

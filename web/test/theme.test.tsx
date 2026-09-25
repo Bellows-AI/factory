@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { AppBar } from '../src/components/AppBar.js';
-import { ThemeSelector } from '../src/components/ThemeSelector.js';
+import { THEME_OPTIONS, ThemeSelector } from '../src/components/ThemeSelector.js';
 import { OnboardingPage, type PendingSignInPayload } from '../src/pages/OnboardingPage.js';
 import {
     THEME_STORAGE_KEY,
@@ -18,7 +18,6 @@ import {
     type ResolvedTheme,
     type SystemThemePort,
     type ThemeDomPort,
-    type ThemePorts,
     type ThemePreference,
     type ThemeStoragePort,
 } from '../src/theme.js';
@@ -226,7 +225,9 @@ describe('the theme controller', () => {
         expect(storage.value()).toBeNull();
         expect(controller.snapshot()).toEqual({ preference: 'system', resolved: 'light' });
     });
+});
 
+describe('the theme controller — cross-tab and disposal', () => {
     it('follows OS changes only while the preference is System', () => {
         const system = fakeSystem(false);
         const controller = createThemeController({
@@ -400,36 +401,35 @@ describe('the provider', () => {
 
     it('exposes the preference, so System stays selected while resolving dark', () => {
         const html = renderSelector('system', 'dark');
-        expect(html).toContain('value="system"');
-        expect(html).toMatch(/value="system"[^>]*selected/);
-        expect(html).not.toMatch(/value="dark"[^>]*selected/);
+        // The trigger shows the PREFERENCE's label — the options themselves (where a resolved
+        // palette would otherwise leak in) are client-side markup no offline render can see.
+        expect(html).toContain('>System</button>');
+        expect(html).not.toContain('>Dark</button>');
     });
 });
 
 describe('the appearance control', () => {
-    it('renders exactly three named options with the contract values', () => {
-        const html = renderSelector();
-        expect((html.match(/<option /g) ?? []).length).toBe(3);
-        for (const [value, name] of [
-            ['system', 'System'],
-            ['light', 'Light'],
-            ['dark', 'Dark'],
-        ] as const) {
-            expect(html, value).toContain(`value="${value}"`);
-            expect(html, value).toContain(`>${name}</option>`);
-        }
+    it('names exactly three options with the contract values', () => {
+        // Coverage note: the old suite counted rendered `<option>`s; the Listbox's options are
+        // now client-side markup (like every other Headless UI panel in this app), so the
+        // contract they are built from is asserted directly instead.
+        expect(THEME_OPTIONS).toEqual([
+            { value: 'system', label: 'System' },
+            { value: 'light', label: 'Light' },
+            { value: 'dark', label: 'Dark' },
+        ]);
     });
 
-    it('labels itself Appearance, the label pointing at the select', () => {
+    it('labels itself Appearance, the label pointing at the trigger', () => {
         const html = renderSelector();
         const forId = /<label[^>]*for="([^"]+)"[^>]*>Appearance<\/label>/.exec(html)?.[1];
         expect(forId, 'the label names a control').toBeTruthy();
-        expect(html).toContain(`<select id="${forId}"`);
+        expect(html).toContain(`<button class="select-trigger" id="${forId}"`);
     });
 
     it('reflects an explicit preference rather than the resolved palette', () => {
-        expect(renderSelector('dark', 'light')).toMatch(/value="dark"[^>]*selected/);
-        expect(renderSelector('light', 'dark')).toMatch(/value="light"[^>]*selected/);
+        expect(renderSelector('dark', 'light')).toContain('>Dark</button>');
+        expect(renderSelector('light', 'dark')).toContain('>Light</button>');
     });
 
     it('refuses to render outside the provider', () => {

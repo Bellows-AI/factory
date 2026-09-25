@@ -1,18 +1,18 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useWorkspace, type WorkspaceExecutorFull } from '../api/useWorkspace.js';
+import type { WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
-import { EXECUTOR_GUIDANCE, WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
+import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
+import { EXECUTOR_GUIDANCE, withDefault } from '../workspace/executors.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
  * The Executors section of the settings tree: the member's configured executors and the add/edit
  * dialog (issue 150), moved off the workspace page — executors configure what a runner runs with
  * and have nothing to do with checkouts. The page header owns the section's one action, "Add
- * executor"; the panel below is the list itself. Issue 183 adds the honest framing: what the
- * page's sentence says an executor controls (label and config) versus what the deployment
- * controls (runner CLI and image).
+ * executor"; the panel below is the list itself. The profile type and config together define the
+ * runner selected by a task.
  */
 
 /** The executor dialog's state: adding, or editing the row that had this name when it opened. */
@@ -46,6 +46,27 @@ export function SettingsExecutorsPage() {
         }
         setExecutorList(result.executors);
         setExecutorDialog(editing === null ? { mode: 'add' } : { mode: 'edit', name: editing });
+    };
+
+    /**
+     * The Make default action: re-reads the whole list with configs — the same on-demand read the
+     * dialog opens with — because the PUT this flag rides is a whole-list replace and every row's
+     * config must travel with it, not just the flagged row's name.
+     */
+    const makeDefault = async (name: string) => {
+        setExecutorDialogError(null);
+        const result = await listExecutorConfigs();
+        if (!result.ok) {
+            setExecutorDialogError(result.error);
+            return;
+        }
+        const flagged = withDefault(result.executors, name);
+        if (!flagged.ok) {
+            setExecutorDialogError(flagged.error);
+            return;
+        }
+        const message = await saveExecutors(flagged.value);
+        if (message) setExecutorDialogError(message);
     };
 
     // A deliberate configuration, not a failure (same posture as the workspace page): with no
@@ -95,7 +116,12 @@ export function SettingsExecutorsPage() {
                     </p>
                 </section>
             ) : data ? (
-                <WorkspaceExecutorsPanel executors={data.executors} onEdit={(name) => void openExecutorDialog(name)} />
+                <WorkspaceExecutorsPanel
+                    executors={data.executors}
+                    onEdit={(name) => void openExecutorDialog(name)}
+                    onMakeDefault={(name) => void makeDefault(name)}
+                    saving={saving}
+                />
             ) : null}
 
             {executorDialogError ? <p className="status">{executorDialogError}</p> : null}

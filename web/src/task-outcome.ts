@@ -175,3 +175,8 @@ export function newestTerminalExit(jobs: Job[]): number | null {
     }
     return null;
 }
+
+/** An open PR-review wait (206) — never inferred from output text or a workflow node name. */
+export function isWaitingForReview(job: Job): boolean {
+    return job.waitReason !== null && job.waitTerminalReason === null;
+}

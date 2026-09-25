@@ -1,12 +1,12 @@
 # opencode, headless, with a fixed configuration baked in.
 #
 # Build context is this directory, not the repo root: the image carries no application code, only
-# the CLI and the config under opencode-home/.
+# the CLI, the config under opencode-home/ and the skills shared with claude-executor, which arrive
+# as the named `skills` context:
 #
-#   docker build -t opencode-executor docker/opencode-executor
+#   docker build --build-context skills=docker/skills -t opencode-executor docker/opencode-executor
 #
-# The driver selects this image with RUNNER_CLI=opencode, which also switches the default
-# EXECUTOR_IMAGE — an explicit EXECUTOR_IMAGE still wins.
+# The driver selects this image when a task's chosen executor profile has type `opencode`.
 #
 # debian rather than alpine: the CLI ships prebuilt glibc binaries that fail at runtime on musl,
 # and the full image already carries git and the CA bundle the agent shells out to.
@@ -82,6 +82,10 @@ ENV OPENCODE_CONFIG=/home/node/.config/opencode/opencode.json
 # can always operate within its own workspace while other members' trees stay refused. To run
 # another policy, mount your own over /home/node/.config/opencode/opencode.json.
 COPY --chown=node:node opencode-home/ /home/node/.config/opencode/
+
+# The skills, from docker/skills/ — the same SKILL.md files claude-executor bakes, in the global
+# skills directory opencode discovers (`opencode debug skill` lists them).
+COPY --from=skills --chown=node:node . /home/node/.config/opencode/skills/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 RUN mkdir -p /workspace && chown node:node /workspace

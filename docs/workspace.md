@@ -61,9 +61,8 @@ variable no user could change.
   deliberately never read by any code: a breadcrumb something resolves against is a second source of
   truth for what `app_user.id` already is.
 - **`workspaceDir()` asserts the uuid before it joins anything**, and `driver/src/docker.ts` asserts
-  the whole `<org>/<uuid>` again before interpolating it into a `docker run`. The same posture
-  `remoteSessionArgs` already takes with a session id — except here the value becomes an agent's
-  working directory, and `..` in it points at the parent of every member's tree.
+  the whole `<org>/<uuid>` again before interpolating it into a `docker run`: the value becomes an
+  agent's working directory, and `..` in it points at the parent of every member's tree.
 - **The segment and the repo name sit at different depths, so neither can shadow the other** — the
   arrangement `<orgId>/<name>` already had.
 - **Repo names are constrained where a name becomes a directory, not at boot.** This was
@@ -165,22 +164,24 @@ resolves that label against the author's rows at run time — the name is the jo
 it is never validated against the list when the task is queued (`job` is an audit record; the rows
 come and go with a PUT).
 
-- **`opencode` config reaches the run; `claude-code` config does not yet.** At claim, the job
-  store reads the author's row of the stamped name (`configFor`), and for an `opencode` row hands
-  the pasted config to the runner as the claim-env value `OPENCODE_CONFIG_CONTENT` — the name
-  opencode merges over its baked configuration (verified against the pinned runner image: baked
-  plugins, instructions and permission fence survive, member `model`/`provider`/`small_model`
-  land). This is what makes the member's model and provider choice authoritative; without a
-  matching row the run falls back to the image's default model. `claude-code` rows have no
-  consumer yet and are stored only.
+- **Both `opencode` and `claude-code` config reach the run.** At claim, the job store reads the
+  author's row of the stamped name (`configFor`) and hands the pasted config to the runner as a
+  claim-env value each CLI's entrypoint merges over its baked configuration — `OPENCODE_CONFIG_CONTENT`
+  for an opencode row (verified against the pinned runner image: baked plugins, instructions and
+  permission fence survive, member `model`/`provider`/`small_model` land), `CLAUDE_CODE_CONFIG_CONTENT`
+  for a claude-code row with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped (the
+  git guard hook and the baked context-mode plugin install). This is what makes the member's model
+  and provider choice authoritative; without a matching row the run falls back to the image's
+  default model.
 - **`permission` is stripped board-side, never honored from a paste.** The baked fence in the
   runner image (and the entrypoint's per-member `external_directory` patch) is the only authority
   on what a run may touch: a pasted `external_directory: "*": allow` would otherwise open every
   member's tree to one run. Every other key travels verbatim.
-- **The label drives config, nothing else.** An executor label matching no row — an executor
-  deleted after the task was queued, or free text — runs exactly as an unlabelled job, on the
-  image default. Which image and CLI a run uses is still the driver operator's `RUNNER_CLI`, not
-  this list: a member's row configures the CLI already chosen for the deployment.
+- **The selected label drives the run.** At claim time the board resolves the label in the task
+  author's executor list and sends that row's type to the driver. `claude-code` selects the Claude
+  Code image and CLI; `opencode` selects OpenCode. A label matching no row — renamed, deleted or
+  free text — is an unresolved selection, and the driver fails the task explicitly instead of
+  guessing a runner.
 - **The dialog edits as well as adds, and validation is structural.** Each row carries an Edit
   action that reopens the dialog pre-filled with the row's type, name and config; a rename saves
   under the new name and is matched against the old one. The contract is still "raw JSON the member
@@ -193,28 +194,40 @@ come and go with a PUT).
   its Add action and the page renders a sentence pointing at workspace setup — both executor
   routes would answer 409 `WORKSPACE_DISABLED` anyway, so the client refuses first instead of
   discovering it after a fetch.
-- **The first row's marker describes the composer, not a default.** A new-task draft autoselects
-  the first row of the polled list — that is all "Selected first on new tasks" says. Nothing is
-  persisted: there is no default, no ordering UI, no make-default action.
-- **The dialog says what each type's config does.** The claude-code help: stored with the
-  executor, not consumed by the current runner, `{}` unless the deployment documents a consumer.
-  The opencode help: merged over the baked configuration by the deployment's CLI — model and
-  provider apply, permission rules ignored. A note under the Type select says the field describes
-  the config and does not switch the deployment's runner CLI; both helps are tied to their fields
-  with `aria-describedby`, and the actions read "Add executor" / "Save executor".
+- **A member may flag one executor as the default (issue 215).** Each row's `is_default` column
+  (040) is a real preference, not list order: the panel's Make default action flags a row and
+  clears every other, `withDefault` folds that back into the whole-list PUT the same way
+  `mergeExecutors` folds a dialog save, and 040's partial unique index makes "at most one default
+  per member" a database fact — the route refuses a body naming two before it ever reaches the
+  row. The task composer and the settings overview both read it through `defaultExecutorName`,
+  which falls back to the first row when none is flagged — the pre-215 behavior, unchanged for a
+  member who has never used the action. A rename keeps the flag (matched by the row's original
+  name, same as `mergeExecutors`); dropping the default row from a PUT clears it rather than
+  reviving it on another row — the flag lives on the row, not on a name. "Selected first on new
+  tasks" is what the fallback still says; the flagged row says "Default — selected on new tasks"
+  instead.
+- **The dialog says what each type's config does.** The claude-code help: merged into the
+  runner's settings.json, with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped —
+  everything else applies, except that the `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env values
+  live in the image's managed settings (with the driver's `OTEL_EXPORTER_OTLP_ENDPOINT` patched in)
+  and always win over anything a member pastes. The opencode help: merged over the baked configuration by the
+  selected OpenCode runner — model and provider apply, permission rules ignored. A note under the
+  Type select says tasks using the executor run with that selected type; both
+  helps are tied to their fields with `aria-describedby`, and the actions read "Add executor" /
+  "Save executor".
 - **Types are labelled for people, stored for machines.** List and dialog show "Claude Code" and
   "OpenCode"; the stored `type` stays the raw union value (`claude-code`, `opencode`).
 - **`config` is never echoed by the poll — one on-demand read excepted.** It may hold credentials
-  the member pasted, and `GET /api/workspace` can run every two seconds. The row's `name`, `type`
-  and `createdAt` travel; the JSON stays in the table (the claim-time `configFor` read is the one
-  read that selects it) — except for `GET /api/workspace/executors`, which answers WITH the configs
+  the member pasted, and `GET /api/workspace` can run every two seconds. The row's `name`, `type`,
+  `createdAt` and `isDefault` travel; the JSON stays in the table (the claim-time `configFor` read
+  is the one read that selects it) — except for `GET /api/workspace/executors`, which answers WITH the configs
   because the edit dialog cannot pre-fill without them. It is fetched once per dialog open, never
   on a tick, which is what keeps the credentials out of the poll without making an executor
   uneditable.
 - **A rename leaves the stamped tasks alone, on purpose.** `job.executor` was an audit stamp at
   queue time; historical tasks keep showing the old name, and a follow-up continues on the
   executor that ran it (copied at insert, not looked up again). A task queued against a name that
-  no longer matches a row — renamed or deleted — runs as an unlabelled job on the image default.
+  no longer matches a row — renamed or deleted — fails with an unresolved-executor reason.
 - **The whole list is a PUT.** Same argument as the repos selection: the body is the entire list,
   so a retried request after a dropped connection changes nothing.
 
@@ -239,7 +252,7 @@ come and go with a PUT).
 - **Clones drift from their remotes**, because nothing fetches — but a task never works on the
   drift: the driver's startup sync creates the task worktree from `origin/<default>` fresh at
   each task's starting claim, which is why the drift is survivable at all. A claim that
-  continues a session (a follow-up, a parked resume) restores the tree without fetching —
+  continues a session (a follow-up) restores the tree without fetching —
   mid-flight is exactly when a task must not sync with main (issue #58).
 
 ## Tests

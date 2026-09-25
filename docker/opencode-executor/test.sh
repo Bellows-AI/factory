@@ -33,7 +33,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "building $IMAGE"
-docker build -q -t "$IMAGE" . >/dev/null || {
+docker build -q --build-context skills=../skills -t "$IMAGE" . >/dev/null || {
     echo 'test.sh: build failed'
     exit 1
 }
@@ -44,6 +44,19 @@ case "$got" in
 *"$VERSION"*) ok "the CLI is the pinned $VERSION" ;;
 *) bad "the CLI is the pinned $VERSION" "got: $got" ;;
 esac
+
+# The shared skills (docker/skills/, the same files claude-executor bakes) are ones opencode itself
+# discovers, not just files on disk. Written to a file first: piped straight out, the listing is
+# cut short once it passes the pipe buffer.
+listed="$(docker run --rm --entrypoint sh "$IMAGE" -c \
+    'opencode debug skill >/tmp/skills.json 2>/dev/null; grep -o "/home/node/.config/opencode/skills/[^/]*/SKILL.md" /tmp/skills.json')"
+for skill in "$HERE"/../skills/*/; do
+    name="$(basename "$skill")"
+    case "$listed" in
+    *"/skills/$name/SKILL.md"*) ok "opencode discovers the $name skill" ;;
+    *) bad "opencode discovers the $name skill" "listed: $listed" ;;
+    esac
+done
 
 # The baked policy, exactly: permissionless inside the workspace, hard gates outside. "ask" is
 # unusable headless — an unanswered ask auto-rejects — so nothing may resolve to it. The read

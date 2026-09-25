@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { refusalOf } from './refusal.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 /** A list-row view of an access token. A token's secret — or its hash — is never in a list. */
 export interface AccessTokenView {
@@ -39,7 +41,7 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
         async (signal: AbortSignal) => {
             try {
                 const response = await fetch(base, { signal });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     // Handed to the gate rather than rendered as a banner — every later request
                     // would 401 too, so a banner would never clear.
                     reportUnauthenticated();
@@ -47,8 +49,7 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
                     return;
                 }
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    setError(body.error ?? `Request failed (${response.status})`);
+                    setError((await refusalOf(response)).error);
                     setLoading(false);
                     return;
                 }
@@ -82,16 +83,15 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
             try {
                 const response = await fetch(base, {
                     method: 'POST',
-                    headers: { 'content-type': 'application/json' },
+                    headers: JSON_HEADERS,
                     body: JSON.stringify({ label }),
                 });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return { ok: false, error: 'Your session expired' };
                 }
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return { ok: false, error: body.error ?? `Could not create the token (${response.status})` };
+                    return { ok: false, error: (await refusalOf(response, 'Could not create the token')).error };
                 }
                 const body = (await response.json()) as { token: string };
                 refresh();
@@ -107,13 +107,12 @@ export function useAccessTokens(scope: 'personal' | 'org'): UseAccessTokens {
         async (id: string): Promise<string | null> => {
             try {
                 const response = await fetch(`${base}/${id}/revoke`, { method: 'POST' });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return 'Your session expired';
                 }
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
-                    return body.error ?? `Could not revoke the token (${response.status})`;
+                    return (await refusalOf(response, 'Could not revoke the token')).error;
                 }
                 refresh();
                 return null;

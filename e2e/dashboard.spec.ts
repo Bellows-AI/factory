@@ -42,10 +42,11 @@ async function open(page: Page) {
  */
 async function selectPreset(page: Page, label: string, preset: string) {
     const [response] = await Promise.all([
-        page.waitForResponse(
-            (r) => r.url().includes(`range=${preset}`) && r.status() === 200,
-        ),
-        page.getByRole('radio', { name: label, exact: true }).click(),
+        page.waitForResponse((r) => r.url().includes(`range=${preset}`) && r.status() === 200),
+        (async () => {
+            await page.locator('#range-select').click();
+            await page.getByRole('option', { name: label, exact: true }).click();
+        })(),
     ]);
     const body = (await response.json()) as {
         meta: { range: { preset: string; from: string | null; to: string | null } };
@@ -73,10 +74,7 @@ test.describe('date range selector', () => {
 
         // 'All time' is the default, so it is selected last: clicking it first would change no
         // query and fire no request.
-        await expect(page.getByRole('radio', { name: 'All time', exact: true })).toHaveAttribute(
-            'aria-checked',
-            'true',
-        );
+        await expect(page.locator('#range-select')).toHaveText('All time');
 
         for (const [label, preset] of [
             ['Today', 'day'],
@@ -88,10 +86,7 @@ test.describe('date range selector', () => {
             const { url, range } = await selectPreset(page, label, preset);
             expect(url.searchParams.get('range'), label).toBe(preset);
             expect(range.preset, label).toBe(preset);
-            await expect(page.getByRole('radio', { name: label, exact: true })).toHaveAttribute(
-                'aria-checked',
-                'true',
-            );
+            await expect(page.locator('#range-select')).toHaveText(label);
             await assertRendersCleanly(page, preset);
         }
 
@@ -108,14 +103,10 @@ test.describe('date range selector', () => {
         // A sparse day may render the one empty state instead of the summary — that is a
         // different screen, not the same numbers, and both satisfy "changed". The poll rides
         // out the gap between the response reaching the test and React committing the payload.
-        await expect
-            .poll(async () => page.locator('.usage-summary strong').allInnerTexts())
-            .not.toEqual(allTime);
+        await expect.poll(async () => page.locator('.usage-summary strong').allInnerTexts()).not.toEqual(allTime);
     });
 
-    test('the custom picker commits once through Apply, and a draft never requests', async ({
-        page,
-    }) => {
+    test('the custom picker commits once through Apply, and a draft never requests', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
 
@@ -124,23 +115,35 @@ test.describe('date range selector', () => {
             if (r.url().includes('/api/stats?')) requests.push(r.url());
         });
 
-        // Custom opens the popover; opening it is not a selection and issues no request.
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        const openCustom = async () => {
+            await page.locator('#range-select').click();
+            await page.getByRole('option', { name: 'Custom', exact: true }).click();
+        };
+
+        // Custom opens the dialog; opening it is not a selection and issues no request.
+        await openCustom();
         const from = page.locator('.range-draft input').first();
         const to = page.locator('.range-draft input').last();
         await expect(from).toHaveValue('');
         await from.fill('2026-07-01');
-        // Typing is a draft: no stats request may fire for it. Escape discards the draft.
+        // Typing is a draft: no stats request may fire for it. Cancel discards the draft.
         expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
-        await page.keyboard.press('Escape');
-        await expect(page.locator('.range-draft')).toHaveCount(0);
+        await page.getByRole('button', { name: 'Cancel' }).click();
+        await expect(page.locator('.range-dialog')).toHaveCount(0);
         expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
+        await expect(page.locator('#range-select')).toHaveText('All time');
 
         // Reopening starts from the committed values — all time here — not the abandoned draft.
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        // Escape discards a draft exactly like Cancel does.
+        await openCustom();
         await expect(from).toHaveValue('');
+        await from.fill('2026-07-15');
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.range-dialog')).toHaveCount(0);
+        expect(requests.filter((u) => u.includes('range=custom'))).toEqual([]);
 
         // Apply commits both bounds exactly once.
+        await openCustom();
         await from.fill('2026-07-01');
         await to.fill('2026-08-01');
         const [response] = await Promise.all([
@@ -151,21 +154,58 @@ test.describe('date range selector', () => {
         expect(body.meta.range.from).toBe('2026-07-01T00:00:00.000Z');
         // `to` is exclusive, so the picked day is widened to the start of the next one.
         expect(body.meta.range.to).toBe('2026-08-02T00:00:00.000Z');
+        await expect(page.locator('#range-select')).toHaveText('Jul 1 – Aug 1');
 
-        // Clear returns to All time from the same popover.
-        await page.getByRole('button', { name: 'Custom', exact: true }).click();
+        // Clear returns to All time from the same dialog.
+        await openCustom();
         const [cleared] = await Promise.all([
             page.waitForResponse((r) => r.url().includes('range=all') && r.status() === 200),
             page.getByRole('button', { name: 'Clear' }).click(),
         ]);
         expect(new URL(cleared.url()).searchParams.get('range')).toBe('all');
-        await expect(page.getByRole('radio', { name: 'All time', exact: true })).toHaveAttribute(
-            'aria-checked',
-            'true',
-        );
+        await expect(page.locator('#range-select')).toHaveText('All time');
 
         await assertRendersCleanly(page, 'custom-jul');
         expect(problems.join('\n')).toBe('');
+    });
+
+    test('the custom range dialog stays inside the viewport and restores focus to the trigger on a narrow phone', async ({
+        page,
+    }) => {
+        await open(page);
+        await page.setViewportSize({ width: 360, height: 844 });
+
+        // The dialog centers over the dimmed page rather than anchoring to the trigger, so it
+        // never has to flip or clip — the containment the closeout audit (issue 190) demands of
+        // every floating surface still holds, just by a different mechanism.
+        await page.locator('#range-select').click();
+        await page.getByRole('option', { name: 'Custom', exact: true }).click();
+        const dialog = page.locator('.range-dialog');
+        await expect(dialog).toBeVisible();
+        const box = (await dialog.boundingBox())!;
+        expect(box.x, 'range dialog left edge').toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, 'range dialog right edge').toBeLessThanOrEqual(361);
+        await page.screenshot({ path: `${SHOTS}/matrix/dashboard_range-dialog-open_dark_360.png` });
+
+        await page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0);
+        await expect(page.locator('#range-select'), 'escape hands focus back to the Range trigger').toBeFocused();
+    });
+
+    test('the chart tooltip stays inside the viewport when a bucket is focused', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await open(page);
+
+        // The last bucket of the all-time chart: the readout clamps inside the SVG, but the SVG
+        // rides the chart wrap's horizontal scroll — focusing the far end must still leave the
+        // tooltip inside what the reader can see.
+        const bucket = page.locator('.bucket-hit').last();
+        await bucket.focus();
+        const tooltip = page.locator('.chart-tooltip').last();
+        await expect(tooltip).toBeVisible();
+        const box = (await tooltip.boundingBox())!;
+        expect(box.x, 'chart tooltip left edge').toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width, 'chart tooltip right edge').toBeLessThanOrEqual(1441);
     });
 
     test('a range with almost no data renders empty or ready, never broken', async ({ page }) => {
@@ -189,27 +229,27 @@ test.describe('date range selector', () => {
 
     test('the page carries no pull-request vocabulary', async ({ page }) => {
         await open(page);
-        const text = (await page.locator('main').innerText()) + (await page.locator('header').innerText());
+        const text = (await page.locator('main').innerText()) + (await page.locator('.appbar').innerText());
         expect(text).not.toMatch(/pull requests?/i);
         expect(text).not.toMatch(/revert rate/i);
         expect(text).not.toMatch(/merged into/i);
     });
 
-    test('month buckets daily, all-time falls back to weeks, and the per-task figures render', async ({
-        page,
-    }) => {
+    test('month buckets daily, all-time falls back to weeks, and the per-task figures render', async ({ page }) => {
         const problems = watchConsole(page);
         await open(page);
 
-        // The month preset spans 30 days: day buckets, and the blurb says so.
+        // The month preset spans 30 days: day buckets, and the caption says so.
         await selectPreset(page, '30 days', 'month');
-        await expect(page.getByText('tokens per day')).toBeVisible();
+        await expect(page.getByText('Input and output tokens by day')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/daily-month.png`, fullPage: true });
 
-        // All-time spans the seeded half-year: the weekly fallback, named as such.
+        // All-time spans the seeded half-year: the weekly fallback, named as such — in the
+        // caption, and by the calculation disclosure once it is opened.
         await selectPreset(page, 'All time', 'all');
-        await expect(page.getByText('per ISO week')).toBeVisible();
-        await expect(page.getByText('too long for daily bars')).toBeVisible();
+        await expect(page.getByText('Input and output tokens by ISO week')).toBeVisible();
+        await page.locator('section.panel', { hasText: 'AI token usage' }).locator('.chart-disclosure summary').click();
+        await expect(page.getByText('longer windows render ISO weeks')).toBeVisible();
 
         // The per-task panel: one table now, every row labeled with its kind, each figure under
         // its Average/Median/P95 header with its measured count beside it.
@@ -293,9 +333,7 @@ test.describe('the supporting tables and the task board', () => {
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 900 });
-            const overflow = await page.evaluate(
-                () => document.body.scrollWidth - document.body.clientWidth
-            );
+            const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
             expect(overflow, `${width}px: body wider than the viewport`).toBeLessThanOrEqual(0);
             await page.screenshot({ path: `${SHOTS}/width-${width}.png`, fullPage: true });
         }
@@ -304,6 +342,17 @@ test.describe('the supporting tables and the task board', () => {
     test('the primary content begins in the first viewport', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto('/');
+        // Measured once the analytics have landed, not at whatever the first paint happened to be.
+        // The board panels mount before the telemetry read resolves, so for a moment the first
+        // `main section` is a task panel a screen and a half down; `.first()` resolves against that
+        // DOM and the assertion then describes a page that no longer exists. It is the same anchor
+        // navigation.spec.ts and workspace.spec.ts wait on for "the dashboard is loaded".
+        //
+        // This raced from the day it was written and passed on timing alone — a front-end change
+        // that moved hydration by a few milliseconds flipped it to failing 2 runs in 6, with the
+        // settled layout byte-identical before and after. What it means to assert is where the
+        // content SETTLES, which is what it now measures.
+        await expect(page.locator('.usage-summary, .usage-empty').first()).toBeVisible();
         const box = await page.locator('main section').first().boundingBox();
         expect(box).not.toBeNull();
         expect(box!.y).toBeLessThan(900);
@@ -324,9 +373,7 @@ test.describe('the organization selector', () => {
         await expect(select).toHaveText('default');
         await expect(select).toHaveAttribute('aria-label', 'Organization: default');
 
-        // Fitting on one line with the account menu is a layout fact no assertion covers; the
-        // Refresh action itself lives on the dashboard now, not in the bar.
-        await expect(page.getByRole('button', { name: 'Refresh' })).toBeVisible();
+        // Fitting on one line with the account menu is a layout fact no assertion covers.
         await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-org.png` });
     });
 });

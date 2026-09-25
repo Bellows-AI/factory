@@ -8,8 +8,7 @@
 //   REPO        — the clone, where `origin` lives and the worktree is created FROM;
 //   WORKTREE    — the task's own tree;
 //   BRANCH      — the branch the worktree runs on (`factory/<thread root id>`);
-//   RESTORE     — set to `1` for a claim that CONTINUES a session (a follow-up, or a parked
-//                 job resumed): the task is mid-flight, and git operations that touch the
+//   RESTORE     — set to `1` for a claim that CONTINUES a session (a follow-up): the task is mid-flight, and git operations that touch the
 //                 remote belong to the task's beginning and end, never its middle. No fetch,
 //                 no rebase: the existing tree is left byte-for-byte as the run before it
 //                 left it, and a reclaimed tree is recreated from the surviving branch —
@@ -57,6 +56,8 @@ const repo = process.env.REPO;
 const wt = process.env.WORKTREE;
 const branch = process.env.BRANCH;
 const restore = process.env.RESTORE === '1';
+const GIT_ERROR_MAX_LENGTH = 200;
+const SYNC_ERROR_MAX_LENGTH = 300;
 
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
 const inw = (...a) => execFileSync('git', a, { cwd: wt, encoding: 'utf8' }).trim();
@@ -130,7 +131,7 @@ try {
                     ' could not be restored — if it is gone from the clone there is ' +
                     'nothing to continue, and a follow-up is never restarted fresh off the remote default ' +
                     '(re-queue the task to start it over): ' +
-                    String((e && e.stderr) || (e && e.message) || e).slice(0, 200)
+                    String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH)
             );
             process.exit(0);
         }
@@ -176,7 +177,7 @@ try {
                 'the task worktree could not be rebased onto origin/' +
                     def +
                     ': ' +
-                    String((e && e.stderr) || (e && e.message) || e).slice(0, 200)
+                    String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH)
             );
             process.exit(0);
         }
@@ -202,11 +203,11 @@ try {
         git('worktree', 'prune');
         try {
             git('worktree', 'add', wt, branch);
-        } catch (e) {
+        } catch {
             git('worktree', 'add', '-b', branch, wt, 'origin/' + def);
         }
     }
     console.log(JSON.stringify({ ok: true, reason: null }));
 } catch (e) {
-    fail('worktree sync failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, 300));
+    fail('worktree sync failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, SYNC_ERROR_MAX_LENGTH));
 }

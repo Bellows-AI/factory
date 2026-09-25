@@ -1,16 +1,17 @@
 # Job board
 
-Read before: touching `server/src/routes/jobs.ts`, `server/src/db/job-store.ts`,
+Read before: touching `server/src/routes/jobs.ts`, `server/src/db/job-store*.ts`,
 `server/migrations/006_jobs.sql` or anything under `driver/`.
 
 A job is a text command waiting for a worker — read as an agent prompt. The runner's `ENTRYPOINT`
 is a CLI wrapper: the driver passes the command as `-p <command>` to claude-code, or as the
-positional prompt of `opencode run` under `RUNNER_CLI=opencode`.
+positional prompt of `opencode run`. The task's selected executor profile type chooses which.
 
-**The server hands jobs out and records results. It never spawns anything.** The driver claims a
-job, runs it in a `claude-executor` container against the AUTHOR's workspace checkout, and reports
-back. The docker socket lives with the driver, never with the dashboard: the dashboard's port is
-unauthenticated, and a socket on that process would make it root on the host.
+**The server hands jobs out and records results. It never spawns anything.** The claim resolves the
+task's executor label in the AUTHOR's executor list and carries its type; the driver runs the
+matching `claude-executor` or `opencode-executor` container against that author's workspace checkout
+and reports back. The docker socket lives with the driver, never with the dashboard: the dashboard's
+port is unauthenticated, and a socket on that process would make it root on the host.
 
 When a task walks a WORKFLOW — the graph of agent nodes the board itself walks between verdicts —
 that is a separate doc: [docs/workflows.md](docs/workflows.md) covers the definition grammar, the
@@ -20,8 +21,8 @@ one-row pipeline every task still shares, workflow or not.
 ## The driver contract
 
 ```
-POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
-                                        userId, workspacePath, resumeSessionId, followUp,
+POST /api/jobs/claim {worker}   -> 200 {id, command, masterPrompt, leaseToken, leaseExpiresAt,
+                                        executorType, userId, workspacePath, resumeSessionId, followUp,
                                         env} | 204
   every request carries `authorization: Bearer $JOB_BOARD_TOKEN`, when the board requires one
   resumeSessionId ? restore that session : mint one, POST /api/jobs/:id/session
@@ -37,19 +38,18 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, leaseToken, leaseExpiresAt,
      user asked to park this run (see Stop) — the kill order of a different kind
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
   POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
-POST /api/jobs/:id/complete {leaseToken, status, exitCode, output}
+POST /api/jobs/:id/complete {leaseToken, status, exitCode, output,
+                             publication?}  (see Publishing and the verdict paragraph below)
   -> 200 {id, status, threadDone}   the verdict, plus whether EVERY job of the thread is
                                     terminal AND the user has closed it — the worktree-reclaim
                                     signal (see below)
-  ... or, if the runner went quiet, or the user asked to stop:
-POST /api/jobs/:id/suspend  {leaseToken}        -> the board lands the park by its stop stamp:
-                                                   'stopped' — the turn ended, session kept for
-                                                   the follow-up — or 'standby', the Remote
-                                                   Control idle park
+  ... or, if the user asked to stop:
+POST /api/jobs/:id/suspend  {leaseToken}        -> the board lands the park 'stopped' — the
+                                                   turn ended, session kept for the follow-up
 ```
 
 **Person-gated routes meet the same loop through the same states.** `POST /api/jobs/:id/stop`
-ends a task's turn — queued or already-parked rows settle `stopped` directly, a running row whose
+ends a task's turn — queued rows settle `stopped` directly, a running row whose
 lease is still live answers
 `202 {status: 'running', cancelRequestedAt}` and the worker reads that flag on the heartbeat above —
 fast while the attempt is still setting up, at the lease's third once the runner runs — kills its
@@ -70,9 +70,54 @@ the database. This is the single most important line in this file.
 The other kill order rode the same beat, and deserved a line of its own: **a `cancelRequested: true`
 beat means the container must be killed AND the run settled.** A user asked for the task, the board
 can do nothing but pass the message, and the run dies the same way a 409 does — only afterwards the
-driver `suspend`s the row, and the board reads its own stop stamp to land the park as a terminal
+driver `suspend`s the row, and the board lands the park as a terminal
 `stopped`. There is no separate endpoint and no third state:
 `cancel_requested_at` is a timestamp on the moving row that the beat reads.
+
+## The master prompt (issue #244)
+
+**Read this before touching** `server/src/db/master-prompt.ts`, `driver/src/master-prompt.ts`, the
+`masterPrompt` field on the claim, or the two argv builders it feeds
+(`driver/src/docker.ts`'s `pushClaudeCodeArgs`/`pushOpencodeArgs`,
+`driver/src/k8s-podspec.ts`'s `claudeRunnerPlan`/`opencodeRunnerPlan`). Every agent claim carries a
+board-owned, board-rendered text — never authorable by a workflow or task prompt — that tells the
+agent it is one turn inside a Factory-run process and names exactly what Factory itself does around
+it: declared gates, publish/reuse-PR, any declared pre/post helper steps, and (scanned off the
+thread's frozen workflow snapshot, when it has one) review reconciliation, merge-conflict repair,
+and durable GitHub waits. `server/src/db/master-prompt.ts`'s `resolveMasterPrompt` is pure — it
+reads only trusted claim metadata (the row's `workflow_node`/`workflow_name`, the root's frozen
+snapshot, this claim's resolved `helperPlans`) and never `job.command`, a node's own prompt text,
+prior output, env values, or credentials. It fails CLOSED: a node claim whose snapshot is missing
+or does not contain the claimed node renders null, and a null `masterPrompt` on the wire is refused
+by the driver before any setup step runs (`loop-run.ts`'s `masterPromptRefusalReason`, checked
+beside the executor-selection refusal) — the same "never run with half a contract" posture the
+workspace-path and executor-type refusals already take. `job.command` is untouched: it remains the
+audit record, the workflow interpolation input, the issue reference source, and the commit/PR-title
+fallback, exactly as before this field existed.
+
+**Delivery is provider-native, never a prefix on the command.** Claude Code gets it through
+`--append-system-prompt` (additive to the CLI's own built-in system prompt, never a replacement)
+plus `--system-prompt-snapshot off`, so a resumed conversation rebuilds the CURRENT claim's
+workflow/node context instead of retaining whichever node's text rode the thread's first turn —
+docker and kubernetes build the identical flag pair, right before `-p`/the delivered command.
+OpenCode gets it through a reserved PRIMARY agent named `factory`
+(`driver/src/master-prompt.ts`'s `opencodeConfigContent`), merged into whatever
+`OPENCODE_CONFIG_CONTENT` the claim already carries from the member's own executor config: every
+other key — model, permissions, plugins, any other declared agent — survives untouched, and a
+member-declared `agent.factory` is replaced wholesale rather than merged field-by-field, so a
+member cannot rename, disable, or rewrite the reserved agent's prompt. Both fresh and resumed
+OpenCode runs launch `run --agent factory ...`. The merge happens once, in
+`driver/src/claim.ts`'s `runnerClaimEnv` — the one place the real runner's env is built, never an
+aux container's (sync, gates, publish, block-helpers), none of which run the agent CLI and none of
+which needs the reserved agent at all.
+
+Four things can shape one run's behavior, and conflating them is the mistake this feature exists to
+prevent: the Factory master prompt (this section — code-owned, immutable, refreshed every claim),
+the current node's own prompt (the task's command, or a workflow node's authored template,
+docs/workflows.md), a checkout's own `AGENTS.md` (read by the agent at its own discretion, never
+injected by the driver), and the provider's own default system prompt (untouched by Claude Code,
+replaced for the `factory` agent's own scope by OpenCode — see the executor image READMEs for the
+provider-specific detail).
 
 ## The driver (`driver/`)
 
@@ -80,8 +125,7 @@ A fourth workspace, with no dependency on `core` and none at run time at all. It
 HTTP board, never of the database — which is what lets it run anywhere the board is reachable.
 
 ```bash
-docker build -t claude-executor docker/claude-executor     # the claude-code runner image, once
-docker build -t opencode-executor docker/opencode-executor # the opencode runner image, once
+make runners                                               # both runner images, once
 npm run driver                                             # against a board on 127.0.0.1:8080
 
 docker compose up -d driver                              # or in the stack, with everything else
@@ -102,32 +146,29 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | --- | --- | --- |
 | `JOB_BOARD_URL` | `http://127.0.0.1:8080` | Must be http(s); the scheme is checked, because `new URL('dashboard:8080')` parses. |
 | `JOB_BOARD_TOKEN` | unset | The shared board secret — the same value the dashboard validates against, both sides from one `.env` entry (chart: one Secret key). **Required against a board running `AUTH_MODE=github`** (the board itself refuses to boot without it); unset against an open one, where the header is **omitted rather than sent empty** — an empty Bearer is a credential that failed, not one that was never offered. |
-| `EXECUTOR_IMAGE` | `claude-executor` | The runner image. `opencode-executor` under `RUNNER_CLI=opencode`, unless set explicitly. |
-| `RUNNER_CLI` | `claude-code` | Which CLI the runner image speaks: claude-code's `--session-id`/`-p <prompt>` form, or opencode's headless `run [--session <id>] <prompt>`. Explicit enum. Under `opencode` no session is minted — the runner scrapes the id the run used and reports it at close — and Remote Control and skip-permissions are refused at startup. Both executors carry both CLIs; the cache watch is the one opencode feature that stays docker-only (see `RUNNER_CACHE_WATCH`). |
+| `CLAUDE_EXECUTOR_IMAGE` | `claude-executor` | Deployment image for tasks whose selected executor profile type is `claude-code`. This changes the image location, never task routing. |
+| `OPENCODE_EXECUTOR_IMAGE` | `opencode-executor` | Deployment image for tasks whose selected executor profile type is `opencode`. This changes the image location, never task routing. |
 | `WORKSPACE_VOLUME` | `factory-ai_workspaces` | A volume **name**, not a host path — see below. |
 | `RUNNER_NETWORK` | unset | Join the compose network or the runner's telemetry reaches nothing. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, passed to both runners as `OTEL_EXPORTER_OTLP_ENDPOINT`. The default names the compose collector, so the endpoint is always provided — a runner's telemetry reaches the collector whether or not the compose network is there to make the baked image default resolve. The chart overrides it with the in-chart collector. |
 | `RUNNER_STATS_URL` | `JOB_BOARD_URL` | Where the runner's branch reporter posts its `session → (repo, branch)` samples — the board's own `/api/sessions/branch`. Defaults to the board URL, which a runner can already reach on compose and in the chart; override for a split topology (host driver, containerized runners) where only a host-gateway address names the API. |
-| `RUNNER_JOB_ID` | set by the loop | The job this attempt runs for. Half of the runner's branch-ingest credential, with `RUNNER_LEASE_TOKEN` below: the reporter sends the pair as `x-factory-job-id` + `x-factory-job-lease-token`, and the board resolves the report's organization from the live attempt — never from the report's `repo` field, which is caller-controlled payload. Forwarded always (there is no branch reporting without it), but it is still a credential channel: it rides the env file (docker) or the per-attempt Secret (kubernetes), never an argv — and never under Remote Control, which receives no forwarded credentials at all. |
+| `RUNNER_JOB_ID` | set by the loop | The job this attempt runs for. Half of the runner's branch-ingest credential, with `RUNNER_LEASE_TOKEN` below: the reporter sends the pair as `x-factory-job-id` + `x-factory-job-lease-token`, and the board resolves the report's organization from the live attempt — never from the report's `repo` field, which is caller-controlled payload. Forwarded always (there is no branch reporting without it), but it is still a credential channel: it rides the env file (docker) or the per-attempt Secret (kubernetes), never an argv. |
 | `RUNNER_LEASE_TOKEN` | set by the loop | That attempt's lease token, from the claim. The half that makes the pair attempt-scoped: a reclaim rotates the token, so a superseded attempt's reports stop authenticating, while `complete()` retains it so the reporter's final `--once` sample — landing after the verdict — still resolves. Same carriage rules as `RUNNER_JOB_ID`. |
 | `DRIVER_CONCURRENCY` | `2` | |
 | `DRIVER_POLL_MS` | `5000` | |
 | `DRIVER_LEASE_SECONDS` | `300` | Heartbeat is a third of this. |
-| `DRIVER_JOB_TIMEOUT_MS` | `7200000` | The container is `docker kill`ed and the job reported failed, with a note. **Not armed under Remote Control.** |
-| `RUNNER_IDLE_MS` | `3600000` | Remote Control only: silence for this long parks the job on standby. |
+| `DRIVER_JOB_TIMEOUT_MS` | `7200000` | The container is `docker kill`ed and the job reported failed, with a note. |
 | `RUNNER_CACHE_WATCH` | off | Kills a job whose provider stopped serving prompt cache: three consecutive completed turns with no cached input over ≥20k tokens, each turn over a minute. Opencode only — see the section below. |
 | `RUNNER_CACHE_WATCH_POLL_MS` | `30000` | How often the watch probes the session database. One throwaway container per poll. |
 | `RUNNER_SKIP_PERMISSIONS` | off | Appends `--dangerously-skip-permissions`. Read the paragraph below. |
-| `RUNNER_ENV` | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names forwarded to the runner. Ignored under Remote Control. A name the claim also carries is shadowed by it — under an app-mode board that is now always `GITHUB_TOKEN` — see [env.md](env.md). |
-| `RUNNER_REMOTE_CONTROL` | off | Runs the job as a drivable session instead of a headless prompt. Read the section below. |
-| `RUNNER_AUTH_VOLUME` | `claude-executor-auth` | The claude.ai login. Mounted only under Remote Control. |
+| `RUNNER_ENV` | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names forwarded to the runner. A name the claim also carries is shadowed by it — under an app-mode board that is now always `GITHUB_TOKEN` — see [env.md](env.md). |
 | `EXECUTOR` | `docker` | `kubernetes` swaps the `docker run` for a batch Job in the namespace the driver runs in — see [kubernetes.md](kubernetes.md). Explicit enum: anything else is fatal, because a typo must not read as "docker is fine" while jobs are claimed and nothing runs. |
 | `K8S_NAMESPACE` | `default` | Where runner Jobs are created. Meaningless under docker. The chart sets it via the downward API. |
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials under `EXECUTOR=kubernetes`, one key per `RUNNER_ENV` name — the k8s form of `-e NAME`: names travel, values stay in the Secret. Unset forwards nothing. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy under `EXECUTOR=kubernetes`. Kubernetes defaults an untagged or `:latest` image to `Always` and would ignore the node's own images; the docker runner has no equivalent problem, so the docker behavior has to be stated. |
 | `GATE_COOLDOWN_MS` | `600000` | How long a gate environment container outlives the task that started it, so the task's next turn does not pay startup again. `0` tears it down the moment the run's exits are walked. Docker only: the kubernetes gate manager runs each gate as a Job that leaves nothing behind, so there is nothing to cool down. |
 | `GATE_LISTEN_HOST` | `127.0.0.1` | Where the ad-hoc gate endpoint binds. Loopback by default — it runs shell commands, and the bind address is the access control. |
-| `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver — the compose stack points it at `http://driver`. A URL with no port of its own has the bound (ephemeral) port appended — the listener is `listen(0)`, so no fixed URL could name it; one with a port stays verbatim. |
+| `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver — the compose stack points it at `http://driver`, the chart at the driver pod's own IP (`http://$(POD_IP)`, so a gate call never lands on another replica). A URL with no port of its own has the bound (ephemeral) port appended — the listener is `listen(0)`, so no fixed URL could name it; one with a port stays verbatim. |
 | `GATE_TIMEOUT_MS` | `600000` | The wall-clock cap on one gate run. A gate that outlives it is a failed gate, exit 124 — the runner's own timeout covers the agent, this covers a gate that hangs. |
 | `RUNNER_SERVICES` | on | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service on a per-job network (docker) or as a pod with a headless DNS Service (kubernetes), so `postgres://db:5432` resolves for exactly that job. `0` opts out. Read the section below for the security posture. |
 
@@ -169,8 +210,7 @@ id the driver would have to interpret.
   cross-tenant read. Failing it also drives the job to a terminal state somebody can see, instead of
   leaving it to be reclaimed on every lease expiry forever.
 - **The driver re-asserts `^<org>/<uuid>$` before interpolating it.** A board is not something this
-  process trusts with a fragment of a shell command — the rule `remoteSessionArgs` already applies
-  to a session id — and here a `..` would point at everybody's checkouts. The pattern is **copied**
+  process trusts with a fragment of a shell command, and here a `..` would point at everybody's checkouts. The pattern is **copied**
   from the server rather than imported: this package depends on nothing, deliberately.
 - **The reads carry it too.** `get`/`thread`/`list` derive the same `workspacePath` with the same
   rule (null when the job has no author or there is no workspace root), which is what the task
@@ -195,9 +235,7 @@ against it, and removes it when the run ends — verdict, throw, or kill. The dr
 claim also carries: docker gives `-e` precedence over `--env-file`, and **the claim must win a
 collision** — its stacked resolution is authoritative, and the names an org configures as core
 secrets are exactly the ones `RUNNER_ENV` forwards by default. A board that predates the field
-omits it; the driver reads that as "no environment". Remote Control runners get none, for the same
-reason they get no `RUNNER_ENV` — a forwarded credential there does not fail, it degrades the
-session in silence.
+omits it; the driver reads that as "no environment".
 
 **`RUNNER_SKIP_PERMISSIONS` is a real decision, not a nuisance flag.** Off, a headless agent stalls
 at permission prompts nobody can answer and the job burns its timeout. On, it edits and runs
@@ -276,10 +314,10 @@ worker died, and `/stop`'s in-place landing on a row whose lease already expired
 `started_at → now()` to the row's total in the same breath, which
 is the only moment it can: `started_at` resetting on every claim is exactly what would otherwise
 erase the superseded segment, and a run that crashed after forty minutes and was retried keeps its
-forty minutes. The park banks too, whichever landing it takes — the segment it ends was real work;
-the parked time after it banks nothing. What never banks is a settle of a row that never executed:
+forty minutes. The park banks too — the segment it ends was real work; the time after it banks
+nothing. What never banks is a settle of a row that never executed:
 the first claim of a queued row leaves the clock null (null means "never ran"; zero would claim a
-measurement that was never made), and `stop`'s direct landing on a queued or parked row banks
+measurement that was never made), and `stop`'s direct landing on a queued row banks
 nothing. One known overcount is accepted as inherent: a superseded or retired attempt banks up to
 its lease expiry, because when a worker dies the board cannot know when the run actually stopped —
 the span is the same one the view's per-run "running time" already shows.
@@ -290,6 +328,10 @@ the span is the same one the view's per-run "running time" already shows.
 - The docker runner hands the loop its newest output tail on every chunk it reads (the tail it
   would report on complete anyway); the kubernetes twin reads the pod log's tail on each status
   poll. Neither throttles — that is the loop's business.
+- The Claude image runs the CLI in `stream-json` mode and formats its session start, tool names
+  and assistant text into that tail. Tool arguments never leave the container through this path:
+  they can carry credentials, while the tool name is enough to show that the task is progressing.
+  Kubernetes uses the same image, so it receives the same stream.
 - The loop flushes at most once every 2s, and only when the tail changed — the pace the detail
   page itself polls at, so a faster flush would be requests the reader cannot see.
 - The board **replaces** `output` with the tail it is sent, never appends. Appending would grow
@@ -334,9 +376,10 @@ provider state it names usually outlives a re-queue. First observed 2026-09-09 o
 model: cache served for fourteen turns, then stopped — turns went from ~25s to 2.5-4.5 minutes
 re-reading 63-84k tokens, and the run died on the timeout having explored and edited nothing.
 The watch is opencode-only (the message rows record per-turn cache tokens; a claude-code
-transcript answers nothing to the query), refused at startup under claude-code, and docker-only:
-each tick is one throwaway container on a warm daemon, while the kubernetes form would be a Job
-per tick — pod admission every poll period, refused at startup under `EXECUTOR=kubernetes`.
+transcript answers nothing to the query): a mixed-task driver probes only its OpenCode runs and
+leaves Claude Code runs alone. It is docker-only: each tick is one throwaway container on a warm
+daemon, while the kubernetes form would be a Job per tick — pod admission every poll period,
+refused at startup under `EXECUTOR=kubernetes`.
 
 **The branch reporter is how an executor run becomes attributable at all.** The CLIs' OTLP
 metrics carry a session id and nothing else — no branch, no repo — so without the reporter's
@@ -374,19 +417,21 @@ deny globs, because opencode resolves rules last-match-wins). Read-only git, `gi
 commit` stay allowed on both: a commit endangers no checkout, and publishing is the driver's
 publish flow. `git rebase` stays denied outright — a rebase rewrites the published task-branch
 commits — but `git merge` of an **origin remote-tracking ref** is allowed (the claude guard parses
-it: every operand must be `origin/<ref>`; the opencode table allows the exact `git merge
-origin/main` forms, `--continue` included, so a repo whose default is not `main` needs the table
-widened): merging the remote default in is the one exit from a conflicts dead-end (job
+it: every operand must be `origin/<ref>`, redirections like `2>&1` are not operands; the opencode
+table allows the exact `git merge origin/main` forms, `--continue` included, and the entrypoint
+appends the same exact forms for the checkout's `origin/HEAD` when that default is not `main`; a
+redirected or piped merge stays denied there):
+merging the remote default in is the one exit from a conflicts dead-end (job
 `3e85c499`, 2026-09-20 — the agent reconciled the files but could not produce the merge commit),
 and a merge can neither move HEAD off the task branch nor rewrite the published commits, so the
 invariant survives it. This is a guardrail, not a security boundary — the agent is root in its
 container,
-and the sync refusal stays the last line of defense. The same images serve both executors, so one
+    and the sync refusal stays the last line of defense. The same images serve both backends, so one
 change covers docker and kubernetes; the case table lives in `git-guard.cjs` itself and is pinned
 twice — offline by vitest (`driver/test/executor-images.test.ts`) and against the baked copy by
 the image suites' checks.
 
-**`RUNNER_CLI=opencode` swaps the CLI behind the image, and with it the session contract.** The
+**Selecting an `opencode` executor swaps the CLI and with it the session contract for that task.** The
 headless form becomes `run <command>`, and no session is minted or passed: opencode mints its own
 ids (`ses_…`) and cannot adopt one minted in advance — minting a uuid anyway would put a session
 on the board that the runner never used. Instead the runner **scrapes the id the run actually
@@ -410,26 +455,20 @@ decode. The error rides the verdict only beside a premature stop: a run that fin
 not footnoted with an error it already retried through. The context and cost merge into the
 runtime vitals — the finished task shows `ctx 90,433 tok`, which is where a context death is
 legible. The id is reported while the lease is still live, before the verdict, because a follow-up
-resumes exactly that row. These jobs show no session link (the link is built
-from `remote_session_id`, which stays claude-only). Their runs still emit OTLP, but the server's
+resumes exactly that row. Their runs still emit OTLP, but the server's
 metric map carries no opencode rows yet, so spend records as an unmapped agent — null, never zero
-— until those rows are added (see [limits.md](limits.md)). The combination is refused at startup
-with `RUNNER_REMOTE_CONTROL` (that is claude-code's bridge) and with `RUNNER_SKIP_PERMISSIONS`
-(that appends a claude-code flag; opencode's permissions come from the `opencode.json` baked into
-its image — see [its README](../docker/opencode-executor/README.md)).
+— until those rows are added (see [limits.md](limits.md)). `RUNNER_SKIP_PERMISSIONS` applies only
+to claude-code tasks; opencode's permissions come from the `opencode.json` baked into its image —
+see [its README](../docker/opencode-executor/README.md).
 
 **Any executor can resume its own sessions.** A follow-up claim carries the session id the parent
 run used, whatever CLI minted it: claude-code restores with `--resume <uuid> -p <command>`,
-opencode with `run --session <ses_…> <command>`. The one refusal that survives is a resume claim
-under opencode with **nothing to deliver** — standby is a Remote Control feature, so that means
-the operator flipped `RUNNER_CLI` while something was parked, and restoring a claude session into
-opencode's database is impossible (`Session not found`, loudly, if it were tried). A follow-up
-whose parent ran under a DIFFERENT CLI than the driver now serving the queue fails at run time
-the same loud way — the operator keeps one CLI per queue.
+opencode with `run --session <ses_…> <command>`. A driver may run Claude Code and OpenCode tasks concurrently; the claim, not the process, owns the
+choice.
 
 ### The executor transcript store (issue #55)
 
-**Headless claude-code transcripts now survive the container.** The runner images used to be the
+**Claude-code transcripts now survive the container.** The runner images used to be the
 one path that lost them: the CLI writes `projects/<path>/<session-id>.jsonl` under
 `CLAUDE_CONFIG_DIR`, which lived on the container filesystem, and the container is removed at
 every run's end. The driver now composes a per-thread directory from the claim's own fields —
@@ -441,28 +480,24 @@ post-run copy, no loss window, on both executors (docker and kubernetes run the 
 the driver passes the same env on both). The leading-dot `.factory/` namespace is never mistaken
 for a checkout by the workspace reconcile.
 
-**The redirect is guarded, and the baked configuration rides along.** The entrypoint refuses
-`FACTORY_TRANSCRIPT_DIR` together with `TRUST_WORKDIR` (exit 2) — Remote Control's config
-directory must stay the auth volume, see below — and the `/opt/claude-home` seed is keyed on
+**The baked configuration rides along.** The `/opt/claude-home` seed is keyed on
 `settings.json` being absent, so the first attempt of a thread seeds the baked git guard and
 settings into the thread directory and every later attempt of the same thread finds them.
 
 **Resume is the side effect the design leans on.** `--resume` resolves the session inside
 `CLAUDE_CONFIG_DIR`, and the root id is stable across every attempt and follow-up of a thread —
 so a follow-up is pointed at the same directory its parent wrote and can actually find the
-session it names. Before this store, a headless follow-up resumed against an ephemeral config
+session it names. Before this store, a follow-up resumed against an ephemeral config
 directory, where the session did not exist.
 
-**What persists, per path.** Headless claude-code: the thread directory on the workspaces volume
+**What persists, per path.** Claude-code: the thread directory on the workspaces volume
 (this store). Opencode: its own per-member sqlite database under `XDG_DATA_HOME` (above) —
-already persistent, deliberately not duplicated. Remote Control: the auth volume over
-`CLAUDE_CONFIG_DIR` — untouched, because standby/park depends on the transcript surviving its
-container there.
+already persistent, deliberately not duplicated.
 
 **Out of scope, deliberately:** reading or analyzing transcripts (the factory-stats dashboard's
 eventual use — it needs the bytes to exist first), board ingestion, retention policy (unbounded
-for now; the `.factory/` namespace makes a future sweep easy to aim), re-homing opencode's
-database, and organizing the Remote Control auth-volume pile. `FACTORY_TRANSCRIPT_DIR` is
+for now; the `.factory/` namespace makes a future sweep easy to aim), and re-homing opencode's
+database. `FACTORY_TRANSCRIPT_DIR` is
 reserved from member configuration on both the driver and the board (see
 [env.md](env.md)) — the value the runner receives is always the driver-composed one.
 
@@ -553,89 +588,148 @@ connection and retry, which is what agents are for.
   record-not-liveness rule the verdict and exit code follow. See "The vitals ride the same flush"
   above for the read, the merge and the claim-time clear.
 
-## The session ids, and driving a job from the Claude UI
+## Block-helper steps (issue #207)
 
-**There are two of them, and they are not interchangeable.**
+**Read this before touching** `driver/src/helpers.ts`, `driver/src/k8s-helper-runner.ts`,
+`driver/src/loop-helpers.ts`, or the `Runner.runHelper` seam in `driver/src/docker.ts`.
 
-| | `session_id` | `remote_session_id` |
-| --- | --- | --- |
-| Looks like | a uuid | `cse_015tb2nHhHNrBuL7ZDhn9Wx5` |
-| Comes from | the driver, which mints it | Anthropic's backend, when the bridge connects |
-| Known | before the container starts | seconds into the run, or never |
-| Good for | joining a job to its telemetry | `https://claude.ai/code/<id>` |
-| Headless jobs | always, under claude-code; under opencode, none — it mints its own and the driver never sees one | never — a `-p` run registers no bridge |
+A workflow `block` node (docs/workflows.md) may declare an allowlisted, board-owned helper to run
+before and/or after its agent turn — a runtime plan naming a helper id, its phase (`pre`/`post`),
+validated/bounded JSON input, and whether it writes to GitHub, never arbitrary shell or an image.
+`BoardJob.helperPlans` carries the declared plans on a claim; `runWorkflowHelper`'s seam is
+`Runner.runHelper(job, plan, token?)`, one shared `HelperResult` either side answers.
 
-The link is built from the **remote** one. Using the local uuid gives a dead URL, which is an easy
-mistake to make and a hard one to notice: both are called "the session id", both are present, and
-only one of them resolves.
+**This issue shipped transport only; issue #122 is the first real producer.** `WorkflowNode.helperPlans`
+(#122) is what a block's `expand()` populates — `builtin/merge-conflict-autofix`'s `repair` node
+declares one, `merge-conflict-probe` — and `job-store-claim.ts`'s `resolveClaimHelperPlans` resolves
+it onto the claim generically (docs/workflows.md, "Built-in blocks"); `BoardJob.helperPlans` is
+still read defensively (absent on every claim outside a block's own expansion), exactly like
+`job.env` on a board that predates it. The `noop` fixture — echoing its bounded input back — stays
+shipped alongside the real one, proving the transport end to end independent of any block's own
+content. Issue #133's `github-review-reconcile` block is the second real producer: its own
+`review-collect-probe`/`review-reply-probe` descriptors (`driver/src/review-helpers.ts`) wrap
+issue #201's unmodified `review-collect.cjs`/`review-reply.cjs` — never edited — inside a small
+ADAPTER, composed at driver LOAD time (never in the container) from prelude/postlude files that
+map the transport's bounded `HELPER_INPUT` onto the env those scripts read and reshape their bare
+verdicts into this transport's `{schema, version, ok, output}` envelope; see
+docs/workflows.md, "The github-review-reconcile block". This issue's own scope was only the
+generic seam, both transports, and the loop's fencing — #122 and #133 each added their own helper
+descriptors (`driver/src/helpers.ts`, `driver/src/review-helpers.ts`) and #122 the claim-side
+resolver, none of which touched this seam.
 
-**The driver mints that id; it never reads it back out of the container.** `claude --session-id
+- **The loop owns WHEN a helper runs.** A PRE helper runs as the last step of `runSetup`
+  (`driver/src/loop-helpers.ts`'s `preHelperStep`), fenced by the exact same lease/stop race
+  (`raceStep`, `down(state)`) every other setup step uses: a Stop or lost lease observed mid-helper
+  stands the attempt down without ever launching the agent, releasing the kubernetes checkout fence
+  the same way a failed gates-reread does. A required pre-helper that answers `{ ok: false }`
+  reports a NAMED failure (`reason`, `message`) and the agent never spawns — `state.launched` never
+  turns true. A POST helper runs in `runPostHelperPhase`, in the same window `runDeclaredGates`
+  runs in — after the agent and its gates have resolved, heartbeat still live, `settle()` not yet
+  called — and runs UNCONDITIONALLY once reached (deciding otherwise on the run's own outcome would
+  be block-specific policy this generic transport must not encode, per the issue's ownership
+  boundary); a failed post-helper fails the verdict and skips publish, the same way a failed gate
+  does. A job with no declared plans, or a runner with no `runHelper`, pays no extra branch at all.
+- **A github-writing helper gets a fresh installation token, minted immediately before it runs** —
+  the loop asks `board.publishToken(job)` (the same re-mint the publish flow itself uses;
+  docs/jobs.md's "The publish asks for its own credential" above) and lays it over the claim env
+  through the existing `withPublishToken`. A read-only helper (`plan.githubWriting: false`) runs
+  with the claim env untouched, asking the board for nothing. Either way the token never enters
+  argv, a pod spec, or stored output — it rides the same env-file (docker) / per-attempt Secret
+  (kubernetes) every credential here already does.
+- **Unknown/unavailable helper ids fail before any container or Job starts.** `lookupHelper` closes
+  over real files under `driver/src/scripts/` (never a path, never inline TS — the same
+  content-passed convention every script here follows); a plan naming an unregistered id answers
+  `{ ok: false, reason: 'unknown_helper' }` before either transport touches the daemon or the API
+  server.
+- **Output is parsed as versioned bounded JSON, and nothing else.** `parseHelperOutput` checks the
+  byte cap BEFORE attempting `JSON.parse` — an oversized answer is never handed to the parser at
+  all — then the `schema`/`version` fields, then an `ok: false` line's own named `reason` (one of
+  `unknown_helper` / `malformed_output` / `oversized_output` / `wrong_version` / `auth_failed` /
+  `timeout` / `runner_error`), falling back to `runner_error` for anything a script names that this
+  module never declared. Malformed, oversized or wrong-version output is a helper FAILURE, never
+  agent context — the same discipline the review scripts' own bounded verdicts already carry.
+- **Docker runs the helper in the task worktree, over the existing runner image, under its own
+  attempt-scoped, per-call NAME** — never `--rm`: `execDocker`'s `timeout` kills the `docker run`
+  CLIENT process, not the container the daemon may still be running, so `--rm` (which fires only
+  when the daemon sees the container itself exit) could leak one on the timeout path — the same
+  reason `dockerRun`'s own runner container skips it. The `finally` removes the named container
+  explicitly and unconditionally instead, tolerating one already gone, exactly as `dockerRunVerdict`
+  does for the runner container. Otherwise: entrypoint swapped for `node`, the script passed by
+  content, the bounded input as one literal `-e HELPER_INPUT=` value (never a credential, the same
+  class as the sync's `REPO`/`WORKTREE` literals), attempt labels, and an env file only when the
+  helper writes to GitHub. Kubernetes runs the identical entrypoint/argv/script content as an aux
+  Job on the task PVC — the same shape `publishStepJobSpec` already uses for one publish step — with
+  its OWN per-call nonce in the Job/Secret name (never a bare `(job, plan)` hash, which would
+  collide the moment two plans of one phase ever name the same helper — `gateJobName`'s run counter
+  closes the identical hole for gates), an attempt-scoped Secret only when needed,
+  `HELPER_TIMEOUT_MS` (shared between both transports) as its `activeDeadlineSeconds`, and a
+  `DeadlineExceeded` condition read back as the named `timeout` failure (`k8s-poll.ts`'s
+  `helperVerdict`, the same check `pollRunnerJobUntilTerminal` makes for the runner Job). Both
+  transports clean up their Job/Secret and env file on every exit path.
+
+### Conclude control and composite helper programs (issue #230)
+
+**Neither transport changed for this issue.** `dockerRunHelper` and `k8s-helper-runner.ts`'s
+`runHelper` only ever resolve `lookupHelper(plan.helperId)` against a single plan — they know
+nothing of phases or composites — so both of the gaps below are closed entirely inside
+`driver/src/helpers.ts` (pure sequencing/registry) and `driver/src/loop-helpers.ts` (the loop's own
+fencing around each child call). Docker/kubernetes parity for both is therefore a property of the
+orchestration being platform-agnostic, not something either transport had to grow.
+
+- **A successful PRE helper may answer an explicit control outcome** (`HelperResult.control`):
+  `continue`, the default — absent from the wire verdict reads the same way, so every script that
+  never adopts the field keeps its exact pre-#230 result shape — or `conclude`. `conclude` is valid
+  only for a pre-helper; `preHelperStep` completes the job `succeeded` right there, through the
+  SAME `rt.report` call site an ordinary setup failure uses, with `formatConcludeOutput(result.output)`
+  as the verdict's `output` — a string passes through verbatim (so a helper's own marker
+  convention still lands on the exact final line the workflow engine's marker edges read; "The
+  edge vocabulary" in docs/workflows.md), anything else is JSON-stringified. The agent never
+  launches, no gates run, no post-helper runs, and publish is never asked for — `preHelperStep`
+  returns `STOOD_DOWN` exactly as a pre-helper failure does, just with a succeeded verdict instead
+  of a failed one. A POST helper naming `conclude` is invalid usage and fails the verdict with a
+  named `invalid_control` reason, exactly like any other post-helper failure — conclude is a
+  pre-only outcome, decided before the agent, never after it.
+- **`CompositeDescriptor` is an allowlisted, host-side helper PROGRAM**: a registered id (disjoint
+  from every script id, validated at module load — a collision, an empty or oversized step list, an
+  unregistered or nested step id, or a non-function planner/finalizer throws synchronously, so a
+  malformed registration never reaches a claim) naming an ordered list of registered SCRIPT steps
+  (never another composite — no nesting) plus two pure functions: `planStepInput` computes one
+  step's bounded input from the previous step's bounded output and the composite's own declared
+  input, and `finalize` folds every step's output, once all have succeeded, into the composite's
+  own bounded result and its own continue/conclude control. `runHelperPlan` (`helpers.ts`) is the
+  shared sequencing algorithm: a plain script plan is a single call through the caller-supplied
+  `invokeChild`, unchanged; a composite plan sequences its steps through the exact SAME
+  `invokeChild` — so every child still rides whatever fencing, per-call token-minting and bounded
+  I/O the caller already applies to a lone plan, one call per step, in declared order. A composite
+  plan cannot itself declare `githubWriting: true` (`invalid_composite_plan`, fails closed before
+  any child runs) — each step declares its own, minted only when that step actually runs, the same
+  "fresh write-token" rule every other github-writing helper follows. A child's own failure
+  propagates as the composite's own failure, unchanged and un-wrapped (its own named `reason`
+  survives, e.g. `timeout`) — no step past the failing one ever runs. `invokeChild` answering
+  `null` (a stop, a lost lease, mid-composite) abandons the remaining steps and `finalize`
+  immediately, observed BETWEEN children, not just around the composite as a whole. The one
+  shipped composite, `sequence-fixture` (two `noop` steps), exists for the same reason `noop` does:
+  proving sequencing, intermediate planning, output propagation and conclude/continue end to end
+  with no real block's own scope involved.
+
+## The session id
+
+**The driver mints it; it never reads it back out of the container.** `claude --session-id
 <uuid>` takes the id as an input, which removes the whole problem: there is no output to parse, no
 race between the container printing and the driver reading, and a runner that dies in its first
-second still leaves a job with a session on it. Scraping was the alternative and it is worse in
-every direction — an interactive session reports its state into a TUI rather than onto stdout, so
-under Remote Control there is nothing parseable there at all.
+second still leaves a job with a session on it. It joins a job to its telemetry. Under opencode
+the driver mints none — opencode mints its own, and the driver scrapes it after the run (see
+above).
 
 It is reported **before** the container is spawned, on its own route rather than folded into the
-completion: under Remote Control the link is worth something only while the job is still running.
-The report is deliberately non-fatal — a board that is briefly unreachable costs the link, not the
-run — and a `409` on it is not acted on, because the heartbeat is the one place that decides a
-superseded run must die.
+completion, so it is on the row while the job is still running. The report is deliberately
+non-fatal — a board that is briefly unreachable costs the link, not the run — and a `409` on it is
+not acted on, because the heartbeat is the one place that decides a superseded run must die.
 
-**The remote id has to be gone and found, because it cannot be minted.** The driver polls the
-running container for it — `docker exec`, reading the `bridge-session` record out of the session
-transcript:
-
-```json
-{"type":"bridge-session","sessionId":"f7b4b985-…","bridgeSessionId":"cse_015tb2nHhHNrBuL7ZDhn9Wx5"}
-```
-
-The transcript is the only place it is legible: the CLI puts its Remote Control state in a TUI, not
-on stdout. Reading it inside the container rather than off the host avoids having to find the auth
-volume, and the file is found by a glob over `projects/*/` rather than by rebuilding the CLI's
-directory-slug rule, which would break silently the day that rule changes. `remoteSessionArgs`
-refuses a session id that is not a uuid before interpolating it into that shell command — the id
-arrives from the board on a follow-up claim, and a board is not something this process should trust with a
-fragment of shell.
-
-The poll gives up after two minutes. A session with no bridge by then is a Remote Control that did
-not connect, and the run is no less valid for it. That is also why the second report carries the
-remote id and the store `coalesce`s it: the first report of an attempt has none yet and must not
-wipe one a later report stored.
-
-Both ids are cleared on every claim, for the same reason `started_at` resets — except on a
+The id is cleared on every claim, for the same reason `started_at` resets — except on a
 follow-up's claim, where the session genuinely is the same one. The attempt that died ran a
 different session, and showing its link next to this attempt's output points a reader at work that
 was thrown away.
-
-**`RUNNER_REMOTE_CONTROL=1` changes what a job is.** It swaps the headless `-p <command>` for
-`--remote-control <container-name> <command>` — an interactive session, with the command as its
-opening prompt, that appears at claude.ai/code and can be driven from there or from the mobile app.
-An interactive session does not end when the agent stops talking, so:
-
-- the container lives until somebody ends the session or `RUNNER_IDLE_MS` of silence parks it (see
-  below), and a drivable job holds its worker slot for that whole time;
-- `exitCode` and `output` arrive only at that point, and `output` is a captured TUI — escape codes
-  and redraws, not a transcript. The OTLP pipeline is where the session's actual content lives.
-
-Three things it needs that a headless run does not, all decided in `dockerArgs`:
-
-- **A tty, with the child's stdin `'ignore'`** (`-t` alone, deliberately not `-i -t`). Without a
-  tty the CLI will not start an interactive session; with `-t` alone the daemon allocates the pty
-  without attaching the client's stdin, so the container gets a terminal that never delivers input
-  or EOF — exactly what a session waiting to be driven from elsewhere needs. The driver never
-  writes to that stdin.
-- **The login volume, and no forwarded credentials at all.** Remote Control requires a full-scope
-  claude.ai login — `docker/claude-executor/run.sh login` writes one into `claude-executor-auth`.
-  `RUNNER_ENV` is skipped entirely in this mode, because a forwarded token does not fail: a
-  `setup-token` can only make model requests, so `--remote-control` starts a perfectly ordinary
-  local session and the only symptom is that it never appears at claude.ai/code.
-- **`TRUST_WORKDIR=1`.** The trust dialog is a real prompt and a driver-started session has nobody
-  to answer it. See [the executor README](../docker/claude-executor/README.md) for what accepting it
-  implies when the checkout ships a `.claude/settings.local.json`.
-
-Off by default, so that turning a worker slot into a long-lived interactive session is something
-somebody typed.
 
 ## The close-time agent-turn read, and the run summary
 
@@ -680,55 +774,19 @@ dashboard's recently-completed view; the command records what was asked, never w
   transcript that is gone — all store null, never zero. A genuine zero-response run stores 0.
   The task statistics exclude a task with any unmeasured in-range run from the agent-turn
   distribution rather than sum it partially; its tokens and runs still count in theirs.
-- **Remote Control runs stay null on purpose.** The conversation continues after any single
-  read, so freezing a mid-conversation count onto the row would understate it forever; a parked
-  session's turns can be banked at the park later if that turns out to matter. The driver never
-  attempts the read under `RUNNER_REMOTE_CONTROL` — pinned in the runner tests, not left to
-  discipline.
 
-## Standby: the Remote Control idle park
+## The park (`suspend`)
 
-A session waiting for a human should not hold a container for the hours it may take one to arrive.
-So a Remote Control runner that goes quiet is **parked**, not failed:
-
-```
-running --(RUNNER_IDLE_MS of silence)--> standby --(Stop)--> stopped
-```
-
-**The board does not re-queue a parked job.** There is no resume: a session parked by idling stays
-parked until somebody ends its turn — Stop settles the row `stopped`, the session is kept, and a
-follow-up continues exactly where things stood — or until it is removed. The session itself is
-still drivable from claude.ai the whole time; the row on the board is the headless record of a
-conversation that moved elsewhere.
-
-**The transcript is what makes this work, and it survives because of a decision made for a different
-reason.** Remote Control mounts the login volume over `CLAUDE_CONFIG_DIR`, and that is also where
-the CLI writes `projects/<path>/<session-id>.jsonl`. So the session outlives its container, and a
-later run continues it with `--resume <sessionId>` — which keeps the original id, since forking it
-is a separate flag. The link the UI shows does not move when a job is parked.
-
-The command is delivered **once**. It is already in the transcript, and sending it again would
-re-run the work somebody has been driving by hand. The follow-up is the one exception, decided by
-the board and not the driver: its command is new, so the claim says `followUp` and it goes into the
-restored session — see the section above.
-
-**Silence is the idle signal because it is the one the driver already has.** It reads every chunk
-the container writes, so a timer reset on each one costs nothing and keeps this process a client of
-the HTTP board and of docker, and of nothing else. Asking the board, or the telemetry store, would
-make it a client of something it has no business knowing about.
-
-**`DRIVER_JOB_TIMEOUT_MS` is not armed under Remote Control.** With both bounds running the shorter
-one always wins, so at the defaults every drivable job would be killed at two hours and
-reported `failed` — and standby would never happen once, which reads as a feature that does not
-exist rather than as a misconfiguration. An interactive session has no meaningful total duration:
-being driven for three hours is the point. Silence is the bound there.
+`suspend` is how a worker lands a user's Stop: the heartbeat delivers the stop stamp, the worker
+kills its runner, and the park settles the row `stopped` — terminal, the session kept for the
+follow-up that continues the turn.
 
 **`suspend` hands back the attempt the claim took.** Parking is not a failed try, and without the
-give-back a job parked three times is `dead`. A run that keeps killing its worker still burns
+give-back a job stopped three times is `dead`. A run that keeps killing its worker still burns
 attempts normally, because that path never reaches `suspend`.
 
-**`suspend` also expires the lease**, exactly as insert does it. Standby is not claimable, so this
-changes nothing for as long as the job is parked.
+**`suspend` also expires the lease**, exactly as insert does it. A stopped row is not claimable, so
+this changes nothing while it sits.
 
 ## Follow-ups and done: a task is over when the user says so
 
@@ -747,8 +805,8 @@ run the user is following up on. The new row carries `parent_job_id` — it is o
 still one TASK to the member: `GET /api/jobs/:id/thread` resolves any member's id to the whole
 chain, the task page renders it as one conversation, a follow-up extends the view in place instead
 of navigating away, and the sidenav lists thread roots only — copies of the parent's `repo`,
-`session_id` and `remote_session_id` from insert. The
-repo copy keeps the thread under its repository's name in the task list; the session copies are what make the claim resume the parent
+and `session_id` from insert. The
+repo copy keeps the thread under its repository's name in the task list; the session copy is what makes the claim resume the parent
 conversation without any new claim-side rule. The thread's frozen `workflow_name` (033) is
 inherited the same way, so every turn of a workflow task carries the name the member chose at
 create. Every row also carries `root_job_id` (022): the
@@ -764,7 +822,7 @@ TASK, not per run: the settled verdicts fold by `root_job_id`, identity fields f
 present-tense fields (status, summary, runtime, session, started) from the chain head — the newest
 member, the `chainHead` rule the sidenav renders — the wall clock and the completion stamp the
 thread's sum and max, and the done from whichever member carries it. A thread with a member still
-queued, running or parked is not completed and is excluded whole; ordering is by the thread's
+queued or running is not completed and is excluded whole; ordering is by the thread's
 newest completion, and the limit bounds tasks. The recently-completed dashboard panel is the
 consumer; the per-run lists the tasks pages poll are unchanged.
 
@@ -789,22 +847,30 @@ driver died before it could report. Since 016 the session id is whatever the exe
 claude uuid or an opencode `ses_…` — so every executor with a reported session can be followed up. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
 retried click answers the first verdict's instant rather than rewriting it.
 
-**A follow-up's command is delivered into the restored session — the one exception to
-delivered-once.** The follow-up's command is the NEW adjustment and the restored transcript is the
-conversation it continues, so it goes out even though the claim
-resumes (`followUp: true` → `--resume <id> -p <command>`). `command_delivered_at` is what has kept
-this an exception rather than a rule: `suspend` stamps it — parking is the moment "the command sits
-in a transcript somebody may have been driving" becomes true — and the claim returns `followUp`
-from the pre-update value. Since stop became a verdict, a suspended follow-up is terminal and never
-claimed again, so in practice every claimed follow-up delivers; the column remains the guard that
-keeps the delivered-once rule from being quietly rewritten.
+**The command is delivered on every claim, resume included.** There is no delivered-once rule: the
+runner plan both executors render from (`driver/src/runner-plan.ts`) appends `-p <command>` to every
+claude-code run, so a resumed claim carries its command exactly as a fresh one does
+(`--resume <id> -p <command>`). A follow-up is not a special case of delivery — its command is the
+NEW adjustment and the restored transcript is the conversation it continues, which is the same
+argv either way.
+
+This replaced a delivered-once rule the two executors disagreed about: docker delivered
+unconditionally, kubernetes suppressed the command on a resume that was not a follow-up, and each
+file's comments claimed to be the other's twin. Docker's behavior is the one that survived, so the
+rule is now stated in one place and rendered by one planner.
+
+`command_delivered_at` is left over from the old rule and no longer gates anything. `suspend()`
+still stamps it (`job-store-actions.ts`) and the claim still derives `followUp` from it —
+`(parent_job_id is not null and command_delivered_at is null)`, `job-store-claim.ts` — but no
+runner reads that flag to decide delivery any more; `followUp` survives only in
+`claimContinuesSession` (`driver/src/claim.ts`). The column and its derivation are candidates for
+removal, which is a schema change and wants its own migration.
 
 **A crashed follow-up attempt keeps the session through the re-claim, where an ordinary job's is
 cleared.** The claim's keep predicate (below) extends to rows carrying
 `parent_job_id`: the session holds the whole conversation, not just the dead attempt's work, and
 clearing it would throw the thread away with the attempt. The command re-delivers on that re-claim,
-which is the ordinary retry semantics for a headless run — and unreachable for Remote Control in
-practice, since a drivable job parks on silence before its lease can expire.
+which is the ordinary retry semantics for a run.
 
 ## The task summary read model: `GET /api/tasks` (#157)
 
@@ -821,8 +887,8 @@ worker secret), its org resolved from the credential, never the query.
 The summary's identity fields (id, command, author, createdAt) are the ROOT's; the present tense
 (status, doneAt, cancelRequestedAt, activity, summary) is the chain HEAD's — the newest member by
 created-then-id, the same resolution `chainHead()` applies in the browser. The bucket comes from
-the HEAD's status and the HEAD's done stamp exactly as `taskSections()` derives it: queued,
-running or parked → **running**; terminal without the user's done → **review**; terminal with it →
+the HEAD's status and the HEAD's done stamp exactly as `taskSections()` derives it: queued or
+running → **running**; terminal without the user's done → **review**; terminal with it →
 **past**. Reading the HEAD's done (not the thread's max, which the grouped terminal list uses for
 its own purposes) is what makes resurrection work: a done task with a fresh queued follow-up has
 a non-terminal head, so the task is running again and the done stamp is gone. The pure half of
@@ -863,7 +929,7 @@ removing lands on the worktree-reclaim machinery.
 **Stop ends the turn.** `POST /api/jobs/:id/stop` is a person's verdict that this run should stop
 talking: the row settles `stopped` — terminal, its session kept — so the follow-up composer is
 what the member sees next, and the conversation continues from exactly where it was cut. There is
-no resume and no park. A queued row (never started) or an already-parked one settles `stopped`
+no resume. A queued row (never started) settles `stopped`
 directly (the answer is `{ status: 'stopped' }`); a `running` row whose lease is still live answers
 `{ status: 'running', cancelRequestedAt }` and the request is delivered by the worker's heartbeat —
 the `cancelRequested` flag — exactly the way a lost lease is delivered, and by the same kill. A
@@ -1137,7 +1203,7 @@ after the verdict, which put the whole thread's commands, output and session ids
 board secret could reach — audit data of jobs the driver never held — and computing the answer
 at the verdict moment also closes a race the read had: a follow-up inserted between the verdict
 and the read made the thread non-terminal at the last possible moment, where the verdict-moment
-answer is final. A follow-up still queued, parked, or running keeps `threadDone` false and
+answer is final. A follow-up still queued or running keeps `threadDone` false and
 the tree in place — and so does a thread that finished with nobody closing it, which is now the
 common case rather than the reclaim.
 
@@ -1221,6 +1287,24 @@ a refusal there would fail every claimed job. Under
 `AUTH_MODE=none` a board with no `GITHUB_TOKEN` in any env scope will fail the publish at push
 with the daemon's authentication error — the work stays local, loudly.
 
+**The verdict names who it published — the PR identity rides the completion report (036).** A
+publish is only real once it is recorded. `publishCheckout` answers the PR URL it created and the
+branch pair; the loop ships them to `complete` as the optional `publication` object — `repo`,
+`prNumber`, `prUrl`, `headBranch`, `baseBranch` — and the board, validating the shape (the repo an
+`owner/name`, the URL the github.com `.../pull/<n>` spelling, the branches bounded refs) and
+cross-checking `repo` against the leased job's OWN `repo` label inside the verdict's transaction,
+records the identity (`job_pr`). A no-op or a failed publish invents nothing: the field is absent
+and no row is written — only a run that actually published a PR names one. The identity is the
+durable anchor a block layer keys its waits on, and it is already what the PR waits read:
+a waiting thread's `workflow_wait` row is addressed to that same `(repo, prNumber)`, GitHub's
+webhook deliveries fold into it and cancel it on PR close, and the task read model surfaces it as
+`waitReason` / `waitingSince` / `waitTerminalReason` (an open wait first, else the most recent
+terminal one). Both `listTasks()` and `thread()` join it (206): an OPEN wait buckets the thread as
+`review` regardless of the row's own status — a human-blocked thread is never "running", whatever
+status the wait-entry mechanism (issue #231, `workflow-blocks/runtime.ts` — docs/workflows.md,
+"Durable block waits") parks it under, which today is no `job` row at all — and `thread()` carries
+the same triple on every member of the conversation, since the wait belongs to the root, not the run.
+
 ## Decisions
 
 **`workflow_name` is frozen audit data, not a live reference (033).** The route stamps the
@@ -1270,13 +1354,6 @@ regenerated on every claim and must be presented on heartbeat and complete. A re
 old one is refused, not merged: the two runs did different work, and merging them writes one run's
 exit code next to another's output.
 
-**`standby` is a status, not an expired lease.** Parking by simply releasing the lease would leave
-the job claimable, so the next idle poll — five seconds later — would resume it, which is the
-opposite of parking it. As a status it falls outside `job_claimable`'s partial predicate
-(`status in ('queued','running')`) and is invisible to the claim without one extra word of SQL.
-Adding it did cost the constraint rewrite that 006's header warns about; that was cheaper than a
-second predicate on the hot path.
-
 **A claim resumes a session only when the job is a follow-up.** The claim keeps `session_id` when
 the row carries `parent_job_id`, and clears it otherwise, so a lease that expired mid-run starts
 fresh for an ordinary job. That attempt's
@@ -1303,18 +1380,13 @@ flatten it.
 **`order by created_at, id`.** `now()` is transaction-constant, so a batch insert shares a
 timestamp and FIFO without the id tiebreaker is arbitrary.
 
-**`repo` and `executor` are grouping metadata for the tasks UI, not execution inputs.** The task
-list names the repository workspace a task belongs to and the executor it was queued with, so a
-job carries both labels — nullable, because every job queued before the tasks UI has neither, and 014
-adds them as plain text for the same reason `remote_session_id` is. No foreign keys: `job` is an
-audit record (the `created_by` precedent — "records who did rather than limiting what they may do"),
-while `user_repo` and `user_executor` rows are member state that comes and goes with a PUT, and a
-deselected repository must not take its history with it. Shape-validated only, under the same
-path-segment rules a checkout's name obeys, because nothing consumes either label: the claim payload
-is unchanged, and a wrong-but-well-formed label in a hand-written API call is as harmless as a
-typo'd command. Wiring an executor into the driver remains future work — that change will decide
-what an executor name means to a worker, and whether existence is then checked at create or at
-claim. "Nothing runs an executor yet" stays true.
+**`repo` and `executor` remain audit labels, but executor is also resolved at claim time.** The task
+list names the repository workspace and executor profile a task was queued with. There are no foreign
+keys: `job` records the choice, while `user_repo` and `user_executor` are mutable member state. The
+claim resolves the executor label against the AUTHOR's current profiles and carries the matched type;
+that type chooses the CLI and its image. A renamed or deleted profile leaves the label in history but
+produces `executorType: null`, which the driver reports as a failed task instead of choosing a
+deployment default. The composer requires a configured profile and initially selects the first one.
 
 **The git guard lives in the images, not the sync.** The restore-mode sync enforces the checkout
 invariant only when a claim STARTS — by then a wrong checkout already exists and the thread is
@@ -1334,13 +1406,6 @@ command is exactly what a hook intercepts.
 - **No priority, no scheduling.** A dead job is reaped; a queued one is taken in order. Stop and
   remove exist (a person can wind a task down or delete it — see the section above), but a queued
   job's *place* in the queue is not something anybody moves.
-- **No cap on how long a job may sit on standby, and nothing reaps one.** A Remote Control idle
-  park waits for its human, who is driving the session from claude.ai and may take days; Stop ends
-  the turn when they are done with it. It costs a row rather than a worker slot, which is the whole
-  point of parking it.
-- **One auth volume, shared by every concurrent Remote Control runner.** They all write
-  `.claude.json` in the same directory. Fine for one drivable job at a time and unexamined beyond
-  that; a volume per job would make the login a template to copy rather than a mount.
 - **No per-JOB authorization.** There is authentication now — see [auth.md](auth.md) — and the two
   credentials are disjoint: a session cookie queues, follows up, marks done, stops, removes and
   reads, a `Bearer $JOB_BOARD_TOKEN` (the shared board secret) claims, heartbeats, streams output,
@@ -1394,10 +1459,10 @@ images — two whose entrypoints echo and exit, plus a service stub and a runner
 `output` comes back as the arguments the container was
 given, which is what proves the prompt, the mount and the completion path all line up. It is also
 what proves the session round-trip: the `sessionId` the board hands back is found inside those
-arguments, so the link points at the session the job actually ran as. Standby is covered in the
-board phase rather than the driver phase — park, prove a parked job is not offered to an idle poll,
-stop it, and continue it as a follow-up whose claim carries the session back — because none of that
-needs a container. Its leftover sweeps are scoped to the jobs this run created, so a live
+arguments, so the link points at the session the job actually ran as. Stop is covered in the
+board phase rather than the driver phase — ask a running job to stop, park it, prove the stopped
+job is not offered to an idle poll, and continue it as a follow-up whose claim carries the session
+back — because none of that needs a container. Its leftover sweeps are scoped to the jobs this run created, so a live
 deployment sharing the daemon does not trip them. It creates a
 `*_test` database, four images and a volume, and drops all of them on exit.
 

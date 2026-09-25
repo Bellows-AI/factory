@@ -1,23 +1,6 @@
-import { execFile as execFileCb, execFileSync, spawnSync } from 'node:child_process';
-import {
-    chmodSync,
-    existsSync,
-    mkdirSync,
-    mkdtempSync,
-    readdirSync,
-    readFileSync,
-    realpathSync,
-    rmSync,
-    writeFileSync,
-} from 'node:fs';
-import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createServer as createHttpsServer } from 'node:https';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import { DatabaseSync } from 'node:sqlite';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
@@ -27,23 +10,25 @@ import {
 } from '../src/publish.js';
 import { bellowsReadScript } from '../src/services.js';
 import {
-    claudeTurnsScript,
-    opencodeCacheProbeScript,
-    opencodeReadoutScript,
-    remoteSessionScript,
-} from '../src/docker.js';
-
-const execFile = promisify(execFileCb);
-
-/** node:sqlite is flagged experimental and its landing version varies; the suite skips, not breaks. */
-function hasNodeSqlite(): boolean {
-    try {
-        new DatabaseSync(':memory:').close();
-        return true;
-    } catch {
-        return false;
-    }
-}
+    BODY_MAX,
+    DIFF_HUNK_MAX,
+    ERROR_MAX,
+    GENERAL_LIMIT,
+    INLINE_LIMIT,
+    PLAN_BYTES_MAX,
+    PLAN_TARGETS_MAX,
+    REVIEWS_LIMIT,
+    THREADS_LIMIT,
+    THREAD_COMMENTS_LIMIT,
+    TOTAL_OUTPUT_BYTES,
+    TRUNCATED_MARKER,
+    reviewCollectScript,
+    reviewReplyScript,
+} from '../src/review.js';
+import { claudeTurnsScript, opencodeCacheProbeScript, opencodeReadoutScript } from '../src/container-scripts.js';
+import { HELPER_REGISTRY } from '../src/helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { SCRIPTS_DIR, pathOf } from './fixtures/scripts-support.js';
 
 /**
  * The scripts this driver hands to containers are REAL FILES under `driver/src/scripts/`, read at
@@ -53,27 +38,11 @@ function hasNodeSqlite(): boolean {
  * container-only failure otherwise — every runner that would have executed the script burns its
  * attempt instead), and the TS-side constants must be exactly their file's content, so a pin on a
  * constant is a pin on the artifact the container runs.
+ *
+ * The behavior of each script — the credential helper, the opencode/claude-turns readouts, the
+ * worktree reclaim — is exercised in its own sibling file (`scripts-*.test.ts`, split out for the
+ * line-count cap); this file keeps only the parity/parse checks that cover every script at once.
  */
-
-const SCRIPTS_DIR = join(fileURLToPath(import.meta.url), '..', '..', 'src', 'scripts');
-
-function hasGit(): boolean {
-    try {
-        execFileSync('git', ['--version'], { stdio: 'ignore' });
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-function hasOpenssl(): boolean {
-    try {
-        execFileSync('openssl', ['version'], { stdio: 'ignore' });
-        return true;
-    } catch {
-        return false;
-    }
-}
 
 /** Every script file, with the checker that gates its syntax. */
 const FILES: [string, 'node' | 'sh'][] = [
@@ -86,10 +55,15 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['claude-turns.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
-    ['remote-session.sh', 'sh'],
+    ['review-collect.cjs', 'node'],
+    ['review-reply.cjs', 'node'],
+    ['helper-noop.cjs', 'node'],
+    ['merge-conflict-probe.cjs', 'node'],
+    ['review-collect-probe-prelude.cjs', 'node'],
+    ['review-collect-probe-postlude.cjs', 'node'],
+    ['review-reply-probe-middle.cjs', 'node'],
+    ['review-reply-probe-postlude.cjs', 'node'],
 ];
-
-const pathOf = (name: string): string => join(SCRIPTS_DIR, name);
 
 describe('the container scripts', () => {
     it('ships exactly the scripts the driver loads, and nothing else', () => {
@@ -132,7 +106,95 @@ describe('the container scripts', () => {
         expect(claudeTurnsScript).toBe(readFileSync(pathOf('claude-turns.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
-        expect(remoteSessionScript).toBe(readFileSync(pathOf('remote-session.sh'), 'utf8'));
+        expect(reviewCollectScript).toBe(readFileSync(pathOf('review-collect.cjs'), 'utf8'));
+        expect(reviewReplyScript).toBe(readFileSync(pathOf('review-reply.cjs'), 'utf8'));
+        expect(HELPER_REGISTRY.get('noop')?.scriptBody).toBe(readFileSync(pathOf('helper-noop.cjs'), 'utf8'));
+        expect(HELPER_REGISTRY.get('merge-conflict-probe')?.scriptBody).toBe(
+            readFileSync(pathOf('merge-conflict-probe.cjs'), 'utf8')
+        );
+    });
+
+    // The github-review-reconcile block's two helpers (issue #133) are COMPOSED bodies, never a
+    // single file's content — driver/src/review-helpers.ts assembles each from real adapter files
+    // plus the unmodified review-collect.cjs/review-reply.cjs, joined with the bare `{ }` blocks
+    // that keep the embedded script's own top-level names from colliding with the adapter's own.
+    // This pin is on the ASSEMBLY, not just the pieces: a byte drift in either adapter file, or in
+    // how review-helpers.ts joins them, fails here rather than only surfacing as a container-only
+    // parse or scope error.
+    it('assembles the review-block helper bodies from their real files, byte for byte', () => {
+        const read = (name: string): string => readFileSync(pathOf(name), 'utf8');
+        const collectBody = [
+            read('review-collect-probe-prelude.cjs'),
+            '{',
+            read('review-collect.cjs'),
+            '}',
+            read('review-collect-probe-postlude.cjs'),
+        ].join('\n');
+        expect(HELPER_REGISTRY.get(REVIEW_COLLECT_PROBE_ID)?.scriptBody).toBe(collectBody);
+
+        const replyBody = [
+            read('review-collect-probe-prelude.cjs'),
+            '{',
+            read('review-collect.cjs'),
+            '}',
+            read('review-reply-probe-middle.cjs'),
+            'if (!__reviewReplyProbeSkip) {',
+            read('review-reply.cjs'),
+            '}',
+            read('review-reply-probe-postlude.cjs'),
+        ].join('\n');
+        expect(HELPER_REGISTRY.get(REVIEW_REPLY_PROBE_ID)?.scriptBody).toBe(replyBody);
+    });
+
+    // The review scripts are not yet loaded by any argv builder, so a byte pin through a
+    // (dormant) constant is the whole seam. The caps they enforce are duplicated as literals in
+    // the scripts AND as the exported constants this module hands to orchestration: a cap drift
+    // in either direction changes what a container truncates versus what the planner promises, so
+    // the shared caps have to agree literal by literal.
+    it('pins the review cap literals to the exported constants', () => {
+        const capsOf = (name: string): Record<string, string> => {
+            const src = readFileSync(pathOf(name), 'utf8');
+            const caps: Record<string, string> = {};
+            for (const m of src.matchAll(/^const ([A-Z_]+) = (.+);$/gm)) caps[m[1]!] = m[2]!;
+            return caps;
+        };
+        const evalCap = (rhs: string): unknown => new Function(`return (${rhs})`)();
+        const collect = capsOf('review-collect.cjs');
+        const reply = capsOf('review-reply.cjs');
+        const collectOnly: Array<[string, unknown]> = [
+            ['BODY_MAX', BODY_MAX],
+            ['DIFF_HUNK_MAX', DIFF_HUNK_MAX],
+            ['GENERAL_LIMIT', GENERAL_LIMIT],
+            ['INLINE_LIMIT', INLINE_LIMIT],
+            ['REVIEWS_LIMIT', REVIEWS_LIMIT],
+            ['THREADS_LIMIT', THREADS_LIMIT],
+            ['THREAD_COMMENTS_LIMIT', THREAD_COMMENTS_LIMIT],
+            ['TOTAL_OUTPUT_BYTES', TOTAL_OUTPUT_BYTES],
+        ];
+        const replyOnly: Array<[string, unknown]> = [
+            ['PLAN_TARGETS_MAX', PLAN_TARGETS_MAX],
+            ['PLAN_BYTES_MAX', PLAN_BYTES_MAX],
+        ];
+        const shared: Array<[string, unknown]> = [
+            ['ERROR_MAX', ERROR_MAX],
+            ['TRUNCATED_MARKER', TRUNCATED_MARKER],
+        ];
+        const check = (caps: Record<string, string>, name: string, value: unknown, where: string) => {
+            expect(caps[name], `${name} in ${where}`).toBeDefined();
+            expect(evalCap(caps[name]!), `${name} in ${where}`).toEqual(value);
+        };
+        for (const [name, value] of collectOnly) check(collect, name, value, 'collect');
+        for (const [name, value] of replyOnly) check(reply, name, value, 'reply');
+        for (const [name, value] of shared) {
+            check(collect, name, value, 'collect');
+            check(reply, name, value, 'reply');
+        }
+        expect(collect.TOTAL_OUTPUT_BYTES).toBe('262144');
+        // The GraphQL thread pagination is untyped in the scripts: the collect script interpolates
+        // the constant into its query, the reply script writes the resolved number; pin both to
+        // THREADS_LIMIT (the collect file text is 'first: ${THREADS_LIMIT}', not the number).
+        expect(readFileSync(pathOf('review-collect.cjs'), 'utf8')).toContain(`first: \${THREADS_LIMIT}`);
+        expect(readFileSync(pathOf('review-reply.cjs'), 'utf8')).toContain(`first: ${THREADS_LIMIT}`);
     });
 
     // The credential helper runs exactly as git spawns it (gitcredentials(7)): a `!`-prefixed
@@ -152,682 +214,5 @@ describe('the container scripts', () => {
         expect(run.status).toBe(0);
         expect(run.stdout).toContain('username=x-access-token');
         expect(run.stdout).toContain('password=test-token');
-    });
-});
-
-/**
- * The sync fetch's credential wiring, against real git — the same offline shape as
- * worktree.test.ts, except the remote: an HTTPS URL, because the token-leak finding is ABOUT the
- * transport a credential rides: the helper answers every credential request with the token, so
- * the suite must exercise the scheme the token would actually leave over. The stub remote
- * answers 401 to everything, so git runs the credential dance: with CRED_HELPER set the helper
- * is spawned (the marker file proves it), without it the fetch fails plain. GIT_* config is
- * pinned to /dev/null so the host's own helpers (osxkeychain and friends) stay out of the dance
- * entirely; the fixture's certificate is self-signed, so TLS verification is switched off for
- * the script's git children — what is under test is the scheme gate and the helper wiring, not
- * the chain of trust.
- */
-describe.skipIf(!hasGit() || !hasOpenssl())('the sync fetch credential helper', () => {
-    const FIXTURE_CONFIG = ['-c', 'init.defaultBranch=main'];
-    const git = (cwd: string, ...args: string[]): string =>
-        execFileSync('git', [...FIXTURE_CONFIG, ...args], { cwd, encoding: 'utf8' }).trim();
-
-    let dir: string;
-    let clone: string;
-    let bare: string;
-    let server: ReturnType<typeof createHttpsServer>;
-
-    // ASYNC on purpose: the 401 server lives on THIS worker's event loop, and a synchronous
-    // execFile would block the very loop the fetch needs to answer the credential round-trips —
-    // the fetch would wait on a server that cannot run. Awaited, the loop stays free.
-    const sync = async (env: Record<string, string>): Promise<{ ok: boolean; reason: string | null }> => {
-        const { stdout } = await execFile(
-            'node',
-            [join(import.meta.dirname, '..', 'src', 'scripts', 'git-worktree.cjs')],
-            {
-                env: {
-                    ...process.env,
-                    REPO: clone,
-                    WORKTREE: join(dir, 'wt'),
-                    BRANCH: 'factory/99999999-9999-4999-8999-999999999999',
-                    // Only CRED_HELPER may answer the credential prompt: the host's global/system
-                    // helpers would muddy exactly the wiring under test.
-                    GIT_CONFIG_GLOBAL: '/dev/null',
-                    GIT_CONFIG_SYSTEM: '/dev/null',
-                    GIT_TERMINAL_PROMPT: '0',
-                    // The loopback remote's certificate is self-signed (minted per-test below);
-                    // verification off keeps the fixture about the scheme, not the chain.
-                    GIT_CONFIG_COUNT: '1',
-                    GIT_CONFIG_KEY_0: 'http.sslVerify',
-                    GIT_CONFIG_VALUE_0: 'false',
-                    ...env,
-                },
-                encoding: 'utf8',
-            }
-        );
-        return JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!);
-    };
-
-    /** The marker-writing helper: the same shape as the shipped credential-helper.sh (a `!f(){
-     * ... }; f` shell snippet passed as the helper CODE), with a side effect git's auth dance
-     * cannot fake. */
-    const markerHelper = (marker: string): string =>
-        `!f(){ printf "username=u\\n"; printf "password=p\\n"; echo invoked > '${marker}'; }; f`;
-
-    beforeEach(async () => {
-        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-cred-')));
-        const work = join(dir, 'origin-work');
-        mkdirSync(work, { recursive: true });
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# cred\n');
-        execFileSync('git', [...FIXTURE_CONFIG, '-C', work, 'add', 'README.md'], { stdio: 'ignore' });
-        execFileSync(
-            'git',
-            [...FIXTURE_CONFIG, '-C', work, '-c', 'user.email=t@e.c', '-c', 'user.name=T', 'commit', '-m', 'init'],
-            { stdio: 'ignore' }
-        );
-        bare = join(dir, 'cred.git');
-        execFileSync('git', [...FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
-        execFileSync('git', [...FIXTURE_CONFIG, 'clone', `file://${bare}`, join(dir, 'clone')], { stdio: 'ignore' });
-        clone = join(dir, 'clone');
-        // A throwaway self-signed certificate for the loopback https remote — the transport the
-        // token would really leave over.
-        const key = join(dir, 'key.pem');
-        const cert = join(dir, 'cert.pem');
-        execFileSync(
-            'openssl',
-            [
-                'req',
-                '-x509',
-                '-newkey',
-                'rsa:2048',
-                '-keyout',
-                key,
-                '-out',
-                cert,
-                '-days',
-                '2',
-                '-nodes',
-                '-subj',
-                '/CN=127.0.0.1',
-            ],
-            { stdio: 'ignore' }
-        );
-        // The 401-everything remote: the first unauthenticated request is refused, which is
-        // what sends git looking for a credential helper. Offline — loopback only.
-        server = createHttpsServer(
-            { key: readFileSync(key, 'utf8'), cert: readFileSync(cert, 'utf8') },
-            (_req, res) => {
-                res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="factory-test"' });
-                res.end('no');
-            }
-        );
-        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-        git(
-            clone,
-            'remote',
-            'set-url',
-            'origin',
-            `https://127.0.0.1:${(server.address() as AddressInfo).port}/repo.git`
-        );
-    });
-
-    afterEach(async () => {
-        // git's libcurl keeps the connection alive after a refused fetch; close() alone waits
-        // for it, which would hang the suite. Drop the sockets, then close.
-        server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
-    });
-
-    it('invokes the helper for the fetch when CRED_HELPER is set against an https origin', async () => {
-        const marker = join(dir, 'helper-invoked');
-        // The remote never authenticates, so the sync answers ok:false — the assertion is the
-        // helper having RUN, which the marker proves.
-        expect((await sync({ CRED_HELPER: markerHelper(marker) })).ok).toBe(false);
-        expect(existsSync(marker)).toBe(true);
-    });
-
-    it('runs the fetch plain when CRED_HELPER is absent', async () => {
-        const marker = join(dir, 'helper-invoked');
-        expect((await sync({})).ok).toBe(false);
-        expect(existsSync(marker)).toBe(false);
-    });
-
-    it('refuses the credentialed fetch when origin is not https, and never runs the helper', async () => {
-        // The remote URL is the member tree's state: a prior agent session can re-point origin
-        // at a cleartext or local transport, and the next sync must not hand it the token. The
-        // helper answers every credential request with the token, whatever host or scheme asks.
-        git(clone, 'remote', 'set-url', 'origin', `file://${bare}`);
-        const marker = join(dir, 'helper-invoked');
-        const result = await sync({ CRED_HELPER: markerHelper(marker) });
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('https');
-        expect(existsSync(marker)).toBe(false);
-    });
-
-    it('pins the credentialed fetch to same-host redirects (http.followRedirects=initial)', async () => {
-        // The fetch's exact argv, captured by a recording `git` shim earlier in PATH that logs
-        // each invocation and execs the real git — the redirect pin rides the same `-c` chain
-        // as the helper, so the assertion is on the argv the script builds.
-        const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
-        const log = join(dir, 'git-argv.log');
-        const shimDir = join(dir, 'shim');
-        mkdirSync(shimDir);
-        writeFileSync(join(shimDir, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realGit}' "$@"\n`);
-        chmodSync(join(shimDir, 'git'), 0o755);
-        await sync({ CRED_HELPER: markerHelper(join(dir, 'helper-invoked')), PATH: `${shimDir}:${process.env.PATH}` });
-        const lines = readFileSync(log, 'utf8').split('\n').filter(Boolean);
-        expect(
-            lines.some((line) => line.includes('http.followRedirects=initial') && line.includes('fetch origin --prune'))
-        ).toBe(true);
-    });
-
-    it('leaves the plain uncredentialed fetch ungated: a file:// origin still syncs', async () => {
-        // The scheme gate exists to keep the TOKEN off non-https transports; with no token in
-        // play the gate must not exist either — a public repo on any transport git can read
-        // keeps its plain fetch.
-        git(clone, 'remote', 'set-url', 'origin', `file://${bare}`);
-        const marker = join(dir, 'helper-invoked');
-        expect((await sync({})).ok).toBe(true);
-        expect(existsSync(marker)).toBe(false);
-    });
-});
-
-/**
- * The close-time opencode session readout, against a real sqlite database — the artifact both
- * runners hand to a throwaway container. The scope is the part worth executing: the session
- * database is per MEMBER (that is what makes a follow-up's `--session` resumable at all), so two
- * concurrent tasks share one file and the readout must answer only the session that ran in
- * OPENCODE_DIR — the newest root session whose `directory` is that path, which is the working
- * directory the runner gave the run. The last provider error is lifted beside the finish reason,
- * because a premature stop whose cause stayed in the session database reads as a mystery on the
- * board (observed 2026-09-11: a 429 rate limit cut a run off mid-tool-call, and the verdict
- * named only the finish reason).
- */
-describe.skipIf(!hasNodeSqlite())('the opencode session readout', () => {
-    /** One root session row, with the columns the script reads. */
-    const insertSession = (db: DatabaseSync, id: string, directory: string, created: number): void => {
-        db.prepare('insert into session (id, parent_id, directory, time_created) values (?, null, ?, ?)').run(
-            id,
-            directory,
-            created
-        );
-    };
-
-    /** One message row; `data` is the JSON blob the script reads fields out of. */
-    const insertMessage = (db: DatabaseSync, sessionId: string, data: object): void => {
-        db.prepare('insert into message (session_id, data) values (?, ?)').run(sessionId, JSON.stringify(data));
-    };
-
-    const run = (dbPath: string, dir: string, startedMs?: string): { answer: Record<string, unknown> } => {
-        const stdout = execFileSync('node', [pathOf('opencode-readout.cjs')], {
-            env: {
-                ...process.env,
-                OPENCODE_DB: dbPath,
-                OPENCODE_DIR: dir,
-                ...(startedMs !== undefined ? { RUN_STARTED_MS: startedMs } : {}),
-            },
-            encoding: 'utf8',
-        });
-        return { answer: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
-    };
-
-    let dir: string;
-    let dbPath: string;
-    const MINE = '/workspaces/org/member/.worktrees/mine';
-    const OTHER = '/workspaces/org/member/.worktrees/other';
-
-    beforeEach(() => {
-        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-ocread-')));
-        dbPath = join(dir, 'opencode.db');
-        const db = new DatabaseSync(dbPath);
-        db.exec('create table session (id text primary key, parent_id text, directory text, time_created integer)');
-        db.exec('create table message (id integer primary key, session_id text, data text)');
-        // The other task's session is the OLDER one; today's newest-root-session scrape answers it
-        // for both tasks, which is the contamination the directory scope exists to end.
-        insertSession(db, 'ses_other', OTHER, 1000);
-        insertMessage(db, 'ses_other', { role: 'assistant', finish: 'stop', tokens: { total: 11 }, cost: 0.01 });
-        // This task's, newer — the one the readout must answer.
-        insertSession(db, 'ses_mine', MINE, 2000);
-        db.close();
-    });
-
-    it('answers the newest root session of its directory, and never another task’s', () => {
-        const { answer } = run(dbPath, MINE);
-        expect(answer.id).toBe('ses_mine');
-    });
-
-    it('answers nothing when no session ran in its directory, though the database has sessions', () => {
-        // The loud failure: a scope key that matches nothing must NOT fall back to the newest
-        // session in the file — that fallback is the cross-task contamination.
-        const { answer } = run(dbPath, '/workspaces/org/member/.worktrees/nobody');
-        expect(answer.id).toBeUndefined();
-        expect(String(answer.error)).toContain('no session');
-    });
-
-    it('refuses to run without a directory to scope to', () => {
-        const { OPENCODE_DIR: _omit, ...env } = process.env;
-        const stdout = execFileSync('node', [pathOf('opencode-readout.cjs')], {
-            env: { ...env, OPENCODE_DB: dbPath },
-            encoding: 'utf8',
-        });
-        expect(JSON.parse(stdout.trim()).error).toContain('OPENCODE_DIR');
-    });
-
-    it('carries the finish reason, context and cost of the in-scope session', () => {
-        const db = new DatabaseSync(dbPath);
-        insertMessage(db, 'ses_mine', {
-            role: 'assistant',
-            finish: 'stop',
-            tokens: { total: 90433.4 },
-            cost: 0.31,
-        });
-        db.close();
-
-        const { answer } = run(dbPath, MINE);
-        // Raw, not rounded: rounding is the driver parse's job (parseOpencodeRunOutcome), and the
-        // script carries the database's own number.
-        expect(answer).toMatchObject({ id: 'ses_mine', finish: 'stop', tokens: 90433.4, cost: 0.31, error: null });
-    });
-
-    it('lifts the last provider error the session recorded', () => {
-        const db = new DatabaseSync(dbPath);
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'tool-calls', tokens: { total: 100016 }, cost: 0 });
-        insertMessage(db, 'ses_mine', {
-            role: 'assistant',
-            error: {
-                name: 'APIError',
-                data: { message: 'Error from provider (Console): Rate limit exceeded.', statusCode: 429 },
-            },
-        });
-        db.close();
-
-        const { answer } = run(dbPath, MINE);
-        expect(answer).toMatchObject({
-            id: 'ses_mine',
-            finish: 'tool-calls',
-            tokens: 100016,
-            error: 'Error from provider (Console): Rate limit exceeded.',
-        });
-    });
-
-    it('counts the assistant responses of the root conversation, never a subagent child', () => {
-        // The agent-turn definition: one assistant response cycle in the run's ROOT conversation.
-        // A subagent's session is a CHILD under a parent_id — its messages belong to another
-        // conversation, and the root-only session selection has to keep them out of the count.
-        const db = new DatabaseSync(dbPath);
-        insertMessage(db, 'ses_mine', { role: 'user' });
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'tool-calls' });
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
-        // A child session under ses_mine: subagent conversation, never counted.
-        db.prepare('insert into session (id, parent_id, directory, time_created) values (?, ?, ?, ?)').run(
-            'ses_child',
-            'ses_mine',
-            MINE,
-            3000
-        );
-        insertMessage(db, 'ses_child', { role: 'assistant', finish: 'stop' });
-        insertMessage(db, 'ses_child', { role: 'assistant', finish: 'stop' });
-        db.close();
-
-        const { answer } = run(dbPath, MINE);
-        expect(answer.turns).toBe(3);
-    });
-
-    it('counts only the turns this run wrote, when the driver passes the run start', () => {
-        // A follow-up RESUMES the root conversation: without the bound, its close-time read
-        // would book the earlier runs' turns again, and the task total would overstate. The
-        // bound is the run's own start (epoch ms); messages without a usable time cannot be
-        // placed in either side, so they are skipped, never mis-booked.
-        const db = new DatabaseSync(dbPath);
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 1000 } });
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 9000 } });
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', time: { created: 9500 } });
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
-        db.close();
-
-        const { answer } = run(dbPath, MINE, '8000');
-        expect(answer.turns).toBe(2);
-        // Without the bound the whole conversation counts, as before.
-        expect(run(dbPath, MINE).answer.turns).toBe(4);
-    });
-
-    it('reports the LAST error when the run errored, retried through it, and errored again', () => {
-        const db = new DatabaseSync(dbPath);
-        insertMessage(db, 'ses_mine', {
-            role: 'assistant',
-            error: { name: 'APIError', data: { message: 'transient 500, retried through', statusCode: 500 } },
-        });
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', tokens: { total: 5 }, cost: 0 });
-        db.close();
-
-        const { answer } = run(dbPath, MINE);
-        expect(answer.error).toBe('transient 500, retried through');
-    });
-
-    it('answers a session with no errors as error null', () => {
-        const db = new DatabaseSync(dbPath);
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop', tokens: { total: 5 }, cost: 0 });
-        db.close();
-
-        const { answer } = run(dbPath, MINE);
-        expect(answer.error).toBeNull();
-    });
-
-    it('lifts the run summary: the last assistant text part, collapsed to one line', () => {
-        // The text lives in `part` rows keyed by message_id — one row per block. The LAST
-        // assistant message carrying text wins; a tool-only trailing turn does not erase it.
-        const db = new DatabaseSync(dbPath);
-        db.exec('create table part (id integer primary key, message_id text, session_id text, data text)');
-        const insert = db.prepare('insert into message (session_id, data) values (?, ?)');
-        const m1 = insert.run('ses_mine', JSON.stringify({ role: 'assistant', finish: 'stop' }));
-        const m2 = insert.run('ses_mine', JSON.stringify({ role: 'assistant', finish: 'stop' }));
-        const insertPart = db.prepare('insert into part (message_id, session_id, data) values (?, ?, ?)');
-        insertPart.run(String(m1.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'text', text: 'earlier' }));
-        insertPart.run(String(m2.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'tool', tool: 'bash' }));
-        insertPart.run(
-            String(m2.lastInsertRowid),
-            'ses_mine',
-            JSON.stringify({ type: 'text', text: '  done —  tests\npass.  ' })
-        );
-        db.close();
-
-        const { answer } = run(dbPath, MINE);
-        expect(answer.summary).toBe('done — tests pass.');
-    });
-
-    it('answers a null summary when the schema predates the part table — the summary degrades alone', () => {
-        // An older opencode keeps no `part` rows: the summary read throws inside its own guard
-        // and costs the summary, never the turns or the finish reason beside it.
-        const db = new DatabaseSync(dbPath);
-        insertMessage(db, 'ses_mine', { role: 'assistant', finish: 'stop' });
-        db.close();
-
-        const { answer } = run(dbPath, MINE);
-        expect(answer.turns).toBe(1);
-        expect(answer.summary).toBeNull();
-    });
-
-    it('bounds the summary to this run, like the turn count', () => {
-        // A follow-up's summary is ITS last words, never the resumed conversation's older text.
-        // The older-created message is the transcript's LAST: without the bound it wins on
-        // position, with the bound it is skipped for being before the run started.
-        const db = new DatabaseSync(dbPath);
-        db.exec('create table part (id integer primary key, message_id text, session_id text, data text)');
-        const insert = db.prepare('insert into message (session_id, data) values (?, ?)');
-        const fresh = insert.run('ses_mine', JSON.stringify({ role: 'assistant', time: { created: 9000 } }));
-        const old = insert.run('ses_mine', JSON.stringify({ role: 'assistant', time: { created: 1000 } }));
-        const insertPart = db.prepare('insert into part (message_id, session_id, data) values (?, ?, ?)');
-        insertPart.run(String(fresh.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'text', text: 'new words' }));
-        insertPart.run(String(old.lastInsertRowid), 'ses_mine', JSON.stringify({ type: 'text', text: 'old words' }));
-        db.close();
-
-        expect(run(dbPath, MINE, '8000').answer.summary).toBe('new words');
-        expect(run(dbPath, MINE).answer.summary).toBe('old words');
-    });
-});
-
-/**
- * The terminal reclaim script, against real git — the artifact the reclaim container runs once a
- * thread is finished (issue #47). Both runners parse only the LAST stdout line, so the script's
- * stated contract of one JSON verdict is load-bearing: the refusal case here pins that a refusal
- * is terminal — exactly one line, and no trailing prune or success verdict that would shadow it
- * as a successful no-op.
- */
-describe.skipIf(!hasGit())('the worktree reclaim script', () => {
-    const GIT_FIXTURE_CONFIG = [
-        '-c',
-        'user.email=test@example.com',
-        '-c',
-        'user.name=Test',
-        '-c',
-        'init.defaultBranch=main',
-    ];
-    const git = (cwd: string, ...args: string[]): string =>
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, ...args], { cwd, encoding: 'utf8' }).trim();
-
-    const ROOT = '55555555-5555-4555-8555-555555555555';
-    const STALE = '66666666-6666-4666-8666-666666666666';
-    const UNREGISTERED = '77777777-7777-4777-8777-777777777777';
-
-    let dir: string;
-    let clone: string;
-
-    const wtPath = (name: string): string => join(dir, 'worktrees', name);
-
-    const remove = (wt: string): { stdout: string; verdict: { ok: boolean; removed?: boolean; reason?: string } } => {
-        // The script FILE itself, not a -e wrap: the artifact the reclaim container runs is what
-        // is under test.
-        const stdout = execFileSync('node', [pathOf('git-worktree-remove.cjs')], {
-            env: { ...process.env, REPO: clone, WORKTREE: wt },
-            encoding: 'utf8',
-        });
-        return { stdout, verdict: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
-    };
-
-    /** A registered worktree of the clone, at a path beside it — the sync's own shape. */
-    const addWorktree = (name: string): string => {
-        const wt = wtPath(name);
-        git(clone, 'worktree', 'add', '-b', `factory/${name}`, wt);
-        return wt;
-    };
-
-    beforeEach(() => {
-        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-reclaim-')));
-        const work = join(dir, 'origin-work');
-        mkdirSync(work, { recursive: true });
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# factory\n');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, '-C', work, 'add', 'README.md'], { stdio: 'ignore' });
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, '-C', work, 'commit', '-m', 'init'], { stdio: 'ignore' });
-        const bare = join(dir, 'factory.git');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
-        clone = join(dir, 'clone');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, clone], { stdio: 'ignore' });
-    });
-
-    it('removes a registered worktree whose directory is there', () => {
-        const wt = addWorktree(ROOT);
-        expect(remove(wt).verdict).toEqual({ ok: true, removed: true });
-        expect(existsSync(wt)).toBe(false);
-        expect(git(clone, 'worktree', 'list', '--porcelain')).not.toContain(wt);
-    });
-
-    it('prunes a registered worktree whose directory is already gone', () => {
-        const wt = addWorktree(ROOT);
-        rmSync(wt, { recursive: true });
-        expect(remove(wt).verdict).toEqual({ ok: true, removed: false });
-        expect(git(clone, 'worktree', 'list', '--porcelain')).not.toContain(wt);
-    });
-
-    it('refuses an unregistered git tree with exactly one verdict, pruning nothing', () => {
-        // A stale registered entry beside the refused tree: the trailing prune that used to run
-        // after the refusal would have cleared it, so its survival proves nothing ran.
-        const stale = addWorktree(STALE);
-        rmSync(stale, { recursive: true });
-        const refused = wtPath(UNREGISTERED);
-        mkdirSync(refused, { recursive: true });
-        writeFileSync(join(refused, '.git'), 'gitdir: /somewhere/else\n');
-        writeFileSync(join(refused, 'PRECIOUS.md'), 'uncommitted work\n');
-
-        const { stdout, verdict } = remove(refused);
-
-        // One line, and it is the refusal: a second verdict would make the runner — which reads
-        // only the last line — report this as a successful no-op.
-        expect(stdout.trim().split('\n').filter(Boolean)).toHaveLength(1);
-        expect(verdict.ok).toBe(false);
-        expect(verdict.reason).toContain('not a registered worktree');
-
-        // The refused tree is untouched...
-        expect(readFileSync(join(refused, 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
-        // ...and so is the stale admin entry beside it.
-        expect(git(clone, 'worktree', 'list', '--porcelain')).toContain(`worktree ${stale}`);
-    });
-
-    it('removes a bare leftover with no .git at the path', () => {
-        const wt = wtPath(UNREGISTERED);
-        mkdirSync(wt, { recursive: true });
-        writeFileSync(join(wt, 'leftover.txt'), 'not a worktree');
-        expect(remove(wt).verdict).toEqual({ ok: true, removed: true });
-        expect(existsSync(wt)).toBe(false);
-    });
-
-    it('is a no-op when there is nothing at the path', () => {
-        expect(remove(wtPath(ROOT)).verdict).toEqual({ ok: true, removed: false });
-    });
-});
-
-/**
- * The close-time claude-code turn count, against a real transcript file — the artifact both
- * runners hand to a throwaway container. The parse is the part worth executing: the transcript
- * is JSONL where an assistant response is a `type: "assistant"` entry, the file is found by
- * GLOBBING the CLI munged project directory (a `projects` segment, then the session id file),
- * and a missing or unreadable transcript answers null — unmeasured, never zero.
- */
-describe.skipIf(!hasNodeSqlite())('the claude-code turn count', () => {
-    const SESSION_ID = '33333333-3333-4333-8333-333333333333';
-
-    const run = (transcriptDir: string, startedAt?: string): { answer: Record<string, unknown> } => {
-        const stdout = execFileSync('node', [pathOf('claude-turns.cjs')], {
-            env: {
-                ...process.env,
-                CLAUDE_TRANSCRIPT_DIR: transcriptDir,
-                CLAUDE_SESSION_ID: SESSION_ID,
-                ...(startedAt !== undefined ? { RUN_STARTED_AT: startedAt } : {}),
-            },
-            encoding: 'utf8',
-        });
-        return { answer: JSON.parse(stdout.trim().split('\n').filter(Boolean).pop()!) };
-    };
-
-    let dir: string;
-    beforeEach(() => {
-        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-cturns-')));
-    });
-
-    it('counts the assistant entries of the run session transcript alone', () => {
-        // The CLI munges the working directory into the projects/ segment; the script must
-        // find the file by glob, not by reconstructing the munging.
-        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({ type: 'user', message: 'fix it' }),
-                JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
-                JSON.stringify({ type: 'assistant', message: { role: 'assistant' } }),
-                JSON.stringify({ type: 'system' }),
-                '',
-            ].join('\n')
-        );
-
-        const { answer } = run(dir);
-        expect(answer.turns).toBe(2);
-    });
-
-    it('never counts a subagent conversation', () => {
-        // Older layouts ride sidechain entries in the same file; newer ones give the subagent
-        // its own session id and file — excluded by the id match alone. Both are pinned.
-        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({ type: 'assistant' }),
-                JSON.stringify({ type: 'assistant', isSidechain: true }),
-                JSON.stringify({ type: 'assistant', isSidechain: true }),
-            ].join('\n')
-        );
-        // A DIFFERENT session in the same project: a subagent conversation under the newer
-        // layout. Its file is never read — the run's session id is the scope.
-        writeFileSync(
-            join(project, '44444444-4444-4444-8444-444444444444.jsonl'),
-            `${JSON.stringify({ type: 'assistant' })}\n`
-        );
-
-        const { answer } = run(dir);
-        expect(answer.turns).toBe(1);
-    });
-
-    it('counts only the entries this run wrote, when the driver passes the run start', () => {
-        // Same delta rule as the opencode readout: a follow-up resumes this transcript, and
-        // the whole file would book the earlier runs' turns again. Entries without a
-        // timestamp cannot be placed in either side and are skipped.
-        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T05:00:00Z' }),
-                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T07:00:00Z' }),
-                JSON.stringify({ type: 'assistant', timestamp: '2026-08-20T08:00:00Z' }),
-                JSON.stringify({ type: 'assistant' }),
-            ].join('\n')
-        );
-
-        const { answer } = run(dir, '2026-08-20T06:00:00Z');
-        expect(answer.turns).toBe(2);
-        // Without the bound the whole transcript counts, as before.
-        expect(run(dir).answer.turns).toBe(4);
-    });
-
-    it('lifts the run summary: the last assistant entry carrying text blocks', () => {
-        // The transcript's content is a string or a block array; text blocks join and
-        // collapse. A trailing tool-only entry does not erase the last words before it.
-        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [
-                JSON.stringify({
-                    type: 'assistant',
-                    message: { content: [{ type: 'text', text: 'first\nattempt' }] },
-                }),
-                JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } }),
-                JSON.stringify({
-                    type: 'assistant',
-                    message: {
-                        content: [
-                            { type: 'text', text: '  all  green.' },
-                            { type: 'text', text: 'pushed.' },
-                        ],
-                    },
-                }),
-            ].join('\n')
-        );
-
-        const { answer } = run(dir);
-        expect(answer.summary).toBe('all green. pushed.');
-    });
-
-    it('answers a null summary when no assistant entry carries text', () => {
-        const project = join(dir, 'projects', '-workspaces-org-member-.worktrees-mine');
-        mkdirSync(project, { recursive: true });
-        writeFileSync(
-            join(project, `${SESSION_ID}.jsonl`),
-            [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } })].join(
-                '\n'
-            )
-        );
-
-        const { answer } = run(dir);
-        expect(answer.turns).toBe(1);
-        expect(answer.summary).toBeNull();
-    });
-
-    it('answers null when the transcript is missing — the container died first, the run never spoke', () => {
-        mkdirSync(join(dir, 'projects', '-workspaces-org-member-.worktrees-mine'), { recursive: true });
-        const { answer } = run(dir);
-        expect(answer.turns).toBeNull();
-        expect(String(answer.error)).toContain('no transcript');
-    });
-
-    it('answers null when the session id is not a session id', () => {
-        const stdout = execFileSync('node', [pathOf('claude-turns.cjs')], {
-            env: { ...process.env, CLAUDE_TRANSCRIPT_DIR: dir, CLAUDE_SESSION_ID: '../../../etc/passwd' },
-            encoding: 'utf8',
-        });
-        expect(JSON.parse(stdout.trim()).turns).toBeNull();
     });
 });

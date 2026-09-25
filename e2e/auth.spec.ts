@@ -19,6 +19,10 @@ import { finishSignIn, throughSignIn } from './signin.js';
  */
 
 const usageGroups = (page: Page) => page.locator('.usage-summary .usage-group');
+/** The analytics anchor: the metric summary when the selection has data, the one empty state
+    when it has none — which is every fresh github-mode member, since the seed plants under the
+    local org only (issue 166). The auth board's "the dashboard answered" is this anchor. */
+const analyticsAnchor = (page: Page) => page.locator('.usage-summary, .usage-empty').first();
 const gate = (page: Page) => page.locator('.login-gate');
 const signIn = (page: Page) => page.getByRole('link', { name: 'Sign in with GitHub' });
 const screen = (page: Page) => page.locator('.onboarding');
@@ -54,7 +58,7 @@ const trackOnlyFirst = async (page: Page): Promise<ReportedInstallation[]> => {
     await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
     await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
     return reported;
 };
 
@@ -62,6 +66,8 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     await page.goto('/');
 
     await expect(gate(page)).toBeVisible();
+    await expect(gate(page).getByRole('heading', { level: 1, name: 'Bellows' })).toBeVisible();
+    await expect(page).toHaveTitle('Bellows');
     await expect(signIn(page)).toBeVisible();
     // The point of gating above App rather than inside it: the panels are never mounted, so no
     // request for data is ever made by somebody who could not read the answer.
@@ -71,6 +77,29 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     const appearance = page.getByLabel('Appearance');
     await expect(appearance).toBeVisible();
     await expect(appearance.locator('option')).toHaveText(['System', 'Light', 'Dark']);
+});
+
+test('the gate holds a narrow phone inside the viewport, in both palettes (issue 190)', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+
+    await expect(gate(page)).toBeVisible();
+    await expect(signIn(page)).toBeVisible();
+    const overflow = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
+    expect(overflow, 'the gate overflows horizontally at 390px').toBeLessThanOrEqual(0);
+    // Dark is SET, not assumed: the appearance bootstrap (#188) maps a missing attribute to the
+    // live OS palette, which headless cannot be trusted to prefer.
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/signin-gate_default_dark_390.png',
+        animations: 'disabled',
+    });
+
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/signin-gate_default_light_390.png',
+        animations: 'disabled',
+    });
 });
 
 test('the document itself is served without authentication', async ({ page }) => {
@@ -99,12 +128,32 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     }
     await page.screenshot({ path: 'artifacts/ui/onboarding.png', fullPage: true });
 
+    // The same screen at phone width, both palettes: the closeout's onboarding captures. The
+    // column must reflow to one column and never widen the body (issue 190).
+    const overflow = () => page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await overflow(), 'onboarding overflows at 390px').toBeLessThanOrEqual(0);
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/onboarding_default_dark_390.png',
+        fullPage: true,
+        animations: 'disabled',
+    });
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await page.screenshot({
+        path: 'artifacts/ui/matrix/onboarding_default_light_390.png',
+        fullPage: true,
+        animations: 'disabled',
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+
     // Deselect the second reported installation and confirm: the session lands, and only the
     // still-checked org was materialized — the choice, nothing else from the report.
     const kept = reported[0]!;
     await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 
     const me = await page.request.get('/api/auth/me');
     const body = (await me.json()) as {
@@ -124,11 +173,11 @@ test('the screen explains itself, its identity, and the default choice (issue 18
     // The recomposed page: one heading, the setup context, the purpose, the person, the note.
     await expect(page.getByRole('heading', { level: 1, name: 'Choose organizations and repositories' })).toHaveCount(1);
     await expect(page.getByText('Setup · One step')).toBeVisible();
-    await expect(page.getByText('Track agent activity, start work, and keep repository setup visible in one place.')).toBeVisible();
-    await expect(page.getByText('Signed in as E2E User (@e2e-user)')).toBeVisible();
     await expect(
-        page.getByText('GitHub sign-in provides your identity and organization membership.')
+        page.getByText('Track agent activity, start work, and keep repository setup visible in one place.')
     ).toBeVisible();
+    await expect(page.getByText('Signed in as E2E User (@e2e-user)')).toBeVisible();
+    await expect(page.getByText('GitHub sign-in provides your identity and organization membership.')).toBeVisible();
 
     // Whatever a previous test stored arrives pre-checked; normalize to every reported
     // installation selected, so what this test confirms is what this test chose — every stored
@@ -151,7 +200,7 @@ test('the screen explains itself, its identity, and the default choice (issue 18
 
     // Confirming the default still completes: the choice lands, the dashboard is reached.
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('a choice of nothing refuses Continue and says what is missing (issue 187)', async ({ page }) => {
@@ -174,7 +223,7 @@ test('a choice of nothing refuses Continue and says what is missing (issue 187)'
     await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
     await expect(cont).not.toHaveAttribute('aria-disabled', 'true');
     await cont.click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('an unavailable repository listing says so and keeps the choice completable (issue 187)', async ({ page }) => {
@@ -192,7 +241,7 @@ test('an unavailable repository listing says so and keeps the choice completable
     await first.locator('summary').click();
     await expect(
         first.getByText(
-            'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
+            'Repository choices are temporarily unavailable. Bellows will track repositories this installation reports.'
         )
     ).toBeVisible();
     await expect(first.getByRole('button', { name: 'Retry' })).toBeVisible();
@@ -200,7 +249,7 @@ test('an unavailable repository listing says so and keeps the choice completable
 
     // All mode stands: the submission posts the org without a repos key and completes.
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(usageGroups(page).first()).toBeVisible({ timeout: 60_000 });
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });
 
 test('the next sign-in reuses the stored choice without the screen (issue 125)', async ({ page }) => {
@@ -214,7 +263,7 @@ test('the next sign-in reuses the stored choice without the screen (issue 125)',
 
     // Straight through: the stored choice from the sign-in above is the choice, so no screen.
     await signIn(page).click();
-    await usageGroups(page).first().waitFor({ timeout: 60_000 });
+    await analyticsAnchor(page).waitFor({ timeout: 60_000 });
     await expect(screen(page)).toHaveCount(0);
 });
 
@@ -303,22 +352,25 @@ test('the returnTo path survives the round trip', async ({ page }) => {
     expect(new URL(page.url()).pathname).toBe('/');
 });
 
-test('the org/my toggle scopes the figures to the signed-in member', async ({ page }) => {
+test('the scope dropdown scopes the figures to the signed-in member', async ({ page }) => {
     await throughSignIn(page);
 
-    // The toggle exists only behind a session — this board signs in, so it is here. The
-    // RadioGroup's aria-label is its accessible name, and each choice is a radio.
-    const toggle = page.getByRole('radiogroup', { name: 'Scope' });
-    await expect(toggle).toBeVisible();
-    await expect(toggle.getByRole('radio', { name: 'Org' })).toHaveAttribute('aria-checked', 'true');
+    // The dropdown exists only behind a session — this board signs in, so it is here.
+    const trigger = page.locator('#scope-select');
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toHaveText('Organization');
 
     const [response] = await Promise.all([
         page.waitForResponse((r) => r.url().includes('scope=mine') && r.status() === 200),
-        toggle.getByRole('radio', { name: 'Me' }).click(),
+        (async () => {
+            await trigger.click();
+            await page.getByRole('option', { name: 'Personal', exact: true }).click();
+        })(),
     ]);
     const body = (await response.json()) as { meta: { scope: string; scopeLogin: string | null } };
     expect(body.meta.scope).toBe('mine');
     expect(body.meta.scopeLogin).toBe('e2e-user');
+    await expect(trigger).toHaveText('Personal');
 
     // This member's org holds no seeded rows (the seed plants under the local org only), so the
     // analytics render the ONE empty state — not zeros, not dash cards — and no per-task figures
@@ -334,8 +386,11 @@ test('the org/my toggle scopes the figures to the signed-in member', async ({ pa
         page.waitForResponse(
             (r) => r.url().includes('/api/stats?') && !r.url().includes('scope=mine') && r.status() === 200
         ),
-        toggle.getByRole('radio', { name: 'Org' }).click(),
+        (async () => {
+            await trigger.click();
+            await page.getByRole('option', { name: 'Organization', exact: true }).click();
+        })(),
     ]);
     expect(((await orgResponse.json()) as { meta: { scope: string } }).meta.scope).toBe('org');
-    await expect(toggle.getByRole('radio', { name: 'Org' })).toHaveAttribute('aria-checked', 'true');
+    await expect(trigger).toHaveText('Organization');
 });

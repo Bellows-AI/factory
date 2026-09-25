@@ -116,6 +116,10 @@
     --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
     --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
+    /* Issue 224: the quiet selector's hover/focus/open highlight, and the floating panel's
+       shadow — a soft surface, never another hairline. */
+    --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
+    --shadow-float: color-mix(in oklab, black 40%, transparent);
 }
 
 /* ---------- Semantic tokens: light ---------- */
@@ -154,6 +158,8 @@
     --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
     --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
+    --accent-wash: color-mix(in oklab, var(--accent) 12%, transparent);
+    --shadow-float: color-mix(in oklab, var(--ink) 14%, transparent);
 }
 
 /* ---------- Expose semantic tokens as utilities ----------
@@ -281,6 +287,10 @@
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
+        /* Wrapping is the narrow-phone answer (issue 190): past the trigger+brand+actions sum
+           the actions drop to their own row instead of pushing the bar past the viewport — no
+           control is displaced or hidden, whatever the account login's length. */
+        row-gap: 2px;
         justify-content: space-between;
         min-height: 48px;
         padding: 8px 24px;
@@ -416,7 +426,9 @@
         column-gap: 12px;
         display: grid;
         /* The metadata tracks cap where space is ample and shrink equally when the band
-           between the drawer and the desktop is tight — the cells ellipsize (issue 189). */
+           between the drawer and the desktop is tight — the cells ellipsize (issue 189).
+           With zero floors the row's whole minimum rides the title track, so the page never
+           scrolls in the 900–1024 stretch (the overflow sentinel's other fix, issue 190). */
         grid-template-columns: minmax(0, 170px) minmax(200px, 1fr) minmax(0, 180px) minmax(0, 110px) minmax(0, 90px);
         padding: 8px 4px;
         row-gap: 4px;
@@ -600,24 +612,13 @@
         outline-offset: 2px;
     }
 
-    /* The dashboard's control row (issue 160): the analytics toolbar, then the freshness and
-       Refresh cluster that moved here from the old global topbar. */
+    /* The dashboard's control row (issue 160): the analytics toolbar, which moved here from the
+       old global topbar. */
     .dashboard-controls {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
         gap: 16px;
-    }
-
-    .range-presets {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-    }
-
-    .range-option.active {
-        border-color: var(--accent);
-        color: var(--accent);
     }
 
     /* The analytics toolbar (issue 166): visibly labeled groups — Range, Scope, Repositories —
@@ -628,8 +629,11 @@
         gap: 4px;
     }
 
-    /* The Repositories group is a real fieldset; the browser's fieldset chrome gives way to the
-       same shape every toolbar group wears. */
+    /* Range, Scope and Repositories are real fieldsets, each with a legend rather than a bare
+       label — grouping the trigger under its caption without the caption stealing the
+       trigger's own accessible name (a `<label for>` would, since button is a labelable
+       element). The browser's fieldset chrome gives way to the same shape every toolbar group
+       wears. */
     fieldset.toolbar-group {
         border: 0;
         margin: 0;
@@ -657,60 +661,71 @@
         padding: 5px 10px;
     }
 
-    /* The range presets and the Custom popover trigger on one line inside the group. */
-    .range-picker {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-    }
-
-    /* The custom dates live in a popover anchored to the Custom trigger: floating surfaces sit
-       above the page on the picker-dialog edge (--line-strong), never an inline expansion. */
-    .range-popover-root {
-        position: relative;
-    }
-
-    .range-popover {
+    /* Custom opens this dialog (issue 246) rather than an inline expansion: the Range trigger
+       stays a single control, and the draft form floats over the dimmed page on the picker's
+       harder hairline, like the task-remove and unsaved-changes confirmations. */
+    .range-dialog {
         background: var(--surface-raised);
         border: 1px solid var(--line-strong);
         border-radius: var(--radius-lg);
-        left: 0;
-        padding: 12px;
-        position: absolute;
-        top: calc(100% + 6px);
-        z-index: 30;
+        color: var(--ink);
+        max-width: 440px;
+        padding: 16px;
+        width: 90vw;
+    }
+
+    .range-dialog-title {
+        font-size: 15px;
+        margin: 0 0 12px;
     }
 
     .range-draft {
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 12px;
+    }
+
+    /* Start date and End date side by side where there is room, stacked below it — no media
+       query needed, the same self-wrapping shape the toolbar itself uses. */
+    .range-draft-fields {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     }
 
     .range-draft label {
-        align-items: center;
         color: var(--ink-muted);
         display: flex;
+        flex-direction: column;
         font-size: 12px;
         gap: 6px;
     }
 
     /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
-       renders in the page's theme without this rule carrying one. */
+       renders in the page's theme without this rule carrying one. `font: inherit` would
+       otherwise pull the 12px label size onto the input text; `font-size` after it restates the
+       14px control floor. */
     .range-draft input {
         background: var(--surface-sunken);
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
         color: var(--ink);
         font: inherit;
+        font-size: 14px;
         padding: 5px 8px;
+        width: 100%;
     }
 
     .range-draft-actions {
         display: flex;
         gap: 8px;
         justify-content: flex-end;
+    }
+
+    /* Clear is a way out, not an answer: pushed to the opposite edge from Cancel/Apply so the
+       row reads as one dismissal plus one decision, not three equal buttons. */
+    .range-draft-actions button:first-child {
+        margin-right: auto;
     }
 
     /* The rendered-data summary: one mono line in the status line's voice, describing the
@@ -797,6 +812,13 @@
         grid-template-columns: 1fr 1fr;
     }
 
+    .usage-measure {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+
     .usage-measure strong {
         font-size: 20px;
     }
@@ -817,17 +839,55 @@
         max-width: 52ch;
     }
 
-    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
-       renders in the page's theme without this rule carrying one. */
-    .org-select {
-        background: var(--surface-sunken);
-        color: var(--ink);
-        border: 1px solid var(--line);
+    /* The shared quiet-trigger skin (issue 224): the account menu, the organization and
+       appearance selectors, and the composer's listboxes. Unframed at rest — the persistent
+       border every other button carries would fight the reference's restrained look — with a
+       soft accent wash on hover, keyboard focus and while its panel is open, so the highlight
+       reads as one state whichever way it was reached. Border stays transparent rather than
+       `none` so nothing shifts size when a state adds one back. */
+    .select-trigger {
+        align-items: center;
+        background: transparent;
+        border: 1px solid transparent;
         border-radius: var(--radius-lg);
-        padding: 5px 8px;
+        color: var(--ink);
+        display: inline-flex;
         font: inherit;
+        gap: 6px;
+        /* A long organization, workflow, repository or executor name wraps inside the trigger,
+           never the page. */
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        padding: 6px 10px;
     }
 
+    .select-trigger:hover,
+    .select-trigger:focus-visible,
+    .select-trigger[data-open] {
+        background: var(--accent-wash);
+        border-color: transparent;
+    }
+
+    .select-trigger:disabled {
+        border-color: transparent;
+        color: var(--ink-muted);
+        cursor: default;
+    }
+
+    /* The chevron is the "a choice is available here" cue; a disabled trigger has none to make. */
+    .select-trigger::after {
+        content: '▾';
+        color: var(--ink-muted);
+        flex: none;
+        margin-left: auto;
+    }
+
+    .select-trigger:disabled::after {
+        display: none;
+    }
+
+    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
+       renders in the page's theme without this rule carrying one. */
     .org-selector {
         display: flex;
         align-items: center;
@@ -838,13 +898,6 @@
         illegible anyway (~700px); past 900px the whole selector leaves the bar for the drawer. */
     .org-select {
         max-width: 220px;
-    }
-
-    /* Inert, not broken: the field keeps its shape and drops to muted text, exactly as
-       `button:disabled` does, so the page has one vocabulary for "not available here". */
-    .org-select:disabled {
-        color: var(--ink-muted);
-        cursor: default;
     }
 
     /* The routed page's content container (issue 160) — a class, not a `main` element selector,
@@ -1274,7 +1327,7 @@
     /* Both screens live outside the shell, so the `.page` container never wraps them: they carry
         the page gutters themselves, which the old global `main` rule used to supply. */
 
-    /* The public-page header (issue 187): Factory brand, one context word, and the actions cell,
+    /* The public-page header (issue 187): the brand, one context word, and the actions cell,
        which carries the theme control (issue 188). Shared by the gate and onboarding — the one
        chrome a page renders before any session exists. */
     .public-header {
@@ -1337,10 +1390,11 @@
         border-color: var(--accent);
     }
 
-    /* The appearance control (issue 188): the one System/Light/Dark preference select, worn by
-       the app bar and the public header's actions cell alike. Sunken like every other form
-       control; the focus ring comes from the global `:focus-visible` rule, and `color-scheme`
-       in the theme blocks paints the native popup without a rule of its own. */
+    /* The appearance control (issue 188): the one System/Light/Dark preference, worn by the app
+       bar and the public header's actions cell alike. Issue 224 moved it off a native `<select>`
+       onto the shared `select-trigger` Listbox skin — a native popup cannot be anchored below
+       the trigger, capped to the viewport, or given a checkmark, all of which the quiet-selector
+       treatment requires. The focus ring still comes from the global `:focus-visible` rule. */
     .theme-field {
         align-items: center;
         display: flex;
@@ -1350,16 +1404,6 @@
     .theme-label {
         color: var(--ink-muted);
         font-size: 13px;
-    }
-
-    .theme-select {
-        background: var(--surface-sunken);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
-        font: inherit;
-        height: 36px;
-        padding: 0 8px;
     }
 
     /* Narrow screens drop the visible label — the select keeps its accessible name, and the
@@ -1950,9 +1994,7 @@
         .mobile-nav .sidenav-link,
         .mobile-nav .sidenav-sublink,
         .mobile-nav .sidenav-newtask,
-        .mobile-nav .org-select,
-        .appbar .user-menu-button,
-        .range-option,
+        .select-trigger,
         .range-draft input,
         .range-draft-actions button,
         .page-header-actions button,
@@ -1966,18 +2008,25 @@
         .unsaved-actions button,
         .env-tab,
         .composer-start button,
-        .composer-select,
-        .legend-button {
+        .composer-param-input,
+        .settings-toggle,
+        .legend-button,
+        .repo-search input,
+        .repo-search button,
+        .repo-table button,
+        .repo-save {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
         }
 
-        /* The appearance select is a replaced element, not a flex box — it clears the same
-            44px target through height alone, on both surfaces it mounts in. */
-        .theme-select {
-            min-height: 44px;
+        /* A summary keeps its native disclosure marker only under `display: list-item`, so it
+            sits out of the shared inline-flex list above and clears the target through
+            line-height alone instead — the checkboxes it discloses are `.settings-toggle`,
+            already on that list. */
+        .composer-steps > summary {
+            line-height: 44px;
         }
 
         /* The token group's two-up measures need the width more than the split at this size. */
@@ -2141,15 +2190,16 @@
         font-size: 12px;
     }
 
-    /* The repository setup page (issue 181): a labeled search row above the list, and the
-       summary/list/detail stack that becomes master/detail beside itself once a wide window can
-       hold both — below 1100px the DOM order (summary, list, detail) is the reading order. */
+    /* The repository setup page (issue 181, compacted by issue 223): a labeled search row above
+       the list, and the summary/list/detail stack that becomes master/detail beside itself once
+       a wide window can hold both — below 1100px the DOM order (summary, list, detail) is the
+       reading order. */
     .repo-search {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin: 12px 0;
+        margin: 8px 0;
     }
 
     .repo-search label {
@@ -2168,16 +2218,150 @@
         padding: 6px 10px;
     }
 
+    /* The availability summary's one line of counts plus installation context (issue 223):
+       both spans wrap onto their own line rather than crowding together on narrow panels. */
+    .repo-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+    }
+
     .repo-columns {
         display: grid;
         gap: 16px;
-        grid-template-columns: 1fr;
+        /* minmax(0, 1fr), not 1fr: the track's implicit minimum is the list table's min-content
+           (its cells are nowrap by design, scrolling inside the table wrap), which otherwise
+           widens the whole page on narrow screens — the same treatment the two-column layout
+           below already applies (issue 190). */
+        grid-template-columns: minmax(0, 1fr);
     }
 
+    /* The list stays full width until a repository is actually opened — `has-detail` only
+       applies once `RepositoryConfigDetail` has something to render. Splitting unconditionally
+       reserved the detail column's share even when it was empty, which is what left Configure
+       clipped at ordinary desktop widths (issue 223). */
     @media (min-width: 1100px) {
-        .repo-columns {
+        .repo-columns.has-detail {
             align-items: start;
             grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+        }
+    }
+
+    /* The repository table (issue 223): fixed, sized columns so Repository, Checkout status and
+       Configure all fit at common desktop widths instead of the shared `.data` nowrap pushing
+       Configure past the panel edge. Column order mirrors the <thead> in RepositorySetup.tsx:
+       Enabled, Repository, Checkout status, Branch, Last commit, Size, Configure. */
+    table.repo-table {
+        min-width: 800px;
+        table-layout: fixed;
+    }
+
+    table.repo-table td {
+        overflow-wrap: anywhere;
+        vertical-align: middle;
+        white-space: normal;
+    }
+
+    table.repo-table th {
+        white-space: normal;
+    }
+
+    table.repo-table th:nth-child(1),
+    table.repo-table td:nth-child(1) {
+        width: 76px;
+    }
+
+    table.repo-table th:nth-child(3),
+    table.repo-table td:nth-child(3) {
+        width: 150px;
+    }
+
+    table.repo-table th:nth-child(4),
+    table.repo-table td:nth-child(4) {
+        width: 110px;
+    }
+
+    table.repo-table th:nth-child(5),
+    table.repo-table td:nth-child(5) {
+        width: 110px;
+    }
+
+    table.repo-table th:nth-child(6),
+    table.repo-table td:nth-child(6) {
+        width: 70px;
+    }
+
+    /* Configure stays reachable without hunting for it: pinned to the wrap's trailing edge, with
+       a hairline that visibly rides over scrolled content underneath — the discoverable "this
+       still scrolls" cue the old plain cut-off column gave none of. */
+    table.repo-table th:last-child,
+    table.repo-table td:last-child {
+        background: var(--surface-raised);
+        box-shadow: inset 1px 0 0 var(--line-strong);
+        position: sticky;
+        right: 0;
+        width: 96px;
+    }
+
+    /* Narrow widths stack rows as cards, mirroring the environment editor's pattern (issue 222):
+       the header row steps aside and each cell names itself via data-label. The sticky Configure
+       column has nothing to stick to once cells are block-level, so it resets to a plain
+       trailing action. */
+    @media (max-width: 640px) {
+        table.repo-table {
+            min-width: 0;
+            table-layout: auto;
+        }
+
+        table.repo-table thead {
+            display: none;
+        }
+
+        table.repo-table tbody,
+        table.repo-table tr {
+            display: block;
+        }
+
+        table.repo-table tr {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            margin-bottom: 8px;
+            padding: 10px;
+        }
+
+        table.repo-table td {
+            border-bottom: none;
+            display: block;
+            padding: 2px 0;
+            width: auto;
+        }
+
+        /* Same specificity as the desktop `:nth-child` column pins (a pseudo-class weighs the
+           same as a class), so the cascade's source order — this rule comes later — decides
+           instead of the pins winning on specificity alone, same trap the env editor's own
+           narrow-width reset already avoids for its first/last-child pins. */
+        table.repo-table td:nth-child(1),
+        table.repo-table td:nth-child(3),
+        table.repo-table td:nth-child(4),
+        table.repo-table td:nth-child(5),
+        table.repo-table td:nth-child(6) {
+            width: auto;
+        }
+
+        table.repo-table td:last-child {
+            background: none;
+            box-shadow: none;
+            padding-top: 8px;
+            position: static;
+            width: auto;
+        }
+
+        table.repo-table td[data-label]::before {
+            color: var(--ink-muted);
+            content: attr(data-label);
+            display: block;
+            font-size: 12px;
         }
     }
 
@@ -2188,29 +2372,35 @@
         margin-top: 16px;
     }
 
-    /* The shared floating surface for the anchored Headless UI panels — the user menu, the org and
-       composer listboxes — and their option rows. The library's anchor engine positions the panel
-       with inline styles, so this class carries only the skin and the z-index policy: dialogs sit at
-       40, popovers at 30, nothing else on the page stacks. */
+    /* The shared floating surface for the account, organization, appearance and composer
+       dropdowns (issue 224) — and their option rows. `useDownwardAnchor` (web/src/anchor.ts)
+       positions the panel and caps its height with an inline `max-height`; this class carries
+       the skin, the internal scroll and the z-index policy: dialogs sit at 40, popovers at 30,
+       nothing else on the page stacks. */
     .popover {
         background: var(--surface-raised);
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
-        padding: 4px;
+        box-shadow: 0 8px 24px var(--shadow-float);
+        max-width: min(320px, calc(100vw - 16px));
+        overflow-y: auto;
+        padding: 6px;
         z-index: 30;
     }
 
     .popover-option {
         /* One skin for both an <a> and a <button> item: the button resets, so the sign-out item reads
            exactly like the Settings link beside it. */
+        align-items: center;
         background: none;
         border: none;
         border-radius: var(--radius-md);
         color: inherit;
         cursor: pointer;
-        display: block;
+        display: flex;
         font: inherit;
-        padding: 6px 10px;
+        gap: 8px;
+        padding: 8px 12px;
         text-align: left;
         text-decoration: none;
         width: 100%;
@@ -2218,11 +2408,25 @@
 
     .popover-option:hover,
     .popover-option[data-focus] {
-        background: var(--surface-sunken);
+        background: var(--accent-wash);
     }
 
+    /* The selected row (an equivalent to the reference's checkmark): bolder text plus a trailing
+       mark, never color alone. */
     .popover-option[data-selected] {
         color: var(--accent);
+        font-weight: 600;
+    }
+
+    .popover-option[data-selected]::after {
+        content: '✓';
+        margin-left: auto;
+    }
+
+    /* A restrained divider between option groups — the account menu's Account/Sign out split. */
+    .popover-separator {
+        border-top: 1px solid var(--line);
+        margin: 4px 2px;
     }
 
     button.primary {
@@ -2601,13 +2805,14 @@
         font-size: 12px;
     }
 
-    .composer-select {
+    /* A declared parameter's text value — a real field, so unlike the composer's listbox
+       triggers (issue 224's `select-trigger`) it keeps its own frame. */
+    .composer-param-input {
         background: var(--surface);
         border: 1px solid var(--line);
         border-radius: var(--radius-md);
         color: var(--ink);
         font: inherit;
-        /* A long repository or workflow name wraps inside the control, never the page. */
         max-width: 100%;
         overflow-wrap: anywhere;
         padding: 2px 6px;
@@ -2631,10 +2836,9 @@
         min-height: 160px;
     }
 
-    /* The guided composer (issue 176): label-above-control fields, the two-column execution
-       context, the plain-language helper and error lines, the preflight sentence, and the Format
-       details that hold a parameter's raw rule. One column until 768px — two columns only where
-       both fields have room, so nothing compresses. */
+    /* The guided composer (issue 176, compacted by 228): label-above-control fields, the
+       plain-language helper and error lines, the preflight sentence, and the Format details that
+       hold a parameter's raw rule. */
     .composer-field {
         display: flex;
         flex-direction: column;
@@ -2648,16 +2852,49 @@
         gap: 12px;
     }
 
-    .composer-grid {
-        display: grid;
-        gap: 12px;
-        grid-template-columns: 1fr;
+    /* The prompt stays the dominant element (issue 228): Repository, Executor and Workflow sit
+       directly beneath it as one wrapping row of small, content-sized controls instead of a
+       full-width grid — each item's own trigger already shows its selected value, so no separate
+       "Execution context" heading is needed. */
+    .composer-context {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        margin-top: 8px;
     }
 
-    @media (min-width: 768px) {
-        .composer-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
+    .composer-context-item {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    /* Truncates inside the flex trigger, where plain text-overflow does not apply — the full
+       value stays reachable through this span's title, the opened listbox, and the preflight
+       sentence. */
+    .composer-context-value {
+        display: block;
+        max-width: min(24ch, 60vw);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* The two default-workflow steps (issue 208), tucked behind a closed-by-default disclosure
+       (issue 228) instead of two persistent rows — the summary alone carries the enabled count. */
+    .composer-steps {
+        font-size: 12px;
+        margin-top: 8px;
+        max-width: 100%;
+        width: fit-content;
+    }
+
+    .composer-steps > summary {
+        color: var(--ink);
+        cursor: pointer;
     }
 
     .composer-helper {
@@ -2694,7 +2931,7 @@
     }
 
     /* A failed field tints its edge like the status pills do — the lamp is the message's color. */
-    .composer-select[aria-invalid='true'] {
+    .composer-param-input[aria-invalid='true'] {
         border-color: var(--lamp-stop);
     }
 
@@ -2724,8 +2961,8 @@
 
     /* The app bar's user menu and the settings page's identity section. */
 
-    /* The trigger is a real button, so the global button skin applies; this only lays the avatar and
-       the login out and keeps the old summary's tighter padding. */
+    /* The trigger wears the shared `select-trigger` skin (issue 224); this only lays the avatar
+       and the login out and keeps the old summary's tighter padding and gap. */
     .user-menu-button {
         align-items: center;
         display: flex;
@@ -2797,17 +3034,114 @@
         gap: 8px;
     }
 
+    /* The default-workflow settings panel's two switches and the composer's matching pair
+       (issue 208): a labelled checkbox row, the one boolean-control primitive this design system
+       has — no dedicated toggle/switch family exists. */
+    .settings-toggle {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+    }
+
     .env-tabs {
         display: flex;
         gap: 6px;
         margin-bottom: 8px;
     }
 
+    .env-tab {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        padding: 4px 10px;
+    }
+
+    .env-tab:hover {
+        background: var(--surface-raised);
+    }
+
     /* The selected tab is the one carrying aria-selected — the attribute the roving focus moves
         with the keyboard, so state and semantics cannot drift apart. */
     .env-tab[aria-selected='true'] {
-        border-color: var(--accent);
+        background: var(--surface-raised);
+        border-color: var(--line);
         color: var(--accent);
+    }
+
+    /* Aligned Name/Value/Actions columns, bounded rows: the Value column absorbs the width the
+        fixed Name and Actions columns leave, so a long value wraps instead of clipping. */
+    .env-vars {
+        border-collapse: collapse;
+        table-layout: fixed;
+        width: 100%;
+    }
+
+    .env-vars th {
+        border-bottom: 1px solid var(--line-strong);
+        color: var(--ink-muted);
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        padding: 6px 10px;
+        text-align: left;
+        text-transform: uppercase;
+    }
+
+    .env-vars td {
+        border-bottom: 1px solid var(--line);
+        padding: 8px 10px;
+        vertical-align: top;
+    }
+
+    .env-vars th:first-child,
+    .env-vars td:first-child {
+        width: 30%;
+    }
+
+    .env-vars th:last-child,
+    .env-vars td:last-child {
+        text-align: center;
+        width: 56px;
+    }
+
+    .env-vars input[aria-invalid='true'] {
+        border-color: var(--lamp-stop);
+    }
+
+    /* The compact row beneath the table: Add stays a quiet outline, the .env disclosure trigger
+        stays plain text — neither competes with the panel's one `.primary` Save action. */
+    .env-row-actions {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+    }
+
+    .env-add {
+        background: transparent;
+        border: 1px solid var(--line);
+        color: var(--accent);
+        font-size: 13px;
+        padding: 4px 10px;
+    }
+
+    .env-advanced-toggle {
+        background: transparent;
+        border: none;
+        color: var(--ink-muted);
+        font-size: 13px;
+        padding: 6px 4px;
+        text-decoration: underline;
+    }
+
+    .env-row-remove {
+        align-items: center;
+        display: inline-flex;
+        justify-content: center;
+        padding: 0;
+        width: 36px;
     }
 
     /* A pending removal stays visible until the save that deletes it: compact, warning-edged,
@@ -2849,6 +3183,7 @@
     }
 
     .env-errors {
+        font-size: 12px;
         white-space: pre-wrap;
     }
 
@@ -2862,19 +3197,38 @@
     /* Narrow widths reflow an env row into a labeled group instead of compressing Name/Value
         unusably: the header row steps aside and each cell names itself via data-label. */
     @media (max-width: 640px) {
+        .env-vars tbody {
+            display: block;
+        }
+
         .env-vars thead {
             display: none;
         }
 
         .env-vars tr {
-            border-bottom: 1px solid var(--line);
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
             display: block;
-            padding: 8px 0;
+            margin-bottom: 8px;
+            padding: 10px;
         }
 
         .env-vars td {
+            border-bottom: none;
             display: block;
             padding: 2px 0;
+            text-align: left;
+            width: auto;
+        }
+
+        /* Same specificity as the desktop `:first-child`/`:last-child` column pins, so the
+            cascade's source order — this rule comes later — decides instead of the pins winning
+            on specificity alone. */
+        .env-vars td:first-child,
+        .env-vars td:last-child {
+            text-align: left;
+            width: auto;
         }
 
         .env-vars td[data-label]::before {

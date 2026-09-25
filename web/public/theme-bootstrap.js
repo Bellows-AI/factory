@@ -11,7 +11,7 @@
     var stored = null;
     try {
         stored = localStorage.getItem('factory.theme');
-    } catch (error) {
+    } catch {
         stored = null;
     }
     if (stored !== 'light' && stored !== 'dark') {
@@ -20,13 +20,13 @@
     if (stored === null) {
         try {
             stored = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-        } catch (error) {
+        } catch {
             stored = 'dark';
         }
     }
     try {
         document.documentElement.dataset.theme = stored;
-    } catch (error) {
+    } catch {
         // Nowhere to write; there is nothing left to do.
     }
 })();

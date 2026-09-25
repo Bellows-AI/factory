@@ -1,8 +1,16 @@
-import type { FastifyPluginAsync } from 'fastify';
+import {
+    ENV_NAME,
+    ENV_NAME_LIMIT,
+    ENV_VALUE_LIMIT,
+    ERROR_CODES,
+    MAX_ENV_VARS_PER_SCOPE,
+    RESERVED_ENV_NAMES,
+} from '@factory-ai/core';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
-import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
+import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
-import { fullName, type AppConfig, type Repo } from '../config.js';
+import type { AppConfig, Repo } from '../config.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 
 /**
@@ -17,72 +25,58 @@ import type { OrgRegistry, OrgRuntime } from '../orgs.js';
  * seeing — or re-sending — the secrets it holds. An omitted name still deletes.
  */
 
-/** A bound on one scope's list, like MAX_EXECUTORS_PER_USER: a ceiling, not a policy. */
-export const MAX_ENV_VARS_PER_SCOPE = 100;
+// The scope cap, reserved names and name/value bounds are core's (core/src/env.ts), shared with
+// the web editors.
+const BYTES_PER_KIB = 1024;
 
-/**
- * The names the driver's own contract with the runner claims. A claim env named WORKDIR would be
- * two different paths to one runner's working directory; TRUST_WORKDIR is how a Remote Control
- * runner is told its checkout is trusted; CRED_HELPER is the credential-helper CODE the sync
- * fetch runs — a member value there would be member-controlled code executed by the sync
- * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
- * starting claims into restore mode, silently skipping the fetch and rebase (issue #58). The
- * three reporter names steer the branch reporter — where it posts, which
- * attempt it speaks for, and which session it claims — and a member value in any of them is a
- * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the headless
- * transcript store lives: the driver composes it from the claim (transcriptDir in
- * driver/src/docker.ts), and a member value would steer transcripts — and, through the runner
- * entrypoint's redirect, the CLI's whole config dir — somewhere else. `OPENCODE_CONFIG_CONTENT` is not the driver's
- * name to reserve but the BOARD's: the claim synthesizes it from the author's own executor row
- * (docs/workspace.md), and a member env var of the same name would be silently shadowed by the
- * synthesized value — refusing the PUT says so instead. Reserved at the route; the driver's list
- * (RESERVED_ENV_NAMES in driver/src/docker.ts — copied, not imported, per that package's
- * zero-dependency rule) deliberately does NOT carry it, because the synthesized value must flow
- * `claimEnv` to reach the runner.
- */
-export const RESERVED_ENV_NAMES = [
-    'WORKDIR',
-    'TRUST_WORKDIR',
-    'BELLOWS_GATE_URL',
-    'BELLOWS_GATE_TOKEN',
-    'CRED_HELPER',
-    'RESTORE',
-    'FACTORY_TRANSCRIPT_DIR',
-    'FACTORY_STATS_URL',
-    'RUNNER_JOB_ID',
-    'RUNNER_LEASE_TOKEN',
-    'BELLOWS_SESSION_ID',
-    'OPENCODE_CONFIG_CONTENT',
-] as const;
-
-/**
- * A per-value ceiling. Far past any real variable, and the bound that keeps one value from being
- * an essay. Newlines are refused outright: the driver delivers values in a docker `--env-file`,
- * which is line-structured and has no quoting — a newline would arrive in the runner truncated,
- * with no error anywhere.
- */
-const VALUE_LIMIT = 32 * 1024;
+/** JSON escaping's worst case: up to six bytes per byte of a control character. */
+const JSON_ESCAPE_WORST_CASE = 6;
+/** What a name/isSecret/structure can roughly cost per entry, beside its value. */
+const ENTRY_STRUCTURE_OVERHEAD = 2048;
+/** Slack for the JSON envelope itself. */
+const BODY_ENVELOPE_SLACK_KIB = 64;
 
 /**
  * The body limit is DERIVED, not guessed: the documented maximum PUT — every variable at the value
- * ceiling — must actually fit, including JSON escaping's worst case (six bytes per byte of control
- * character) plus per-entry structure. A smaller limit here would let fastify's body parser kill a
- * body the validation rules accept with a raw 413 and no code, which is the one failure this
- * constant exists to prevent.
+ * ceiling — must actually fit, including JSON escaping's worst case plus per-entry structure. A
+ * smaller limit here would let fastify's body parser kill a body the validation rules accept with
+ * a raw 413 and no code, which is the one failure this constant exists to prevent.
  */
 const BODY_LIMIT =
-    // 6× escaping, the 2048 a name/isSecret/structure can roughly cost per entry, and slack for
-    // the JSON envelope itself.
-    MAX_ENV_VARS_PER_SCOPE * (VALUE_LIMIT * 6 + 2048) + 64 * 1024;
+    MAX_ENV_VARS_PER_SCOPE * (ENV_VALUE_LIMIT * JSON_ESCAPE_WORST_CASE + ENTRY_STRUCTURE_OVERHEAD) +
+    BODY_ENVELOPE_SLACK_KIB * BYTES_PER_KIB;
 
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** How much of an over-long name the refusal message quotes back — a name, not a paragraph. */
+const NAME_PREVIEW_LIMIT = 16;
 
-/**
- * A per-name ceiling, under the 2048-per-entry structure allowance the BODY_LIMIT arithmetic
- * assumes — and far under the kernel's per-environment-string limit, which a name past it would
- * turn every later `docker run` for this scope into an E2BIG.
- */
-const NAME_LIMIT = 255;
+/** One entry's structural checks — split out of `parseVars` so each stays under the complexity cap. */
+function parseVarEntry(entry: unknown): EnvVarEntry | string {
+    const item = entry as { name?: unknown; value?: unknown; isSecret?: unknown };
+    if (typeof item?.name !== 'string' || typeof item?.isSecret !== 'boolean') {
+        return 'each entry must be { name: string, value: string | null, isSecret: boolean }';
+    }
+    if (item.name.length > ENV_NAME_LIMIT) {
+        return `name "${item.name.slice(0, NAME_PREVIEW_LIMIT)}…" exceeds ${ENV_NAME_LIMIT} characters`;
+    }
+    if (typeof item.value !== 'string' && item.value !== null) {
+        return `value for "${item.name}" must be a string or null`;
+    }
+    if (!ENV_NAME.test(item.name)) {
+        return `"${item.name}" is not a legal environment variable name`;
+    }
+    if (RESERVED_ENV_NAMES.includes(item.name)) {
+        return `"${item.name}" is reserved by the runner`;
+    }
+    if (item.value !== null && (item.value.length > ENV_VALUE_LIMIT || /[\r\n]/.test(item.value))) {
+        return `value for "${item.name}" exceeds the limit or contains a newline`;
+    }
+    // A null value is the keep-it marker, and only a secret can keep: a readable value always
+    // arrives with the body that owns it.
+    if (item.value === null && !item.isSecret) {
+        return `value for "${item.name}" must be set — only a secret may be left blank`;
+    }
+    return { name: item.name, value: item.value, isSecret: item.isSecret };
+}
 
 /**
  * Structural validation for a vars list; the client's copy is UX only. Returns the list or the
@@ -96,31 +90,9 @@ function parseVars(raw: unknown): EnvVarEntry[] | string {
     }
     const parsed: EnvVarEntry[] = [];
     for (const entry of list) {
-        const item = entry as { name?: unknown; value?: unknown; isSecret?: unknown };
-        if (typeof item?.name !== 'string' || typeof item?.isSecret !== 'boolean') {
-            return 'each entry must be { name: string, value: string | null, isSecret: boolean }';
-        }
-        if (item.name.length > NAME_LIMIT) {
-            return `name "${item.name.slice(0, 16)}…" exceeds ${NAME_LIMIT} characters`;
-        }
-        if (typeof item.value !== 'string' && item.value !== null) {
-            return `value for "${item.name}" must be a string or null`;
-        }
-        if (!ENV_NAME.test(item.name)) {
-            return `"${item.name}" is not a legal environment variable name`;
-        }
-        if ((RESERVED_ENV_NAMES as readonly string[]).includes(item.name)) {
-            return `"${item.name}" is reserved by the runner`;
-        }
-        if (item.value !== null && (item.value.length > VALUE_LIMIT || /[\r\n]/.test(item.value))) {
-            return `value for "${item.name}" exceeds the limit or contains a newline`;
-        }
-        // A null value is the keep-it marker, and only a secret can keep: a readable value always
-        // arrives with the body that owns it.
-        if (item.value === null && !item.isSecret) {
-            return `value for "${item.name}" must be set — only a secret may be left blank`;
-        }
-        parsed.push({ name: item.name, value: item.value, isSecret: item.isSecret });
+        const one = parseVarEntry(entry);
+        if (typeof one === 'string') return one;
+        parsed.push(one);
     }
     const names = new Set(parsed.map((entry) => entry.name));
     if (names.size !== parsed.length) return 'variable names must be unique within one scope';
@@ -134,6 +106,47 @@ function parseRepo(raw: unknown): Repo | string {
     }
     return { owner: repo.owner, name: repo.name };
 }
+
+/**
+ * The scope becomes a check-constraint key here and a directory-shaped key at the row; the same
+ * segment rules a checkout's name obeys, refused with a code rather than discovered as a
+ * constraint violation.
+ */
+function repoSegmentReason(repo: Repo): string | null {
+    for (const [label, value] of [
+        ['owner', repo.owner],
+        ['name', repo.name],
+    ] as const) {
+        const reason = badSegment(label, value);
+        if (reason) return `"${repo.owner}/${repo.name}": ${reason}`;
+    }
+    return null;
+}
+
+/**
+ * Every check the repo-scope PUT applies before it touches the store, in one place so the route
+ * handler itself stays a single guard-and-save.
+ */
+async function validatePutRepoRequest(
+    request: FastifyRequest,
+    repos: OrgRuntime['repos']
+): Promise<
+    { ok: true; repo: Repo; vars: EnvVarEntry[] } | { ok: false; code: string; message: string; status?: number }
+> {
+    const repo = parseRepo(request.body);
+    if (typeof repo === 'string') return { ok: false, code: ERROR_CODES.BAD_BODY, message: repo };
+    const segmentReason = repoSegmentReason(repo);
+    if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
+    const vars = parseVars(request.body);
+    if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
+    const visible = await checkReposVisible(repos, [repo], { subject: 'the repository' });
+    if (!visible.ok) return visible;
+    return { ok: true, repo, vars };
+}
+
+const HTTP_OK = 200;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_UNAVAILABLE = 503;
 
 export interface EnvRoutesDeps {
     readonly config: AppConfig;
@@ -158,9 +171,9 @@ export const envRoutes =
 
         app.get('/api/env', async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
             const loaded = await guard(
@@ -174,7 +187,7 @@ export const envRoutes =
             );
             if (!loaded.ok) return reply;
 
-            return reply.code(200).send({
+            return reply.code(HTTP_OK).send({
                 org: loaded.value[0],
                 workspace: loaded.value[1],
                 repos: loaded.value[2],
@@ -185,9 +198,9 @@ export const envRoutes =
         // installation access is membership, and there are no roles above member to gate it with.
         app.put('/api/env/org', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
             const vars = parseVars(request.body);
@@ -204,15 +217,15 @@ export const envRoutes =
                 }
             );
             if (!saved.ok) return reply;
-            return reply.code(200).send({ vars: saved.value });
+            return reply.code(HTTP_OK).send({ vars: saved.value });
         });
 
         // The caller's own scope. Any member may write it — it is their runners' environment.
         app.put('/api/env/workspace', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
             const vars = parseVars(request.body);
@@ -229,56 +242,21 @@ export const envRoutes =
                 }
             );
             if (!saved.ok) return reply;
-            return reply.code(200).send({ vars: saved.value });
+            return reply.code(HTTP_OK).send({ vars: saved.value });
         });
 
         // Org-wide per-repository scope: one configuration per repository, applied to every
         // member's runs in it — the GitHub Actions precedent.
         app.put('/api/env/repo', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const rt = await runtimeOf(request);
-            if (!rt) return bad(reply, 'ENV_UNAVAILABLE', 'No environment store for this organization', 503);
+            if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
-            const repos = rt.repos;
 
-            const repo = parseRepo(request.body);
-            if (typeof repo === 'string') return bad(reply, 'BAD_BODY', repo);
-            // The scope becomes a check-constraint key here and a directory-shaped key at the row;
-            // the same segment rules a checkout's name obeys, refused with a code rather than
-            // discovered as a constraint violation.
-            for (const [label, value] of [
-                ['owner', repo.owner],
-                ['name', repo.name],
-            ] as const) {
-                const reason = badSegment(label, value);
-                if (reason) return bad(reply, 'BAD_REPO_NAME', `"${repo.owner}/${repo.name}": ${reason}`);
-            }
-
-            const vars = parseVars(request.body);
-            if (typeof vars === 'string') {
-                return bad(reply, varsCode(vars), vars);
-            }
-
-            /*
-             * The same bargain the workspace selection route makes: the scope must be one the
-             * installation can actually see, or the row is one this deployment has no business
-             * holding.
-             */
-            const available = new Set((await repos.list()).map(fullName));
-            if (!available.size && repos.lastError()) {
-                return reply.code(503).send({
-                    error: `Cannot check the repository against the GitHub App installation: ${repos.lastError()}`,
-                    code: 'UNAVAILABLE',
-                });
-            }
-            if (!available.has(`${repo.owner}/${repo.name}`)) {
-                return bad(
-                    reply,
-                    'UNKNOWN_REPO',
-                    `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`
-                );
-            }
+            const parsed = await validatePutRepoRequest(request, rt.repos);
+            if (!parsed.ok) return bad(reply, parsed.code, parsed.message, parsed.status);
+            const { repo, vars } = parsed;
 
             const saved = await guard(
                 reply,
@@ -289,18 +267,23 @@ export const envRoutes =
                 }
             );
             if (!saved.ok) return reply;
-            return reply.code(200).send({ vars: saved.value });
+            return reply.code(HTTP_OK).send({ vars: saved.value });
         });
     };
 
 /** The refusal code for a parseVars reason, in one place so the codes stay honest. */
 function varsCode(reason: string): string {
-    if (reason.startsWith('at most')) return 'TOO_MANY_ENV_VARS';
-    if (reason.includes('exceeds the limit or contains a newline')) return 'BAD_ENV_VALUE';
-    if (reason.includes('exceeds 255 characters')) return 'BAD_ENV_NAME';
-    if (reason.endsWith('is not a legal environment variable name')) return 'BAD_ENV_NAME';
-    if (reason.endsWith('is reserved by the runner')) return 'RESERVED_ENV_NAME';
-    if (reason.includes('only a secret may be left blank')) return 'BAD_VALUE';
-    if (reason.startsWith('variable names must be unique')) return 'ENV_NAME_CONFLICT';
-    return 'BAD_BODY';
+    if (reason.startsWith('at most')) return ERROR_CODES.TOO_MANY_ENV_VARS;
+    if (reason.includes('exceeds the limit or contains a newline')) return ERROR_CODES.BAD_ENV_VALUE;
+    if (reason.includes('exceeds 255 characters')) return ERROR_CODES.BAD_ENV_NAME;
+    if (reason.endsWith('is not a legal environment variable name')) return ERROR_CODES.BAD_ENV_NAME;
+    if (reason.endsWith('is reserved by the runner')) return ERROR_CODES.RESERVED_ENV_NAME;
+    if (reason.includes('only a secret may be left blank')) return ERROR_CODES.BAD_VALUE;
+    if (reason.startsWith('variable names must be unique')) return ERROR_CODES.ENV_NAME_CONFLICT;
+    return ERROR_CODES.BAD_BODY;
+}
+
+/** The refusal every route sends when the caller's org has no env store behind it. */
+function noEnvStore(reply: FastifyReply) {
+    return bad(reply, ERROR_CODES.ENV_UNAVAILABLE, 'No environment store for this organization', HTTP_UNAVAILABLE);
 }

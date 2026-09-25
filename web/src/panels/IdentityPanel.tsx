@@ -1,6 +1,7 @@
 import type { Session } from '../api/useSession.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { taskTime } from '../format.js';
+import { ADMIN_ROLE } from '@factory-ai/core';
 
 /**
  * The read-only identity section of the settings page, and its first consumer of the extended
@@ -35,7 +36,7 @@ export function IdentityPanel({ session }: { session: Session }) {
                             attributed to a local stand-in account.
                         </p>
                     ) : (
-                        <p className="muted">{role === 'admin' ? 'Administrator' : 'Member'} of this organization</p>
+                        <p className="muted">{role === ADMIN_ROLE ? 'Administrator' : 'Member'} of this organization</p>
                     )}
                 </div>
             </div>

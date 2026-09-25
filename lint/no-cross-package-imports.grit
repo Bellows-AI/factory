@@ -1,0 +1,40 @@
+language js
+
+// The two package boundaries AGENTS.md states and nothing enforced.
+//
+// 1. `driver` depends on nothing, `core` included. It is a client of the HTTP board; sharing types
+//    with the server would hand a process that only needs `fetch` and `docker` the whole server
+//    dependency tree, plus a build order it currently does not have. When a type has to be shared,
+//    it is copied — deliberately.
+// 2. `server` and `web` resolve core through `@factory-ai/core`, which maps to `core/dist`, never
+//    `core/src`. Reaching into the sources bypasses the build that `npm run dev` and `npm run
+//    build` sequence first, and produces type errors that read like source bugs.
+//
+// Both are zero violations today, so this is a ratchet: it costs nothing now and refuses the
+// change that would otherwise be discovered by a container build or a stale `core/dist`.
+//
+// The paths are spelled as an `or` of whole regexes, never `(src|test)`: Grit binds a regex group
+// to a variable, so an alternation group does not compile. It fails SILENTLY — the plugin reports
+// "regex pattern matched 1 variables, but expected 0" at `info` severity once per file and then
+// matches nothing, which looks exactly like a clean ratchet. Check for that message before
+// believing a zero here.
+`import $_ from $source` where {
+    or {
+        and {
+            $filename <: or { r".*/driver/src/.*", r".*/driver/test/.*" },
+            $source <: r"^['\"]@factory-ai/core.*['\"]$",
+            register_diagnostic(
+                span = $source,
+                message = "driver depends on nothing, core included — copy the type instead (AGENTS.md)."
+            )
+        },
+        and {
+            $filename <: or { r".*/server/src/.*", r".*/web/src/.*" },
+            $source <: r"^['\"].*core/src/.*['\"]$",
+            register_diagnostic(
+                span = $source,
+                message = "server and web resolve core through @factory-ai/core (core/dist), never core/src."
+            )
+        }
+    }
+}

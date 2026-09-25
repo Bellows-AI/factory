@@ -1,7 +1,8 @@
+import { ERROR_CODES } from '@factory-ai/core';
 import { timingSafeEqual } from 'node:crypto';
 import fastifyCookie from '@fastify/cookie';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { LOCAL_ORG_ID, UUID, type AppConfig } from '../config.js';
+import { LOCAL_ORG_ID, UUID, type AppConfig, type AuthConfig } from '../config.js';
 import { ORG_TOKEN_PREFIX, isAccessToken } from './access-token.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
@@ -58,13 +59,12 @@ const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
 /**
  * What an organization token may reach, and nothing else — an allowlist, because a refusal list
  * would silently admit every route added after it. Each entry names no person: board and repo
- * reads, and the cache poke. Everything a route needs a `callerOf` for — queueing a job above all,
+ * reads. Everything a route needs a `callerOf` for — queueing a job above all,
  * whose `created_by` must stay a person — is outside it, and gets a 403 rather than a 401: the
  * token did authenticate, the route just needs a human behind it.
  */
 const ORG_TOKEN_ROUTES: readonly (readonly [string, RegExp])[] = [
     ['GET', /^\/api\/stats$/],
-    ['POST', /^\/api\/refresh$/],
     ['GET', /^\/api\/repos$/],
     ['GET', /^\/api\/jobs$/],
     ['GET', /^\/api\/jobs\/[^/]+$/],
@@ -86,6 +86,7 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
  *
  * - `/api/health` must answer while the migrations are still retrying, and the compose healthcheck
  *   carries no credential. Authenticating it would restart the container that was about to succeed.
+ * - `/api/ready` is the kubelet's startup probe, which carries no credential either.
  * - `/api/auth/*` is how a caller obtains a credential in the first place. `/api/auth/me` answers
  *   `200 {authenticated: false}` for nobody — being the thing that *tells* the SPA it is
  *   unauthenticated is its whole purpose, and a 401 there would be logged as a console error by
@@ -97,6 +98,7 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
  */
 const OPEN_ROUTES: readonly RegExp[] = [
     /^\/api\/health$/,
+    /^\/api\/ready$/,
     /^\/api\/auth\//,
     // The installation webhook answers to the HMAC signature over its body — a credential the
     // route verifies itself — so the session hook must not demand a cookie of it.
@@ -128,10 +130,16 @@ function secretsMatch(provided: string, expected: string): boolean {
     return timingSafeEqual(a, b);
 }
 
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
+
+const BEARER_PREFIX = 'Bearer ';
+
 const bearer = (request: FastifyRequest): string | null => {
     const header = request.headers.authorization;
-    if (!header?.startsWith('Bearer ')) return null;
-    return header.slice(7).trim() || null;
+    if (!header?.startsWith(BEARER_PREFIX)) return null;
+    return header.slice(BEARER_PREFIX.length).trim() || null;
 };
 
 export interface AuthPluginDeps {
@@ -201,7 +209,7 @@ async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store
     const accessToken = bearer(request);
     if (!accessToken) return false;
     if (!isAccessToken(accessToken)) {
-        await reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
         return true;
     }
     const tokenHash = hashToken(accessToken);
@@ -210,12 +218,16 @@ async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store
         // reads only that one, whatever else this database serves.
         const orgToken = await store.findOrgToken(tokenHash);
         if (!orgToken) {
-            await reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+            await reply
+                .code(HTTP_UNAUTHORIZED)
+                .send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
             return true;
         }
         const path = pathOf(request.url);
         if (!orgTokenAllowed(request.method, path)) {
-            await reply.code(403).send({ error: 'Organization tokens can only read', code: 'FORBIDDEN' });
+            await reply
+                .code(HTTP_FORBIDDEN)
+                .send({ error: 'Organization tokens can only read', code: ERROR_CODES.FORBIDDEN });
             return true;
         }
         request.auth = { kind: 'org', token: orgToken };
@@ -223,11 +235,137 @@ async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store
     }
     const tokenCaller = await store.findPersonalToken(tokenHash);
     if (!tokenCaller) {
-        await reply.code(401).send({ error: 'Invalid access token', code: 'UNAUTHENTICATED' });
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
         return true;
     }
     request.auth = { kind: 'user', caller: tokenCaller };
     return true;
+}
+
+async function enforceIngest(auth: AuthConfig, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    // Optional, because the two callers are a collector on the compose network and a plugin
+    // installed on developer laptops — requiring it would break both with no migration path.
+    // Unset means these routes behave exactly as they did before accounts existed.
+    //
+    // A header, never a query parameter: a query parameter lands in every access log.
+    if (!auth.ingestToken) return;
+    const provided = request.headers['x-factory-ingest-token'];
+    if (typeof provided === 'string' && secretsMatch(provided, auth.ingestToken)) return;
+    await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid ingest token', code: ERROR_CODES.UNAUTHENTICATED });
+}
+
+interface BranchAuthDeps {
+    auth: AuthConfig;
+    store: AuthStore;
+    leaseOrgOf: (jobId: string, leaseToken: string) => Promise<string | null>;
+}
+
+async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const { auth, store, leaseOrgOf } = deps;
+    // Open in `none` mode, exactly the worker routes' stance: the stand-in local org is the only
+    // one there is, and request.auth stays null for it.
+    if (auth.mode === 'none') return;
+
+    // The runner's credential: the attempt it runs for. The deployment-wide ingest token
+    // deliberately does NOT authorize this write — a shared secret cannot bind a report to an
+    // organization, which is the whole finding. A pair that is PRESENT but does not resolve is a
+    // 401 with no fall-through, the same rule a failed bearer gets: a credential that failed must
+    // not ride a weaker one behind it.
+    const jobId = request.headers['x-factory-job-id'];
+    const leaseToken = request.headers['x-factory-job-lease-token'];
+    if (typeof jobId === 'string' && jobId && typeof leaseToken === 'string' && leaseToken) {
+        const orgId = await leaseOrgOf(jobId, leaseToken);
+        if (!orgId) {
+            await reply
+                .code(HTTP_UNAUTHORIZED)
+                .send({ error: 'Unknown job or lease', code: ERROR_CODES.UNAUTHENTICATED });
+            return;
+        }
+        request.auth = { kind: 'job', orgId };
+        return;
+    }
+
+    // The laptop plugin's credential: the user's personal access token, through the same
+    // resolution the person routes use. No pair and no bearer → 401.
+    if (await resolveBearer(request, reply, store)) return;
+    await reply
+        .code(HTTP_UNAUTHORIZED)
+        .send({ error: 'Branch ingest needs a credential', code: ERROR_CODES.UNAUTHENTICATED });
+}
+
+interface WorkerAuthDeps {
+    auth: AuthConfig;
+    jobOrgOf: (jobId: string) => Promise<string | null>;
+    reclaimOrgOf: (reclaimId: string) => Promise<string | null>;
+}
+
+async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const { auth, jobOrgOf, reclaimOrgOf } = deps;
+    // Open in `none` mode, like every other route in it. Requiring a secret here would buy
+    // nothing — anyone who can reach this port can already queue a command that an agent runs —
+    // while breaking `npm run driver` against a local board, which is the ordinary way this is
+    // developed. The two credentials are disjoint when there ARE credentials; `none` means there
+    // are none.
+    if (auth.mode === 'none') return;
+
+    // One shared secret, the same value in the board's and the driver's environment
+    // (JOB_BOARD_TOKEN on both sides). Constant-time, and checked before any database round trip —
+    // a wrong guess costs a compare, not a query. There is no token row and no org binding: the
+    // secret is the deployment's driver credential, so the org a call operates on comes from the
+    // row it names.
+    const token = bearer(request);
+    if (!token || !secretsMatch(token, auth.jobBoardToken)) {
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid worker token', code: ERROR_CODES.UNAUTHENTICATED });
+        return;
+    }
+
+    // The two claim routes name no row — they ASK for work — so their principal carries null and
+    // the route offers every org's queue. Every other worker route carries the job (or reclaim) id
+    // in its URL, and the org comes from that row; an id that resolves to nothing is the route's
+    // own 404, answered here to keep the store lookup from inventing a runtime for a row that does
+    // not exist. The segment is captured before any shape check, so a MALFORMED id is refused on
+    // the same terms instead of slipping through with a null org — which the route's storeOf()
+    // would turn into a 503 before its own id validation ran — and so a resolver is never handed a
+    // string postgres would refuse to cast.
+    const path = pathOf(request.url);
+    const rowId = path.match(/^\/api\/jobs\/([^/]+)\//)?.[1] ?? path.match(/^\/api\/reclaims\/([^/]+)\//)?.[1];
+    let orgId: string | null = null;
+    if (rowId && UUID.test(rowId)) {
+        orgId = path.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
+    }
+    if (rowId && !orgId) {
+        await reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: ERROR_CODES.NOT_FOUND });
+        return;
+    }
+    request.auth = { kind: 'worker', orgId };
+}
+
+interface UserAuthDeps {
+    auth: AuthConfig;
+    store: AuthStore;
+    resolveUser: (request: FastifyRequest) => Promise<Caller | null>;
+}
+
+async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const { auth, store, resolveUser } = deps;
+    // The bearer is THE credential when present: a CLI never sends a cookie and a browser never
+    // sends a bearer, so both at once means something between them is rewriting, and the cookie
+    // behind a failed or foreign bearer must not be consulted — that would let a rewritten header
+    // ride somebody's session in.
+    if (auth.mode !== 'none') {
+        if (await resolveBearer(request, reply, store)) return;
+    }
+
+    const caller = await resolveUser(request);
+    if (!caller) {
+        // Under AUTH_MODE=none this means the stand-in row migrate() seeds is not there yet, which
+        // is a database that has not finished starting rather than a bad request — but it is
+        // reported the same way, because a route that answers 503 only in one auth mode is a
+        // difference between modes that nothing else in the system has.
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
+        return;
+    }
+    request.auth = { kind: 'user', caller };
 }
 
 /**
@@ -255,103 +393,10 @@ export async function registerAuth(
     app.addHook('onRequest', async (request, reply) => {
         const requirement = requirementFor(pathOf(request.url));
         if (requirement === 'open') return;
-
-        if (requirement === 'ingest') {
-            // Optional, because the two callers are a collector on the compose network and a plugin
-            // installed on developer laptops — requiring it would break both with no migration path.
-            // Unset means these routes behave exactly as they did before accounts existed.
-            //
-            // A header, never a query parameter: a query parameter lands in every access log.
-            if (!auth.ingestToken) return;
-            const provided = request.headers['x-factory-ingest-token'];
-            if (typeof provided === 'string' && secretsMatch(provided, auth.ingestToken)) return;
-            return reply.code(401).send({ error: 'Invalid ingest token', code: 'UNAUTHENTICATED' });
-        }
-
-        if (requirement === 'branch') {
-            // Open in `none` mode, exactly the worker routes' stance: the stand-in local org is
-            // the only one there is, and request.auth stays null for it.
-            if (auth.mode === 'none') return;
-
-            // The runner's credential: the attempt it runs for. The deployment-wide ingest token
-            // deliberately does NOT authorize this write — a shared secret cannot bind a report
-            // to an organization, which is the whole finding. A pair that is PRESENT but does not
-            // resolve is a 401 with no fall-through, the same rule a failed bearer gets: a
-            // credential that failed must not ride a weaker one behind it.
-            const jobId = request.headers['x-factory-job-id'];
-            const leaseToken = request.headers['x-factory-job-lease-token'];
-            if (typeof jobId === 'string' && jobId && typeof leaseToken === 'string' && leaseToken) {
-                const orgId = await leaseOrgOf(jobId, leaseToken);
-                if (!orgId) {
-                    return reply.code(401).send({ error: 'Unknown job or lease', code: 'UNAUTHENTICATED' });
-                }
-                request.auth = { kind: 'job', orgId };
-                return;
-            }
-
-            // The laptop plugin's credential: the user's personal access token, through the same
-            // resolution the person routes use. No pair and no bearer → 401.
-            if (await resolveBearer(request, reply, store)) return;
-            return reply.code(401).send({ error: 'Branch ingest needs a credential', code: 'UNAUTHENTICATED' });
-        }
-
-        if (requirement === 'worker') {
-            // Open in `none` mode, like every other route in it. Requiring a secret here would buy
-            // nothing — anyone who can reach this port can already queue a command that an agent
-            // runs — while breaking `npm run driver` against a local board, which is the ordinary
-            // way this is developed. The two credentials are disjoint when there ARE credentials;
-            // `none` means there are none.
-            if (auth.mode === 'none') return;
-
-            // One shared secret, the same value in the board's and the driver's environment
-            // (JOB_BOARD_TOKEN on both sides). Constant-time, and checked before any database
-            // round trip — a wrong guess costs a compare, not a query. There is no token row and
-            // no org binding: the secret is the deployment's driver credential, so the org a
-            // call operates on comes from the row it names.
-            const token = bearer(request);
-            if (!token || !secretsMatch(token, auth.jobBoardToken)) {
-                return reply.code(401).send({ error: 'Invalid worker token', code: 'UNAUTHENTICATED' });
-            }
-
-            // The two claim routes name no row — they ASK for work — so their principal carries
-            // null and the route offers every org's queue. Every other worker route carries the
-            // job (or reclaim) id in its URL, and the org comes from that row; an id that
-            // resolves to nothing is the route's own 404, answered here to keep the store lookup
-            // from inventing a runtime for a row that does not exist. The segment is captured
-            // before any shape check, so a MALFORMED id is refused on the same terms instead of
-            // slipping through with a null org — which the route's storeOf() would turn into a
-            // 503 before its own id validation ran — and so a resolver is never handed a string
-            // postgres would refuse to cast.
-            const path = pathOf(request.url);
-            const rowId = path.match(/^\/api\/jobs\/([^/]+)\//)?.[1] ?? path.match(/^\/api\/reclaims\/([^/]+)\//)?.[1];
-            let orgId: string | null = null;
-            if (rowId && UUID.test(rowId)) {
-                orgId = path.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
-            }
-            if (rowId && !orgId) {
-                return reply.code(404).send({ error: 'No such job', code: 'NOT_FOUND' });
-            }
-            request.auth = { kind: 'worker', orgId };
-            return;
-        }
-
-        // The bearer is THE credential when present: a CLI never sends a cookie and a browser
-        // never sends a bearer, so both at once means something between them is rewriting, and
-        // the cookie behind a failed or foreign bearer must not be consulted — that would let a
-        // rewritten header ride somebody's session in.
-        if (auth.mode !== 'none') {
-            if (await resolveBearer(request, reply, store)) return;
-        }
-
-        const caller = await resolveUser(request);
-        if (!caller) {
-            // Under AUTH_MODE=none this means the stand-in row migrate() seeds is not there yet,
-            // which is a database that has not finished starting rather than a bad request — but it
-            // is reported the same way, because a route that answers 503 only in one auth mode is a
-            // difference between modes that nothing else in the system has.
-            return reply.code(401).send({ error: 'Sign in required', code: 'UNAUTHENTICATED' });
-        }
-        request.auth = { kind: 'user', caller };
+        if (requirement === 'ingest') return enforceIngest(auth, request, reply);
+        if (requirement === 'branch') return enforceBranch({ auth, store, leaseOrgOf }, request, reply);
+        if (requirement === 'worker') return enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply);
+        return enforceUser({ auth, store, resolveUser }, request, reply);
     });
 }
 

@@ -5,8 +5,8 @@ import { buildApp } from '../src/app.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
-import type { Claim, Job, JobStore } from '../src/db/job-store.js';
-import { createStatsService } from '../src/stats-service.js';
+import type { Claim, Job } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
 import type { MemoryAuthStore } from './helpers.js';
@@ -24,6 +24,12 @@ const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
 const WORKER_TOKEN = TEST_JOB_BOARD_TOKEN;
+const HTTP_OK = 200;
+const HTTP_CREATED = 201;
+const HTTP_ACCEPTED = 202;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -55,7 +61,7 @@ const jobStub = (): JobStore =>
             return 'ok';
         },
         async suspend() {
-            return { result: 'ok', status: 'standby' };
+            return { result: 'ok', status: 'stopped' };
         },
         async complete() {
             return 'ok';
@@ -114,6 +120,8 @@ describe('the route table', () => {
      */
     it.each([
         ['/api/health', 'open'],
+        // The kubelet's startup probe carries no credential.
+        ['/api/ready', 'open'],
         ['/api/auth/github', 'open'],
         // The installation webhook answers to the HMAC signature over its body — a credential the
         // route verifies itself — so the session hook must not demand a cookie of it.
@@ -134,7 +142,6 @@ describe('the route table', () => {
         // wall is on /api/* rather than on the document — see docs/auth.md.
         ['/settings/workspace', 'open'],
         ['/api/stats', 'user'],
-        ['/api/refresh', 'user'],
         ['/api/jobs', 'user'],
         // The task read model (#157): a person's inbox view over the same board. It falls through
         // to `user` by the safe default rather than being listed anywhere — pinned here because a
@@ -202,13 +209,13 @@ describe('with github auth configured', () => {
     it('answers /api/health with no credential at all', async () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const response = await server.inject({ method: 'GET', url: '/api/health' });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('401s the dashboard for an anonymous caller', async () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const response = await server.inject({ method: 'GET', url: '/api/stats?range=all' });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(response.json().code).toBe('UNAUTHENTICATED');
     });
 
@@ -219,7 +226,7 @@ describe('with github auth configured', () => {
             url: '/api/jobs',
             payload: { command: 'rm -rf /' },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('lets a signed-in member queue a job', async () => {
@@ -235,7 +242,7 @@ describe('with github auth configured', () => {
             headers: { cookie },
         });
 
-        expect(response.statusCode).toBe(201);
+        expect(response.statusCode).toBe(HTTP_CREATED);
     });
 
     it('stops honouring a session the moment its membership is removed', async () => {
@@ -243,7 +250,9 @@ describe('with github auth configured', () => {
         const server = await build(githubAuth(), store);
         const caller = store.seedMember(ORG, 'octocat');
         const cookie = await signedIn(store, caller);
-        expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: { cookie } })).statusCode).toBe(200);
+        expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: { cookie } })).statusCode).toBe(
+            HTTP_OK
+        );
 
         // Nothing in production deletes a membership except the sign-in propagation (GitHub no
         // longer reporting an installation) — which is exactly what this stands in for.
@@ -251,7 +260,7 @@ describe('with github auth configured', () => {
 
         // The next request, not the next fortnight. This immediacy is why sessions are rows.
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: { cookie } });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('refuses a forged cookie', async () => {
@@ -262,11 +271,11 @@ describe('with github auth configured', () => {
             url: '/api/jobs',
             headers: { cookie: `${SESSION_COOKIE}=made-up.signature` },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });
 
-describe('the two credentials are disjoint', () => {
+describe('the two credentials are disjoint: claim and job-scoped routes', () => {
     it('refuses a session cookie on the claim route', async () => {
         const store = memoryAuthStore();
         const server = await build(githubAuth(), store);
@@ -282,7 +291,7 @@ describe('the two credentials are disjoint', () => {
 
         // Even an admin. A member holding a lease is a member able to take work away from the
         // driver that is running it.
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('accepts the shared board secret on the claim route', async () => {
@@ -298,7 +307,7 @@ describe('the two credentials are disjoint', () => {
 
         // No org binding and no token row: the secret IS the driver credential, and the claim is
         // offered every org's queue.
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('resolves a job-scoped worker call from the row its URL names', async () => {
@@ -312,7 +321,7 @@ describe('the two credentials are disjoint', () => {
             headers: { authorization: `Bearer ${WORKER_TOKEN}` },
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('404s a job-scoped worker call whose job does not exist', async () => {
@@ -328,7 +337,7 @@ describe('the two credentials are disjoint', () => {
 
         // Authenticated (the secret matched) but routed nowhere: the org read from the row is
         // the only honest answer, and there is no row.
-        expect(response.statusCode).toBe(404);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
     });
 
     it('404s a job-scoped worker call whose id is not a uuid', async () => {
@@ -345,7 +354,7 @@ describe('the two credentials are disjoint', () => {
         // A malformed id names no row either. Letting it through with a null org hands the
         // route's storeOf() an org that does not exist, and the driver reads a 503
         // JOBS_UNAVAILABLE where the route's own id validation should have spoken.
-        expect(response.statusCode).toBe(404);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
     });
 
     it('404s a reclaim ack whose id is not a uuid', async () => {
@@ -359,9 +368,11 @@ describe('the two credentials are disjoint', () => {
             headers: { authorization: `Bearer ${WORKER_TOKEN}` },
         });
 
-        expect(response.statusCode).toBe(404);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
     });
+});
 
+describe('the two credentials are disjoint: cross-credential refusals', () => {
     it('refuses the worker secret on a human route', async () => {
         const store = memoryAuthStore();
         const server = await build(githubAuth(), store);
@@ -374,7 +385,7 @@ describe('the two credentials are disjoint', () => {
         });
 
         // A job queued by the driver would have no author, silently breaking the audit trail.
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('keeps the thread read session-only, in both directions', async () => {
@@ -391,7 +402,7 @@ describe('the two credentials are disjoint', () => {
                     headers: { cookie },
                 })
             ).statusCode
-        ).toBe(200);
+        ).toBe(HTTP_OK);
 
         // The worker secret on the full thread read would let the driver read commands, output
         // and session ids of jobs it never held a lease on — the thread is audit data, and the
@@ -405,7 +416,7 @@ describe('the two credentials are disjoint', () => {
                     headers: { authorization: `Bearer ${WORKER_TOKEN}` },
                 })
             ).statusCode
-        ).toBe(401);
+        ).toBe(HTTP_UNAUTHORIZED);
     });
 
     it("refuses the worker secret on the single-job read, which stays a person's", async () => {
@@ -420,7 +431,7 @@ describe('the two credentials are disjoint', () => {
 
         // The job row — command, output, verdict — is a person's view of their audit trail; a
         // worker secret reaching it would make a member's session no stronger than any leaked one.
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('refuses a wrong secret', async () => {
@@ -436,7 +447,7 @@ describe('the two credentials are disjoint', () => {
 
         // There is no row to be revoked: the secret simply matches or it does not. A deployment
         // rotates by changing the value on both sides.
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });
 
@@ -450,7 +461,7 @@ describe('telemetry ingest', () => {
             url: '/api/otlp/v1/logs',
             payload: { resourceLogs: [] },
         });
-        expect(response.statusCode).not.toBe(401);
+        expect(response.statusCode).not.toBe(HTTP_UNAUTHORIZED);
     });
 
     it('requires the header once a token is configured', async () => {
@@ -461,7 +472,7 @@ describe('telemetry ingest', () => {
             url: '/api/otlp/v1/logs',
             payload: { resourceLogs: [] },
         });
-        expect(without.statusCode).toBe(401);
+        expect(without.statusCode).toBe(HTTP_UNAUTHORIZED);
 
         const with_ = await server.inject({
             method: 'POST',
@@ -469,7 +480,7 @@ describe('telemetry ingest', () => {
             payload: { resourceLogs: [] },
             headers: { 'x-factory-ingest-token': 'ingest-secret' },
         });
-        expect(with_.statusCode).not.toBe(401);
+        expect(with_.statusCode).not.toBe(HTTP_UNAUTHORIZED);
 
         // The OTLP routes are the ONLY thing the ingest token still reaches. It is a deployment
         // -wide authenticity check for machine exports, never an org binding — which is exactly
@@ -480,7 +491,7 @@ describe('telemetry ingest', () => {
             payload: { agent: 'claude', sessionId: 'abc', repo: 'a/b', branch: 'dev' },
             headers: { 'x-factory-ingest-token': 'ingest-secret' },
         });
-        expect(branch.statusCode).toBe(401);
+        expect(branch.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });
 
@@ -500,7 +511,7 @@ describe('the branch route needs an org-bound credential in github mode', () => 
             payload: report,
             headers: { 'x-factory-job-id': JOB_ID, 'x-factory-job-lease-token': LEASE },
         });
-        expect(response.statusCode).toBe(202);
+        expect(response.statusCode).toBe(HTTP_ACCEPTED);
     });
 
     it('401s a pair that does not resolve, even with a bearer behind it', async () => {
@@ -518,14 +529,14 @@ describe('the branch route needs an org-bound credential in github mode', () => 
                 authorization: `Bearer ${token}`,
             },
         });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
         expect(response.json().code).toBe('UNAUTHENTICATED');
     });
 
     it('401s a missing pair', async () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const response = await server.inject({ method: 'POST', url: '/api/sessions/branch', payload: report });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('accepts a personal access token — the laptop plugin’s credential', async () => {
@@ -539,7 +550,7 @@ describe('the branch route needs an org-bound credential in github mode', () => 
             payload: report,
             headers: { authorization: `Bearer ${token}` },
         });
-        expect(response.statusCode).toBe(202);
+        expect(response.statusCode).toBe(HTTP_ACCEPTED);
     });
 
     // 403, not 401, and deliberately so: the oat_ DID authenticate — findOrgToken resolved it —
@@ -556,7 +567,7 @@ describe('the branch route needs an org-bound credential in github mode', () => 
             payload: report,
             headers: { authorization: `Bearer ${token}` },
         });
-        expect(response.statusCode).toBe(403);
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
         expect(response.json().code).toBe('FORBIDDEN');
     });
 
@@ -567,7 +578,7 @@ describe('the branch route needs an org-bound credential in github mode', () => 
             throw new Error('none mode must not consult the lease');
         });
         const response = await server.inject({ method: 'POST', url: '/api/sessions/branch', payload: report });
-        expect(response.statusCode).toBe(202);
+        expect(response.statusCode).toBe(HTTP_ACCEPTED);
     });
 });
 
@@ -588,7 +599,7 @@ describe('AUTH_MODE=none', () => {
             payload: { command: 'echo hi' },
         });
 
-        expect(response.statusCode).toBe(201);
+        expect(response.statusCode).toBe(HTTP_CREATED);
     });
 
     it('lets a driver claim with no token, because `none` means no credentials at all', async () => {
@@ -608,7 +619,7 @@ describe('AUTH_MODE=none', () => {
             payload: { worker: 'driver-1' },
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('reports the stand-in account from /api/auth/me, with nothing pretending to be GitHub data', async () => {
@@ -624,7 +635,7 @@ describe('AUTH_MODE=none', () => {
 
         const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toMatchObject({
             user: { login: '__local__', githubUserId: 0, avatarUrl: null },
             role: 'admin',
@@ -650,7 +661,7 @@ describe('AUTH_MODE=none', () => {
 
         const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().workspacePath).toBe(
             '/tmp/factory-settings-test/default/00000000-0000-4000-8000-000000000000'
         );

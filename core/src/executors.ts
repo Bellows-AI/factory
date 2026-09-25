@@ -11,3 +11,6 @@
 export const EXECUTOR_TYPES = ['claude-code', 'opencode'] as const;
 
 export type ExecutorType = (typeof EXECUTOR_TYPES)[number];
+
+/** The executor types by name, destructured from the one list so no second copy can drift. */
+export const [CLAUDE_CODE, OPENCODE] = EXECUTOR_TYPES;

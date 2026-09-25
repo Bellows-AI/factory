@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import type { Board, BoardJob, HeartbeatVerdict, LeaseState, Reclaim, RuntimeReport } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
-import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/docker.js';
+import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateServer } from '../src/gates.js';
+import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishResult, SyncResult } from '../src/publish.js';
-import { createLoop, type GateStack, type Loop } from '../src/loop.js';
+import { createLoop, type Loop } from '../src/loop.js';
+import type { GateStack } from '../src/loop-types.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
+
+/** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
+ *  presence matters to this file's own tests, none of which assert its exact text. */
+const MASTER_PROMPT =
+    'Factory execution contract (factory-master-prompt/v1)\n\nFactory execution context\n- Mode: standalone';
 
 const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     id: `0000000${n}-1111-4111-8111-111111111111`,
@@ -14,6 +21,8 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     attempts: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
+    masterPrompt: MASTER_PROMPT,
     resumeSessionId,
     followUp: false,
     userId: USER,
@@ -21,8 +30,20 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
 });
 
 interface BoardStub extends Board {
-    completed: { id: string; status: string; exitCode: number | null; output: string }[];
-    sessions: { id: string; sessionId: string; remoteSessionId: string | null }[];
+    completed: {
+        id: string;
+        status: string;
+        exitCode: number | null;
+        output: string;
+        publication?: {
+            repo: string;
+            prNumber: number;
+            prUrl: string;
+            headBranch: string;
+            baseBranch: string;
+        } | null;
+    }[];
+    sessions: { id: string; sessionId: string }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     beats: number;
@@ -83,9 +104,9 @@ function stubBoard(
             board.suspended.push(claimed.id);
             return 'held';
         },
-        async session(claimed, sessionId, remoteSessionId) {
+        async session(claimed, sessionId) {
             if (options.failSession) throw new Error('board unreachable');
-            board.sessions.push({ id: claimed.id, sessionId, remoteSessionId });
+            board.sessions.push({ id: claimed.id, sessionId });
             return 'held';
         },
         async progress(claimed, output, runtime) {
@@ -111,7 +132,7 @@ function stubBoard(
             const verdict: HeartbeatVerdict = { result: 'held', cancelRequested: options.cancelRequested ?? false };
             return verdict;
         },
-        async claimReclaim(worker) {
+        async claimReclaim(_worker) {
             const next = reclaimQueue.shift();
             if (next) board.reclaimGrants.push(next);
             return next ?? null;
@@ -121,7 +142,7 @@ function stubBoard(
             board.reclaimAcks.push(id);
             return options.ackReclaimLease ?? 'ok';
         },
-        async rereadGates(claimed) {
+        async rereadGates(_claimed) {
             board.gatesReread += 1;
             return options.rereadGates ?? null;
         },
@@ -145,33 +166,29 @@ function stubBoard(
 
 function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
-    remote: string | null = null,
-    sample: Omit<RuntimeSample, 'sampledAt'> | null = null,
-    publish: PublishResult | null = null,
-    sync: SyncResult | null = null,
-    reclaim: { ok: boolean; removed: boolean; reason: string | null } | null = null
+    options: {
+        sample?: Omit<RuntimeSample, 'sampledAt'> | null;
+        publish?: PublishResult | null;
+        sync?: SyncResult | null;
+        reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null;
+    } = {}
 ): Runner & {
     killed: string[];
-    lookups: number;
     samples: number;
     published: BoardJob[];
     publishTokens: (string | undefined)[];
     synced: BoardJob[];
     reclaimed: BoardJob[];
 } {
+    const { sample = null, publish = null, sync = null, reclaim = null } = options;
     const runner = {
         killed: [] as string[],
-        lookups: 0,
         samples: 0,
         published: [] as BoardJob[],
         publishTokens: [] as (string | undefined)[],
         synced: [] as BoardJob[],
         reclaimed: [] as BoardJob[],
         run: outcome,
-        async remoteSessionId() {
-            runner.lookups += 1;
-            return remote;
-        },
         async sampleRuntime() {
             runner.samples += 1;
             return sample;
@@ -182,7 +199,18 @@ function stubRunner(
         async publishGit(publishedJob: BoardJob, publishToken?: string) {
             runner.published.push(publishedJob);
             runner.publishTokens.push(publishToken);
-            return publish ?? { ok: true, published: false, branch: null, prUrl: null, reason: null };
+            return (
+                publish ?? {
+                    ok: true,
+                    published: false,
+                    branch: null,
+                    prUrl: null,
+                    reason: null,
+                    repository: null,
+                    baseBranch: null,
+                    prNumber: null,
+                }
+            );
         },
         async syncCheckout(syncedJob: BoardJob) {
             runner.synced.push(syncedJob);
@@ -200,7 +228,6 @@ const ok = (over: Partial<RunOutcome> = {}): RunOutcome => ({
     exitCode: 0,
     output: 'done',
     timedOut: false,
-    idled: false,
     started: true,
     ...over,
 });
@@ -438,13 +465,13 @@ describe('the poll loop', () => {
     // loud, because a silently-lost session presents later as "this run cannot take a follow-up"
     // with nothing anywhere naming why.
     it('says so when an opencode run closes with no session scraped', async () => {
-        const board = stubBoard([job(1)]);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }]);
         const runner = stubRunner(async () => ok({ finishReason: 'stop', contextTokens: 1200, costUsd: 0 }));
         const logs: string[] = [];
         const loop = createLoop({
             board: board.board,
             runner,
-            config: config({ RUNNER_CLI: 'opencode' }),
+            config: config(),
             sleep,
             log: (m) => logs.push(m),
         });
@@ -472,12 +499,17 @@ describe('the poll loop', () => {
     // and its result changes the verdict — work that landed nowhere is not a success.
     it('publishes a succeeded run and says where the work landed', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, {
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
-            reason: null,
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: true,
+                published: true,
+                branch: 'fix/10',
+                prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+                reason: null,
+                repository: 'Bellows-AI/factory',
+                baseBranch: 'main',
+                prNumber: 42,
+            },
         });
 
         await drive({ ...board, runner });
@@ -487,16 +519,50 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain(
             '[driver] published fix/10 — https://github.com/Bellows-AI/factory/pull/42'
         );
+        // The structured identity of the publication rides the verdict — the board records what
+        // a thread shipped, and review traffic and the thread's wait key on it.
+        expect(board.board.completed[0]?.publication).toEqual({
+            repo: 'Bellows-AI/factory',
+            prNumber: 42,
+            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+            headBranch: 'fix/10',
+            baseBranch: 'main',
+        });
+    });
+
+    // A no-op publish — clean tree, nothing unpushed — invents no publication: the board must
+    // not record a thread as having shipped a PR it did not.
+    it('reports no publication when the publish is a no-op', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: true,
+                published: false,
+                branch: null,
+                prUrl: null,
+                reason: 'no uncommitted changes and nothing unpushed',
+                repository: null,
+                baseBranch: null,
+                prNumber: null,
+            },
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(board.board.completed[0]?.publication).toBeUndefined();
     });
 
     it('fails the verdict when the publish does not land', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, {
-            ok: false,
-            published: false,
-            branch: null,
-            prUrl: null,
-            reason: 'git step failed: authentication refused',
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: false,
+                published: false,
+                branch: null,
+                prUrl: null,
+                reason: 'git step failed: authentication refused',
+            },
         });
 
         await drive({ ...board, runner });
@@ -513,12 +579,17 @@ describe('the poll loop', () => {
     it('skips the publish when the claim says publish: false', async () => {
         const claimed = { ...job(1), publish: false };
         const board = stubBoard([claimed]);
-        const runner = stubRunner(async () => ok(), null, null, {
-            ok: true,
-            published: true,
-            branch: 'fix/10',
-            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
-            reason: null,
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: true,
+                published: true,
+                branch: 'fix/10',
+                prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+                reason: null,
+                repository: 'Bellows-AI/factory',
+                baseBranch: 'main',
+                prNumber: 42,
+            },
         });
 
         await drive({ ...board, runner });
@@ -623,6 +694,35 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
+    it('fails a task whose selected executor profile no longer resolves, before anything runs', async () => {
+        const board = stubBoard([{ ...job(1), executorType: null }]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('selected executor no longer exists');
+    });
+
+    // Issue #244: the board always renders a master prompt for every agent claim, so a missing
+    // one is a contract violation the driver refuses explicitly, before any setup — never a run
+    // with no Factory execution context.
+    it('fails a task with no master prompt, before anything runs', async () => {
+        const board = stubBoard([{ ...job(1), masterPrompt: null }]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('no Factory execution context');
+    });
+
     // The same no-fallback rule the null workspacePath refusal applies, extended to the task
     // worktree (issue #35): a repo-shaped label this driver cannot resolve a worktree path for
     // is failed with a reason, never run in a fallback location.
@@ -642,9 +742,11 @@ describe('the poll loop', () => {
 
     it('fails the attempt with the reason when the checkout sync fails', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, null, {
-            ok: false,
-            reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts',
+        const runner = stubRunner(async () => ok(), {
+            sync: {
+                ok: false,
+                reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts',
+            },
         });
 
         await drive({ ...board, runner });
@@ -719,7 +821,7 @@ describe('the poll loop', () => {
         // reclaim is the same downstream-of-the-verdict step it is for a run.
         const repoJob = { ...job(1), repo: 'Bellows-AI/factory', workspacePath: `bellows/${USER}` };
         const board = stubBoard([repoJob], { threadDone: true });
-        const runner = stubRunner(async () => ok(), null, null, null, { ok: false, reason: 'no disk' });
+        const runner = stubRunner(async () => ok(), { sync: { ok: false, reason: 'no disk' } });
 
         await drive({ ...board, runner });
 
@@ -731,10 +833,12 @@ describe('the poll loop', () => {
     it('reports the verdict untouched when the reclaim refuses, and logs the reason', async () => {
         const logs: string[] = [];
         const board = stubBoard([job(1)], { threadDone: true });
-        const runner = stubRunner(async () => ok(), null, null, null, null, {
-            ok: false,
-            removed: false,
-            reason: 'refusing to remove /workspaces/bellows/44444444-4444-4444-8444-444444444444/.worktrees/0000000',
+        const runner = stubRunner(async () => ok(), {
+            reclaim: {
+                ok: false,
+                removed: false,
+                reason: 'refusing to remove /workspaces/bellows/44444444-4444-4444-8444-444444444444/.worktrees/0000000',
+            },
         });
         const loop = createLoop({
             board: board.board,
@@ -997,7 +1101,7 @@ describe('the poll loop', () => {
     // and the stopped task settles sessionless: nothing to follow up (issue #152).
     it('reports the scraped session before parking a stopped opencode run', async () => {
         const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
         const events: string[] = [];
         const rawSuspend = board.board.suspend.bind(board.board);
         board.board.suspend = async (claimed) => {
@@ -1012,11 +1116,9 @@ describe('the poll loop', () => {
             return ok({ sessionId: 'ses_stoppedrun00000000001' });
         });
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
-        expect(board.board.sessions).toEqual([
-            { id: job(1).id, sessionId: 'ses_stoppedrun00000000001', remoteSessionId: null },
-        ]);
+        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: 'ses_stoppedrun00000000001' }]);
         expect(events).toEqual(['parked with 1 session(s) reported']);
         expect(board.board.suspended).toEqual([job(1).id]);
         expect(board.board.completed).toEqual([]);
@@ -1027,7 +1129,7 @@ describe('the poll loop', () => {
     // task that can never take a follow-up (issue #152).
     it('says so when a stopped opencode run has no session to report', async () => {
         const options: { cancelRequested?: boolean } = {};
-        const board = stubBoard([job(1)], options);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
         const logs: string[] = [];
         const runner = stubRunner(async () => {
             options.cancelRequested = true;
@@ -1035,7 +1137,7 @@ describe('the poll loop', () => {
             return ok({ readoutError: 'the readout container failed: boom' });
         });
 
-        await drive({ ...board, runner, log: (m) => logs.push(m) }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(logs.some((m) => m.includes('the session readout came up empty'))).toBe(true);
         expect(board.board.sessions).toEqual([]);
@@ -1342,7 +1444,10 @@ describe('the poll loop', () => {
                 userId: null,
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,
+                rootCommand: '',
                 repo: 'Bellows-AI/factory',
+                executorType: 'claude-code',
+                masterPrompt: null,
             },
         ]);
         expect(board.board.reclaimAcks).toEqual([rowId]);
@@ -1542,9 +1647,11 @@ describe('the poll loop', () => {
     // the claim down itself (Foreground Job delete, then release) before answering ok:false.
     it('does not release the fence when the sync itself fails — the runner released it', async () => {
         const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok(), null, null, null, {
-            ok: false,
-            reason: 'conflict in driver/src/loop.ts',
+        const runner = stubRunner(async () => ok(), {
+            sync: {
+                ok: false,
+                reason: 'conflict in driver/src/loop.ts',
+            },
         });
         const { events } = releaseEvents(board.board, runner);
 
@@ -1610,8 +1717,7 @@ describe('the poll loop', () => {
     });
 
     // The id the board is told has to be the one the runner is given, or the UI links to a session
-    // that does not exist. Reported before the run so the link works while the job is still going —
-    // which, under Remote Control, is the only time it is worth anything.
+    // that does not exist. Reported before the run so the link works while the job is still going.
     it('reports the session it is about to run as, before starting the container', async () => {
         const board = stubBoard([job(1)]);
         let given = '';
@@ -1626,38 +1732,8 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(given).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: given, remoteSessionId: null }]);
+        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: given }]);
         expect(reportedFirst).toBe(true);
-    });
-
-    /**
-     * The remote id is the one the Claude UI addresses a session by, and unlike the local uuid it
-     * cannot be minted: Anthropic's backend assigns it when the bridge connects, seconds into the
-     * run. So the worker goes and finds it, which is the whole reason this poll exists.
-     */
-    it('reports the remote session id once the bridge has one', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 10));
-            return ok();
-        }, 'cse_015tb2nHhHNrBuL7ZDhn9Wx5');
-
-        await drive({ ...board, runner }, { RUNNER_REMOTE_CONTROL: '1' });
-
-        expect(board.board.sessions.map((s) => s.remoteSessionId)).toContain('cse_015tb2nHhHNrBuL7ZDhn9Wx5');
-    });
-
-    // Forty `docker exec`s that can never find anything: a headless run registers no bridge.
-    it('does not go looking for a bridge on a headless run', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => {
-            await new Promise((resolve) => setTimeout(resolve, 10));
-            return ok();
-        }, 'cse_never-read');
-
-        await drive({ ...board, runner });
-
-        expect(runner.lookups).toBe(0);
     });
 
     // Losing the link is not losing the job.
@@ -1721,8 +1797,7 @@ describe('the poll loop', () => {
                 while (!board.board.progressed.some((p) => p.runtime)) await sleep();
                 return ok({ output: 'final' });
             },
-            null,
-            { cpuPercent: 93, memUsedMb: 544, memPercent: 7 }
+            { sample: { cpuPercent: 93, memUsedMb: 544, memPercent: 7 } }
         );
 
         await drive({ ...board, runner });
@@ -1755,12 +1830,13 @@ describe('the poll loop', () => {
                 while (!board.board.progressed.some((p) => p.runtime?.services)) await sleep();
                 return ok({ output: 'final' });
             },
-            null,
             {
-                cpuPercent: null,
-                memUsedMb: null,
-                memPercent: null,
-                services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+                sample: {
+                    cpuPercent: null,
+                    memUsedMb: null,
+                    memPercent: null,
+                    services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
+                },
             }
         );
 
@@ -1853,21 +1929,9 @@ describe('the poll loop', () => {
         ]);
     });
 
-    // An idle Remote Control session is nobody's failure: it is a job waiting for a human. Reporting
-    // an exit code for it would make it indistinguishable from a run that ended.
-    it('parks an idle runner instead of completing it', async () => {
-        const board = stubBoard([job(1)]);
-        const runner = stubRunner(async () => ok({ exitCode: 137, output: 'quiet', idled: true }));
-
-        await drive({ ...board, runner });
-
-        expect(board.board.suspended).toEqual([job(1).id]);
-        expect(board.board.completed).toEqual([]);
-    });
-
-    // The other half of standby: the board hands the session back on the claim, and the runner
-    // restores it rather than being given a new one. A fresh id here would strand the transcript
-    // the human has been driving and move the link.
+    // The board hands the session back on the claim, and the runner restores it rather than being
+    // given a new one. A fresh id here would strand the transcript the conversation continues
+    // from and move the link.
     it('resumes the session the board hands back, and does not report it again', async () => {
         const parked = '44444444-4444-4444-8444-444444444444';
         const board = stubBoard([job(1, parked)]);
@@ -1921,14 +1985,14 @@ describe('an opencode runner', () => {
     // uuid here and reporting it would put a session on the board that the runner never used — so
     // the honest answer is no session at all.
     it('runs headless: no session is minted, reported or given', async () => {
-        const board = stubBoard([job(1)]);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }]);
         let given: RunSession | null | undefined;
         const runner = stubRunner(async (_job, session) => {
             given = session;
             return ok();
         });
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
         expect(given).toBeNull();
         expect(board.board.sessions).toEqual([]);
@@ -1944,39 +2008,22 @@ describe('an opencode runner', () => {
         ]);
     });
 
-    // A claim carrying resumeSessionId under opencode WITHOUT a follow-up can only be board state
-    // from before a RUNNER_CLI flip: standby is a Remote Control feature, and opencode refuses
-    // Remote Control at startup. Failing it with a reason beats restoring a session the runner
-    // cannot adopt — or idling a headless run to its deadline.
-    it('fails a parked job it cannot resume, with a reason, without running it', async () => {
-        const board = stubBoard([job(1, '44444444-4444-4444-8444-444444444444')]);
-        let ran = 0;
-        const runner = stubRunner(async () => {
-            ran += 1;
-            return ok();
-        });
-
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
-
-        expect(ran).toBe(0);
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
-        expect(board.board.completed[0]?.output).toContain('opencode');
-    });
-
     /**
      * The follow-up carve-out, and the reason an opencode task is follow-up-able at all: the
      * child's session is opencode's OWN (scraped and reported when the parent ran), so the runner
      * restores it with `--session` and delivers the new command into it.
      */
     it('runs an opencode follow-up, restoring the session it carries', async () => {
-        const board = stubBoard([{ ...job(1, 'ses_f86188c3dffeZGYO4yZq4atba9'), followUp: true }]);
+        const board = stubBoard([
+            { ...job(1, 'ses_f86188c3dffeZGYO4yZq4atba9'), executorType: 'opencode', followUp: true },
+        ]);
         let given: RunSession | null | undefined;
         const runner = stubRunner(async (_job, session) => {
             given = session;
             return ok();
         });
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
         expect(given).toEqual({ id: 'ses_f86188c3dffeZGYO4yZq4atba9', resume: true });
         expect(board.board.completed).toHaveLength(1);
@@ -1988,14 +2035,12 @@ describe('an opencode runner', () => {
     // scrapes it out of the session database after the run and the board is told while the lease
     // is still live, because a follow-up resumes exactly this.
     it('reports the session id the runner scraped from a finished opencode run', async () => {
-        const board = stubBoard([job(1)]);
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }]);
         const runner = stubRunner(async () => ok({ sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9' }));
 
-        await drive({ ...board, runner }, { RUNNER_CLI: 'opencode' });
+        await drive({ ...board, runner });
 
-        expect(board.board.sessions).toEqual([
-            { id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9', remoteSessionId: null },
-        ]);
+        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: 'ses_f86188c3dffeZGYO4yZq4atba9' }]);
         expect(board.board.completed).toHaveLength(1);
     });
 });
@@ -2176,7 +2221,7 @@ describe('verification gates', () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
         let acquires = 0;
-        stack.gates.manager.acquire = async (key: string) => {
+        stack.gates.manager.acquire = async (_key: string) => {
             acquires += 1;
             if (acquires > 1) throw new Error('daemon unreachable');
         };
@@ -2239,7 +2284,7 @@ describe('verification gates', () => {
     it('bounds the total reported gate output', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
-        stack.gates.manager.runGate = async (_key, name) => ({
+        stack.gates.manager.runGate = async (_key, _name) => ({
             exitCode: 0,
             output: 'x'.repeat(40_000),
         });
@@ -2312,15 +2357,7 @@ describe('verification gates', () => {
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
     });
 
-    // An idle park is not a finished run: the gates would run on a session somebody is still
-    // driving, and their verdict would mean nothing.
-    it('runs no gates for a parked, a never-started or a lost run', async () => {
-        const idleBoard = stubBoard([gatedJob(1)]);
-        const idleStack = stubGateStack();
-        await drive({ ...idleBoard, runner: stubRunner(async () => ok({ idled: true })), gates: idleStack.gates });
-        expect(idleStack.stack.ran.names).toEqual([]);
-        expect(idleBoard.board.completed).toEqual([]);
-
+    it('runs no gates for a never-started or a lost run', async () => {
         const unstartedBoard = stubBoard([gatedJob(2)]);
         const unstartedStack = stubGateStack();
         await drive({
@@ -2359,5 +2396,411 @@ describe('verification gates', () => {
         expect(stack.stack.released).toEqual([]);
         expect(board.board.gatesReported).toEqual([]);
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+});
+
+describe('block-helper steps (issue #207)', () => {
+    /** A runner whose `runHelper` records every call and answers scripted results in order. */
+    function runnerWithHelper(
+        run: (job: BoardJob, session: RunSession | null) => Promise<RunOutcome>,
+        results: HelperResult[]
+    ) {
+        const runner = stubRunner(run);
+        const calls: { jobId: string; plan: HelperPlan; token: string | undefined }[] = [];
+        const queue = [...results];
+        runner.runHelper = async (helperJob, plan, token) => {
+            calls.push({ jobId: helperJob.id, plan, token });
+            return queue.shift() ?? { ok: true, output: null };
+        };
+        return { runner, calls };
+    }
+
+    const helperPlan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
+        helperId: 'noop',
+        phase: 'pre',
+        input: null,
+        githubWriting: false,
+        ...over,
+    });
+
+    it('runs a declared pre-helper before the agent, and never launches the agent when it fails', async () => {
+        const runCalls: string[] = [];
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+        const { runner, calls } = runnerWithHelper(
+            async (helperJob) => {
+                runCalls.push(helperJob.id);
+                return ok();
+            },
+            [{ ok: false, reason: 'runner_error', message: 'the helper blew up' }]
+        );
+
+        await drive({ ...board, runner });
+
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.plan.phase).toBe('pre');
+        // The agent never launches — the whole point of the pre-phase gate.
+        expect(runCalls).toEqual([]);
+        expect(board.board.completed).toEqual([
+            {
+                id: job(1).id,
+                status: 'failed',
+                exitCode: null,
+                output: expect.stringContaining('the helper blew up'),
+            },
+        ]);
+    });
+
+    it('runs the agent normally after a pre-helper succeeds', async () => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+        const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: null }]);
+
+        await drive({ ...board, runner });
+
+        expect(calls).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('asks the board for a fresh install token before a github-writing pre-helper, never a read-only one', async () => {
+        // publish: false isolates the assertion to the pre-helper's own ask — otherwise the
+        // ordinary publish flow (publishIfDue) asks for its own fresh token too, on a job this
+        // plain would otherwise publish (absent `publish` reads as "publish").
+        const board = stubBoard([{ ...job(1), publish: false, helperPlans: [helperPlan({ githubWriting: true })] }], {
+            publishToken: 'fresh-install-token',
+        });
+        const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: null }]);
+
+        await drive({ ...board, runner });
+
+        expect(board.board.publishTokenAsks).toEqual([job(1).id]);
+        expect(calls[0]!.token).toBe('fresh-install-token');
+
+        const readOnlyBoard = stubBoard([
+            { ...job(2), publish: false, helperPlans: [helperPlan({ githubWriting: false })] },
+        ]);
+        const { runner: readOnlyRunner, calls: readOnlyCalls } = runnerWithHelper(
+            async () => ok(),
+            [{ ok: true, output: null }]
+        );
+        await drive({ ...readOnlyBoard, runner: readOnlyRunner });
+        expect(readOnlyBoard.board.publishTokenAsks).toEqual([]);
+        expect(readOnlyCalls[0]!.token).toBeUndefined();
+    });
+
+    it('runs a declared post-helper after the agent, and fails the verdict — skipping publish — when it fails', async () => {
+        const board = stubBoard([
+            { ...job(1), repo: 'Bellows-AI/factory', helperPlans: [helperPlan({ phase: 'post' })] },
+        ]);
+        const { runner, calls } = runnerWithHelper(
+            async () => ok(),
+            [{ ok: false, reason: 'malformed_output', message: 'unreadable verdict' }]
+        );
+        runner.publishGit = async (publishedJob) => {
+            runner.published.push(publishedJob);
+            return {
+                ok: true,
+                published: true,
+                branch: 'fix/1',
+                prUrl: 'https://github.com/o/r/pull/1',
+                reason: null,
+                repository: 'o/r',
+                baseBranch: 'main',
+                prNumber: 1,
+            };
+        };
+
+        await drive({ ...board, runner });
+
+        expect(calls[0]!.plan.phase).toBe('post');
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(board.board.completed[0]!.output).toContain('unreadable verdict');
+        // Publish never runs: a failed post-helper dooms the verdict exactly like a failed gate.
+        expect(runner.published).toEqual([]);
+    });
+
+    it('a succeeding post-helper does not disturb an otherwise-succeeded verdict', async () => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'post' })] }]);
+        const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: { fine: true } }]);
+
+        await drive({ ...board, runner });
+
+        expect(calls).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('pays no helper work at all for a job with no declared plans, or a runner with no runHelper', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        expect(runner.runHelper).toBeUndefined();
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('stands a job down while a pre-helper is still running, without launching the agent', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }], options);
+        const runCalls: string[] = [];
+        const runner = stubRunner(async (helperJob) => {
+            runCalls.push(helperJob.id);
+            throw new Error('the agent must not launch');
+        });
+        const released: string[] = [];
+        runner.releaseFence = async (fencedJob) => {
+            released.push(fencedJob.id);
+        };
+        runner.runHelper = async () => {
+            // The stop lands while the pre-helper is in flight.
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return { ok: true, output: null };
+        };
+
+        const started = drive({ ...board, runner });
+        // Let the setup-poll heartbeat carry the stop in while the helper is pending.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await started;
+
+        expect(runCalls).toEqual([]);
+        expect(released).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('releases the kubernetes checkout fence when a pre-helper fails, since no runner launches to release it', async () => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+        const { runner } = runnerWithHelper(
+            async () => ok(),
+            [{ ok: false, reason: 'unknown_helper', message: 'nope' }]
+        );
+        const released: string[] = [];
+        runner.releaseFence = async (fencedJob) => {
+            released.push(fencedJob.id);
+        };
+
+        await drive({ ...board, runner });
+
+        expect(released).toEqual([job(1).id]);
+    });
+
+    describe('pre-helper conclude and composite helper programs (issue #230)', () => {
+        it('completes the job succeeded exactly once when a pre-helper concludes, never launching the agent', async () => {
+            const runCalls: string[] = [];
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+            const { runner, calls } = runnerWithHelper(
+                async (helperJob) => {
+                    runCalls.push(helperJob.id);
+                    return ok();
+                },
+                [{ ok: true, output: { decided: 'up-to-date' }, control: 'conclude' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(runCalls).toEqual([]);
+            expect(board.board.completed).toEqual([
+                {
+                    id: job(1).id,
+                    status: 'succeeded',
+                    exitCode: 0,
+                    output: JSON.stringify({ decided: 'up-to-date' }),
+                },
+            ]);
+        });
+
+        it('a pre-helper answering control: "continue" explicitly runs the agent, same as answering none at all', async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: true, output: null, control: 'continue' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', exitCode: 0 });
+        });
+
+        it('a concluding pre-helper skips every later declared pre-plan', async () => {
+            const board = stubBoard([
+                { ...job(1), helperPlans: [helperPlan({ input: 'first' }), helperPlan({ input: 'second' })] },
+            ]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: true, output: null, control: 'conclude' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        });
+
+        it('a post-helper reporting "conclude" fails the verdict with invalid_control and skips publish', async () => {
+            const board = stubBoard([
+                { ...job(1), repo: 'Bellows-AI/factory', helperPlans: [helperPlan({ phase: 'post' })] },
+            ]);
+            const { runner } = runnerWithHelper(async () => ok(), [{ ok: true, output: null, control: 'conclude' }]);
+            runner.publishGit = async (publishedJob) => {
+                runner.published.push(publishedJob);
+                return {
+                    ok: true,
+                    published: true,
+                    branch: 'fix/1',
+                    prUrl: 'https://github.com/o/r/pull/1',
+                    reason: null,
+                    repository: 'o/r',
+                    baseBranch: 'main',
+                    prNumber: 1,
+                };
+            };
+
+            await drive({ ...board, runner });
+
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+            expect(board.board.completed[0]!.output).toContain('only valid for a pre-run helper');
+            expect(runner.published).toEqual([]);
+        });
+
+        it('sequences a declared composite plan over its child script steps, propagating output between them', async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [
+                    { ok: true, output: { echoed: 'first' } },
+                    { ok: true, output: { echoed: 'second' } },
+                ]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(2);
+            expect(calls[0]!.plan.helperId).toBe('noop');
+            expect(calls[0]!.plan.input).toEqual({ step: 0, seed: null });
+            expect(calls[1]!.plan.helperId).toBe('noop');
+            expect(calls[1]!.plan.input).toEqual({ step: 1, receivedFromStep0: { echoed: 'first' } });
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        });
+
+        it("a composite's own finalize decides conclude vs. continue from its declared input", async () => {
+            const concludingBoard = stubBoard([
+                { ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture', input: { conclude: true } })] },
+            ]);
+            const { runner: concludingRunner } = runnerWithHelper(
+                async () => ok(),
+                [
+                    { ok: true, output: null },
+                    { ok: true, output: null },
+                ]
+            );
+            await drive({ ...concludingBoard, runner: concludingRunner });
+            expect(concludingBoard.board.completed[0]).toMatchObject({ status: 'succeeded', exitCode: 0 });
+
+            const continuingBoard = stubBoard([
+                { ...job(2), helperPlans: [helperPlan({ helperId: 'sequence-fixture', input: { conclude: false } })] },
+            ]);
+            const runCalls: string[] = [];
+            const { runner: continuingRunner } = runnerWithHelper(
+                async (helperJob) => {
+                    runCalls.push(helperJob.id);
+                    return ok();
+                },
+                [
+                    { ok: true, output: null },
+                    { ok: true, output: null },
+                ]
+            );
+            await drive({ ...continuingBoard, runner: continuingRunner });
+            expect(runCalls).toEqual([job(2).id]);
+        });
+
+        it("propagates a composite child's own failure reason unchanged, and never runs the following child", async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }]);
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: false, reason: 'timeout', message: 'the child ran out of time' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(calls).toHaveLength(1);
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+            expect(board.board.completed[0]!.output).toContain('timeout');
+            expect(board.board.completed[0]!.output).toContain('the child ran out of time');
+        });
+
+        it('stands the job down between composite child steps, without ever running the second child or the agent', async () => {
+            const options: { cancelRequested?: boolean } = {};
+            const board = stubBoard(
+                [{ ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }],
+                options
+            );
+            const runCalls: string[] = [];
+            const runner = stubRunner(async (helperJob) => {
+                runCalls.push(helperJob.id);
+                throw new Error('the agent must not launch');
+            });
+            const released: string[] = [];
+            runner.releaseFence = async (fencedJob) => {
+                released.push(fencedJob.id);
+            };
+            const childCalls: HelperPlan[] = [];
+            runner.runHelper = async (_helperJob, plan) => {
+                childCalls.push(plan);
+                // The stop lands while the FIRST child is in flight.
+                options.cancelRequested = true;
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                return { ok: true, output: null };
+            };
+
+            const started = drive({ ...board, runner });
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            await started;
+
+            expect(childCalls).toHaveLength(1);
+            expect(runCalls).toEqual([]);
+            expect(released).toEqual([job(1).id]);
+            expect(board.board.suspended).toEqual([job(1).id]);
+            expect(board.board.completed).toEqual([]);
+        });
+
+        it('fails closed as invalid_composite_plan when the declared plan itself claims githubWriting, before any child runs', async () => {
+            const board = stubBoard([
+                { ...job(1), helperPlans: [helperPlan({ helperId: 'sequence-fixture', githubWriting: true })] },
+            ]);
+            const { runner, calls } = runnerWithHelper(async () => ok(), []);
+
+            await drive({ ...board, runner });
+
+            expect(calls).toEqual([]);
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+            expect(board.board.completed[0]!.output).toContain('invalid_composite_plan');
+        });
+
+        it("asks the board for no token at all when neither of a composite's declared steps writes to GitHub", async () => {
+            // sequence-fixture's own two steps both declare githubWriting: false — each child call
+            // still goes through the SAME per-child token-minting closure a plain plan's single call
+            // does (pinned by "asks the board for a fresh install token…" above), so a composite whose
+            // steps are all read-only asks the board for nothing, exactly like a read-only plain plan.
+            const board = stubBoard(
+                [{ ...job(1), publish: false, helperPlans: [helperPlan({ helperId: 'sequence-fixture' })] }],
+                {
+                    publishToken: 'fresh-install-token',
+                }
+            );
+            const { runner, calls } = runnerWithHelper(
+                async () => ok(),
+                [
+                    { ok: true, output: null },
+                    { ok: true, output: null },
+                ]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(board.board.publishTokenAsks).toEqual([]);
+            expect(calls.map((c) => c.token)).toEqual([undefined, undefined]);
+        });
     });
 });

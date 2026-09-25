@@ -1,6 +1,7 @@
 import type { UseEnv } from '../api/useEnv.js';
-import type { Session } from '../api/useSession.js';
+import { roleLabel, type Session } from '../api/useSession.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
+import { defaultExecutorName } from '../workspace/executors.js';
 
 /**
  * The configuration overview's derivation (issue 180): the five readiness items, computed from
@@ -82,7 +83,7 @@ function organizationItem(session: ReadinessInput['session']): ReadinessItem {
         facts: [
             { text: session.organization.name },
             // The role's title, and nothing more: no internal id, no powers the API does not grant.
-            { text: `Your role: ${session.role === 'admin' ? 'Admin' : 'Member'}` },
+            { text: `Your role: ${roleLabel(session.role)}` },
         ],
         tone: 'ok',
         action: { label: 'Review organization settings', to: '/settings/organization' },
@@ -255,11 +256,18 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
             action: MANAGE_EXECUTORS,
         };
     }
+    const flagged = data.executors.some((executor) => executor.isDefault);
     return {
         id: 'executors',
         heading: 'Executors',
         status: `${count(data.executors.length, 'personal executor available', 'personal executors available')}`,
-        facts: [{ text: `${data.executors[0]!.name} is selected first on new tasks.` }],
+        facts: [
+            {
+                text: flagged
+                    ? `${defaultExecutorName(data.executors)} is the default executor for new tasks.`
+                    : `${defaultExecutorName(data.executors)} is selected first on new tasks.`,
+            },
+        ],
         tone: 'ok',
         action: MANAGE_EXECUTORS,
     };

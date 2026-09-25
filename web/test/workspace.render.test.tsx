@@ -16,24 +16,30 @@ const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 describe('the executors panel', () => {
     // The panel is the list itself plus the scope context (#183): the "My workspace" heading, the
-    // guidance that says what an executor does and does not control, and the rows.
-    const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z') => ({
+    // guidance that says the type controls task execution, and the rows.
+    const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z', isDefault = false) => ({
         name,
         type,
         createdAt,
+        isDefault,
     });
+    const noop = () => {};
 
-    it('scopes the list under "My workspace" and carries the deployment guidance', () => {
-        const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
+    it('scopes the list under "My workspace" and carries task-routing guidance', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel executors={[]} onEdit={noop} onMakeDefault={noop} saving={false} />
+        );
         expect(html).toContain('<h2>My workspace</h2>');
-        expect(html).toContain('The deployment chooses the runner CLI and image');
-        expect(html).toContain('does not switch the deployment between Claude Code and OpenCode');
+        expect(html).toContain('Each task runs with its selected executor');
+        expect(html).toContain('type chooses Claude Code or OpenCode');
     });
 
-    it('says new tasks use the image default when the list is empty', () => {
-        const html = renderToStaticMarkup(<WorkspaceExecutorsPanel executors={[]} onEdit={() => {}} />);
+    it('says an executor is required when the list is empty', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel executors={[]} onEdit={noop} onMakeDefault={noop} saving={false} />
+        );
         expect(html).toContain('No personal executors configured');
-        expect(html).toContain('use the deployment&#x27;s image default');
+        expect(html).toContain('Add one before starting a task');
         expect(html).not.toContain('No executors configured');
     });
 
@@ -41,7 +47,9 @@ describe('the executors panel', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
-                onEdit={() => {}}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
             />
         );
         expect(html).toContain('Claude Code');
@@ -52,28 +60,53 @@ describe('the executors panel', () => {
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
-    it('marks only the first row as selected first — a fact about the composer, not a default', () => {
+    it('marks only the first row as selected first when no default is set — the pre-215 fallback', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
-                onEdit={() => {}}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
             />
         );
         expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
+    });
+
+    it('captions the flagged row as the default, even when it is not first', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode', undefined, true)]}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
+            />
+        );
+        expect(html).toContain('Default — selected on new tasks');
+        expect(html).not.toContain('Selected first on new tasks');
     });
 
     it('never carries a row config — the poll payload has none, and the type enforces it', () => {
         // WorkspaceExecutor has no config field; an excess property is a compile error, and the
         // render proves the summary path cannot leak one either.
         const html = renderToStaticMarkup(
-            <WorkspaceExecutorsPanel executors={[executor('main', 'claude-code')]} onEdit={() => {}} />
+            <WorkspaceExecutorsPanel
+                executors={[executor('main', 'claude-code')]}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
+            />
         );
         expect(html).not.toContain('{');
     });
 
     it('uses the real table primitives, focusable wrapper included', () => {
         const html = renderToStaticMarkup(
-            <WorkspaceExecutorsPanel executors={[executor('main', 'claude-code')]} onEdit={() => {}} />
+            <WorkspaceExecutorsPanel
+                executors={[executor('main', 'claude-code')]}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
+            />
         );
         expect(html).toContain('table-wrap');
         expect(html).toContain('<table class="data"');
@@ -84,10 +117,37 @@ describe('the executors panel', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
-                onEdit={() => {}}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
             />
         );
         expect(html.match(/>Edit</g)?.length).toBe(2);
+    });
+
+    it('renders Make default on every non-default row, and not on the default row', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode', undefined, true)]}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
+            />
+        );
+        expect(html.match(/>Make default</g)?.length).toBe(1);
+    });
+
+    it('disables Make default while a save is in flight', () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceExecutorsPanel
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={true}
+            />
+        );
+        expect(html).toMatch(/>Make default<\/button>/);
+        expect(html).toContain('disabled');
     });
 });
 
@@ -97,8 +157,10 @@ describe('formatting', () => {
         expect(bytes(0)).toBe('0 B');
         // A decimal below 10 and none above it: "1.5 KB" is a useful distinction and "42.9 MB" is
         // false precision on a number that changes every time anybody runs a build.
-        expect(bytes(1536)).toBe('1.5 KB');
-        expect(bytes(45_000_000)).toBe('43 MB');
+        const BYTES_1_5_KB = 1536;
+        expect(bytes(BYTES_1_5_KB)).toBe('1.5 KB');
+        const BYTES_43_MB = 45_000_000;
+        expect(bytes(BYTES_43_MB)).toBe('43 MB');
     });
 
     it('renders an absent or unparseable commit date as an em dash', () => {
@@ -112,9 +174,15 @@ describe('the poll back-off', () => {
     it('stays at two seconds while somebody is watching, then eases off', () => {
         // Pure, and tested as such: a static list refetched every two seconds forever is a query
         // per member per tick for a value that only changes when they act.
-        expect(pollDelay(0)).toBe(2_000);
-        expect(pollDelay(59_000)).toBe(2_000);
-        expect(pollDelay(61_000)).toBe(5_000);
-        expect(pollDelay(10 * 60_000)).toBe(15_000);
+        const FAST_POLL_MS = 2_000;
+        const MEDIUM_POLL_MS = 5_000;
+        const SLOW_POLL_MS = 15_000;
+        const JUST_UNDER_ONE_MINUTE_MS = 59_000;
+        const JUST_OVER_ONE_MINUTE_MS = 61_000;
+        const TEN_MINUTES_MS = 600_000;
+        expect(pollDelay(0)).toBe(FAST_POLL_MS);
+        expect(pollDelay(JUST_UNDER_ONE_MINUTE_MS)).toBe(FAST_POLL_MS);
+        expect(pollDelay(JUST_OVER_ONE_MINUTE_MS)).toBe(MEDIUM_POLL_MS);
+        expect(pollDelay(TEN_MINUTES_MS)).toBe(SLOW_POLL_MS);
     });
 });

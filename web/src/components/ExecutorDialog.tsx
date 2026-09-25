@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import { EXECUTOR_TYPES, type ExecutorType } from '@factory-ai/core';
 import {
     EXECUTOR_TYPE_META,
     executorTypeLabel,
     mergeExecutors,
+    TYPE_CONFIG_NOTE,
     validateExecutorConfig,
     validateExecutorPayload,
     type ExecutorRow,
@@ -18,9 +19,9 @@ import {
  * submits because CSP sends `form-action 'none'`. The one difference in body is a textarea for
  * the pasted JSON, re-validated on every keystroke by the pure validator — cheap, and the message
  * under the field is what makes raw JSON pasteable at all. Issue 183 makes the help tell the
- * truth per type (EXECUTOR_TYPE_META): what the config is stored for, what actually consumes it,
- * and what the type does NOT do — the note under the Type select says the field describes the
- * config, it does not switch the deployment's runner CLI. Both helps are tied to their fields
+ * truth per type (EXECUTOR_TYPE_META): what the config is stored for and what consumes it. The
+ * note under the Type select says that the type selects the runner for tasks using this profile.
+ * Both helps are tied to their fields
  * with `aria-describedby`, and the textarea's parse error is `aria-invalid` plus a described-by
  * error, the content itself retained.
  *
@@ -36,10 +37,6 @@ import {
 export const ADD_LABEL = 'Add executor';
 export const SAVE_LABEL = 'Save executor';
 
-/** What choosing a Type does and does not do; tied to the select with aria-describedby. */
-export const TYPE_CONFIG_NOTE =
-    "The selected Type describes this config. It does not change the deployment's runner CLI.";
-
 export interface ExecutorDialogProps {
     open: boolean;
     /** The whole executor list as the dialog opened it, configs included. */
@@ -47,7 +44,7 @@ export interface ExecutorDialogProps {
     /** The name of the row being edited, matched as it was when the dialog opened; null to add. */
     editing: string | null;
     onClose: () => void;
-    onSave: (executors: { name: string; type: string; config: object }[]) => Promise<string | null>;
+    onSave: (executors: { name: string; type: string; config: object; isDefault: boolean }[]) => Promise<string | null>;
     saving: boolean;
 }
 
@@ -56,6 +53,11 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
     const [name, setName] = useState('');
     const [config, setConfig] = useState('');
     const [failure, setFailure] = useState<string | null>(null);
+    // One instance-scoped prefix for every id this dialog hands out. The ids are relationships —
+    // the panel's label, the two helps, the textarea's error — and a literal id would be the same
+    // relationship twice the moment a second dialog exists, which is what silently re-points a
+    // `<label for>` and what makes a bare `#id` selector ambiguous.
+    const ids = useId();
 
     // Add opens blank; edit opens pre-filled from the row it is editing. Re-keyed off `editing`
     // too, so switching rows without closing still lands on the right one.
@@ -93,11 +95,11 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
     };
 
     return (
-        <Dialog open={open} onClose={onClose} className="dialog-layer" aria-labelledby="executor-title">
+        <Dialog open={open} onClose={onClose} className="dialog-layer" aria-labelledby={`${ids}-title`}>
             <div className="dialog-backdrop" aria-hidden="true" />
             <div className="dialog-position">
                 <DialogPanel className="picker">
-                    <DialogTitle as="h2" id="executor-title">
+                    <DialogTitle as="h2" id={`${ids}-title`}>
                         {editing ? 'Edit executor' : 'Add executor'}
                     </DialogTitle>
                     <p className="muted">
@@ -108,7 +110,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                         <span className="muted">type</span>
                         <select
                             value={type}
-                            aria-describedby="executor-type-help"
+                            aria-describedby={`${ids}-type-help`}
                             onChange={(event) => setType(event.target.value as ExecutorType)}
                         >
                             {/* Rendered from the shared list, so a future type needs no JSX change. */}
@@ -119,7 +121,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                             ))}
                         </select>
                     </label>
-                    <p className="muted" id="executor-type-help">
+                    <p className="muted" id={`${ids}-type-help`}>
                         {TYPE_CONFIG_NOTE}
                     </p>
 
@@ -140,19 +142,19 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                             value={config}
                             placeholder={EXECUTOR_TYPE_META[type].example}
                             aria-invalid={parseError ? true : undefined}
-                            aria-describedby={['executor-config-help', parseError ? 'executor-config-error' : null]
+                            aria-describedby={[`${ids}-config-help`, parseError ? `${ids}-config-error` : null]
                                 .filter(Boolean)
                                 .join(' ')}
                             onChange={(event) => setConfig(event.target.value)}
                         />
                     </label>
-                    <p className="muted" id="executor-config-help">
+                    <p className="muted" id={`${ids}-config-help`}>
                         {EXECUTOR_TYPE_META[type].configHelp}
                     </p>
                     {/* Re-validated per keystroke; rendered live, before Save is even pressed, and
                         tied back to the textarea so a screen reader hears it as its error. */}
                     {parseError ? (
-                        <p className="status" id="executor-config-error">
+                        <p className="status" id={`${ids}-config-error`}>
                             {parseError}
                         </p>
                     ) : null}

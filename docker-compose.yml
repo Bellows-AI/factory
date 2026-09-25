@@ -148,12 +148,12 @@ services:
             # answers. 10s would mark that unhealthy and hold up everything with a depends_on.
             start_period: 180s
 
-    # Claims jobs from the board and spawns a runner per job (claude-executor, or opencode-executor
-    # under RUNNER_CLI=opencode). Part of the default `docker compose up` by operator decision:
+    # Claims jobs from the board and spawns the runner selected by each task's executor profile.
+    # Part of the default `docker compose up` by operator decision:
     # it mounts the docker socket, which is root on the host — see docs/security.md for what that
     # means before running this file anywhere shared. The runner image is built once:
     #
-    #   docker build -t claude-executor docker/claude-executor   # or opencode-executor
+    #   make runners   # claude-executor and opencode-executor, with their shared docker/skills
     #
     # Like the dashboard above, this service runs the working tree, not a baked build: it used to
     # build docker/driver.Dockerfile's `runtime` stage, and an `up` or restart without `--build`
@@ -183,14 +183,10 @@ services:
             # No ORG_ID. It only ever built the runner's WORKDIR as /workspaces/<org>, and the board
             # sends `workspacePath` on the claim now: checkouts are per member, so only the board —
             # which created the directory — knows where a given job's tree is.
-            # Empty by default on purpose: an explicit EXECUTOR_IMAGE reads as "operator knows
-            # better" and wins over everything, so the default has to come from RUNNER_CLI inside
-            # the driver — claude-executor, or opencode-executor under RUNNER_CLI=opencode. An
-            # image that does not speak RUNNER_CLI's dialect is a mismatch nothing guards against.
-            EXECUTOR_IMAGE: ${EXECUTOR_IMAGE:-}
-            # Which CLI the runner image speaks. Refused at startup alongside Remote Control and
-            # RUNNER_SKIP_PERMISSIONS — both are claude-code-only. See docs/jobs.md.
-            RUNNER_CLI: ${RUNNER_CLI:-claude-code}
+            # Image locations are deployment details; the task's executor selection chooses which
+            # CLI/image pair runs. See docs/jobs.md.
+            CLAUDE_EXECUTOR_IMAGE: ${CLAUDE_EXECUTOR_IMAGE:-claude-executor}
+            OPENCODE_EXECUTOR_IMAGE: ${OPENCODE_EXECUTOR_IMAGE:-opencode-executor}
             # A volume name as the daemon knows it, hence the compose project prefix. Override if
             # the project directory is not `factory-ai`.
             WORKSPACE_VOLUME: ${WORKSPACE_VOLUME:-factory-ai_workspaces}

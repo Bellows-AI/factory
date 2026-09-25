@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
+import { useDownwardAnchor } from '../anchor.js';
+import type { QueueTaskInput } from '../api/useTasks.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     clampedWorkflow,
+    defaultWorkflowPayload,
+    effectiveDefaultSteps,
     effectiveWorkflows,
     firstRepo,
     freshWorkflowDraft,
@@ -11,11 +15,18 @@ import {
     paramValueMatches,
     paramsComplete,
     preflightSentence,
+    queueBody,
     resolveWorkflowChoice,
     startBlocker,
+    toggleDefaultStep,
     touchAll,
     valuesForWorkflow,
+    type StartBlocker,
+    type WorkflowParamChoice,
 } from '../task-composer.js';
+import { defaultExecutorName } from '../workspace/executors.js';
+import type { DefaultWorkflowSteps } from '../api/useDefaultWorkflowSettings.js';
+import type { DefaultStepOverrides } from '../task-composer.js';
 
 /**
  * The prompt's example placeholder. The issue number travels as string parts because
@@ -24,77 +35,62 @@ import {
  */
 const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected tests, and run the relevant checks.';
 
+/** One workflow choice as the composer's props hand it in — the same shape `TaskComposer`'s
+ * `workflows` prop carries, named so `useComposerDraft` can declare it without repeating it. */
+interface ComposerWorkflowOption {
+    id: string;
+    name: string;
+    scope: 'org' | 'user' | 'repo';
+    params?: WorkflowParamChoice[];
+}
+
 /**
- * The guided new-task composer, the default right pane of the tasks area.
- *
- * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`, `useJobs`,
- * `useWorkflows`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
- * effects, the page hands it finished props and the suite asserts markup.
- *
- * The page reads top to bottom the way a member decides: what the agent should do, where it will
- * run, which process will guide it, what is still blocking the launch, and what will actually
- * run — before Start is ever pressed. The repository, the executor and the workflow are stamps
- * the member chooses per task, with explicit product words for every deliberate null: no
- * repository, the deployment's default executor, no workflow. The pure layer beneath — the
- * verdicts, the preflight sentence, the blocker matrix — lives in `task-composer.ts`.
+ * Everything the composer's draft owns: the state, the effects that keep it consistent with the
+ * workspace and workflow lists as they arrive, and the values Start needs — pulled out of
+ * `TaskComposer` so the component itself stays a render layer over this.
  */
-export function TaskComposer({
-    repos,
-    workspaceError,
-    onRetryWorkspace,
-    executors,
-    workflows,
-    actionError,
-    sending,
-    onSend,
-    onRepoChange,
-}: {
-    /**
-     * The member's selected repositories, one option each. Null while the workspace poll has not
-     * answered yet — "not known" is a different sentence from "known empty", and merging them
-     * would blame the member's selection for a request that never landed.
-     */
+interface ComposerDraft {
+    draft: string;
+    setDraft: (value: string) => void;
+    executor: string;
+    setExecutor: (value: string) => void;
+    repo: string;
+    setRepo: (value: string) => void;
+    setRepoTouched: (value: boolean) => void;
+    workflow: string;
+    setWorkflow: (value: string) => void;
+    setStoredParams: (value: { workflowId: string | null; values: Record<string, string> }) => void;
+    paramTouched: Record<string, boolean>;
+    setParamTouched: (value: Record<string, boolean>) => void;
+    declaredParams: WorkflowParamChoice[];
+    chosenWorkflowId: string | null;
+    paramValues: Record<string, string>;
+    paramsReady: boolean;
+    /** The default workflow's effective step set for THIS task — null until the saved settings
+     * have answered. Only meaningful beside the unchosen ('') workflow value. */
+    effectiveDefaultSteps: DefaultWorkflowSteps | null;
+    /** One checkbox click: flips its effective value into an explicit override for this task. */
+    onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) => void;
+    send: () => Promise<void>;
+}
+
+function useComposerDraft(input: {
     repos: readonly { owner: string; name: string }[] | null;
-    /** Why `repos` is null, when it is. */
-    workspaceError: string | null;
-    onRetryWorkspace: () => void;
-    executors: readonly { name: string; type: string }[];
+    executors: readonly { name: string; type: string; isDefault?: boolean }[];
+    workflows: readonly ComposerWorkflowOption[] | null;
     /**
-     * The workflow choices for the selected repository's context, or null when the list has not
-     * answered (or this board serves no workflows at all). Null HIDES the section: a board
-     * without the feature renders exactly the composer that came before it. Each choice carries
-     * its declared launch parameters — choosing one renders an explicit, labelled input per
-     * param, and Start stays disabled until every one validates. Unchosen, the task runs the
-     * member's words verbatim — no workflow, no parameters.
+     * The member's saved default-workflow step settings (issues 203/208), or null while they have
+     * not answered yet — the two optional-step checkboxes stay hidden for exactly that duration,
+     * the same "not known yet" posture the workspace poll gets.
      */
-    workflows:
-        | readonly {
-              id: string;
-              name: string;
-              scope: 'org' | 'user' | 'repo';
-              params?: import('../task-composer.js').WorkflowParamChoice[];
-          }[]
-        | null;
-    /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
-    actionError: string | null;
+    defaultWorkflowSettings: DefaultWorkflowSteps | null;
+    onRepoChange: ((repo: string | null) => void) | undefined;
     sending: boolean;
-    /** `workflow` is a chosen name, or null for no process — the raw prompt runs. */
-    onSend: (
-        command: string,
-        repo: string | null,
-        executor: string | null,
-        workflow: string | null,
-        workflowParams: Record<string, string> | null
-    ) => Promise<string | null>;
-    /**
-     * Reports the chosen repository upward, so the page can re-fetch the workflow list for that
-     * repository's context. Optional — the panel is testable without it.
-     */
-    onRepoChange?: (repo: string | null) => void;
-}) {
+    onSend: (queued: QueueTaskInput) => Promise<string | null>;
+}): ComposerDraft {
+    const { repos, executors, workflows, defaultWorkflowSettings, onRepoChange, sending, onSend } = input;
     const [draft, setDraft] = useState('');
-    const [executor, setExecutor] = useState(() => executors[0]?.name ?? '');
-    const [executorTouched, setExecutorTouched] = useState(false);
+    const [executor, setExecutor] = useState(() => defaultExecutorName(executors));
     const [repo, setRepo] = useState(() => firstRepo(repos));
     const [repoTouched, setRepoTouched] = useState(false);
     // The workflow starts UNCHOSEN — '', meaning no process: the raw prompt runs. And, unlike
@@ -109,6 +105,12 @@ export function TaskComposer({
     // Which parameter fields the member has left (or an invalid keyboard submission has marked).
     // An untouched empty field is a hint — "Required" — not a painted failure.
     const [paramTouched, setParamTouched] = useState(freshWorkflowDraft().paramTouched);
+    // The member's explicit inversions of the saved default-workflow steps for THIS task — empty
+    // until a checkbox is touched, so an untouched field keeps tracking a settings poll refresh
+    // live while a touched one is locked to the member's choice.
+    const [defaultStepOverrides, setDefaultStepOverrides] = useState<DefaultStepOverrides>(
+        freshWorkflowDraft().defaultStepOverrides
+    );
 
     // The workflow whose inputs the composer shows: exactly the member's explicit choice, at the
     // scope the board would resolve. Nothing autoselects one — an unnamed task runs the raw
@@ -118,6 +120,7 @@ export function TaskComposer({
     const chosenWorkflowId = chosenWorkflow?.id ?? null;
     const paramValues = valuesForWorkflow(storedParams, chosenWorkflowId);
     const paramsReady = paramsComplete(declaredParams, paramValues);
+    const effectiveSteps = effectiveDefaultSteps(defaultWorkflowSettings, defaultStepOverrides);
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
     // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
@@ -131,22 +134,22 @@ export function TaskComposer({
         }
     }, [repos, repo, repoTouched]);
 
-    // The FIRST configured executor is the default: a member who set one up means their tasks to
-    // run on it, not on an unlabelled runner. Explicit `none` wins the moment they pick it —
-    // `executorTouched` is what stops this autoselect from stomping their choice back on the
-    // next workspace poll.
+    // The persisted default executor (issue 215), or the FIRST configured one when none is
+    // flagged, is selected when the async workspace poll lands. There is no deployment fallback:
+    // the selected profile type is the task's runner choice.
     useEffect(() => {
-        if (!executorTouched && executor === '' && executors.length > 0) {
-            setExecutor(executors[0]!.name);
+        if (executor === '' && executors.length > 0) {
+            setExecutor(defaultExecutorName(executors));
         }
-    }, [executors, executor, executorTouched]);
+    }, [executors, executor]);
 
     // A configured executor can be deleted on the Workspace page while a draft sits here; the
     // select would go blank while `send` still submitted the stale name. Clamp to what exists —
-    // back to the first executor, or the deployment default when the list is empty.
+    // back to the default (or first) executor, or an explicit blocked state when the list is
+    // empty.
     useEffect(() => {
         if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
-            setExecutor(executors.length > 0 ? executors[0]!.name : '');
+            setExecutor(defaultExecutorName(executors));
         }
     }, [executors, executor]);
 
@@ -171,6 +174,7 @@ export function TaskComposer({
         setWorkflow(reset.workflow);
         setStoredParams(reset.storedParams);
         setParamTouched(reset.paramTouched);
+        setDefaultStepOverrides(reset.defaultStepOverrides);
     }, [repo]);
 
     // And the workflow: a repository switch refetches the list for the new context, and a chosen
@@ -205,8 +209,7 @@ export function TaskComposer({
     // The mirror of the board's check: a missing or malformed parameter must never reach the
     // wire — the composer says nothing and the launch stays dark.
     const send = async () => {
-        if (!draft.trim() || sending || !paramsReady) return;
-        const chosenExecutor = executor === '' ? null : executor;
+        if (!draft.trim() || sending || !paramsReady || executor === '') return;
         const chosenRepo = repo === '' ? null : repo;
         const chosenWorkflowName = workflow === '' ? null : workflow;
         // Values travel trimmed, and only beside an explicit choice — a task with no workflow
@@ -217,14 +220,433 @@ export function TaskComposer({
             declaredParams.length > 0
                 ? Object.fromEntries(declaredParams.map((param) => [param.name, values[param.name] ?? '']))
                 : null;
-        if ((await onSend(draft, chosenRepo, chosenExecutor, chosenWorkflowName, chosenParams)) === null) setDraft('');
+        const chosenDefaultWorkflow = defaultWorkflowPayload(workflow, effectiveSteps);
+        const queued = queueBody(
+            { command: draft, repo: chosenRepo, executor, workflow: chosenWorkflowName, workflowParams: chosenParams },
+            chosenDefaultWorkflow
+        );
+        if ((await onSend(queued)) === null) setDraft('');
     };
+
+    return {
+        draft,
+        setDraft,
+        executor,
+        setExecutor,
+        repo,
+        setRepo,
+        setRepoTouched,
+        workflow,
+        setWorkflow,
+        setStoredParams,
+        paramTouched,
+        setParamTouched,
+        declaredParams,
+        chosenWorkflowId,
+        paramValues,
+        paramsReady,
+        effectiveDefaultSteps: effectiveSteps,
+        onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) =>
+            setDefaultStepOverrides(toggleDefaultStep(defaultStepOverrides, key, defaultWorkflowSettings)),
+        send,
+    };
+}
+
+/** How many of the two default-workflow steps are effectively on — the closed disclosure's
+ * one-line summary, so the enabled count reads without opening it. */
+function enabledStepCount(steps: DefaultWorkflowSteps): number {
+    return Number(steps.reviewReconciliation) + Number(steps.mergeConflictAutofix);
+}
+
+/**
+ * The compact context row (issue 228): Repository, Executor and Workflow as small, content-sized
+ * controls under the prompt, plus the two contextual notes that only apply beside an empty
+ * executor or repository list. Split out of `TaskComposer` so the parent's own body stays a
+ * simple top-to-bottom outline — this owns every prop the row's own Listboxes need.
+ */
+function ComposerContextRow({
+    repos,
+    repo,
+    setRepo,
+    setRepoTouched,
+    executors,
+    executor,
+    setExecutor,
+    workflows,
+    workflow,
+    setWorkflow,
+    setParamTouched,
+}: {
+    repos: readonly { owner: string; name: string }[];
+    repo: string;
+    setRepo: (value: string) => void;
+    setRepoTouched: (value: boolean) => void;
+    executors: readonly { name: string; type: string; isDefault?: boolean }[];
+    executor: string;
+    setExecutor: (value: string) => void;
+    workflows: readonly ComposerWorkflowOption[] | null;
+    workflow: string;
+    setWorkflow: (value: string) => void;
+    setParamTouched: (value: Record<string, boolean>) => void;
+}) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const repoAnchor = useDownwardAnchor('start');
+    const executorAnchor = useDownwardAnchor('start');
+    return (
+        <>
+            <div className="composer-context">
+                <div className="composer-context-item">
+                    <span className="composer-label">Repository</span>
+                    <Listbox
+                        value={repo}
+                        onChange={(next) => {
+                            setRepoTouched(true);
+                            setRepo(next);
+                            // Reporting upward is the reporting effect's job — one path.
+                        }}
+                    >
+                        <ListboxButton
+                            ref={repoAnchor.setReference}
+                            className="select-trigger"
+                            aria-label="Repository"
+                            title={repo === '' ? 'No repository' : repo}
+                        >
+                            <span className="composer-context-value">{repo === '' ? 'No repository' : repo}</span>
+                        </ListboxButton>
+                        <ListboxOptions
+                            ref={repoAnchor.setFloating}
+                            style={repoAnchor.floatingStyles}
+                            portal
+                            className="popover"
+                        >
+                            <ListboxOption value="" className="popover-option">
+                                No repository
+                            </ListboxOption>
+                            {repos.map(({ owner, name }) => {
+                                const full = `${owner}/${name}`;
+                                return (
+                                    <ListboxOption key={full} value={full} className="popover-option">
+                                        {full}
+                                    </ListboxOption>
+                                );
+                            })}
+                        </ListboxOptions>
+                    </Listbox>
+                </div>
+                <div className="composer-context-item">
+                    <span className="composer-label">Executor</span>
+                    <Listbox value={executor} disabled={executors.length === 0} onChange={setExecutor}>
+                        <ListboxButton
+                            ref={executorAnchor.setReference}
+                            className="select-trigger"
+                            aria-label="Executor"
+                            title={executor === '' ? 'No executor configured' : executor}
+                        >
+                            <span className="composer-context-value">
+                                {executor === '' ? 'No executor configured' : executor}
+                            </span>
+                        </ListboxButton>
+                        <ListboxOptions
+                            ref={executorAnchor.setFloating}
+                            style={executorAnchor.floatingStyles}
+                            portal
+                            className="popover"
+                        >
+                            {executors.map((candidate) => (
+                                <ListboxOption key={candidate.name} value={candidate.name} className="popover-option">
+                                    {candidate.name}
+                                </ListboxOption>
+                            ))}
+                        </ListboxOptions>
+                    </Listbox>
+                </div>
+                <ComposerWorkflowTrigger
+                    workflows={workflows}
+                    workflow={workflow}
+                    setWorkflow={setWorkflow}
+                    setParamTouched={setParamTouched}
+                />
+            </div>
+            {executors.length === 0 ? (
+                <p className="muted">
+                    Add an executor in <Link to="/settings/executors">Settings</Link> before starting a task.
+                </p>
+            ) : null}
+            {repos.length === 0 ? (
+                <p className="muted">
+                    Select repositories in <Link to="/settings/repositories">Settings</Link> to run against a codebase
+                </p>
+            ) : null}
+        </>
+    );
+}
+
+/**
+ * The workflow context item: the compact Reusable workflow trigger that sits in the context row
+ * beside Repository and Executor. Split out so `TaskComposer` can place it inside
+ * `.composer-context` without also pulling in the steps disclosure and the parameter fields,
+ * which render below the row instead.
+ */
+function ComposerWorkflowTrigger({
+    workflows,
+    workflow,
+    setWorkflow,
+    setParamTouched,
+}: {
+    workflows: readonly ComposerWorkflowOption[] | null;
+    workflow: string;
+    setWorkflow: (value: string) => void;
+    setParamTouched: (value: Record<string, boolean>) => void;
+}) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`. Called
+    // unconditionally, before the null bail below, so the hook order never varies with the
+    // board's workflow feature.
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
+    if (workflows === null) return null;
+    const label = workflow === '' ? 'Default workflow' : workflow;
+    return (
+        <div className="composer-context-item">
+            <span className="composer-label">Workflow</span>
+            <Listbox
+                value={workflow}
+                onChange={(next) => {
+                    setWorkflow(next);
+                    // The values reset through the identity-keyed read, and this choice's
+                    // touched marks reset with it: fields the member never reached in the
+                    // new process must not arrive pre-failed.
+                    setParamTouched({});
+                    // A repo switch goes further and resets the whole draft — the repo
+                    // effect above.
+                }}
+            >
+                <ListboxButton
+                    ref={setReference}
+                    className="select-trigger"
+                    aria-label="Reusable workflow"
+                    title={label}
+                >
+                    <span className="composer-context-value">{label}</span>
+                </ListboxButton>
+                <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
+                    <ListboxOption value="" className="popover-option">
+                        Default workflow
+                    </ListboxOption>
+                    {effectiveWorkflows(workflows).map((choice) => (
+                        <ListboxOption key={choice.id} value={choice.name} className="popover-option">
+                            {choice.name}
+                        </ListboxOption>
+                    ))}
+                </ListboxOptions>
+            </Listbox>
+        </div>
+    );
+}
+
+/**
+ * What renders below the context row for the chosen workflow: the two default-workflow steps
+ * tucked behind a closed-by-default disclosure (issue 228 — a compact options menu rather than
+ * two persistent rows) beside the unchosen '' value, or a named workflow's declared launch
+ * parameters. Split out of `TaskComposer` so its independent visibility checks (no workflow list
+ * at all; a chosen workflow with no declared params) do not add to the parent's own.
+ */
+function ComposerWorkflowDetails({
+    workflows,
+    workflow,
+    declaredParams,
+    paramValues,
+    paramTouched,
+    chosenWorkflowId,
+    setStoredParams,
+    setParamTouched,
+    effectiveDefaultSteps: effectiveSteps,
+    onToggleDefaultStep,
+}: {
+    workflows: readonly ComposerWorkflowOption[] | null;
+    workflow: string;
+    declaredParams: WorkflowParamChoice[];
+    paramValues: Record<string, string>;
+    paramTouched: Record<string, boolean>;
+    chosenWorkflowId: string | null;
+    setStoredParams: (value: { workflowId: string | null; values: Record<string, string> }) => void;
+    setParamTouched: (value: Record<string, boolean>) => void;
+    effectiveDefaultSteps: DefaultWorkflowSteps | null;
+    onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) => void;
+}) {
+    return (
+        <>
+            {workflows !== null && workflow === '' && effectiveSteps !== null ? (
+                <details className="composer-steps">
+                    <summary>Optional steps ({enabledStepCount(effectiveSteps)} of 2 on)</summary>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={effectiveSteps.reviewReconciliation}
+                            onChange={() => onToggleDefaultStep('reviewReconciliation')}
+                        />
+                        Iterate on PR review comments
+                    </label>
+                    <label className="settings-toggle">
+                        <input
+                            type="checkbox"
+                            checked={effectiveSteps.mergeConflictAutofix}
+                            onChange={() => onToggleDefaultStep('mergeConflictAutofix')}
+                        />
+                        Repair merge conflicts
+                    </label>
+                </details>
+            ) : null}
+
+            {declaredParams.length > 0 ? (
+                <div className="composer-field">
+                    <span className="composer-label">Workflow details</span>
+                    <WorkflowParameterFields
+                        params={declaredParams}
+                        values={paramValues}
+                        touched={paramTouched}
+                        onInput={(name, value) =>
+                            setStoredParams({
+                                workflowId: chosenWorkflowId,
+                                values: { ...paramValues, [name]: value },
+                            })
+                        }
+                        onBlur={(name) => setParamTouched(markTouched(paramTouched, name))}
+                    />
+                </div>
+            ) : null}
+        </>
+    );
+}
+
+/** The Start button's status line, the precedence `startBlocker` already picked — this only
+ * spells each reason out in words. */
+function describeBlocker(blocker: StartBlocker | null): string | null {
+    switch (blocker) {
+        case 'in-flight':
+            return 'Starting the task…';
+        case 'missing-executor':
+            return 'Configure an executor in Settings to continue.';
+        case 'empty-prompt':
+            return 'Describe the task to continue.';
+        case 'defaults-unresolved':
+            return 'Loading your saved workflow defaults…';
+        case 'invalid-params':
+            return 'Complete the required workflow details to continue.';
+        default:
+            return null;
+    }
+}
+
+/**
+ * The guided new-task composer, the default right pane of the tasks area.
+ *
+ * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`, `useJobs`,
+ * `useWorkflows`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
+ * effects, the page hands it finished props and the suite asserts markup.
+ *
+ * The prompt is the dominant element (issue 228): it sits first and largest, immediately followed
+ * by Repository, Executor and Workflow as one compact, content-sized row rather than a tall
+ * stacked form — each control shows its own selected value, so the page needs no separate
+ * "Execution context" heading to explain them. The repository, executor and workflow are task
+ * parameters. Repository and workflow may deliberately be absent; executor may not, because its
+ * profile type chooses the runner. What is still blocking the launch and what will actually run
+ * come last, right above Start. The pure layer beneath — the verdicts, preflight sentence and
+ * blocker matrix — lives in `task-composer.ts`.
+ */
+export function TaskComposer({
+    repos,
+    workspaceError,
+    onRetryWorkspace,
+    executors,
+    workflows,
+    defaultWorkflowSettings,
+    actionError,
+    sending,
+    onSend,
+    onRepoChange,
+}: {
+    /**
+     * The member's selected repositories, one option each. Null while the workspace poll has not
+     * answered yet — "not known" is a different sentence from "known empty", and merging them
+     * would blame the member's selection for a request that never landed.
+     */
+    repos: readonly { owner: string; name: string }[] | null;
+    /** Why `repos` is null, when it is. */
+    workspaceError: string | null;
+    onRetryWorkspace: () => void;
+    executors: readonly { name: string; type: string; isDefault?: boolean }[];
+    /**
+     * The workflow choices for the selected repository's context, or null when the list has not
+     * answered (or this board serves no workflows at all). Null HIDES the section: a board
+     * without the feature renders exactly the composer that came before it. Each choice carries
+     * its declared launch parameters — choosing one renders an explicit, labelled input per
+     * param, and Start stays disabled until every one validates. Unchosen, the task runs the
+     * member's words verbatim — no workflow, no parameters.
+     */
+    workflows:
+        | readonly {
+              id: string;
+              name: string;
+              scope: 'org' | 'user' | 'repo';
+              params?: import('../task-composer.js').WorkflowParamChoice[];
+          }[]
+        | null;
+    /**
+     * The member's saved default-workflow step settings (issues 203/208), or null while they have
+     * not answered yet — the two optional-step checkboxes stay hidden for exactly that duration,
+     * the same "not known yet" posture the workspace poll gets.
+     */
+    defaultWorkflowSettings: DefaultWorkflowSteps | null;
+    /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
+    actionError: string | null;
+    sending: boolean;
+    /** `workflow` is a chosen name, or null for Default workflow — the raw prompt runs either way
+     * today; `defaultWorkflow` travels inside `input` when Default workflow is chosen. */
+    onSend: (input: QueueTaskInput) => Promise<string | null>;
+    /**
+     * Reports the chosen repository upward, so the page can re-fetch the workflow list for that
+     * repository's context. Optional — the panel is testable without it.
+     */
+    onRepoChange?: (repo: string | null) => void;
+}) {
+    const {
+        draft,
+        setDraft,
+        executor,
+        setExecutor,
+        repo,
+        setRepo,
+        setRepoTouched,
+        workflow,
+        setWorkflow,
+        setStoredParams,
+        paramTouched,
+        setParamTouched,
+        declaredParams,
+        chosenWorkflowId,
+        paramValues,
+        paramsReady,
+        effectiveDefaultSteps: effectiveSteps,
+        onToggleDefaultStep,
+        send,
+    } = useComposerDraft({ repos, executors, workflows, defaultWorkflowSettings, onRepoChange, sending, onSend });
 
     // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
     // button, never a bypass. An invalid keyboard submission owes the member the same screen a
     // tab-through would have left: every field marked, the first invalid one focused, and no
     // request sent. An empty prompt is the missing task itself; the visible blocker says so.
-    const blocker = startBlocker({ sending, promptEmpty: draft.trim() === '', paramsInvalid: !paramsReady });
+    // Launching Default workflow before the saved step settings answer would silently omit the
+    // member's saved pair from the submitted JSON — only meaningful where the checkboxes
+    // themselves would render (the workflow section is visible, and no custom workflow is chosen).
+    const defaultsUnresolved = workflows !== null && workflow === '' && effectiveSteps === null;
+    const blocker = startBlocker({
+        sending,
+        executorMissing: executor === '',
+        promptEmpty: draft.trim() === '',
+        defaultsUnresolved,
+        paramsInvalid: !paramsReady,
+    });
     const attemptStart = () => {
         if (blocker === null) {
             void send();
@@ -236,18 +658,12 @@ export function TaskComposer({
             if (first) document.getElementById(`composer-param-${first.name}`)?.focus();
         }
     };
-    const blockerCopy =
-        blocker === 'in-flight'
-            ? 'Starting the task…'
-            : blocker === 'empty-prompt'
-              ? 'Describe the task to continue.'
-              : blocker === 'invalid-params'
-                ? 'Complete the required workflow details to continue.'
-                : null;
+    const blockerCopy = describeBlocker(blocker);
     const preflight = preflightSentence({
         repo: repo === '' ? null : repo,
         executor: executor === '' ? null : executor,
         workflow: workflow === '' ? null : workflow,
+        defaultSteps: workflow === '' ? effectiveSteps : null,
     });
 
     if (repos === null) {
@@ -286,7 +702,7 @@ export function TaskComposer({
                         What should the agent do?
                     </label>
                     <p className="composer-helper" id="composer-prompt-helper">
-                        Include the outcome you want, relevant files or issue, and checks the agent should run.
+                        Include the outcome, relevant files or issue, and checks to run.
                     </p>
                     <textarea
                         id="composer-prompt"
@@ -298,129 +714,31 @@ export function TaskComposer({
                     />
                 </div>
 
-                <h2>Execution context</h2>
-                <div className="composer-grid">
-                    <div className="composer-field">
-                        <span className="composer-label" id="composer-repo-label">
-                            Repository
-                        </span>
-                        <p className="composer-helper">Run without a repository checkout.</p>
-                        <Listbox
-                            value={repo}
-                            onChange={(next) => {
-                                setRepoTouched(true);
-                                setRepo(next);
-                                // Reporting upward is the reporting effect's job — one path.
-                            }}
-                        >
-                            <ListboxButton className="composer-select" aria-labelledby="composer-repo-label">
-                                {repo === '' ? 'No repository' : repo}
-                            </ListboxButton>
-                            <ListboxOptions anchor="bottom start" className="popover">
-                                <ListboxOption value="" className="popover-option">
-                                    No repository
-                                </ListboxOption>
-                                {repos.map(({ owner, name }) => {
-                                    const full = `${owner}/${name}`;
-                                    return (
-                                        <ListboxOption key={full} value={full} className="popover-option">
-                                            {full}
-                                        </ListboxOption>
-                                    );
-                                })}
-                            </ListboxOptions>
-                        </Listbox>
-                    </div>
-                    <div className="composer-field">
-                        <span className="composer-label" id="composer-executor-label">
-                            Executor
-                        </span>
-                        <p className="composer-helper">Use the deployment&rsquo;s default runner.</p>
-                        <Listbox
-                            value={executor}
-                            onChange={(next) => {
-                                setExecutorTouched(true);
-                                setExecutor(next);
-                            }}
-                        >
-                            <ListboxButton className="composer-select" aria-labelledby="composer-executor-label">
-                                {executor === '' ? 'Default executor' : executor}
-                            </ListboxButton>
-                            <ListboxOptions anchor="bottom start" className="popover">
-                                <ListboxOption value="" className="popover-option">
-                                    Default executor
-                                </ListboxOption>
-                                {executors.map((candidate) => (
-                                    <ListboxOption
-                                        key={candidate.name}
-                                        value={candidate.name}
-                                        className="popover-option"
-                                    >
-                                        {candidate.name}
-                                    </ListboxOption>
-                                ))}
-                            </ListboxOptions>
-                        </Listbox>
-                    </div>
-                </div>
-                {repos.length === 0 ? (
-                    <p className="muted">
-                        Select repositories in <Link to="/settings/repositories">Settings</Link> to run against a
-                        codebase
-                    </p>
-                ) : null}
-                {workflows !== null ? (
-                    <div className="composer-field">
-                        <h2 id="composer-workflow-label">Reusable workflow</h2>
-                        <p className="composer-helper">
-                            A workflow can turn this request into a repeatable multi-step process.
-                        </p>
-                        <Listbox
-                            value={workflow}
-                            onChange={(next) => {
-                                setWorkflow(next);
-                                // The values reset through the identity-keyed read, and this
-                                // choice's touched marks reset with it: fields the member never
-                                // reached in the new process must not arrive pre-failed.
-                                setParamTouched({});
-                                // A repo switch goes further and resets the whole draft — the
-                                // repo effect above.
-                            }}
-                        >
-                            <ListboxButton className="composer-select" aria-labelledby="composer-workflow-label">
-                                {workflow === '' ? 'No workflow — run prompt as written' : workflow}
-                            </ListboxButton>
-                            <ListboxOptions anchor="bottom start" className="popover">
-                                <ListboxOption value="" className="popover-option">
-                                    No workflow — run prompt as written
-                                </ListboxOption>
-                                {effectiveWorkflows(workflows).map((choice) => (
-                                    <ListboxOption key={choice.id} value={choice.name} className="popover-option">
-                                        {choice.name}
-                                    </ListboxOption>
-                                ))}
-                            </ListboxOptions>
-                        </Listbox>
-                    </div>
-                ) : null}
-
-                {declaredParams.length > 0 ? (
-                    <div className="composer-field">
-                        <h2>Workflow details</h2>
-                        <WorkflowParameterFields
-                            params={declaredParams}
-                            values={paramValues}
-                            touched={paramTouched}
-                            onInput={(name, value) =>
-                                setStoredParams({
-                                    workflowId: chosenWorkflowId,
-                                    values: { ...paramValues, [name]: value },
-                                })
-                            }
-                            onBlur={(name) => setParamTouched(markTouched(paramTouched, name))}
-                        />
-                    </div>
-                ) : null}
+                <ComposerContextRow
+                    repos={repos}
+                    repo={repo}
+                    setRepo={setRepo}
+                    setRepoTouched={setRepoTouched}
+                    executors={executors}
+                    executor={executor}
+                    setExecutor={setExecutor}
+                    workflows={workflows}
+                    workflow={workflow}
+                    setWorkflow={setWorkflow}
+                    setParamTouched={setParamTouched}
+                />
+                <ComposerWorkflowDetails
+                    workflows={workflows}
+                    workflow={workflow}
+                    declaredParams={declaredParams}
+                    paramValues={paramValues}
+                    paramTouched={paramTouched}
+                    chosenWorkflowId={chosenWorkflowId}
+                    setStoredParams={setStoredParams}
+                    setParamTouched={setParamTouched}
+                    effectiveDefaultSteps={effectiveSteps}
+                    onToggleDefaultStep={onToggleDefaultStep}
+                />
 
                 <p className="composer-preflight" aria-live="polite">
                     {preflight}

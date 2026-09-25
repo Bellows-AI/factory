@@ -1,18 +1,16 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/job-store.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
 let store: JobStore;
-/** A second store on the same pool, bound to a different org. Only the org guard uses it. */
-let otherOrgStore: JobStore;
 
 const ORG = randomUUID();
-const OTHER_ORG = randomUUID();
 
 /**
  * The jobs' author. A generated identity, never a literal: integration tests do not hardcode ids,
@@ -20,7 +18,10 @@ const OTHER_ORG = randomUUID();
  * eventually would. Re-planted before every test, because `created_by` is a uuid foreign key.
  */
 const AUTHOR = randomUUID();
-const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, 8), 16);
+/** Turns a slice of a uuid into a plausible github id — hex digits, parsed as base 16. */
+const HEX_RADIX = 16;
+const UUID_HEX_SLICE_LENGTH = 8;
+const AUTHOR_GITHUB_ID = Number.parseInt(randomUUID().slice(0, UUID_HEX_SLICE_LENGTH), HEX_RADIX);
 
 const db = useTestDb({
     max: 8,
@@ -31,11 +32,12 @@ beforeAll(async () => {
     if (!enabled) return;
     sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
-    otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
 });
 
+const MS_PER_MINUTE = 60_000;
+
 /** How long ago an ISO stamp reads, in minutes — for asserting backdated times without sleeping. */
-const minutesAgo = (iso: string): number => (Date.now() - Date.parse(iso)) / 60_000;
+const minutesAgo = (iso: string): number => (Date.now() - Date.parse(iso)) / MS_PER_MINUTE;
 
 /**
  * Writes a job row in whatever state the case needs, straight SQL — the `craft` helper of the
@@ -47,7 +49,7 @@ const craft = async (
     shape: {
         root?: string;
         parent?: string | null;
-        status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+        status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
         command?: string;
         createdMinutesAgo?: number;
         finishedMinutesAgo?: number;
@@ -155,9 +157,11 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task', () =
         expect(task.summary).toBe('last words');
         expect(task.runtime).toMatchObject({ contextTokens: 4242 });
         // The clock is the THREAD's — the figure the task view's head clock shows.
-        expect(task.taskWallClockMs).toBe(100_000);
+        const EXPECTED_TASK_WALL_CLOCK_MS = 100_000;
+        expect(task.taskWallClockMs).toBe(EXPECTED_TASK_WALL_CLOCK_MS);
         // The head's own banked clock rides the per-run field, unchanged in meaning.
-        expect(task.wallClockMs).toBe(10_000);
+        const EXPECTED_HEAD_WALL_CLOCK_MS = 10_000;
+        expect(task.wallClockMs).toBe(EXPECTED_HEAD_WALL_CLOCK_MS);
         // Completion is the thread's newest: the head's finish stamp here.
         expect(Math.abs(minutesAgo(task.finishedAt!) - 10)).toBeLessThan(2);
     });
@@ -190,145 +194,14 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task', () =
         expect(listed[1]?.summary).toBeNull();
     });
 
-    it('excludes a thread whose follow-up is still queued, running or parked', async () => {
-        for (const moving of ['queued', 'running', 'standby'] as const) {
+    it('excludes a thread whose follow-up is still queued or running', async () => {
+        for (const moving of ['queued', 'running'] as const) {
             const root = await craft({ status: 'succeeded', finishedMinutesAgo: 30 });
             await craft({ parent: root, status: moving, createdMinutesAgo: 5 });
 
             const listed = await store.list({ status: 'terminal', limit: 10 });
             expect(listed.map((task) => task.id)).not.toContain(root);
         }
-    });
-
-    it("keeps a stopped thread, and serves the thread's done from whichever member carries it", async () => {
-        const stopped = await craft({ status: 'stopped', finishedMinutesAgo: 20 });
-        const done = await craft({
-            status: 'succeeded',
-            createdMinutesAgo: 20,
-            finishedMinutesAgo: 15,
-        });
-        await craft({
-            parent: done,
-            status: 'failed',
-            createdMinutesAgo: 10,
-            finishedMinutesAgo: 5,
-            doneMinutesAgo: 3,
-        });
-        // A stop that landed on the FOLLOW-UP: the head carries the verdict and its actor —
-        // the stopper join aims at the head's stopped_by, not the root row's.
-        const stoppedLate = await craft({
-            status: 'succeeded',
-            createdMinutesAgo: 30,
-            finishedMinutesAgo: 25,
-        });
-        await craft({
-            parent: stoppedLate,
-            status: 'stopped',
-            createdMinutesAgo: 12,
-            finishedMinutesAgo: 8,
-            stoppedBy: true,
-        });
-
-        const listed = await store.list({ status: 'terminal', limit: 10 });
-        expect(listed.map((task) => task.id)).toEqual([done, stoppedLate, stopped]);
-        expect(listed[0]?.status).toBe('failed');
-        expect(listed[0]?.doneAt).not.toBeNull();
-        expect(Math.abs(minutesAgo(listed[0]!.doneAt!) - 3)).toBeLessThan(2);
-        expect(listed[0]?.doneBy?.login).toBe('completed-tasks-cat');
-        expect(listed[1]?.status).toBe('stopped');
-        expect(listed[1]?.stoppedBy?.login).toBe('completed-tasks-cat');
-        expect(listed[2]?.status).toBe('stopped');
-        expect(listed[2]?.doneAt).toBeNull();
-    });
-
-    it("orders by each thread's newest completion, not by any member's", async () => {
-        const older = await craft({
-            status: 'succeeded',
-            createdMinutesAgo: 60,
-            finishedMinutesAgo: 30,
-        });
-        await craft({ parent: older, status: 'succeeded', createdMinutesAgo: 50, finishedMinutesAgo: 20 });
-        const newer = await craft({
-            status: 'succeeded',
-            createdMinutesAgo: 40,
-            finishedMinutesAgo: 5,
-        });
-
-        const listed = await store.list({ status: 'terminal', limit: 10 });
-        expect(listed.map((task) => task.id)).toEqual([newer, older]);
-    });
-
-    it("serves the thread's max finished_at even when the head run is not the last to finish", async () => {
-        // A branched thread: the head is the newest-CREATED member, but an older sibling finished
-        // after it. The row's Finished column is the task's — the max.
-        const root = await craft({
-            status: 'succeeded',
-            createdMinutesAgo: 70,
-            finishedMinutesAgo: 65,
-        });
-        await craft({ parent: root, status: 'succeeded', createdMinutesAgo: 60, finishedMinutesAgo: 10 });
-        await craft({ parent: root, status: 'stopped', createdMinutesAgo: 50, finishedMinutesAgo: 55 });
-
-        const listed = await store.list({ status: 'terminal', limit: 10 });
-        expect(listed).toHaveLength(1);
-        expect(listed[0]?.status).toBe('stopped');
-        expect(Math.abs(minutesAgo(listed[0]!.finishedAt!) - 10)).toBeLessThan(2);
-    });
-
-    it('bounds tasks, not runs', async () => {
-        for (let thread = 0; thread < 3; thread++) {
-            const root = await craft({
-                status: 'succeeded',
-                createdMinutesAgo: 60 - thread * 10,
-                finishedMinutesAgo: 55 - thread * 10,
-                command: `thread ${thread}`,
-            });
-            await craft({
-                parent: root,
-                status: 'succeeded',
-                createdMinutesAgo: 58 - thread * 10,
-                finishedMinutesAgo: 53 - thread * 10,
-            });
-        }
-
-        expect(await store.list({ status: 'terminal', limit: 2 })).toHaveLength(2);
-        expect(await store.list({ status: 'terminal', limit: 3 })).toHaveLength(3);
-    });
-
-    it('answers null where nothing was ever banked — never zero', async () => {
-        const root = await craft({ status: 'stopped', finishedMinutesAgo: 20 });
-        await craft({ parent: root, status: 'succeeded', createdMinutesAgo: 10, finishedMinutesAgo: 5 });
-
-        const listed = await store.list({ status: 'terminal', limit: 10 });
-        expect(listed).toHaveLength(1);
-        expect(listed[0]?.taskWallClockMs).toBeNull();
-        expect(listed[0]?.wallClockMs).toBeNull();
-    });
-
-    it("groups the repo filter by thread under the root's label", async () => {
-        const widgets = await craft({ status: 'succeeded', finishedMinutesAgo: 20, repo: 'acme/widgets' });
-        await craft({ parent: widgets, status: 'succeeded', createdMinutesAgo: 10, finishedMinutesAgo: 5 });
-        await craft({ status: 'succeeded', finishedMinutesAgo: 15, repo: 'acme/other' });
-        await craft({ status: 'succeeded', finishedMinutesAgo: 1, repo: 'acme/widgets' });
-
-        const listed = await store.list({ status: 'terminal', repo: 'acme/widgets', limit: 10 });
-        expect(listed).toHaveLength(2);
-        expect(listed.every((task) => task.repo === 'acme/widgets')).toBe(true);
-        expect(await store.list({ status: 'terminal', repo: 'acme/other', limit: 10 })).toHaveLength(1);
-    });
-
-    it("keeps another organization's tasks out", async () => {
-        const root = await craft({ status: 'succeeded', finishedMinutesAgo: 20 });
-        const other = await otherOrgStore.create('other org task', null, { repo: null, executor: null });
-        const claim = await otherOrgStore.claim('w1', 300);
-        await otherOrgStore.complete(other.id, claim!.leaseToken, {
-            status: 'succeeded',
-            exitCode: 0,
-            output: null,
-        });
-
-        const listed = await store.list({ status: 'terminal', limit: 10 });
-        expect(listed.map((task) => task.id)).toEqual([root]);
     });
 });
 

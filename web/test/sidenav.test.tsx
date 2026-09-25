@@ -18,9 +18,10 @@ const render = (path: string, navigation: TaskNavigation | null = null) =>
     );
 
 let seq = 0;
+const UUID_SUFFIX_WIDTH = 12;
 const summary = (over: Partial<TaskSummary> = {}): TaskSummary => {
     seq += 1;
-    const id = over.id ?? `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}`;
+    const id = over.id ?? `00000000-0000-4000-8000-${String(seq).padStart(UUID_SUFFIX_WIDTH, '0')}`;
     return {
         id,
         command: over.command ?? 'newer task',
@@ -32,6 +33,9 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => {
         author: over.author ?? null,
         activity: over.activity ?? null,
         summary: over.summary ?? null,
+        waitReason: over.waitReason ?? null,
+        waitingSince: over.waitingSince ?? null,
+        waitTerminalReason: over.waitTerminalReason ?? null,
         createdAt: over.createdAt ?? '2026-09-02T12:00:00.000Z',
         activityAt: over.activityAt ?? '2026-09-02T12:10:00.000Z',
     };
@@ -58,6 +62,12 @@ const navigation = (
 });
 
 describe('SideNav', () => {
+    it('carries the Bellows brand in the sidenav-brand slot, ahead of the items', () => {
+        const html = render('/');
+        expect(html).toContain('<div class="sidenav-brand">Bellows</div>');
+        expect(html.indexOf('sidenav-brand')).toBeLessThan(html.indexOf('sidenav-items'));
+    });
+
     it('links to every section', () => {
         const html = render('/');
         expect(html).toContain('href="/"');
@@ -158,14 +168,27 @@ describe('SideNav task preview', () => {
     });
 
     it('holds five rows hard: running first, then the newest needs-review, never past', () => {
-        const runningTasks = [1, 2, 3, 4].map((i) => summary(running({ activityAt: `2026-09-02T12:0${i}:00.000Z` })));
+        const MINUTE_1 = 1;
+        const MINUTE_2 = 2;
+        const MINUTE_3 = 3;
+        const MINUTE_4 = 4;
+        const runningTasks = [MINUTE_1, MINUTE_2, MINUTE_3, MINUTE_4].map((i) =>
+            summary(running({ activityAt: `2026-09-02T12:0${i}:00.000Z` }))
+        );
         // The server serves review rows NEWEST first; the helper trusts that order.
-        const reviewTasks = [4, 3, 2, 1].map((i) =>
+        const reviewTasks = [MINUTE_4, MINUTE_3, MINUTE_2, MINUTE_1].map((i) =>
             summary({ status: 'failed', activityAt: `2026-09-02T12:1${i}:00.000Z`, command: `review task ${i}` })
         );
-        const html = render('/tasks', navigation(runningTasks, reviewTasks, { running: 9, review: 20, past: 100 }));
+        const RUNNING_COUNT = 9;
+        const REVIEW_COUNT = 20;
+        const PAST_COUNT = 100;
+        const html = render(
+            '/tasks',
+            navigation(runningTasks, reviewTasks, { running: RUNNING_COUNT, review: REVIEW_COUNT, past: PAST_COUNT })
+        );
         const rows = html.match(/sidenav-task-title/g) ?? [];
-        expect(rows).toHaveLength(5);
+        const MAX_PREVIEW_ROWS = 5;
+        expect(rows).toHaveLength(MAX_PREVIEW_ROWS);
         // Three running first — the preview caps running at three — then the two newest review.
         expect(html).toContain('review task 4');
         expect(html).toContain('review task 3');
@@ -173,8 +196,14 @@ describe('SideNav task preview', () => {
     });
 
     it('collapses what did not fit into a link to the filtered inbox', () => {
-        const reviewTasks = [1, 2, 3].map((i) => summary({ status: 'failed', command: `review task ${i}` }));
-        const html = render('/tasks', navigation([], reviewTasks, { running: 0, review: 15, past: 0 }));
+        const TASK_1 = 1;
+        const TASK_2 = 2;
+        const TASK_3 = 3;
+        const reviewTasks = [TASK_1, TASK_2, TASK_3].map((i) =>
+            summary({ status: 'failed', command: `review task ${i}` })
+        );
+        const REVIEW_COUNT = 15;
+        const html = render('/tasks', navigation([], reviewTasks, { running: 0, review: REVIEW_COUNT, past: 0 }));
         expect(html).toContain('+12 more need review');
         expect(html).toContain('href="/tasks?state=review"');
         // And a "View all" way into the inbox beside it.
@@ -188,15 +217,28 @@ describe('SideNav task preview', () => {
             command: 'the open task',
         });
         // Six review rows newest-first; the preview shows the first five.
-        const reviewTasks = [6, 5, 4, 3, 2, 1].map((i) => summary({ status: 'failed', command: `review task ${i}` }));
-        const without = render('/tasks', navigation([], reviewTasks, { running: 0, review: 6, past: 0 }));
+        const TASK_1 = 1;
+        const TASK_2 = 2;
+        const TASK_3 = 3;
+        const TASK_4 = 4;
+        const TASK_5 = 5;
+        const TASK_6 = 6;
+        const reviewTasks = [TASK_6, TASK_5, TASK_4, TASK_3, TASK_2, TASK_1].map((i) =>
+            summary({ status: 'failed', command: `review task ${i}` })
+        );
+        const REVIEW_COUNT_WITHOUT_OPEN = 6;
+        const without = render(
+            '/tasks',
+            navigation([], reviewTasks, { running: 0, review: REVIEW_COUNT_WITHOUT_OPEN, past: 0 })
+        );
         expect(without).not.toContain('the open task');
         expect(without).toContain('review task 2');
         // Open and outside the five (it is the oldest of seven): injected, and the last
         // non-active row evicted to make room.
+        const REVIEW_COUNT_WITH_OPEN = 7;
         const full = render(
             `/tasks/${open.id}`,
-            navigation([], [...reviewTasks, open], { running: 0, review: 7, past: 0 })
+            navigation([], [...reviewTasks, open], { running: 0, review: REVIEW_COUNT_WITH_OPEN, past: 0 })
         );
         expect(full).toContain('the open task');
         expect(full).not.toContain('review task 2');
@@ -232,23 +274,29 @@ describe('SideNav status dots and live lines', () => {
         expect(html).toContain('→ Read src/x.ts');
     });
 
-    it('keeps the live line out of parked and finished tasks', () => {
+    it('keeps the live line out of queued and finished tasks', () => {
         const html = render(
             '/tasks',
-            navigation([], [summary(), summary({ ...running(), status: 'standby' } as Partial<TaskSummary>)])
+            navigation([], [summary(), summary({ ...running(), status: 'queued' } as Partial<TaskSummary>)])
         );
         expect(html).not.toContain('sidenav-task-summary');
     });
 
-    it('paints the states text-first: grey parked, red failed, green done, plain stopped', () => {
-        const parked = render('/tasks', navigation([summary({ status: 'standby' })], []));
-        expect(parked).toContain('sidenav-dot sidenav-dot-paused');
+    it('paints the states text-first: grey queued, red failed, green done, plain stopped', () => {
+        const queued = render('/tasks', navigation([summary({ status: 'queued' })], []));
+        expect(queued).toContain('sidenav-dot sidenav-dot-paused');
         const failed = render('/tasks', navigation([], [summary({ status: 'failed' })]));
         expect(failed).toContain('sidenav-dot sidenav-dot-failed');
         const done = render('/tasks', navigation([], [summary({ doneAt: '2026-09-02T13:00:00.000Z' })]));
         expect(done).toContain('sidenav-dot sidenav-dot-done');
         const stopped = render('/tasks', navigation([], [summary({ status: 'stopped' })]));
         expect(stopped).not.toContain('sidenav-dot ');
+    });
+
+    it('holds the same grey paused dot for an open PR-review wait as for queued', () => {
+        const html = render('/tasks', navigation([], [summary({ status: 'queued', waitReason: 'review' })]));
+        expect(html).toContain('sidenav-dot sidenav-dot-paused');
+        expect(html).not.toContain('sidenav-dot-done');
     });
 });
 

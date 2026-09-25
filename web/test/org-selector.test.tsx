@@ -73,7 +73,7 @@ describe('AppBar', () => {
     /*
      * The global bar (issue 160) is chrome only: the organization selector and the user menu, and
      * — on mobile — the navigation trigger and the brand. No h1, no telemetry: the dashboard owns
-     * its repo coverage, timestamp and Refresh, and the routed page owns the page's heading.
+     * its repo coverage and timestamp, and the routed page owns the page's heading.
      */
     const payload = {
         meta: {
@@ -101,7 +101,7 @@ describe('AppBar', () => {
         const markup = html();
         expect(markup).not.toContain('<h1');
         expect(markup).toContain('appbar-brand');
-        expect(markup).toContain('>Factory</a>');
+        expect(markup).toContain('>Bellows</a>');
         expect(markup).toContain('Open navigation');
         expect(markup.indexOf('appbar-trigger')).toBeLessThan(markup.indexOf('appbar-actions'));
     });

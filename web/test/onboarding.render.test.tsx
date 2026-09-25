@@ -53,7 +53,8 @@ describe('OnboardingPage', () => {
     it('renders the setup decision: brand, context, one h1, purpose, identity, and the orgs', () => {
         const html = renderPage({ payload: pending });
         expect(html).toContain('public-brand');
-        expect(html).toContain('Factory');
+        expect(html).toContain('Bellows');
+        expect(html).not.toContain('Factory');
         expect(html).toContain('Setup · One step');
         // Exactly one h1 in the loaded state, and it is the pinned one.
         expect(html.match(/<h1/g)?.length).toBe(1);
@@ -71,7 +72,7 @@ describe('OnboardingPage', () => {
         const html = renderPage({ payload: { ...pending, selected: ['999999'], reselect: true, org: '999999' } });
         expect(html).toContain('Requested for this sign-in');
         expect(html).toContain(
-            'This replaces which organizations you enter Factory with. Repository modes change only where shown above.'
+            'This replaces which organizations you enter Bellows with. Repository modes change only where shown above.'
         );
         // Only the stored choice arrives checked.
         expect(checkedBoxes(html)).toBe(1);
@@ -153,7 +154,7 @@ describe('OnboardingPage explicit repository mode (issue 187)', () => {
         expect(note).toBeGreaterThan(-1);
         expect(summary).toBeGreaterThan(note);
         expect(action).toBeGreaterThan(summary);
-        expect(html).toContain('This choice changes what Factory tracks, not your GitHub permissions.');
+        expect(html).toContain('This choice changes what Bellows tracks, not your GitHub permissions.');
         // Every org is accounted for, by name and mode, and the requested org is the active one.
         expect(html).toContain('2 organizations selected');
         expect(html).toContain('All current and future repositories');
@@ -222,7 +223,7 @@ describe('OnboardingPage listings (issue 187)', () => {
             listings: { 888888: NONE, 999999: NONE },
         });
         expect(html).toContain(
-            'Repository choices are temporarily unavailable. Factory will track repositories this installation reports.'
+            'Repository choices are temporarily unavailable. Bellows will track repositories this installation reports.'
         );
         expect(html).toContain(
             'Your existing specific selection is preserved, but it cannot be reviewed right now. Try again before changing repository scope.'
@@ -288,14 +289,18 @@ describe('reconciling a rejected submission (#135 review)', () => {
     });
 });
 
+const EXPLICIT_MODE_LISTING: RepoListing = { repos: ['acme/web', 'acme/other'], source: 'app' };
+const EXPLICIT_MODE_INSTALLATIONS = [
+    { id: '888888', account: 'other-org', tracked: null },
+    { id: '999999', account: 'acme', tracked: ['acme/gone', 'acme/web'] },
+];
+const oneDraft = (installation: { id: string; account: string; tracked: string[] | null }, listing?: RepoListing) =>
+    initialDrafts([installation], listing ? { [installation.id]: listing } : undefined).get(installation.id)!;
+
 describe('explicit repository mode (issue 187)', () => {
-    const LISTING: RepoListing = { repos: ['acme/web', 'acme/other'], source: 'app' };
-    const INSTALLATIONS = [
-        { id: '888888', account: 'other-org', tracked: null },
-        { id: '999999', account: 'acme', tracked: ['acme/gone', 'acme/web'] },
-    ];
-    const one = (installation: { id: string; account: string; tracked: string[] | null }, listing?: RepoListing) =>
-        initialDrafts([installation], listing ? { [installation.id]: listing } : undefined).get(installation.id)!;
+    const LISTING = EXPLICIT_MODE_LISTING;
+    const INSTALLATIONS = EXPLICIT_MODE_INSTALLATIONS;
+    const one = oneDraft;
 
     it('null tracking initializes all mode; a stored array initializes specific with its raw set', () => {
         const all = one({ id: '888888', account: 'other-org', tracked: null });
@@ -393,6 +398,12 @@ describe('explicit repository mode (issue 187)', () => {
             buildCompletionPayload([INSTALLATIONS[0]!], new Set(['888888']), new Map([['888888', all]])).repos
         ).toEqual({});
     });
+});
+
+describe('explicit repository mode (issue 187) — completion payload and summary', () => {
+    const LISTING = EXPLICIT_MODE_LISTING;
+    const INSTALLATIONS = EXPLICIT_MODE_INSTALLATIONS;
+    const one = oneDraft;
 
     it('a deselected organization contributes no org and no repo key, whatever its draft says', () => {
         const widened = withMode(one(INSTALLATIONS[1]!, LISTING), 'all');

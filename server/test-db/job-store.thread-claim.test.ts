@@ -2,7 +2,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
-import { createJobStore, type JobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/job-store.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -11,6 +12,8 @@ let sql: Sql;
 let store: JobStore;
 
 const ORG = 'test-org';
+/** A lease long enough that nothing in this suite outlives it by accident. */
+const LEASE_SECONDS = 300;
 
 const db = useTestDb({ max: 8 });
 
@@ -29,7 +32,7 @@ beforeAll(async () => {
  */
 const craft = async (shape: {
     parent?: string | null;
-    status?: 'queued' | 'running' | 'standby' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+    status?: 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
     lease?: 'live' | 'expired';
     /** Seconds before now the row was created. Bigger = older: orders the queue deterministically. */
     olderBySeconds?: number;
@@ -56,7 +59,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const root = await craft({ status: 'running', lease: 'live' });
         await craft({ parent: root });
 
-        expect(await store.claim('w1', 300)).toBeNull();
+        expect(await store.claim('w1', LEASE_SECONDS)).toBeNull();
     });
 
     it('reclaims the running root itself, and unblocks its follow-up only at a terminal status', async () => {
@@ -64,17 +67,17 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const followUp = await craft({ parent: root });
 
         // The root's own reclaim is the heartbeat-fenced path and stays — never the follow-up.
-        const first = await store.claim('w1', 300);
+        const first = await store.claim('w1', LEASE_SECONDS);
         expect(first).toMatchObject({ id: root, attempts: 1 });
         expect(first?.rootJobId).toBe(root);
 
         // The root runs on: the follow-up still waits.
-        expect(await store.claim('w2', 300)).toBeNull();
+        expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
 
         // The moment the root is terminal the follow-up is claimable, carrying exactly the fields
         // it always did — the new predicate composes with the claim, it does not reshape it.
         await store.complete(root, first!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        const second = await store.claim('w3', 300);
+        const second = await store.claim('w3', LEASE_SECONDS);
         expect(second).toMatchObject({
             id: followUp,
             command: 'crafted',
@@ -94,7 +97,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const root = await craft({ status: 'running', lease: 'expired' });
         await craft({ parent: root, olderBySeconds: 60 });
 
-        expect((await store.claim('w1', 300))?.id).toBe(root);
+        expect((await store.claim('w1', LEASE_SECONDS))?.id).toBe(root);
     });
 
     // The exclusion is symmetric: whichever member of the thread runs, the others wait — a root
@@ -103,16 +106,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const root = await craft({});
         await craft({ parent: root, status: 'running', lease: 'live' });
 
-        expect(await store.claim('w1', 300)).toBeNull();
-    });
-
-    // Standby is parked, not running: it holds no worktree work, so it blocks nothing — and the
-    // claim's status filter already keeps it unclaimable.
-    it('a standby row neither blocks nor is claimable', async () => {
-        await craft({ status: 'standby', lease: 'expired' });
-        const followUp = await craft({ parent: '00000000-0000-4000-8000-000000000001', status: 'queued' });
-
-        expect((await store.claim('w1', 300))?.id).toBe(followUp);
+        expect(await store.claim('w1', LEASE_SECONDS)).toBeNull();
     });
 
     // Stopped is the user's verdict on a turn they ended: terminal, so it blocks nothing and is
@@ -121,7 +115,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         await craft({ status: 'stopped', lease: 'expired' });
         const followUp = await craft({ parent: '00000000-0000-4000-8000-000000000002', status: 'queued' });
 
-        expect((await store.claim('w1', 300))?.id).toBe(followUp);
+        expect((await store.claim('w1', LEASE_SECONDS))?.id).toBe(followUp);
     });
 
     it('different roots never block each other', async () => {
@@ -129,9 +123,9 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         await craft({ parent: rootA });
         const rootB = await craft({});
 
-        expect((await store.claim('w1', 300))?.id).toBe(rootB);
+        expect((await store.claim('w1', LEASE_SECONDS))?.id).toBe(rootB);
         // Thread A's follow-up still waits — the exclusion is per thread, not global.
-        expect(await store.claim('w2', 300)).toBeNull();
+        expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
     });
 
     it('terminal roots — failed and dead — block nothing', async () => {
@@ -140,8 +134,8 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const failedChild = await craft({ parent: failedRoot });
         const deadChild = await craft({ parent: deadRoot });
 
-        const first = await store.claim('w1', 300);
-        const second = await store.claim('w2', 300);
+        const first = await store.claim('w1', LEASE_SECONDS);
+        const second = await store.claim('w2', LEASE_SECONDS);
         expect([first?.id, second?.id].sort()).toEqual([failedChild, deadChild].sort());
     });
 
@@ -160,7 +154,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
             await blocker`select pg_advisory_lock(hashtextextended(${root}::text, 0))`;
 
             let settled = false;
-            const pending = store.claim('w1', 300).then(
+            const pending = store.claim('w1', LEASE_SECONDS).then(
                 (claim) => {
                     settled = true;
                     return claim;
@@ -175,7 +169,8 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
             // observable rather than a sleeping guess: once the claim is parked on an advisory
             // wait (visible in pg_stat_activity — both connections are the same role), the
             // window is real on both sides. Pre-fix the claim never parks and settles here.
-            for (let waited = 0; waited < 200 && !settled; waited += 1) {
+            const POLL_ATTEMPTS = 200;
+            for (let waited = 0; waited < POLL_ATTEMPTS && !settled; waited += 1) {
                 const [row] = await blocker<{ n: number }[]>`
                     select count(*)::int as n from pg_stat_activity
                     where wait_event_type = 'Lock' and wait_event = 'advisory'
@@ -205,7 +200,7 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const root = await craft({});
         await craft({ parent: root });
 
-        const [first, second] = await Promise.all([store.claim('w1', 300), store.claim('w2', 300)]);
+        const [first, second] = await Promise.all([store.claim('w1', LEASE_SECONDS), store.claim('w2', LEASE_SECONDS)]);
 
         // Exactly one, not merely "at most one": a second null on top of the winner would be a
         // lost claim, which is a different way to break the same promise.

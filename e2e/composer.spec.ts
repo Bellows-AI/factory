@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ConsoleMessage, Page } from '@playwright/test';
+import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -61,11 +62,10 @@ test.describe('the guided task composer', () => {
         await issue.fill('not an issue reference');
         await issue.blur();
 
-        // The refusal names the field and the way out, and never the regex source: the raw rule
-        // lives only under the field's Format details.
-        await expect(
-            composer.getByText('Issue does not match the required format. Open Format details for the technical rule.')
-        ).toBeVisible();
+        // The refusal speaks the declaration's own words first — the seeded `issue` param
+        // describes the shape it wants — and never the regex source: the raw rule lives only
+        // under the field's Format details.
+        await expect(composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })).toBeVisible();
         await expect(composer.getByText('Format details')).toBeVisible();
         const visible = await composer.innerText();
         expect(visible).not.toContain('#\\d+');
@@ -83,13 +83,14 @@ test.describe('the guided task composer', () => {
 
         await page.screenshot({ path: `${SHOTS}/composer-guided.png`, fullPage: true });
         await page.setViewportSize({ width: 360, height: 800 });
+        await noHorizontalOverflow(page);
         await page.screenshot({ path: `${SHOTS}/composer-360.png`, fullPage: true });
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.screenshot({ path: `${SHOTS}/composer-1440.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
 
-    test('an unchosen workflow runs the raw prompt, and an empty prompt explains the dark Start', async ({
+    test('the compact context row stays content-sized, and the optional steps sit behind a closed disclosure', async ({
         page,
     }) => {
         const problems = watchConsole(page);
@@ -97,7 +98,78 @@ test.describe('the guided task composer', () => {
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
-        await expect(page.getByLabel('Reusable workflow')).toHaveText('No workflow — run prompt as written');
+        const context = composer.locator('.composer-context');
+        await expect(context).toBeVisible();
+
+        // Each trigger is a compact, content-sized control — none of them stretches to the
+        // composer's own width, unlike the old full-width grid columns.
+        const composerBox = await composer.boundingBox();
+        for (const label of ['Repository', 'Executor', 'Reusable workflow']) {
+            const box = await page.getByLabel(label).boundingBox();
+            expect(box).not.toBeNull();
+            expect(box!.width).toBeLessThan(composerBox!.width * 0.6);
+        }
+
+        // The two default-workflow steps (#208) are collapsed behind a summary that names how
+        // many are on, not two persistent rows.
+        const steps = composer.locator('.composer-steps');
+        const summary = steps.locator('summary');
+        await expect(summary).toHaveText(/Optional steps \(\d of 2 on\)/);
+        const reviewToggle = composer.getByRole('checkbox', { name: 'Iterate on PR review comments' });
+        await expect(reviewToggle).toBeHidden();
+
+        // Opening it reveals both switches; toggling one updates the summary's count and the
+        // preflight sentence together.
+        await summary.click();
+        await expect(reviewToggle).toBeVisible();
+        const beforeText = await summary.textContent();
+        await reviewToggle.click();
+        await expect(summary).not.toHaveText(beforeText ?? '');
+        await expect(composer.getByText(/Default workflow selected:/)).toBeVisible();
+
+        // The keyboard path opens it too: a focused summary responds to Enter like any disclosure.
+        await summary.click();
+        await expect(reviewToggle).toBeHidden();
+        await summary.focus();
+        await page.keyboard.press('Enter');
+        await expect(reviewToggle).toBeVisible();
+
+        await page.screenshot({ path: `${SHOTS}/composer-steps-open.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('renders correctly in dark theme at desktop and mobile widths', async ({ page }) => {
+        const problems = watchConsole(page);
+        await page.addInitScript(() => localStorage.setItem('factory.theme', 'dark'));
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+
+        const composer = page.locator('.composer');
+        await expect(composer.getByText('What should the agent do?')).toBeVisible();
+
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await page.screenshot({ path: `${SHOTS}/composer-1440-dark.png`, fullPage: true });
+        await page.setViewportSize({ width: 360, height: 800 });
+        await noHorizontalOverflow(page);
+        // Every context trigger still clears the compact-shell touch-target floor in dark theme,
+        // the same as light — the theme swaps color tokens only.
+        for (const label of ['Repository', 'Executor', 'Reusable workflow']) {
+            const box = await page.getByLabel(label).boundingBox();
+            expect(box).not.toBeNull();
+            expect(box!.height).toBeGreaterThanOrEqual(44);
+        }
+        await page.screenshot({ path: `${SHOTS}/composer-360-dark.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('an unchosen workflow runs the raw prompt, and an empty prompt explains the dark Start', async ({ page }) => {
+        const problems = watchConsole(page);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+
+        const composer = page.locator('.composer');
+        await expect(page.getByLabel('Reusable workflow')).toHaveText('Default workflow');
 
         // Fresh page, empty prompt: Start is dark by design and says so.
         const start = page.getByRole('button', { name: 'Start task' });
@@ -109,7 +181,7 @@ test.describe('the guided task composer', () => {
         // whole command, and the preflight says exactly that.
         await page.getByLabel('What should the agent do?').fill('fix the login crash');
         await expect(start).toBeEnabled();
-        await expect(composer.getByText('Your prompt will run as written.')).toBeVisible();
+        await expect(composer.getByText(/Default workflow selected: prompt, gates, publish/)).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
@@ -130,9 +202,7 @@ test.describe('the guided task composer', () => {
         // The shortcut is the button, never a bypass: the invalid submission marks the field,
         // focuses it, and sends nothing — the member is still on the composer.
         await issue.press('ControlOrMeta+Enter');
-        await expect(
-            composer.getByText('Issue does not match the required format. Open Format details for the technical rule.')
-        ).toBeVisible();
+        await expect(composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })).toBeVisible();
         await expect(issue).toBeFocused();
         expect(page.url()).toContain('/tasks/new');
 
@@ -142,5 +212,11 @@ test.describe('the guided task composer', () => {
         await issue.press('ControlOrMeta+Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(problems.join('\n')).toBe('');
+
+        // Leave no claimable task behind: the task-detail spec claims against the same seeded
+        // board and its "own queued task is the only one claimable" invariant is what keeps that
+        // deterministic. Stop this one — the page's own primary action for a queued task.
+        await page.locator('.page-header-actions').getByRole('button', { name: 'Stop run' }).click();
+        await expect(page.locator('.page-header-meta')).toContainText('stopped', { timeout: 10_000 });
     });
 });

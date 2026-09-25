@@ -22,13 +22,14 @@ const { execFileSync } = require('node:child_process');
 
 const TITLE_MAX = 144;
 const BODY_COMMIT_CAP = 30;
+const GIT_OUTPUT_MAX_BUFFER_BYTES = 10485760;
 
 function git(args) {
     return execFileSync('git', args, {
         cwd: process.cwd(),
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
-        maxBuffer: 10 * 1024 * 1024,
+        maxBuffer: GIT_OUTPUT_MAX_BUFFER_BYTES,
     });
 }
 

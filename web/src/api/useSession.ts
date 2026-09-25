@@ -1,4 +1,6 @@
+import { ADMIN_ROLE, type Role } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
+import { refusalOf } from './refusal.js';
 
 export interface Session {
     /** The `/api/auth/me` union's signed-in arm; the anonymous answer is `{ authenticated: false }`. */
@@ -11,7 +13,7 @@ export interface Session {
         githubUserId: number;
         avatarUrl: string | null;
     };
-    role: 'admin' | 'member';
+    role: Role;
     membership: { invitedAt: string | null; claimedAt: string | null };
     account: { createdAt: string | null; lastLoginAt: string | null };
     organization: { id: string; name: string };
@@ -22,6 +24,9 @@ export interface Session {
     /** 'none' means the server is running open, so there is no session to end and no button. */
     mode: 'github' | 'none';
 }
+
+/** The role as the settings pages print it. */
+export const roleLabel = (role: Role): string => (role === ADMIN_ROLE ? 'Admin' : 'Member');
 
 /**
  * How an expired session reaches the gate.
@@ -38,6 +43,10 @@ export interface Session {
  * gate for both.
  */
 const listeners = new Set<() => void>();
+
+/** The status code that means "the session is gone" — every data hook checks for it and hands the
+ * gate the news via {@link reportUnauthenticated} rather than rendering it as its own error. */
+export const HTTP_STATUS_UNAUTHORIZED = 401;
 
 export function reportUnauthenticated(): void {
     for (const listener of listeners) listener();
@@ -91,7 +100,7 @@ export function useSession(): UseSession {
             // 'include' would drag CORS into a same-origin app for nothing.
             const response = await fetch('/api/auth/me');
             if (!response.ok) {
-                setError(`Could not check the session (${response.status})`);
+                setError((await refusalOf(response, 'Could not check the session')).error);
             } else {
                 const payload = (await response.json()) as MeResponse;
                 setSession(payload.authenticated ? payload : null);

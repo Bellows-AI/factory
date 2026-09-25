@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import { LOCAL_ORG_ID, type AppConfig } from '../src/config.js';
 import { createOrgRegistry, type OrgRegistry } from '../src/orgs.js';
 import { testConfig } from './helpers.js';
@@ -121,6 +121,7 @@ describe('createOrgRegistry', () => {
         // read — the script has none left, so a cache miss would reject rather than pass.
         await expect(registry.for('a')).resolves.toMatchObject({ orgId: 'a' });
         await expect(registry.for('b')).resolves.toMatchObject({ orgId: 'b' });
-        expect(calls.filter((c) => c.includes('from organization'))).toHaveLength(4);
+        const EXPECTED_ORGANIZATION_READS = 4;
+        expect(calls.filter((c) => c.includes('from organization'))).toHaveLength(EXPECTED_ORGANIZATION_READS);
     });
 });

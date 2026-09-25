@@ -1,6 +1,6 @@
 import { useRef, useState, useId } from 'react';
 import { ChartRoot, XLabels, YAxis } from './Axes.js';
-import { PAD, linearScale, niceMax } from './scale.js';
+import { PAD, linearScale, niceMax, type Scale } from './scale.js';
 
 /**
  * The bucket readout's exact figure, grouped for reading — the same idiom ByUserPanel's
@@ -62,6 +62,29 @@ export function rovingIndex(current: number, count: number, key: BucketNavKey): 
 const TOOLTIP_MIN_WIDTH = 150;
 const TOOLTIP_MAX_WIDTH = 320;
 const TOOLTIP_LINE = 14;
+/** A monospace character's rendered advance, in px — there is no DOM text metric inside an SVG. */
+const TOOLTIP_CHAR_WIDTH_PX = 6.6;
+/** Extra room the width estimate leaves beyond the widest line's raw character count. */
+const TOOLTIP_WIDTH_PADDING_PX = 12;
+/** Extra room the box leaves below its last line. */
+const TOOLTIP_HEIGHT_PADDING_PX = 8;
+/** The gap between the box and the bar it sits above. */
+const TOOLTIP_GAP_ABOVE_BAR_PX = 6;
+/** The box's left inset for its text lines. */
+const TOOLTIP_TEXT_INSET_PX = 6;
+/** The first line's baseline offset from the box's top. */
+const TOOLTIP_FIRST_LINE_BASELINE_PX = 16;
+/** The empty-state label's baseline offset below the plot's top padding. */
+const EMPTY_STATE_LABEL_OFFSET_PX = 12;
+/** The floor under a bar's rendered height — a real value must always read as a sliver, never a
+ * true zero. */
+const MIN_BAR_HEIGHT_PX = 0.5;
+/** A bar's width, as a fraction of its band. */
+const BAR_WIDTH_BAND_FRACTION = 0.7;
+/** A bar's rendered width floor, in px, before the eighth-of-plot cap narrows a sparse range. */
+const MIN_BAR_WIDTH_PX = 56;
+/** A single bar can never exceed this fraction of the plot — never a filled panel. */
+const MAX_BAR_WIDTH_PLOT_FRACTION = 8;
 
 /**
  * The bucket's exact readout: full date, partial flag, every raw series value (hidden ones
@@ -70,12 +93,15 @@ const TOOLTIP_LINE = 14;
  */
 function bucketParts(
     i: number,
-    bucketLabels: readonly string[],
-    partial: readonly boolean[],
-    series: readonly BarSeries[],
-    line: LineSeries | undefined,
-    hiddenSeries: ReadonlySet<string> | undefined
+    context: {
+        bucketLabels: readonly string[];
+        partial: readonly boolean[];
+        series: readonly BarSeries[];
+        line: LineSeries | undefined;
+        hiddenSeries: ReadonlySet<string> | undefined;
+    }
 ): string[] {
+    const { bucketLabels, partial, series, line, hiddenSeries } = context;
     const parts: string[] = [bucketLabels[i] ?? ''];
     if (partial[i]) parts.push('partial period');
     for (const s of series) parts.push(`${s.label} ${exact(s.values[i])}`);
@@ -86,6 +112,142 @@ function bucketParts(
     ];
     if (hidden.length > 0) parts.push(`hidden: ${hidden.join(', ')}`);
     return parts;
+}
+
+/**
+ * The stacked bars themselves — one `<rect>` per non-zero value, stacked bottom to top per
+ * bucket. Split out of `BarChart` so its own line count stays under the limit.
+ */
+function computeBars(input: {
+    labels: readonly string[];
+    visibleSeries: readonly BarSeries[];
+    y: Scale;
+    bandCentre: (i: number) => number;
+    barWidth: number;
+}): React.ReactNode[] {
+    const { labels, visibleSeries, y, bandCentre, barWidth } = input;
+    return labels.flatMap((_, i) => {
+        let base = 0;
+        return visibleSeries.flatMap((s, si) => {
+            const value = s.values[i] ?? 0;
+            if (!value) return [];
+            const rect = (
+                <rect
+                    key={`${i}-${si}`}
+                    x={bandCentre(i) - barWidth / 2}
+                    y={y(base + value)}
+                    width={barWidth}
+                    height={Math.max(y(base) - y(base + value), MIN_BAR_HEIGHT_PX)}
+                    className={`bar ${s.className}`.trim()}
+                    data-series={s.id}
+                />
+            );
+            base += value;
+            return [rect];
+        });
+    });
+}
+
+/**
+ * The hatch marking a bucket still in progress, behind the bars: a bucket in progress stays
+ * marked even while its numbers are zero, and the marks stay readable under the bars on top.
+ * A hatch, not a color — the series must read in grayscale too. Split out of `BarChart` so its
+ * own line count stays under the limit.
+ */
+function PartialHatchOverlay({
+    labels,
+    partial,
+    bandCentre,
+    band,
+    plotTop,
+    plotBottom,
+}: {
+    labels: readonly string[];
+    partial: readonly boolean[];
+    bandCentre: (i: number) => number;
+    band: number;
+    plotTop: number;
+    plotBottom: number;
+}) {
+    if (!partial.some(Boolean)) return null;
+    return (
+        <>
+            <defs>
+                <pattern
+                    id="partial-hatch"
+                    patternUnits="userSpaceOnUse"
+                    width="6"
+                    height="6"
+                    patternTransform="rotate(45)"
+                >
+                    <rect width="6" height="6" className="bar-partial-hatch" />
+                </pattern>
+            </defs>
+            {labels.map((_, i) =>
+                partial[i] ? (
+                    <rect
+                        key={`partial-${i}`}
+                        className="bar-partial"
+                        x={bandCentre(i) - band / 2}
+                        y={plotTop}
+                        width={band}
+                        height={plotBottom - plotTop}
+                    />
+                ) : null
+            )}
+        </>
+    );
+}
+
+/**
+ * The active bucket's exact readout, positioned to stay inside the plot. No DOM text metrics
+ * inside an SVG — the box rides the monospace advance instead, so a long hidden-series list
+ * still fits inside its own readout. Split out of `BarChart` so its own line count stays under
+ * the limit.
+ */
+function BucketTooltip({
+    tooltipId,
+    lines,
+    anchorX,
+    topY,
+    plotTop,
+    minX,
+    maxX,
+}: {
+    tooltipId: string;
+    lines: readonly string[];
+    /** The bucket's horizontal centre — the box is centred on it, clamped to the plot. */
+    anchorX: number;
+    /** The top of the bucket's stacked value — the box sits above it. */
+    topY: number;
+    plotTop: number;
+    minX: number;
+    maxX: number;
+}) {
+    const boxWidth = Math.min(
+        Math.max(
+            TOOLTIP_MIN_WIDTH,
+            Math.ceil(TOOLTIP_CHAR_WIDTH_PX * Math.max(...lines.map((l) => l.length)) + TOOLTIP_WIDTH_PADDING_PX)
+        ),
+        TOOLTIP_MAX_WIDTH
+    );
+    const boxHeight = TOOLTIP_LINE * lines.length + TOOLTIP_HEIGHT_PADDING_PX;
+    const boxX = Math.max(minX, Math.min(anchorX - boxWidth / 2, maxX - boxWidth));
+    const boxY = Math.max(topY - boxHeight - TOOLTIP_GAP_ABOVE_BAR_PX, plotTop);
+    return (
+        <g id={tooltipId} className="chart-tooltip">
+            <rect className="chart-tooltip-box" x={boxX} y={boxY} width={boxWidth} height={boxHeight} rx="3" />
+            {lines.map((l, n) => (
+                <text
+                    key={n}
+                    x={boxX + TOOLTIP_TEXT_INSET_PX}
+                    y={boxY + TOOLTIP_FIRST_LINE_BASELINE_PX + TOOLTIP_LINE * n}
+                >
+                    {l}
+                </text>
+            ))}
+        </g>
+    );
 }
 
 /** Vertical bars, stacked when more than one series is given, over one roving bucket inspector. */
@@ -115,7 +277,7 @@ export function BarChart({
     if (visibleSeries.length === 0 && !visibleLine) {
         return (
             <ChartRoot width={width} height={height} role="group" ariaLabel={ariaLabel}>
-                <text className="chart-empty" x={PAD.left} y={PAD.top + 12}>
+                <text className="chart-empty" x={PAD.left} y={PAD.top + EMPTY_STATE_LABEL_OFFSET_PX}>
                     All series hidden
                 </text>
             </ChartRoot>
@@ -128,7 +290,10 @@ export function BarChart({
     // ~580px wide and reading as a filled panel — but a flat cap starved sparse ranges: seven
     // day-bars of 56px in 800px read as gaps. The cap is a fraction of the plot instead: a bar
     // can never exceed an eighth of it (never a panel), and band-limited ranges fill out.
-    const barWidth = Math.min(Math.max(band * 0.7, 1), Math.max(56, innerWidth / 8));
+    const barWidth = Math.min(
+        Math.max(band * BAR_WIDTH_BAND_FRACTION, 1),
+        Math.max(MIN_BAR_WIDTH_PX, innerWidth / MAX_BAR_WIDTH_PLOT_FRACTION)
+    );
     const bandCentre = (i: number) => PAD.left + band * i + band / 2;
     const plotBottom = height - PAD.bottom;
 
@@ -136,57 +301,18 @@ export function BarChart({
     const max = niceMax(Math.max(...stackTotals, 0));
     const y = linearScale([0, max], [plotBottom, PAD.top]);
 
-    const bars = labels.flatMap((_, i) => {
-        let base = 0;
-        return visibleSeries.flatMap((s, si) => {
-            const value = s.values[i] ?? 0;
-            if (!value) return [];
-            const rect = (
-                <rect
-                    key={`${i}-${si}`}
-                    x={bandCentre(i) - barWidth / 2}
-                    y={y(base + value)}
-                    width={barWidth}
-                    height={Math.max(y(base) - y(base + value), 0.5)}
-                    className={`bar ${s.className}`.trim()}
-                    data-series={s.id}
-                />
-            );
-            base += value;
-            return [rect];
-        });
-    });
+    const bars = computeBars({ labels, visibleSeries, y, bandCentre, barWidth });
 
-    // A partial bucket is hatched over its full band, behind the bars: a bucket still in
-    // progress stays marked even while its numbers are zero, and the marks stay readable on
-    // top. A hatch, not a color — the series must read in grayscale too.
-    const partialMark = partial.some(Boolean) ? (
-        <>
-            <defs>
-                <pattern
-                    id="partial-hatch"
-                    patternUnits="userSpaceOnUse"
-                    width="6"
-                    height="6"
-                    patternTransform="rotate(45)"
-                >
-                    <rect width="6" height="6" className="bar-partial-hatch" />
-                </pattern>
-            </defs>
-            {labels.map((_, i) =>
-                partial[i] ? (
-                    <rect
-                        key={`partial-${i}`}
-                        className="bar-partial"
-                        x={bandCentre(i) - band / 2}
-                        y={PAD.top}
-                        width={band}
-                        height={plotBottom - PAD.top}
-                    />
-                ) : null
-            )}
-        </>
-    ) : null;
+    const partialMark = (
+        <PartialHatchOverlay
+            labels={labels}
+            partial={partial}
+            bandCentre={bandCentre}
+            band={band}
+            plotTop={PAD.top}
+            plotBottom={plotBottom}
+        />
+    );
 
     let overlay: React.ReactNode = null;
     if (visibleLine) {
@@ -207,7 +333,7 @@ export function BarChart({
         );
     }
 
-    const parts = (i: number) => bucketParts(i, bucketLabels, partial, series, line, hiddenSeries);
+    const parts = (i: number) => bucketParts(i, { bucketLabels, partial, series, line, hiddenSeries });
 
     // One roving tab stop: pointer movement and keyboard focus feed the same active-bucket
     // state. Keys move BOTH the model and the DOM focus — a stop that moves without its focus
@@ -248,29 +374,18 @@ export function BarChart({
         );
     });
 
-    let tooltip: React.ReactNode = null;
-    if (activeIdx !== null) {
-        const lines = parts(activeIdx);
-        // No DOM text metrics inside an SVG — the box rides the monospace advance instead,
-        // so a long hidden-series list still fits inside its own readout.
-        const boxWidth = Math.min(
-            Math.max(TOOLTIP_MIN_WIDTH, Math.ceil(6.6 * Math.max(...lines.map((l) => l.length)) + 12)),
-            TOOLTIP_MAX_WIDTH
+    const tooltip =
+        activeIdx === null ? null : (
+            <BucketTooltip
+                tooltipId={tooltipId}
+                lines={parts(activeIdx)}
+                anchorX={bandCentre(activeIdx)}
+                topY={y(stackTotals[activeIdx] ?? 0)}
+                plotTop={PAD.top}
+                minX={PAD.left}
+                maxX={width - PAD.right}
+            />
         );
-        const boxHeight = TOOLTIP_LINE * lines.length + 8;
-        const boxX = Math.max(PAD.left, Math.min(bandCentre(activeIdx) - boxWidth / 2, width - PAD.right - boxWidth));
-        const boxY = Math.max(y(stackTotals[activeIdx] ?? 0) - boxHeight - 6, PAD.top);
-        tooltip = (
-            <g id={tooltipId} className="chart-tooltip">
-                <rect className="chart-tooltip-box" x={boxX} y={boxY} width={boxWidth} height={boxHeight} rx="3" />
-                {lines.map((l, n) => (
-                    <text key={n} x={boxX + 6} y={boxY + 16 + TOOLTIP_LINE * n}>
-                        {l}
-                    </text>
-                ))}
-            </g>
-        );
-    }
 
     return (
         <ChartRoot width={width} height={height} role="group" ariaLabel={ariaLabel}>

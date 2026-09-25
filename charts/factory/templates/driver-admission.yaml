@@ -1,0 +1,191 @@
+{{- if .Values.isolation.admissionPolicy }}
+{{/*
+The fence RBAC cannot draw (see driver-rbac.yaml): two ValidatingAdmissionPolicies bound to the
+driver's ServiceAccount and this namespace. Cluster-scoped objects, so their names carry the
+namespace; they need Kubernetes >= 1.30 (admissionregistration.k8s.io/v1), and a cluster without
+the API fails the install loudly rather than installing an unfenced driver.
+
+`-pods` fences what a pod the driver specs may hold — the runner, every aux Job, every service
+pod — because `create pods` would otherwise be `read every Secret`:
+  - Secrets a container can read (volumes, env, envFrom) only when they are the driver's own
+    per-attempt ones (factory-{job,sync,publish,helper,gate}-…-env, docs/kubernetes.md) or the
+    runner credentials. The chart's pull secrets only under imagePullSecrets — the kubelet reads
+    those, a container never does. The dashboard Secret is none of these.
+  - volumes: the workspaces claim, emptyDir, and such Secrets — no hostPath, no other claim, no
+    projected ServiceAccount token, no CSI driver.
+  - every mount of the workspaces claim carries a subPath of the driver's WORKSPACE_PATH shape
+    (`<org>/<user id>`, driver/src/publish.ts) and no subPathExpr, so no pod mounts the claim root.
+  - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
+    added capabilities.
+`-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
+label every runner-owned object carries), so the dashboard's Secret, Service and ConfigMaps are
+out of reach; Secrets only under the per-attempt names and only Opaque (a service-account-token
+Secret would mint credentials); Services only headless, never an exposure.
+
+Limits, stated: the per-attempt Secret names do not carry the release, so in a namespace shared by
+two releases one driver can still reach the other's per-attempt objects — install one release per
+namespace. Admission sees no job, so the workspace subPath is fenced by shape, not by owner: a
+compromised driver can still name another member's `<org>/<user id>` subtree. A mutating sidecar injector (a service mesh) adds volumes this policy refuses on service
+pods; exclude the namespace from injection. Seccomp/AppArmor/sysctls are left to Pod Security
+Admission — label the namespace `pod-security.kubernetes.io/enforce: baseline` for those.
+*/}}
+{{- $fullname := include "factory.fullname" . }}
+{{- $name := printf "%s-%s-driver" .Release.Namespace $fullname | trunc 240 | trimSuffix "-" }}
+{{- $user := printf "system:serviceaccount:%s:%s-driver" .Release.Namespace $fullname }}
+{{- $allowed := list }}
+{{- if include "factory.runnerSecretEnabled" . }}
+{{- $allowed = append $allowed (include "factory.runnerSecretName" .) }}
+{{- end }}
+{{- $secretName := "^factory-(job|sync|publish|helper|gate)-[a-z0-9-]+-env$" }}
+{{- $workspaceSubPath := "^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: {{ $name }}-pods
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['CREATE']
+              resources: ['pods']
+            - apiGroups: ['batch']
+              apiVersions: ['v1']
+              operations: ['CREATE']
+              resources: ['jobs']
+    matchConditions:
+        - name: the-driver
+          expression: {{ printf "request.userInfo.username == '%s'" $user | quote }}
+    variables:
+        - name: spec
+          expression: "request.kind.kind == 'Job' ? object.spec.template.spec : object.spec"
+        - name: containers
+          expression: "variables.spec.containers + (has(variables.spec.initContainers) ? variables.spec.initContainers : [])"
+        - name: allowed
+          expression: {{ toJson $allowed | quote }}
+        - name: pullSecrets
+          expression: {{ toJson .Values.imagePullSecrets | quote }}
+        - name: workspaceVolumes
+          expression: >-
+              has(variables.spec.volumes) ? variables.spec.volumes.filter(v,
+                has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ include "factory.workspaceClaim" . | squote }}
+              ).map(v, v.name) : []
+    validations:
+        - expression: "has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false"
+          message: 'a driver-specced pod must set automountServiceAccountToken: false'
+        - expression: "!has(variables.spec.serviceAccountName) || variables.spec.serviceAccountName in ['', 'default']"
+          message: 'a driver-specced pod runs as the default ServiceAccount'
+        - expression: "!has(variables.spec.nodeName) || variables.spec.nodeName == ''"
+          message: 'a driver-specced pod is placed by the scheduler, never pinned to a node'
+        - expression: >-
+              variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))
+          message: 'a driver-specced container may not bind a host port'
+        - expression: >-
+              !(has(variables.spec.hostNetwork) && variables.spec.hostNetwork) &&
+              !(has(variables.spec.hostPID) && variables.spec.hostPID) &&
+              !(has(variables.spec.hostIPC) && variables.spec.hostIPC)
+          message: 'a driver-specced pod may not share host namespaces'
+        - expression: >-
+              !has(variables.spec.volumes) || variables.spec.volumes.all(v,
+                (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ include "factory.workspaceClaim" . | squote }}) ||
+                has(v.emptyDir) ||
+                (has(v.secret) && has(v.secret.secretName) &&
+                  (v.secret.secretName.matches({{ squote $secretName }}) || v.secret.secretName in variables.allowed)))
+          message: 'a driver-specced pod may mount only the workspaces claim, emptyDir, and its own per-attempt Secrets'
+        - expression: >-
+              variables.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m,
+                !(m.name in variables.workspaceVolumes) ||
+                (!has(m.subPathExpr) && has(m.subPath) && m.subPath.matches({{ squote $workspaceSubPath }}))))
+          message: 'a driver-specced pod may mount the workspaces claim only at a member subPath (<org>/<user id>)'
+        - expression: >-
+              !has(variables.spec.imagePullSecrets) ||
+              variables.spec.imagePullSecrets.all(p, has(p.name) && p.name in variables.pullSecrets)
+          message: 'a driver-specced pod may pull only with the chart imagePullSecrets'
+        - expression: >-
+              variables.containers.all(c,
+                (!has(c.env) || c.env.all(e,
+                  !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef) ||
+                  (has(e.valueFrom.secretKeyRef.name) &&
+                    (e.valueFrom.secretKeyRef.name.matches({{ squote $secretName }}) ||
+                     e.valueFrom.secretKeyRef.name in variables.allowed)))) &&
+                (!has(c.envFrom) || c.envFrom.all(f,
+                  !has(f.secretRef) ||
+                  (has(f.secretRef.name) &&
+                    (f.secretRef.name.matches({{ squote $secretName }}) || f.secretRef.name in variables.allowed)))))
+          message: 'a driver-specced pod may read only its own per-attempt Secrets and the runner credentials'
+        - expression: >-
+              variables.containers.all(c, !has(c.securityContext) || (
+                !(has(c.securityContext.privileged) && c.securityContext.privileged) &&
+                (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
+                  size(c.securityContext.capabilities.add) == 0)))
+          message: 'a driver-specced container may not be privileged or add capabilities'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: {{ $name }}-pods
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    policyName: {{ $name }}-pods
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: {{ $name }}-objects
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['CREATE', 'DELETE']
+              resources: ['pods', 'secrets', 'configmaps', 'services']
+            - apiGroups: ['batch']
+              apiVersions: ['v1']
+              operations: ['CREATE', 'DELETE']
+              resources: ['jobs']
+    matchConditions:
+        - name: the-driver
+          expression: {{ printf "request.userInfo.username == '%s'" $user | quote }}
+    variables:
+        # A DELETE carries the stored object as oldObject and no object.
+        - name: target
+          expression: "request.operation == 'DELETE' ? oldObject : object"
+    validations:
+        - expression: "has(variables.target.metadata.labels) && 'factory.job' in variables.target.metadata.labels"
+          message: 'the driver creates and deletes only objects labelled factory.job'
+        - expression: >-
+              request.kind.kind != 'Secret' ||
+              (variables.target.metadata.name.matches({{ squote $secretName }}) &&
+                (request.operation == 'DELETE' || !has(object.type) || object.type == 'Opaque'))
+          message: 'the driver manages only Opaque per-attempt Secrets'
+        - expression: >-
+              request.kind.kind != 'Service' || request.operation == 'DELETE' ||
+              (has(object.spec.clusterIP) && object.spec.clusterIP == 'None')
+          message: 'the driver creates only headless Services'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: {{ $name }}-objects
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    policyName: {{ $name }}-objects
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: {{ .Release.Namespace }}
+{{- end }}

@@ -24,7 +24,8 @@ const E2E_LOGIN = 'e2e-user';
  * Full millisecond precision — a modulus would make two runs collide by birthday bound and the
  * second would inherit the first's stored selection.
  */
-const E2E_USER_ID = 420000 + Date.now();
+const E2E_USER_ID_BASE = 420000;
+const E2E_USER_ID = E2E_USER_ID_BASE + Date.now();
 
 const shared = {
     WEB_ROOT: `${root}web/dist`,
@@ -154,6 +155,10 @@ export default defineConfig({
                 // keeps work. The open board above deliberately has none, which is what keeps a
                 // picker from ever appearing in the visual check.
                 ORG_WORKSPACE_ROOT: `${root}artifacts/e2e-workspaces`,
+                // The seed's stored-repo rows land under these orgs (same ids the stub IdP
+                // reports as installations), so the repositories page's org-scoped stored
+                // fallback offers the seeded repository to the signed-in member.
+                SEED_ORGS: '999999,888888',
             },
             timeout: 180_000,
             reuseExistingServer: false,

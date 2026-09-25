@@ -4,8 +4,6 @@ import type { DateRange } from '../src/range.js';
 import { taskUsageStats } from '../src/task-usage.js';
 import type { JobRun, SessionRollup, TokenTotals } from '../src/types.js';
 
-const NOW = new Date('2026-08-21T12:00:00.000Z');
-
 const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice', avatarUrl: null };
 const BOB = { id: 'u-bob', login: 'bob', name: null, avatarUrl: null };
 
@@ -16,6 +14,8 @@ const T = (input: number | null, output: number | null): TokenTotals => ({
     cacheCreation: null,
 });
 
+const DEFAULT_SESSION_OUTPUT_TOKENS = 5;
+
 function session(over: Partial<SessionRollup>): SessionRollup {
     return {
         sessionId: 's',
@@ -25,7 +25,7 @@ function session(over: Partial<SessionRollup>): SessionRollup {
         taskKey: null,
         firstSeen: '2026-08-20T00:00:00.000Z',
         lastSeen: '2026-08-20T01:00:00.000Z',
-        tokens: T(10, 5),
+        tokens: T(10, DEFAULT_SESSION_OUTPUT_TOKENS),
         linesAdded: 1,
         linesRemoved: 0,
         editsAccepted: 1,
@@ -49,25 +49,31 @@ function run(over: Partial<JobRun>): JobRun {
 }
 
 // The spec's 1k/2k/3k scenario: three tasks, three sessions, hand-checkable percentiles.
+const TASK_1K_INPUT_TOKENS = 600;
+const TASK_1K_OUTPUT_TOKENS = 400;
+const TASK_2K_INPUT_TOKENS = 1200;
+const TASK_2K_OUTPUT_TOKENS = 800;
+const TASK_3K_INPUT_TOKENS = 2400;
+const TASK_3K_OUTPUT_TOKENS = 600;
 const threeTasks = [
     session({
         sessionId: 'a',
         taskKey: 't1',
-        tokens: T(600, 400),
+        tokens: T(TASK_1K_INPUT_TOKENS, TASK_1K_OUTPUT_TOKENS),
         firstSeen: '2026-08-20T01:00:00Z',
         lastSeen: '2026-08-20T01:10:00Z',
     }),
     session({
         sessionId: 'b',
         taskKey: 't2',
-        tokens: T(1200, 800),
+        tokens: T(TASK_2K_INPUT_TOKENS, TASK_2K_OUTPUT_TOKENS),
         firstSeen: '2026-08-20T02:00:00Z',
         lastSeen: '2026-08-20T02:10:00Z',
     }),
     session({
         sessionId: 'c',
         taskKey: 't3',
-        tokens: T(2400, 600),
+        tokens: T(TASK_3K_INPUT_TOKENS, TASK_3K_OUTPUT_TOKENS),
         firstSeen: '2026-08-20T03:00:00Z',
         lastSeen: '2026-08-20T03:10:00Z',
     }),
@@ -94,16 +100,18 @@ describe('tokens per task', () => {
     });
 
     it('sums input and output only, never cache reads', () => {
+        const INPUT_TOKENS = 100;
+        const OUTPUT_TOKENS = 50;
         const stats = taskUsageStats(
             [
                 session({
                     taskKey: 't1',
-                    tokens: { input: 100, output: 50, cacheRead: 999_999, cacheCreation: 888_888 },
+                    tokens: { input: INPUT_TOKENS, output: OUTPUT_TOKENS, cacheRead: 999_999, cacheCreation: 888_888 },
                 }),
             ],
             []
         );
-        expect(stats.tokensPerTask.p50).toBe(150);
+        expect(stats.tokensPerTask.p50).toBe(INPUT_TOKENS + OUTPUT_TOKENS);
     });
 
     it('answers null figures, not zeros, when no task carries measured tokens', () => {
@@ -154,8 +162,9 @@ describe('agent turns per task', () => {
         // One measured run (7 turns), one unmeasured (null — the close-time read failed). A
         // partial sum presented as a total is a quiet undercount, so the task drops out of
         // THIS figure — while its tokens and job turns still count in theirs.
+        const MEASURED_TOKENS = 500;
         const stats = taskUsageStats(
-            [session({ sessionId: 'a', taskKey: 't1', tokens: T(500, 500) })],
+            [session({ sessionId: 'a', taskKey: 't1', tokens: T(MEASURED_TOKENS, MEASURED_TOKENS) })],
             [
                 run({ rootJobId: 't1', createdAt: '2026-08-19T00:00:00Z', agentTurns: 7 }),
                 run({ rootJobId: 't1', createdAt: '2026-08-20T00:00:00Z', agentTurns: null }),
@@ -236,25 +245,27 @@ describe('range interaction', () => {
 
 describe('caller scope', () => {
     it("narrowes the task set to the caller's tasks", () => {
+        const ALICE_AGENT_TURNS = 3;
         const stats = taskUsageStats(
             [
                 session({ sessionId: 'a', taskKey: 't1', user: ALICE }),
                 session({ sessionId: 'b', taskKey: 't2', user: BOB }),
             ],
             [
-                run({ rootJobId: 't1', createdBy: ALICE.id, agentTurns: 3 }),
+                run({ rootJobId: 't1', createdBy: ALICE.id, agentTurns: ALICE_AGENT_TURNS }),
                 run({ rootJobId: 't2', createdBy: BOB.id, agentTurns: 4 }),
             ],
             { user: { id: ALICE.id } }
         );
         expect(stats.tokensPerTask).toEqual({ avg: 15, p50: 15, p95: 15, tasks: 1 });
         expect(stats.jobTurnsPerTask.tasks).toBe(1);
-        expect(stats.agentTurnsPerTask.p50).toBe(3);
+        expect(stats.agentTurnsPerTask.p50).toBe(ALICE_AGENT_TURNS);
     });
 
     it('leaves sessions without attribution out of every scope', () => {
+        const ANON_TOKENS = 1000;
         const stats = taskUsageStats(
-            [session({ sessionId: 'anon', taskKey: 't1', tokens: T(1000, 1000) })],
+            [session({ sessionId: 'anon', taskKey: 't1', tokens: T(ANON_TOKENS, ANON_TOKENS) })],
             [run({ rootJobId: 't1', createdBy: null, agentTurns: 5 })],
             { user: { id: ALICE.id } }
         );
@@ -262,10 +273,10 @@ describe('caller scope', () => {
         expect(stats.jobTurnsPerTask.tasks).toBe(0);
         // Org scope keeps the same figures visible.
         const org = taskUsageStats(
-            [session({ sessionId: 'anon', taskKey: 't1', tokens: T(1000, 1000) })],
+            [session({ sessionId: 'anon', taskKey: 't1', tokens: T(ANON_TOKENS, ANON_TOKENS) })],
             [run({ rootJobId: 't1', createdBy: null, agentTurns: 5 })]
         );
-        expect(org.tokensPerTask.p50).toBe(2000);
+        expect(org.tokensPerTask.p50).toBe(ANON_TOKENS + ANON_TOKENS);
     });
 });
 
@@ -273,10 +284,17 @@ describe('repo scope', () => {
     it('excludes out-of-repo sessions and runs from every distribution', () => {
         // The totals above the task panel bucket other-repo work out; the panel must not
         // quietly include what the page just excluded.
+        const INSCOPE_TOKENS = 1000;
+        const OTHER_REPO_TOKENS = 500;
         const stats = taskUsageStats(
             [
-                session({ sessionId: 'a', taskKey: 't1', tokens: T(1000, 1000) }),
-                session({ sessionId: 'b', taskKey: 't2', tokens: T(500, 500), repo: 'other/repo' }),
+                session({ sessionId: 'a', taskKey: 't1', tokens: T(INSCOPE_TOKENS, INSCOPE_TOKENS) }),
+                session({
+                    sessionId: 'b',
+                    taskKey: 't2',
+                    tokens: T(OTHER_REPO_TOKENS, OTHER_REPO_TOKENS),
+                    repo: 'other/repo',
+                }),
             ],
             [run({ rootJobId: 't1', agentTurns: 3 }), run({ rootJobId: 't2', agentTurns: 4, repo: 'other/repo' })],
             { repos: ['o/r'] }
@@ -308,10 +326,11 @@ describe('wall clock per task', () => {
     it('excludes a task with any unmeasured run from this distribution only', () => {
         // t2's run never executed (null wall clock = never ran, not zero); both tasks carry a
         // measured session, so both count in tokens while only t1 counts in wall clock.
+        const MEASURED_TOKENS = 1000;
         const stats = taskUsageStats(
             [
-                session({ sessionId: 'a', taskKey: 't1', tokens: T(1000, 1000) }),
-                session({ sessionId: 'b', taskKey: 't2', tokens: T(1000, 1000) }),
+                session({ sessionId: 'a', taskKey: 't1', tokens: T(MEASURED_TOKENS, MEASURED_TOKENS) }),
+                session({ sessionId: 'b', taskKey: 't2', tokens: T(MEASURED_TOKENS, MEASURED_TOKENS) }),
             ],
             [run({ rootJobId: 't1', wallClockMs: 60_000 }), run({ rootJobId: 't2', wallClockMs: null })]
         );

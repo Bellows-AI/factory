@@ -8,8 +8,8 @@ TimescaleDB, or the OTLP collector actually accepted the artifact handed to it.
 
 | Command | Boundary | Current result |
 | --- | --- | --- |
-| `npm run test:executors` | Offline board routes, orchestration, both runners, image/config artifacts, OTLP parsing | 1,095 tests |
-| `npm run test:coverage:executors` | The same surface with a regression threshold | 92.59% lines/statements, 86.97% branches, 95.12% functions |
+| `npm run test:executors` | Offline board routes, orchestration, both runners, image/config artifacts, OTLP parsing | 1,279 tests |
+| `npm run test:coverage:executors` | The same surface with a regression threshold | 95.14% lines/statements, 89.21% branches, 96.28% functions |
 | `DATABASE_URL=…/factory_test npm run test:db` | Real lease, fencing, attribution, deduplication and rollup SQL | 308 tests |
 | `npm run test:jobs` | Real board HTTP, Docker daemon, containers and disposable database | Required before changing Docker runner behavior |
 | `npm run test:k8s` | Helm assertions; `--cluster` adds real Jobs in kind | Required before changing Kubernetes runner behavior |
@@ -25,9 +25,11 @@ truthful, not more strict.
 | Responsibility | Primary suites | What must remain pinned |
 | --- | --- | --- |
 | Board protocol | `board.test.ts`, `routes.jobs.test.ts`, `server/test-db/job-store*` | credential on every worker write, lease conflict distinctions, claim/heartbeat/complete idempotence |
-| Orchestration | `loop.test.ts` | first/periodic heartbeat, setup races, stop/remove, stale lease kill, reclaim barriers, report degradation |
+| Orchestration | `loop.test.ts` | first/periodic heartbeat, setup races, stop/remove, stale lease kill, reclaim barriers, report degradation, block-helper pre/post fencing |
 | Docker runner | `docker.test.ts`, `gates.test.ts`, `scripts.test.ts`, `worktree.test.ts` | argv/env secrecy, attempt labels, kill/fence isolation, bounded output, real Git behavior |
 | Kubernetes runner | `k8s.test.ts`, `k8s-transport.test.ts` | Docker parity plus claim arbitration, attempt Secrets, API retry bounds, token rotation and cleanup ordering |
+| Block-helper transport (issue #207) | `helpers.test.ts`, plus the block-helper cases in `docker.test.ts`, `k8s.test.ts` and `loop.test.ts` | registry lookup closed before any container/Job starts, versioned bounded-JSON parsing, named failure reasons, docker/kubernetes argv-and-spec parity, pre-phase agent-launch gating, post-phase publish gating |
+| Master prompt (issue #244) | `server/test/master-prompt.test.ts`, `driver/test/master-prompt.test.ts`, the argv/config pins in `docker.test.ts`/`k8s.test.ts`, `loop.test.ts`'s pre-spawn refusal | bounded, versioned renderer output; fail-closed on a missing/malformed claim; identical docker/kubernetes argv; the reserved OpenCode `factory` agent surviving a hostile member config |
 | Runner images | `executor-images.test.ts`, `branch-reporter.test.ts` | PID 1 signal forwarding, exact shipped scripts, session attribution, agent-specific startup |
 | Analytics | `telemetry-shipping.test.ts`, `routes.ingest.test.ts`, `telemetry*.test.ts`, `telemetry.sql.test.ts` | compatible OTLP/JSON, retry configuration, privacy filters, malformed-payload semantics, deduplication |
 
@@ -49,6 +51,26 @@ same; the consecutive Kubernetes polling/Secret cleanup cases are the reference 
 4. Neither real-agent image can emit telemetry offline without the vendor binary/plugin runtime.
    Keep artifact contract tests fast, and reserve image-level emission for a pinned smoke job rather
    than making every unit run depend on external credentials.
+5. The `test:k8s --cluster` phase (`scripts/test-k8s.sh`) has no case for an allowlisted block
+   helper (`merge-conflict-autofix`, `github-review-reconcile`) — only the bare echo-executor happy
+   path. Deferred (issue #210): both real blocks need a "GitHub" to talk to (a git remote to probe/
+   rebase against, or `gh`-shaped HTTP responses and a recorded PR publication), and there is no
+   agreed shape yet for faking that inside a kind cluster without live GitHub — a fake local git
+   remote in the test's own scaffolding and a stub of the helper script's HTTP/`gh` calls inside the
+   executor image are the two candidates. Picking one is a test-harness design decision, not an
+   integration fix, so it is left open here rather than decided unilaterally.
+6. The board-owned master prompt (issue #244) is pinned offline down to the exact argv/config each
+   transport builds (`master-prompt.test.ts` on both sides, plus the argv/spec parity pins in
+   `docker.test.ts`/`k8s.test.ts`) and against a real database only where `server/test-db` already
+   runs. Nothing offline proves the CLIs themselves honor the flags: that the pinned
+   `CLAUDE_CODE_VERSION` actually accepts `--append-system-prompt`/`--system-prompt-snapshot off`
+   without erroring, or that OpenCode's `run --agent factory` with the merged
+   `OPENCODE_CONFIG_CONTENT` really seats a primary agent rather than silently ignoring an unknown
+   flag. That needs a real container running the real CLI — an executor-image smoke case, in the
+   same family as `executor-images.test.ts`'s static pins but requiring the daemon those pins
+   deliberately avoid — and a behavioral fixture proving a task prompt that asks the agent to push
+   or open a PR is refused by the CLI's own tool gating while the master prompt is in force. Neither
+   exists yet; both need a real model credential, which is out of scope for the offline gates above.
 
 ## Efficiency rules
 

@@ -6,8 +6,9 @@ describe('pure helpers', () => {
     it('returns null on a zero denominator rather than 0', () => {
         // "0 reverts in 0 commits" reads as a real answer; null is the only way to say
         // unavailable. The entire unavailable-vs-zero contract on the page rests on this.
+        const NONZERO_NUMERATOR = 5;
         expect(ratio(0, 0)).toBeNull();
-        expect(ratio(5, 0)).toBeNull();
+        expect(ratio(NONZERO_NUMERATOR, 0)).toBeNull();
     });
 
     it('puts the year boundary in the ISO week that owns the Thursday', () => {

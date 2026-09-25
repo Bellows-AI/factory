@@ -2,7 +2,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { CLOSE_LABEL, DIALOG_LABEL, MobileNavDialog } from '../src/components/MobileNavDialog.js';
-import type { Job } from '../src/api/useJobs.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 
 /**

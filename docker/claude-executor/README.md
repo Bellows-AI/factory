@@ -11,17 +11,18 @@ checkout; it does not build or run this repo's application.
 | `entrypoint.sh` | `/usr/local/bin/claude-executor` — the `ENTRYPOINT` |
 | `branch-reporter.cjs` | `/usr/local/bin/branch-reporter.cjs` — the branch reporter the entrypoint launches beside the CLI |
 | `git-guard.cjs` | `/usr/local/bin/git-guard.cjs` — the git guard wired as the `PreToolUse` hook in `settings.json` |
-| `run.sh` | starts a Remote Control session, with a full-scope login in a named volume — deliberately not the `.env` token, which is model-requests-only and not shipped inside the image |
 | `test.sh` | builds the image and exercises it against this repo — not shipped inside it |
 | `claude-home/` | `/home/node/.claude` inside the image, via `CLAUDE_CONFIG_DIR` |
-| `claude-home/settings.json` | telemetry configuration and the git-guard hook wiring |
+| `managed-settings.json` | `/etc/claude-code/managed-settings.json` — the telemetry configuration, in the one scope a checkout's `.claude/settings.json` cannot override |
+| `claude-home/settings.json` | the git-guard hook wiring |
 | `claude-home/CLAUDE.md` | the global instructions every session loads |
-| `claude-home/skills/` | `github`, `jira`, `backend-fix`, `gates` — loaded on demand, not every session |
+| `../skills/` | `/home/node/.claude/skills` — `github`, `jira`, `backend-fix`, `gates`, shared with opencode-executor; loaded on demand, not every session |
 
 `claude-home/` is the predefined configuration folder. Whatever you drop in it ships in the image —
-add `agents/`, `commands/` or `hooks/` and they need no Dockerfile change.
+add `agents/`, `commands/` or `hooks/` and they need no Dockerfile change. Skills do not go here:
+they live in `docker/skills/`, so opencode-executor bakes the same set.
 
-Tool-specific guidance lives in `skills/`, not in `CLAUDE.md`: `CLAUDE.md` is read in full at the
+Tool-specific guidance lives in skills, not in `CLAUDE.md`: `CLAUDE.md` is read in full at the
 start of every session, while a skill costs only its description until something actually invokes
 it. Anything that applies to a subset of tasks belongs in a skill. It is a
 deliberate copy rather than a mount of the host's `~/.claude` — that directory holds
@@ -57,13 +58,16 @@ has — instructions for an absent binary cost tokens every session and end in
 ## Build
 
 ```bash
-docker build -t claude-executor docker/claude-executor
+docker build --build-context skills=docker/skills -t claude-executor docker/claude-executor
 
 # Pin the CLI instead of tracking latest:
-docker build --build-arg CLAUDE_CODE_VERSION=2.0.0 -t claude-executor docker/claude-executor
+docker build --build-context skills=docker/skills --build-arg CLAUDE_CODE_VERSION=2.0.0 \
+    -t claude-executor docker/claude-executor
 ```
 
-The build context is this directory, not the repo root.
+The build context is this directory, not the repo root. The skills are the exception: they live in
+`docker/skills/`, shared with the other executor image, and arrive as the named `skills` context —
+leave the flag off and the build fails trying to pull an image called `skills`.
 
 ## Test
 
@@ -73,8 +77,8 @@ docker/claude-executor/test.sh
 
 Builds the image as `claude-executor-test` and runs its checks against this repo as the mounted
 checkout: the CLI, `gh`, `acli`, the plugin (including a real MCP stdio handshake, since installed
-is not the same as working), `CLAUDE.md`, the skills, the three `$WORKDIR` behaviours, both prompt
-suppressions (onboarding done, trust off unless `TRUST_WORKDIR` is set), git reading the mount,
+is not the same as working), `CLAUDE.md`, the skills, the three `$WORKDIR` behaviours, the onboarding
+prompt suppressed at build time, the `/opt/claude-home` seed, git reading the mount,
 and the git guard — the baked case table (`--selftest`), the hook wire protocol, and the
 `settings.json` wiring. Prints `ok`/`FAIL` per check and exits non-zero if any fail.
 
@@ -96,61 +100,8 @@ docker run --rm -it \
 
 `ANTHROPIC_API_KEY` works in place of `CLAUDE_CODE_OAUTH_TOKEN`.
 
-## Two credentials, for two different things
-
-They are not interchangeable, and the difference is not cosmetic:
-
-| | Headless (`-p`) | Remote Control |
-| --- | --- | --- |
-| Credential | `CLAUDE_CODE_OAUTH_TOKEN` from `.env` | a full-scope claude.ai login |
-| Comes from | `claude setup-token` | `run.sh login` |
-| Lives in | the environment, per run | a named docker volume |
-
-A `setup-token` token can **only make model requests**. It cannot establish a Remote Control
-session — and the failure is quiet: `claude --remote-control` still starts a perfectly normal
-interactive session, so the only symptom is that the session never appears at claude.ai/code. (The
-docs are explicit: *"Remote Control requires a full-scope login token… these tokens can only make
-model requests"*.) Remote Control also needs a Pro, Max, Team or Enterprise plan; API keys are not
-supported at all.
-
-So `run.sh` does **not** pass the `.env` token. `test.sh` still does, because a headless prompt is
-exactly what that token is for.
-
-## Interactive: Remote Control
-
-```bash
-docker/claude-executor/run.sh login          # once — sign in to claude.ai
-docker/claude-executor/run.sh                # session named after the current directory
-docker/claude-executor/run.sh my-session
-TARGET=~/src/api docker/claude-executor/run.sh
-```
-
-`run.sh login` prints an OAuth URL: open it on this machine, then paste the code back at the
-prompt. The container's callback server is unreachable from the host browser, which is exactly the
-case the paste flow exists for.
-
-The login lands in `.credentials.json` under `CLAUDE_CONFIG_DIR`, so it dies with `--rm` unless
-that directory is a volume. `run.sh` mounts `claude-executor-auth` there (override with
-`AUTH_VOLUME`). A volume mounts *empty* and hides the baked configuration behind it, so the
-entrypoint seeds it from `/opt/claude-home` on first use — the image keeps a pristine copy for
-exactly this. Seeding is keyed on `settings.json` being absent, so it never overwrites a later
-login. After rebuilding the image, `docker volume rm claude-executor-auth` to pick up config
-changes.
-
-Without a login in the volume, `run.sh` exits `2` and points at `run.sh login` rather than starting
-a session that silently is not remote-controlled.
-
-Two more prompts stand between a cold container and a usable interactive session, and neither has
-anyone to answer it:
-
-- **First-run onboarding** (the theme picker) is settled at build time in the image's
-  `.claude.json`.
-- **The trust dialog** for the mounted directory is opt-in per run via `TRUST_WORKDIR=1`, which
-  `run.sh` sets. **Read this before setting it by hand:** the dialog also warns when the mounted
-  checkout ships a `.claude/settings.local.json`, whose pre-approved tool permissions then apply
-  without asking. Mounting a directory here is already that decision; the variable just states it
-  explicitly. It stays off by default so a headless run cannot silently inherit a checkout's
-  permission grants.
+First-run onboarding (the theme picker) would otherwise wait for a keypress nobody sends; it is
+settled at build time in the image's `.claude.json`.
 
 `ENTRYPOINT` is the `claude-executor` wrapper: it changes into `$WORKDIR`, then runs `claude`
 with every argument given after the image name as a supervised child, capturing and re-raising its
@@ -170,9 +121,30 @@ It also marks the checkout `safe.directory` when one is mounted. A bind mount ke
 which is rarely the container's 1000, and git otherwise refuses the repository outright with a
 "dubious ownership" error that never mentions uids.
 
+## Master prompt
+
+Every claim carries a board-rendered `masterPrompt` (issue #244) — a short, versioned Factory
+execution context (mode, workflow/node, and which capabilities Factory itself runs around this
+turn) — which the driver passes with `--append-system-prompt` and `--system-prompt-snapshot off`,
+right before `-p`. Four things can shape one run's behavior, and they are not the same thing:
+
+- **The Factory master prompt** — code-owned, board-rendered, delivered fresh on every claim. Never
+  authorable by a workflow or task; it is the one thing this repo's own automation cannot override.
+- **The current node's prompt** — the task's own command, or a workflow node's authored template
+  (docs/workflows.md). What THIS turn is asked to do.
+- **This checkout's `AGENTS.md`** — read by the agent like any other file in the worktree, at its
+  own discretion; not injected by the driver at all.
+- **Claude Code's own built-in system prompt** — untouched. `--append-system-prompt` adds to it,
+  never replaces it.
+
+`--system-prompt-snapshot off` is what keeps a resumed conversation honest: without it, Claude Code
+would record the FIRST turn's system prompt and keep re-sending it on every later `--resume`, even
+though the board's own text changes (a new node, a follow-up, an updated capability list) on every
+claim.
+
 ## Transcript store
 
-When the driver starts a headless run it sets `FACTORY_TRANSCRIPT_DIR` to a per-task-thread
+When the driver starts a run it sets `FACTORY_TRANSCRIPT_DIR` to a per-task-thread
 directory on the workspaces volume. The entrypoint then makes that directory `CLAUDE_CONFIG_DIR`
 before anything else runs, so session transcripts land on the volume the moment the CLI writes
 them and survive the container's removal — and a follow-up run, which is pointed at the same
@@ -182,11 +154,6 @@ The seed and both patches below the redirect read `CLAUDE_CONFIG_DIR` dynamicall
 git guard and every baked setting are in force exactly as in an unredirected run: the first use
 of a thread directory is seeded from `/opt/claude-home`, and the seeded copy is what later
 attempts of the same thread reuse.
-
-`FACTORY_TRANSCRIPT_DIR` and `TRUST_WORKDIR` are mutually exclusive. `TRUST_WORKDIR` is how a
-Remote Control session accepts its mount, and Remote Control's config directory must stay the
-auth volume — standby/park depends on the transcript surviving there for a later `--resume`. The
-entrypoint refuses the combination with exit `2` rather than silently mis-homing either one.
 
 ## Git guard
 
@@ -198,7 +165,9 @@ branch or commit (path-scoped `git checkout -- <paths>` stays allowed), `git wor
 `git reset --hard`, and `git rebase` outright — rebasing onto the default branch is
 the driver sync's job, and a rebase rewrites the published task-branch commits. `git merge` is
 allowed in exactly one shape: every operand is an origin remote-tracking ref (`git merge
-origin/main`, flags like `--no-edit` included; `-m`'s value is not read as an operand) — merging
+origin/main`, flags like `--no-edit` included; `-m`'s value is not read as an operand, and
+neither is a redirection — `git merge origin/main 2>&1 | tail` is the shape agents type, and the
+`&` of `2>&1` is no command separator) — merging
 the remote default in is the one exit from a conflicts dead-end the sync's rebase refuses (job
 `3e85c499`, 2026-09-20), and a merge can neither move HEAD off the task branch nor rewrite the
 published commits, so the invariant survives it. `--abort`/`--quit`/`--continue` stay allowed,
@@ -221,7 +190,8 @@ Why: the task tree standing on its `factory/<root>` branch is the driver's invar
 restore-mode sync refuses a wrong checkout only *after* the damage — which strands the thread
 (job `43379d3a`, 2026-09-13). This is a guardrail, not a security boundary — the agent is root in
 its container, and the sync refusal stays the last line of defense. The script lives in
-`/usr/local/bin` (like the branch reporter) so the Remote Control auth volume cannot shadow it.
+`/usr/local/bin` (like the branch reporter) so the transcript store's config-dir redirect cannot
+move it.
 The canonical case table ships inside the script: vitest runs it offline
 (`driver/test/executor-images.test.ts`), and `test.sh` runs `git-guard.cjs --selftest` against
 the baked copy, so the table tests the bytes that actually ship.
@@ -244,7 +214,7 @@ sessions you start yourself.
 
 ## Telemetry
 
-`claude-home/settings.json` points the OTLP exporter at `http://collector:4318` — the `collector`
+`managed-settings.json` points the OTLP exporter at `http://collector:4318` — the `collector`
 service in this repo's `docker-compose.yml`, resolvable only from that compose network:
 
 ```bash
@@ -257,8 +227,11 @@ docker run --rm -it --network factory-ai_default \
 
 Off that network the exporter fails to connect; the CLI still works, the sessions just go
 unrecorded. Override `OTEL_EXPORTER_OTLP_ENDPOINT` with `-e` to point elsewhere (the entrypoint
-rewrites the baked settings value to match); to disable telemetry entirely, edit
-`claude-home/settings.json` — the baked env block overrides `-e CLAUDE_CODE_ENABLE_TELEMETRY=0`.
+rewrites the managed value to match); to disable telemetry entirely, edit
+`managed-settings.json` — the managed env block overrides `-e CLAUDE_CODE_ENABLE_TELEMETRY=0`, a
+member's executor config, and the mounted checkout's own `.claude/settings.json` alike. That last
+one is why it is managed: a checkout pointing `OTEL_EXPORTER_OTLP_ENDPOINT` at `127.0.0.1` (as this
+repo does, for host development) used to win and silently drop every export.
 
 The three `OTEL_LOG_*` flags are `0` on purpose: they control whether prompts, responses and tool
 arguments are shipped as log bodies. See [docs/security.md](../../docs/security.md).

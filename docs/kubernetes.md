@@ -1,6 +1,6 @@
 # Kubernetes
 
-Read before: touching `driver/src/k8s.ts`, the `EXECUTOR`/`K8S_NAMESPACE`/`RUNNER_CREDENTIALS_SECRET`
+Read before: touching `driver/src/k8s-*.ts`, the `EXECUTOR`/`K8S_NAMESPACE`/`RUNNER_CREDENTIALS_SECRET`
 variables, anything under `charts/factory/`, or `scripts/test-k8s.sh`.
 
 The stack runs on Kubernetes three ways at once, and the issue that asked for it named all three:
@@ -11,10 +11,35 @@ factory, and an **operator for runners** — which, deliberately, is not a CRD c
 ## The executor
 
 `EXECUTOR` selects the platform runners run on: `docker` (the default, the original path) or
-`kubernetes`. The seam is the `Runner` interface in `driver/src/docker.ts` — `run`, `kill`,
-`remoteSessionId` — which `driver/src/k8s.ts` implements a second time. **The loop, the board
-contract and the server change not at all**: `loop.ts` cannot tell which executor is under it, and
-that is the point. A third platform would add a third `Runner`, nothing else.
+`kubernetes`. The seam is the `Runner` interface in `driver/src/runner.ts` — `run`, `kill`,
+`sampleRuntime` — which `driver/src/k8s-runner.ts` implements a second time. **The loop, the
+board contract and the server change not at all**: `loop.ts` cannot tell which executor is under
+it, and that is the point. A third platform would add a third `Runner`, nothing else.
+
+What both executors share lives in executor-neutral files: `runner.ts` (the `Runner` contract,
+`RunOutcome`/`RunSession`/`RuntimeSample`, output tails), `claim.ts` (workspace and working-dir
+paths, transcript and opencode-db locations, gate identity, claim env), `close-read.ts` (the
+outcome and turn-count parsers, the cache watch's policy and probe parser) and
+`container-scripts.ts` (the script loader and the run-time scripts). `docker.ts` and `docker-*.ts` are docker-only; a
+`k8s-*.ts` file importing from them is a parity smell — move the shared name to a neutral file.
+
+The kubernetes executor is split across `driver/src/k8s-*.ts`; import from the file that owns a
+name, there is no barrel:
+
+- `k8s-transport.ts` — the wire types (`K8sRequest`/`K8sResponse`), the real transport
+  (`inClusterRequest`), and the protocol constants and status thresholds every other file reads.
+- `k8s-podspec.ts` — the runner's own pure Job spec (`runnerJobSpec`, the `dockerArgs`
+  analogue) plus the gate/bellows/claude-turns/opencode-readout spec builders and naming.
+- `k8s-auxspec.ts` — the sync/reclaim/publish/service spec builders, and the shared checkout
+  claim / per-attempt Secret naming and path helpers.
+- `k8s-fence.ts` — the re-claim fence: claim acquire/release, the leftover sweep, and the
+  pre/post-create claim verifies around the runner Job POST.
+- `k8s-poll.ts` — Job-status polling to a terminal state, the live-output tail, and the
+  sync/reclaim aux Job runners built on it.
+- `k8s-services.ts` — the declared-service fleet: the `.bellows.yaml` readout, starting each
+  service as a Pod + headless Service, and the lease-scoped teardown.
+- `k8s-runner.ts` — `createKubernetesRunner` itself, composing the above into the `Runner`.
+- `k8s-gates.ts` — `createKubernetesGateManager`, the second `GateManager`.
 
 The two implementations decide the same things and are pinned the same way:
 
@@ -29,6 +54,7 @@ The two implementations decide the same things and are pinned the same way:
 | What a runner must never hold | the docker socket (it does not) | a ServiceAccount token (`automountServiceAccountToken: false`) |
 | Publish | sibling containers over the workspaces volume, one per step | aux Jobs over the workspaces PVC, one per step — the same `publishCheckout` workflow over both |
 | Runner vitals | `docker stats --no-stream` | the metrics API (`metrics.k8s.io`), read from the runner's pod; null when the cluster runs no metrics-server |
+| Master prompt (issue #244) | Claude: `--append-system-prompt`/`--system-prompt-snapshot off` in `dockerArgs`. OpenCode: reserved `factory` agent merged into `OPENCODE_CONFIG_CONTENT` by `envFileBody(job, config)` | identical: `claudeRunnerPlan`/`opencodeRunnerPlan` build the same argv, and `runnerCredentialEnv` merges the same `OPENCODE_CONFIG_CONTENT` through the shared `driver/src/claim.ts` `runnerClaimEnv` — one merge function, never two |
 
 Two decisions in that table deserve their own paragraph:
 
@@ -56,7 +82,9 @@ before it existed runs to its natural end with its env intact and its report ref
 a driver that crashes before cleanup leaks its attempt's Secret (Secrets have no TTL), and the
 `factory.job: <id>` label is what a cleanup job would select. The chart's Role grows
 `secrets: ['create', 'delete']` and nothing more on secrets — no `get`, no `list`; the driver
-writes values it was handed and never reads one back. (The fence's checkout claim adds a
+writes values it was handed and never reads one back. The Role alone does not make that true —
+RBAC cannot scope a verb to a name, and `create` on pods is `read` on any Secret a pod may mount —
+which is what the chart's admission policy is for (see [The chart](#the-chart)). (The fence's checkout claim adds a
 `configmaps` rule with `get` — see below for why that read is safe there and only there.)
 
 **The runner gets no ServiceAccount token.** Pods automount one by default, and a driver-spawned
@@ -98,8 +126,7 @@ the winner's objects — and the apiserver's name uniqueness arbitrates: `201` a
 ours; `409` and somebody holds it, so the claim is read. `data.attempt` is the board's per-job
 attempt counter, and it orders the contenders with no clock anywhere — against a live claim it
 only moves forward: every claim increments it, and the one decrement in the board (`suspend`'s
-give-back) belongs to docker-side idle parking, which a kubernetes attempt can never reach
-(Remote Control is refused under this executor, and this runner reports `idled: false` always);
+give-back) lands the row `stopped`, which is terminal and never claimed again;
 even if an equal number ever arose, the rule below is the conservative direction — stand down and
 burn one attempt, and the claim after that carries a strictly higher number. A claim whose
 attempt is at or ahead of ours belongs to our own replacement, and this attempt STANDS DOWN
@@ -180,10 +207,16 @@ board, say), that is a new decision, made then.
 `charts/factory/` — see [its README](../charts/factory/README.md) for the object list and the
 kind walkthrough. Decisions that look like cruft and are not:
 
-- **The in-chart TimescaleDB is a plain Deployment, not the upstream chart dependency.** One
-  deployment, one claim, no subchart; it mirrors compose running a plain timescale container. For
-  anything real, `timescale.enabled=false` and `database.url` point at a managed instance — which
-  is also why the helper fails the template when that combination is asked for without a URL.
+- **The app chart deploys no database.** Production points `database.url` at a managed TimescaleDB;
+  the URL carries the password, so it lands in the dashboard Secret as `database-url` and reaches
+  the pod by `secretKeyRef`, and the template refuses to render without one. There is no
+  `timescale.enabled` switch to leave on by accident.
+- **Local state is its own release: `charts/factory-local-state`.** A plain TimescaleDB Deployment
+  (not the upstream chart — one deployment, one claim, mirroring compose) plus the workspaces
+  claim, installed as `factory-state`; `values-local.yaml` names both objects (`database.url`,
+  `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
+  and the checkouts that database records — the two are kept together, since rows describing a
+  worktree that is gone are worse than no rows. `make reset` removes the state release too.
 - **`AUTH_MODE` defaults to `github` in the chart**, as compose pins it, because the chart's
   dashboard holds checkouts and serves a route that runs shell commands. The local values file
   turns it off explicitly (`none` + `AUTH_ALLOW_PUBLIC_BIND=1`, the ClusterIP being the perimeter —
@@ -192,11 +225,60 @@ kind walkthrough. Decisions that look like cruft and are not:
 - **`values-local.yaml` points the executor at a stub echo image**, the same trick
   `scripts/test-jobs.sh` uses: a queued job runs a real pod that echoes its prompt, which proves
   the whole board → driver → Job → pod → complete path offline, with no Claude and no credential.
-- **The dashboard pod waits for the in-chart database before starting.** The server's migration
-  retry gives up after ~55s — and then keeps serving with no tables, every DB-backed route a 500
-  no client can poll away. On a cold cluster the database image pulls for minutes, so an init
-  container runs the database pod's own readiness predicate (`pg_isready` against its service)
-  until it passes; only then does the server start, inside its retry budget.
+- **The dashboard pod waits for the database before starting.** The server's migration retry
+  gives up after ~55s — and then keeps serving with no tables, every DB-backed route a 500 no
+  client can poll away. A cold local node pulls the database image for minutes and a managed
+  instance can be mid-failover, so an init container runs `pg_isready -d "$DATABASE_URL"` — the
+  same URL, from the same Secret key, the server reads — until it passes. `database.waitImage` is
+  any image with the postgres client; the local profile reuses the timescale image already on the
+  node.
+- **The driver is fenced by admission, not by its Role alone.** Runners run agent-written code in
+  the release's namespace — they have to: the workspaces claim is namespaced and the dashboard
+  mounts it too — and RBAC cannot scope a verb to a name prefix, so the driver's `create pods`
+  would be "mount any Secret here" and its `delete secrets` would reach the dashboard's. Two
+  `ValidatingAdmissionPolicy` objects bound to the driver's ServiceAccount (`templates/driver-admission.yaml`,
+  `isolation.admissionPolicy`, Kubernetes ≥ 1.30) close that: a pod spec the driver submits
+  (runner, aux Job, service pod) may let a container read (volume, env, envFrom) only the
+  per-attempt Secrets — `factory-{job,sync,publish,helper,gate}-…-env`, the naming every
+  `*SecretName` in `driver/src/k8s-*.ts` follows — and the runner credentials; the chart's pull
+  secrets only under `imagePullSecrets`, where the kubelet and never a container reads them; may
+  mount only the workspaces claim, emptyDir and those Secrets, and the claim only with a `subPath`
+  of the `WORKSPACE_PATH` shape (`<org>/<user id>`, no `subPathExpr`), never its root; and carries
+  no ServiceAccount token, host namespace, privilege or added capability. Creates and deletes reach
+  only objects labelled `factory.job`; Secrets only Opaque, Services only headless. **A new
+  driver-owned Secret must follow the naming, every new driver-owned object must carry
+  `factory.job`, and every workspace mount must use `workspaceMount()`'s subPath**, or the
+  apiserver refuses it. `driver/test/k8s-admission.test.ts` pins every `*SecretName` builder
+  against the policy's own pattern, and the subPath pattern against `WORKSPACE_PATH`, both read
+  from the template. Limits, stated in the template: the names carry no release (one release per
+  namespace), the subPath is fenced by shape and not by owner (a compromised driver can still name
+  another member's subtree), and a mesh sidecar injector's volumes are refused on service pods.
+- **Runner pods are confined by a NetworkPolicy** (`templates/runner-networkpolicy.yaml`,
+  `isolation.networkPolicy`), selected by `factory.job` plus the release label — every pod the
+  driver specs carries `app.kubernetes.io/instance: <K8S_RELEASE>` for exactly this, so one
+  release's policy never confines a neighbor's runners. Ingress only from each other (declared
+  services); egress to DNS (port 53 only to the `k8s-app: kube-dns` pods in kube-system and
+  `isolation.dnsCidrs`, default the NodeLocal DNSCache address 169.254.20.10/32 — a cluster whose
+  DNS carries other labels must list its resolver there, or runners lose DNS), this release's
+  dashboard, collector and driver, each other, and anything outside `isolation.blockedCidrs` (the private ranges and 169.254.0.0/16, the cloud
+  metadata endpoint). IPv4 only; inert without an enforcing CNI.
+- **The gate endpoint is advertised at the driver pod's IP.** `GATE_ADVERTISE_URL=http://$(POD_IP)`
+  from the downward API: a Service name would resolve to every driver replica — and to the old and
+  new pod both during a rollout — while the ephemeral port the driver appends is open on exactly
+  one. There is no driver Service. With `DRIVER_WORKER` set to the pod name — defaulted, every
+  container's `driver-<pid>` is `driver-1`, and the board's `claimed_by` fences could not tell
+  replicas apart — `driver.replicas` above one is safe. IPv4 pod IPs only: an IPv6 address would
+  need brackets the URL does not add.
+- **One dashboard, recreated.** The server is the single in-process writer of the checkouts, its
+  migrations take no lock, and an RWO claim cannot attach twice, so the Deployment runs one
+  replica with `strategy: Recreate`. Startup and readiness read `/api/ready` — 503 until the
+  migrations land, 503 for good if they gave up — so a pod whose schema never arrived is restarted
+  instead of left Ready; liveness stays on `/api/health`, which touches no database.
+- **Images carry tags.** `dashboard.image.tag`/`driver.image.tag` default to the chart's
+  `appVersion`, so an upgrade to a new build changes the pod spec and rolls; the collector is
+  pinned, its config keys moving between releases. `values-local.yaml` uses `latest`, the tag the
+  local builds produce. A changed chart Secret or collector config rolls its readers via
+  `checksum/*` pod annotations.
 - **The chart ships the collector, and the driver names it in every runner spec.** A docker runner
   joins the compose network and its baked `collector:4318` resolves; a pod cannot join a network,
   so the kubernetes form of `RUNNER_NETWORK` is the driver setting `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -225,16 +307,17 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `K8S_NAMESPACE` | `default` | Where runner Jobs are created. The chart sets it via the downward API, so the driver follows whichever namespace it landed in. |
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials, one key per `RUNNER_ENV` name. Unset forwards nothing — an image with a login baked into a volume needs none, the same answer as the docker driver's missing-credentials warning. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT` in the pod spec. Always provided, so a pod never relies on an image-baked default that nothing in a cluster resolves; the default names the compose collector and the chart overrides it with the in-chart collector. |
+| `RUNNER_IMAGE_PULL_SECRETS` | unset | Comma-separated Secret names set as `imagePullSecrets` on every pod the driver specs (runner, aux Jobs, gates, services). The chart forwards its own `imagePullSecrets`. Docker has no twin: the daemon's login is what `docker run` pulls with. |
+| `K8S_RELEASE` | unset | The Helm release; labels every runner Job and every driver-specced pod `app.kubernetes.io/instance`, which scopes bulk cleanup and the runner NetworkPolicy to one release. |
+| `DRIVER_HEARTBEAT_FILE` | unset | A file the driver rewrites every 10s from a timer, so a liveness probe can tell a turning event loop from a wedged one — the driver serves no HTTP. Timer-driven on purpose: a drain stops polling for as long as its jobs take. The chart sets `/tmp/heartbeat` and probes its age. Executor-neutral. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy. Kubernetes reads a missing or `:latest` tag as `Always`, which reaches past the node's local images for a registry copy of `claude-executor` — where the docker runner would have used what the daemon holds. The chart passes `driver.imagePullPolicy` through. |
 
-Refused combinations, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_REMOTE_CONTROL=1` — Remote
-Control needs a tty held open, an auth volume and an idle-parking loop that only the docker runner
-has; and `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each watch tick is one throwaway
-container on the docker daemon, and the kubernetes form would be a Job per tick, pod admission
-every poll period. The alternative to refusing either was a driver that claims jobs and burns
+Refused combination, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each
+watch tick is one throwaway container on the docker daemon, and the kubernetes form would be a Job
+per tick, pod admission every poll period. The alternative to refusing it was a driver that claims jobs and burns
 attempts running nothing.
 
-**opencode runs under this executor** (with `RUNNER_CLI=opencode` and an image that speaks it):
+**An OpenCode task runs under this executor** when its selected executor profile type is `opencode`:
 the runner Job's argv is opencode's headless form — `run [--session <id>] <command>`, no session
 minted by the driver — and the Job carries `XDG_DATA_HOME=<mount>/<org>/<user>/.opencode` so the
 session database persists on the workspaces PVC, which is what makes a follow-up's `--session`
@@ -359,6 +442,15 @@ half of that race is closed in the loop itself: an in-driver barrier keyed by th
 makes a follow-up claimed while a reclaim is in flight wait out the removal before its startup
 sync. Docker's documented bound is one driver per daemon, so the barrier is all docker needs;
 the claim is what makes the exclusion hold across drivers under kubernetes.
+
+**A declared block-helper step is one more aux Job over the same PVC** (issue #207,
+docs/jobs.md's "Block-helper steps"): the identical entrypoint/argv/script-content shape
+`publishStepJobSpec` already uses for a publish step, with its own attempt-scoped Secret only
+when the helper writes to GitHub, and `HELPER_TIMEOUT_MS` as its `activeDeadlineSeconds` — a
+`DeadlineExceeded` condition reads back as the transport's own named `timeout` failure, the
+same check the runner Job's own poll makes. Docker runs the identical script by content in the
+task worktree over the existing runner image. Neither transport is wired to a real caller yet;
+see docs/jobs.md for the full contract.
 
 ## Testing
 

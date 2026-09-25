@@ -26,6 +26,9 @@ function billableTokens(session: SessionRollup): number | null {
     return (input ?? 0) + (output ?? 0);
 }
 
+const P50 = 0.5;
+const P95 = 0.95;
+
 /**
  * Nearest-rank percentile over the ascending sort: the ceil(p·N)-th value, 1-indexed. Chosen
  * because it recomputes by hand — the independent suites restate these figures without a
@@ -37,10 +40,75 @@ function distribution(values: number[]): TaskUsageDistribution {
     const rank = (p: number) => sorted[Math.ceil(p * sorted.length) - 1] as number;
     return {
         avg: sorted.reduce((sum, v) => sum + v, 0) / sorted.length,
-        p50: rank(0.5),
-        p95: rank(0.95),
+        p50: rank(P50),
+        p95: rank(P95),
         tasks: sorted.length,
     };
+}
+
+/**
+ * Tokens: summed over each task's sessions, null contributors skipped — but a task whose
+ * sessions measured nothing at all is EXCLUDED from the distribution, never counted as a
+ * zero-total task.
+ */
+function computeTokenValues(sessions: readonly SessionRollup[], tasks: ReadonlySet<string>): number[] {
+    const tokenLists = new Map<string, (number | null)[]>();
+    for (const session of sessions) {
+        if (session.taskKey === null) continue;
+        const list = tokenLists.get(session.taskKey);
+        if (list) list.push(billableTokens(session));
+        else tokenLists.set(session.taskKey, [billableTokens(session)]);
+    }
+    const tokenValues: number[] = [];
+    for (const task of tasks) {
+        const total = (tokenLists.get(task) ?? []).reduce<number | null>(
+            (acc, v) => (v === null ? acc : (acc ?? 0) + v),
+            null
+        );
+        if (total !== null) tokenValues.push(total);
+    }
+    return tokenValues;
+}
+
+/**
+ * Job turns: one run row, one job turn. Every task in scope counts, including one whose
+ * runs all fell outside the range — it got here through its sessions, and its zero is
+ * real (no run of this task was queued inside the range).
+ */
+function computeJobTurnValues(runs: readonly JobRun[], tasks: ReadonlySet<string>): number[] {
+    const jobTurnCounts = new Map<string, number>();
+    for (const run of runs) {
+        jobTurnCounts.set(run.rootJobId, (jobTurnCounts.get(run.rootJobId) ?? 0) + 1);
+    }
+    return [...tasks].map((task) => jobTurnCounts.get(task) ?? 0);
+}
+
+/**
+ * Shared shape behind agent turns and wall clock: sum a per-run measurement onto its task,
+ * but a task with any unmeasured (null) in-range run is excluded from THIS distribution only —
+ * a partial sum presented as a total is a quiet undercount. A task with no in-range run banked
+ * nothing in the range, and that zero is a measurement, not a missing value.
+ */
+function sumMeasuredPerTask(
+    runs: readonly JobRun[],
+    tasks: ReadonlySet<string>,
+    getValue: (run: JobRun) => number | null
+): number[] {
+    const sums = new Map<string, { sum: number; unmeasured: boolean }>();
+    for (const run of runs) {
+        const entry = sums.get(run.rootJobId) ?? { sum: 0, unmeasured: false };
+        const value = getValue(run);
+        if (value === null) entry.unmeasured = true;
+        else entry.sum += value;
+        sums.set(run.rootJobId, entry);
+    }
+    const values: number[] = [];
+    for (const task of tasks) {
+        const entry = sums.get(task);
+        if (entry?.unmeasured) continue;
+        values.push(entry?.sum ?? 0);
+    }
+    return values;
 }
 
 /**
@@ -82,74 +150,10 @@ export function taskUsageStats(
     }
     for (const run of visibleRuns) tasks.add(run.rootJobId);
 
-    // Tokens: summed over each task's sessions, null contributors skipped — but a task whose
-    // sessions measured nothing at all is EXCLUDED from the distribution, never counted as a
-    // zero-total task.
-    const tokenLists = new Map<string, (number | null)[]>();
-    for (const session of visibleSessions) {
-        if (session.taskKey === null) continue;
-        const list = tokenLists.get(session.taskKey);
-        if (list) list.push(billableTokens(session));
-        else tokenLists.set(session.taskKey, [billableTokens(session)]);
-    }
-    const tokenValues: number[] = [];
-    for (const task of tasks) {
-        const total = (tokenLists.get(task) ?? []).reduce<number | null>(
-            (acc, v) => (v === null ? acc : (acc ?? 0) + v),
-            null
-        );
-        if (total !== null) tokenValues.push(total);
-    }
-
-    // Job turns: one run row, one job turn. Every task in scope counts, including one whose
-    // runs all fell outside the range — it got here through its sessions, and its zero is
-    // real (no run of this task was queued inside the range).
-    const jobTurnCounts = new Map<string, number>();
-    for (const run of visibleRuns) {
-        jobTurnCounts.set(run.rootJobId, (jobTurnCounts.get(run.rootJobId) ?? 0) + 1);
-    }
-    const jobTurnValues: number[] = [...tasks].map((task) => jobTurnCounts.get(task) ?? 0);
-
-    // Agent turns: the sum of the runs' stored counts. A task with any unmeasured in-range
-    // run is excluded from THIS distribution only — a partial sum presented as a total is a
-    // quiet undercount — while its tokens and job turns still count in theirs.
-    const agentTurns = new Map<string, { sum: number; unmeasured: boolean }>();
-    for (const run of visibleRuns) {
-        const entry = agentTurns.get(run.rootJobId) ?? { sum: 0, unmeasured: false };
-        if (run.agentTurns === null) entry.unmeasured = true;
-        else entry.sum += run.agentTurns;
-        agentTurns.set(run.rootJobId, entry);
-    }
-    const agentTurnValues: number[] = [];
-    for (const task of tasks) {
-        const entry = agentTurns.get(task);
-        if (entry?.unmeasured) continue;
-        // No in-range run banks zero conversation within the range — measured, not missing.
-        agentTurnValues.push(entry?.sum ?? 0);
-    }
-
-    // Wall clock: the execution time the board banked, summed over the task's in-range runs.
-    // The same exclude-don't-zero shape as agent turns — one never-executed (null) run would
-    // make any sum a quiet undercount, so the task leaves THIS distribution only. A task with
-    // no in-range run banked nothing in the range, and that zero is a measurement.
-    const wallClock = new Map<string, { sum: number; unmeasured: boolean }>();
-    for (const run of visibleRuns) {
-        const entry = wallClock.get(run.rootJobId) ?? { sum: 0, unmeasured: false };
-        if (run.wallClockMs === null) entry.unmeasured = true;
-        else entry.sum += run.wallClockMs;
-        wallClock.set(run.rootJobId, entry);
-    }
-    const wallClockValues: number[] = [];
-    for (const task of tasks) {
-        const entry = wallClock.get(task);
-        if (entry?.unmeasured) continue;
-        wallClockValues.push(entry?.sum ?? 0);
-    }
-
     return {
-        tokensPerTask: distribution(tokenValues),
-        jobTurnsPerTask: distribution(jobTurnValues),
-        agentTurnsPerTask: distribution(agentTurnValues),
-        wallClockPerTask: distribution(wallClockValues),
+        tokensPerTask: distribution(computeTokenValues(visibleSessions, tasks)),
+        jobTurnsPerTask: distribution(computeJobTurnValues(visibleRuns, tasks)),
+        agentTurnsPerTask: distribution(sumMeasuredPerTask(visibleRuns, tasks, (r) => r.agentTurns)),
+        wallClockPerTask: distribution(sumMeasuredPerTask(visibleRuns, tasks, (r) => r.wallClockMs)),
     };
 }

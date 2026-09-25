@@ -68,6 +68,9 @@ const SYSTEM_TABLES = new Set(['schema_migrations']);
 /** Table names come from our own catalog, and this is the shape every migration creates. */
 const PLAIN_NAME = /^[a-z_][a-z0-9_]*$/;
 
+/** Covers every store a suite builds; a suite that needs real parallelism raises `options.max`. */
+const DEFAULT_POOL_MAX = 4;
+
 /**
  * Truncates every user table in one statement. The list is read from the catalog rather than
  * written per suite, so a new migration's tables are covered without the suites moving, and no
@@ -111,7 +114,7 @@ export function useTestDb(options: TestDbOptions = {}): TestDb {
 
     beforeAll(async () => {
         if (!url) return;
-        db.sql = postgres(url, { max: options.max ?? 4 });
+        db.sql = postgres(url, { max: options.max ?? DEFAULT_POOL_MAX });
         await migrate(db.sql, { attempts: 3 });
     });
 

@@ -1,9 +1,8 @@
+import type { Role } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
 import { hashToken, mintToken } from './session.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
-
-export type Role = 'admin' | 'member';
 
 export interface AuthUser {
     id: string;
@@ -233,23 +232,17 @@ const toCaller = (row: CallerRow): Caller => ({
     role: row.role,
 });
 
-/**
- * The organization is a PARAMETER here, unlike every other store in this directory, which binds it
- * at construction.
- *
- * That is not an oversight to be tidied up later. The other stores are handed an organization and
- * read rows inside it; this one is what decides whether a caller belongs to an organization at all,
- * and its most important read — a session token — is global by nature: the row *tells* the board
- * which organization the caller is working in. Binding an org at construction would mean the object
- * had to already know the answer it exists to produce. Since #99 that answer is per caller: a
- * session and a personal token each carry their own org in their row, and every read resolves the
- * caller THROUGH it.
- */
-export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unknown> }): AuthStore {
-    const gate = async () => {
-        if (ready) await ready;
-    };
+type Gate = () => Promise<void>;
 
+/**
+ * Sign-in, the selection screen's pending hop, and the stored-selection read: everything that
+ * turns a GitHub identity into a membership. Split out of `createAuthStore` so that factory stays
+ * under the function-length gate — grouped by concern, not by an arbitrary line count.
+ */
+function buildIdentityMethods(
+    sql: Sql,
+    gate: Gate
+): Pick<AuthStore, 'signIn' | 'storedSelection' | 'createPendingSignIn' | 'findPendingSignIn' | 'deletePendingSignIn'> {
     const memberOf = async (userId: string, orgId: string): Promise<Caller | null> => {
         const rows = await sql<CallerRow[]>`
             select u.id, u.github_user_id, u.github_login, u.display_name,
@@ -286,20 +279,25 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
 
             // One installation = one organization (#99). The id IS the installation id, so the row
             // is stable across account renames; the name is a label, re-derived on every sign-in.
-            for (const org of installations) {
-                await sql`
-                    insert into organization (id, name, installation_id)
-                    values (${org.id}, ${org.name}, ${org.id}::bigint)
-                    on conflict (id) do update set
-                        name = excluded.name,
-                        installation_id = excluded.installation_id
-                `;
-                await sql`
-                    insert into org_membership (org_id, github_login, user_id, claimed_at)
-                    values (${org.id}, ${login}, ${userId}, now())
-                    on conflict (org_id, user_id) do update set github_login = excluded.github_login
-                `;
-            }
+            //
+            // One multi-row statement each, not two per installation: this runs on EVERY sign-in,
+            // not only the first, and an account in a dozen installations paid two dozen round
+            // trips for it. Still two statements, in this order — `org_membership.org_id` is a FK
+            // onto `organization`, so the orgs have to land first.
+            const orgIds = installations.map((org) => org.id);
+            const orgNames = installations.map((org) => org.name);
+            await sql`
+                insert into organization (id, name, installation_id)
+                select id, name, id::bigint from unnest(${orgIds}::text[], ${orgNames}::text[]) as t(id, name)
+                on conflict (id) do update set
+                    name = excluded.name,
+                    installation_id = excluded.installation_id
+            `;
+            await sql`
+                insert into org_membership (org_id, github_login, user_id, claimed_at)
+                select id, ${login}, ${userId}::uuid, now() from unnest(${orgIds}::text[]) as t(id)
+                on conflict (org_id, user_id) do update set github_login = excluded.github_login
+            `;
 
             // The materialized fact, re-synced at every sign-in: a membership of an organization
             // GitHub does not report is gone, and with it — through the joins the reads run —
@@ -396,7 +394,12 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             `;
             return rows.length > 0;
         },
+    };
+}
 
+/** The org's tracked-repo allowlist (#125): the onboarding screen's per-org narrowing. */
+function buildTrackedRepoMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'trackedRepos' | 'replaceTrackedRepos'> {
+    return {
         async trackedRepos(orgId) {
             await gate();
             return trackedRepoRows({ sql, orgId });
@@ -406,7 +409,15 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             await gate();
             await replaceTrackedRepoRows({ sql, orgId, repos });
         },
+    };
+}
 
+/** The session row: mint, resolve, move between organizations, and drop at logout. */
+function buildSessionMethods(
+    sql: Sql,
+    gate: Gate
+): Pick<AuthStore, 'createSession' | 'findSession' | 'updateSessionOrg' | 'deleteSession'> {
+    return {
         async createSession(tokenHash, userId, expiresAt, orgId) {
             await gate();
             await sql`
@@ -455,7 +466,15 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             await gate();
             await sql`delete from session where token_hash = ${tokenHash}`;
         },
+    };
+}
 
+/** Organization lookups and membership management — the switcher and the webhook's revocation. */
+function buildOrgMethods(
+    sql: Sql,
+    gate: Gate
+): Pick<AuthStore, 'findOrg' | 'membershipsOf' | 'removeMember' | 'localCaller'> {
+    return {
         async findOrg(orgId) {
             await gate();
             const rows = await sql<{ id: string; name: string }[]>`
@@ -498,7 +517,28 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             const row = rows[0];
             return row ? toCaller(row) : null;
         },
+    };
+}
 
+/**
+ * Access tokens (fat_/oat_). Each row carries the org it was minted for, and resolves through the
+ * same org_membership join a session does, so removing a member ends their tokens' reach on the
+ * very next request.
+ */
+function buildTokenMethods(
+    sql: Sql,
+    gate: Gate
+): Pick<
+    AuthStore,
+    | 'createAccessToken'
+    | 'findPersonalToken'
+    | 'findOrgToken'
+    | 'listPersonalTokens'
+    | 'listOrgTokens'
+    | 'revokePersonalToken'
+    | 'revokeOrgToken'
+> {
+    return {
         async createAccessToken(input) {
             await gate();
             const rows = await sql<{ id: string }[]>`
@@ -614,5 +654,31 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
             `;
             return rows[0] ? 'revoked' : 'missing';
         },
+    };
+}
+
+/**
+ * The organization is a PARAMETER here, unlike every other store in this directory, which binds it
+ * at construction.
+ *
+ * That is not an oversight to be tidied up later. The other stores are handed an organization and
+ * read rows inside it; this one is what decides whether a caller belongs to an organization at all,
+ * and its most important read — a session token — is global by nature: the row *tells* the board
+ * which organization the caller is working in. Binding an org at construction would mean the object
+ * had to already know the answer it exists to produce. Since #99 that answer is per caller: a
+ * session and a personal token each carry their own org in their row, and every read resolves the
+ * caller THROUGH it.
+ */
+export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unknown> }): AuthStore {
+    const gate: Gate = async () => {
+        if (ready) await ready;
+    };
+
+    return {
+        ...buildIdentityMethods(sql, gate),
+        ...buildTrackedRepoMethods(sql, gate),
+        ...buildSessionMethods(sql, gate),
+        ...buildOrgMethods(sql, gate),
+        ...buildTokenMethods(sql, gate),
     };
 }

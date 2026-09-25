@@ -1,8 +1,128 @@
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
+import { useDownwardAnchor } from '../anchor.js';
 import { isTerminal, type Job } from '../api/useJobs.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { wallClock } from '../format.js';
+import { isWaitingForReview } from '../task-outcome.js';
 import { taskSummary, taskTitleFromCommand } from '../task-tree.js';
+
+/** Stop run's own three faces: the button, this click's own in-flight label, and the board's own
+ * pending-stop status once the request has landed but the worker has not parked the run yet.
+ * Split out of `TaskHeader` so its own nested branch does not add to the panel's cognitive
+ * complexity. */
+function StopControl({
+    latestTaskId,
+    stopping,
+    stoppingId,
+    onStop,
+}: {
+    latestTaskId: string;
+    stopping: boolean;
+    stoppingId: string | null;
+    onStop: (id: string) => Promise<void>;
+}) {
+    if (!stopping) {
+        return (
+            <button type="button" className="chat-resume chat-stop" onClick={() => void onStop(latestTaskId)}>
+                Stop run
+            </button>
+        );
+    }
+    if (stoppingId === latestTaskId) {
+        return (
+            <button type="button" className="chat-resume chat-stop" disabled>
+                Stopping…
+            </button>
+        );
+    }
+    // The request has landed; the worker has not parked the run yet. Pending is not terminal —
+    // this is a status, not a control.
+    return <span className="pill chat-stop">Stopping…</span>;
+}
+
+/**
+ * The state-specific action matrix (issue 178): Stop run for every not-terminal state, Mark done
+ * for a terminal task nobody has closed, the closure's attribution once one has, and Remove task
+ * in the overflow while no member of the thread is running. Split out of `TaskHeader` for the
+ * same reason as `StopControl`.
+ */
+function TaskHeaderActions({
+    latestTask,
+    stoppable,
+    stopping,
+    stoppingId,
+    open,
+    closed,
+    doneId,
+    removeAvailable,
+    waiting,
+    onStop,
+    onDone,
+    onRemoveRequest,
+}: {
+    latestTask: Job;
+    stoppable: boolean;
+    stopping: boolean;
+    stoppingId: string | null;
+    open: boolean;
+    closed: boolean;
+    doneId: string | null;
+    removeAvailable: boolean;
+    /** An open PR-review wait (206) — Stop run stays offered, with copy explaining what it does. */
+    waiting: boolean;
+    onStop: (id: string) => Promise<void>;
+    onDone: (id: string) => Promise<void>;
+    onRemoveRequest: () => void;
+}) {
+    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
+    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('end');
+    return (
+        <div className="task-actions">
+            {stoppable ? (
+                <StopControl latestTaskId={latestTask.id} stopping={stopping} stoppingId={stoppingId} onStop={onStop} />
+            ) : null}
+            {stoppable && waiting ? (
+                <p className="muted">
+                    Stopping cancels remaining automation. It does not close or merge the pull request.
+                </p>
+            ) : null}
+            {open ? (
+                <button
+                    type="button"
+                    className="primary"
+                    disabled={doneId === latestTask.id}
+                    onClick={() => void onDone(latestTask.id)}
+                >
+                    {doneId === latestTask.id ? 'Marking done…' : 'Mark done'}
+                </button>
+            ) : null}
+            {closed ? (
+                <span className="pill chat-done">
+                    {latestTask.doneBy !== null ? `Done by ${latestTask.doneBy.login}` : 'Marked done'}
+                </span>
+            ) : null}
+            {removeAvailable ? (
+                <Menu>
+                    <MenuButton ref={setReference} className="chat-resume">
+                        More task actions
+                    </MenuButton>
+                    {/* The anchored menu is the destructive overflow: Remove task lives here and
+                    nowhere else. Focus lands back on this trigger — the menu restores it on
+                    close, and the dialog the item opens restores it to the element focused
+                    before it captured the caret. */}
+                    <MenuItems ref={setFloating} style={floatingStyles} portal className="popover">
+                        <MenuItem>
+                            <button type="button" className="popover-option chat-remove" onClick={onRemoveRequest}>
+                                Remove task
+                            </button>
+                        </MenuItem>
+                    </MenuItems>
+                </Menu>
+            ) : null}
+        </div>
+    );
+}
 
 /**
  * The page-level head of `/tasks/:id`, derived from the loaded thread: the task's name — the
@@ -12,7 +132,7 @@ import { taskSummary, taskTitleFromCommand } from '../task-tree.js';
  * thread is a complete render.
  *
  * The action matrix is state-specific (issue 178): every not-terminal state offers **Stop run**
- * — the board lands queued and standby stops as readily as a moving run's — with the request in
+ * — the board lands queued stops as readily as a moving run's — with the request in
  * flight and the request landed both reading **Stopping…**; a terminal task that nobody has
  * closed offers **Mark done** as the page's one primary action; and a closed task shows its
  * closure as attribution text — **Done by <login>**, or **Marked done** when no actor is on
@@ -56,12 +176,13 @@ export function TaskHeader({
     // Both halves of a stop that has not settled yet read the same: the request this click sent,
     // and the one the board has stamped while the worker has not parked the run.
     const stopping = stoppingId === latestTask.id || latestTask.cancelRequestedAt !== null;
-    // Remove is hidden while any member is running — not merely the newest. Queued and standby
-    // members do not block it; nothing on the board is executing them.
+    // Remove is hidden while any member is running — not merely the newest. Queued members do
+    // not block it; nothing on the board is executing them.
     const removeAvailable = !jobs.some((task) => task.status === 'running');
     // The task's live summary — the newest run's activity line, while there is one — beside the
     // title, the same line the sidebar's "Task" row and the sidenav read.
     const summary = taskSummary(latestTask.id, jobs);
+    const waiting = isWaitingForReview(latestTask);
 
     return (
         <PageHeader
@@ -69,7 +190,11 @@ export function TaskHeader({
             title={taskTitleFromCommand(rootTask.command)}
             meta={
                 <>
-                    <span className="pill">{latestTask.status}</span>
+                    {/* Polite, not assertive: a poll that lands the same text announces nothing —
+                    the live region only speaks when the status word itself actually changes. */}
+                    <span className="pill" aria-live="polite">
+                        {waiting ? 'Waiting for review' : latestTask.status}
+                    </span>
                     {/* The overall wall clock: everything the board has banked for the task,
                     plus the head run's live segment while it is going — the 2s poll is the
                     ticker. A task that has never run says so with a dash, not a zero. */}
@@ -84,64 +209,20 @@ export function TaskHeader({
                 </>
             }
             actions={
-                <div className="task-actions">
-                    {stoppable ? (
-                        stopping ? (
-                            stoppingId === latestTask.id ? (
-                                <button type="button" className="chat-resume chat-stop" disabled>
-                                    Stopping…
-                                </button>
-                            ) : (
-                                // The request has landed; the worker has not parked the run yet.
-                                // Pending is not terminal — this is a status, not a control.
-                                <span className="pill chat-stop">Stopping…</span>
-                            )
-                        ) : (
-                            <button
-                                type="button"
-                                className="chat-resume chat-stop"
-                                onClick={() => void onStop(latestTask.id)}
-                            >
-                                Stop run
-                            </button>
-                        )
-                    ) : null}
-                    {open ? (
-                        <button
-                            type="button"
-                            className="primary"
-                            disabled={doneId === latestTask.id}
-                            onClick={() => void onDone(latestTask.id)}
-                        >
-                            {doneId === latestTask.id ? 'Marking done…' : 'Mark done'}
-                        </button>
-                    ) : null}
-                    {closed ? (
-                        <span className="pill chat-done">
-                            {latestTask.doneBy !== null ? `Done by ${latestTask.doneBy.login}` : 'Marked done'}
-                        </span>
-                    ) : null}
-                    {removeAvailable ? (
-                        <Menu>
-                            <MenuButton className="chat-resume">More task actions</MenuButton>
-                            {/* The anchored menu is the destructive overflow: Remove task lives
-                            here and nowhere else. Focus lands back on this trigger — the menu
-                            restores it on close, and the dialog the item opens restores it to
-                            the element focused before it captured the caret. */}
-                            <MenuItems anchor="bottom end" className="popover">
-                                <MenuItem>
-                                    <button
-                                        type="button"
-                                        className="popover-option chat-remove"
-                                        onClick={onRemoveRequest}
-                                    >
-                                        Remove task
-                                    </button>
-                                </MenuItem>
-                            </MenuItems>
-                        </Menu>
-                    ) : null}
-                </div>
+                <TaskHeaderActions
+                    latestTask={latestTask}
+                    stoppable={stoppable}
+                    stopping={stopping}
+                    stoppingId={stoppingId}
+                    open={open}
+                    closed={closed}
+                    doneId={doneId}
+                    removeAvailable={removeAvailable}
+                    waiting={waiting}
+                    onStop={onStop}
+                    onDone={onDone}
+                    onRemoveRequest={onRemoveRequest}
+                />
             }
         />
     );

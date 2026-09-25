@@ -41,16 +41,18 @@ export async function replaceTrackedRepos({
     ready?: Promise<unknown>;
 }): Promise<void> {
     if (ready) await ready;
+    // "owner/name", the one spelling every repo identity takes here — the same split parseFullName
+    // makes. A malformed name has no owner column to land in, and the route has already validated
+    // every entry against the installation listing.
+    const rows = repos.flatMap((repo) => {
+        const slash = repo.indexOf('/');
+        if (slash <= 0 || slash === repo.length - 1) return [];
+        return [{ org_id: orgId, owner: repo.slice(0, slash), name: repo.slice(slash + 1) }];
+    });
     await sql.begin(async (tx) => {
         await tx`delete from tracked_repo where org_id = ${orgId}`;
-        for (const repo of repos) {
-            // "owner/name", the one spelling every repo identity takes here — the same split
-            // parseFullName makes. A malformed name has no owner column to land in, and the
-            // route has already validated every entry against the installation listing.
-            const slash = repo.indexOf('/');
-            if (slash <= 0 || slash === repo.length - 1) continue;
-            await tx`insert into tracked_repo (org_id, owner, name)
-                     values (${orgId}, ${repo.slice(0, slash)}, ${repo.slice(slash + 1)})`;
-        }
+        // One multi-row insert, not one round trip per repo: a large App install's selection is
+        // hundreds of names and this sits on the onboarding click.
+        if (rows.length) await tx`insert into tracked_repo ${tx(rows)}`;
     });
 }

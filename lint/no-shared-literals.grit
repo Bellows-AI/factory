@@ -1,0 +1,88 @@
+language js
+
+// Values with one named home. Spelling one raw anywhere else is a second copy that can drift from
+// the first; import the constant instead. The homes, and tests (which pin wire values on purpose),
+// are the only places the literal may appear. One regex per value: grit binds a regex group to a
+// variable, so an alternation group fails to compile.
+or {
+    JsStringLiteralExpression(),
+    TsStringLiteralType(),
+    JsLiteralMemberName()
+} as $lit where {
+    not $filename <: or {
+        r".*/core/src/executors\.ts$",
+        r".*/core/src/roles\.ts$",
+        r".*/core/src/http\.ts$",
+        r".*/core/src/error-codes\.ts$",
+        r".*/driver/src/executors\.ts$",
+        r".*/driver/src/http\.ts$",
+        r".*/driver/src/labels\.ts$",
+        r".*/test/.*",
+        r".*/test-db/.*",
+        r".*/e2e/.*"
+    },
+    $lit <: or {
+        r"^['\"]claude-code['\"]$",
+        r"^['\"]opencode['\"]$",
+        r"^['\"]admin['\"]$",
+        r"^['\"]member['\"]$",
+        r"^['\"]content-type['\"]$",
+        r"^['\"]application/json['\"]$",
+        // Runner object labels (driver/src/labels.ts), behind the same kind of pre-check as the codes.
+        and {
+            r"^['\"]factory\.[a-z]+['\"]$",
+            or {
+                r"^['\"]factory\.job['\"]$",
+                r"^['\"]factory\.lease['\"]$",
+                r"^['\"]factory\.service['\"]$",
+                r"^['\"]factory\.gates['\"]$"
+            }
+        },
+        // API error codes. The all-caps pre-check runs first so an ordinary literal pays one regex,
+        // not the whole list — the list is what makes a plugin run slow. Prefixed families match by
+        // prefix, so a new code is caught before it lands in core/src/error-codes.ts.
+        and {
+            r"^['\"][A-Z][A-Z_]+['\"]$",
+            or {
+                r"^['\"]BAD_[A-Z_]+['\"]$",
+                r"^['\"]UNKNOWN_[A-Z_]+['\"]$",
+                r"^['\"]TOO_MANY_[A-Z_]+['\"]$",
+                r"^['\"]BLOCK_UNAVAILABLE['\"]$",
+                r"^['\"]COMPLETE_FAILED['\"]$",
+                r"^['\"]DUPLICATE_NODE['\"]$",
+                r"^['\"]ENV_NAME_CONFLICT['\"]$",
+                r"^['\"]ENV_UNAVAILABLE['\"]$",
+                r"^['\"]EXECUTOR_NAME_CONFLICT['\"]$",
+                r"^['\"]FORBIDDEN['\"]$",
+                r"^['\"]JOBS_UNAVAILABLE['\"]$",
+                r"^['\"]LEASE_LOST['\"]$",
+                r"^['\"]NAME_TAKEN['\"]$",
+                r"^['\"]NO_PENDING['\"]$",
+                r"^['\"]NO_PUBLISH_PATH['\"]$",
+                r"^['\"]NO_SESSION['\"]$",
+                r"^['\"]NOT_FINISHED['\"]$",
+                r"^['\"]NOT_FOUND['\"]$",
+                r"^['\"]NOT_STOPPABLE['\"]$",
+                r"^['\"]ORG_UNAVAILABLE['\"]$",
+                r"^['\"]REPO_NAME_CONFLICT['\"]$",
+                r"^['\"]REPOS_UNAVAILABLE['\"]$",
+                r"^['\"]RESERVED_ENV_NAME['\"]$",
+                r"^['\"]SCOPE_REQUIRES_USER['\"]$",
+                r"^['\"]TASK_DONE['\"]$",
+                r"^['\"]TASK_RUNNING['\"]$",
+                r"^['\"]TELEMETRY_DISABLED['\"]$",
+                r"^['\"]TOO_LARGE['\"]$",
+                r"^['\"]UNAUTHENTICATED['\"]$",
+                r"^['\"]UNAVAILABLE['\"]$",
+                r"^['\"]WORKFLOW_SETTINGS_UNAVAILABLE['\"]$",
+                r"^['\"]WORKFLOWS_UNAVAILABLE['\"]$",
+                r"^['\"]WORKSPACE_DISABLED['\"]$",
+                r"^['\"]WORKSPACE_UNAVAILABLE['\"]$"
+            }
+        }
+    },
+    register_diagnostic(
+        span = $lit,
+        message = "Shared literal: import it from core/src/{executors,roles,http,error-codes}.ts (driver: driver/src/{executors,http,labels}.ts)."
+    )
+}

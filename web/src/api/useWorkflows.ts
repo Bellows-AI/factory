@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { refusalOf } from './refusal.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import type { WorkflowParamChoice } from '../task-composer.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 /**
  * One workflow the composer can offer: the id and name a `POST /api/jobs` body names, the scope it
@@ -67,15 +69,17 @@ export function useWorkflows(repo: string | null): UseWorkflows {
         const ack = new AbortController();
         controller.current = ack;
         const url = repo === null ? '/api/workflows' : `/api/workflows?repo=${encodeURIComponent(repo)}`;
-        (async () => {
+        // Explicitly discarded: the body catches everything it can answer for, and an effect
+        // cannot await. The `void` is what says so rather than leaving a floating promise.
+        void (async () => {
             try {
                 const response = await fetch(url, { signal: ack.signal });
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     return;
                 }
                 if (!response.ok) {
-                    setError(`Could not load the workflows (${response.status})`);
+                    setError((await refusalOf(response, 'Could not load the workflows')).error);
                     return;
                 }
                 const body = (await response.json()) as { workflows?: WorkflowChoice[] };
@@ -89,4 +93,172 @@ export function useWorkflows(repo: string | null): UseWorkflows {
     }, [repo, nonce]);
 
     return { workflows: answeredWorkflows(answer, repo), error, refresh };
+}
+
+/** One row of the management panel's list — `GET /api/workflows`' summary shape, definition
+ * omitted (issue 131): the panel fetches a record's `definition` only when an edit opens it. */
+export interface WorkflowSummaryView {
+    id: string;
+    name: string;
+    scope: 'org' | 'user' | 'repo';
+    userId: string | null;
+    repo: string | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/** The full record a `GET /api/workflows/:id` or a write answers with. */
+export interface WorkflowDetailView extends WorkflowSummaryView {
+    definition: unknown;
+}
+
+/** A read or write that named its own refusal, `code` included — the panel renders `code: error`
+ * so a validator refusal (UNKNOWN_KEY, NO_PUBLISH_PATH, …) is diagnosable, not just a sentence. */
+export type WorkflowResult = { ok: true; record: WorkflowDetailView } | { ok: false; error: string; code?: string };
+
+export interface UseWorkflowsManagement {
+    /** Null while the first fetch has not answered. */
+    workflows: WorkflowSummaryView[] | null;
+    loading: boolean;
+    error: string | null;
+    fetchOne: (id: string) => Promise<WorkflowResult>;
+    create: (input: { name: string; scope: 'org' | 'user'; definition: unknown }) => Promise<WorkflowResult>;
+    update: (id: string, input: { name: string; definition: unknown }) => Promise<WorkflowResult>;
+    remove: (id: string) => Promise<string | null>;
+}
+
+/**
+ * The settings management panel's CRUD surface (issue 131): the caller-visible list — org-level
+ * and the caller's own user-level workflows, the same no-repo-context list `DefaultWorkflowPanel`'s
+ * page already sits beside — plus fetch-one, create, update and delete. No polling, like
+ * `useAccessTokens`: the list only changes when this panel writes to it, and each write refetches
+ * so the table shows exactly what is stored.
+ *
+ * Repo-scoped workflows stay out of this list on purpose: `GET /api/workflows` with no `repo`
+ * query answers org and own-user rows only (`listVisible`'s own degrade-away rule), and a repo
+ * context this settings page has no reason to hold is not worth adding just to show a scope this
+ * panel does not offer creating anyway — repo-scoped definitions stay the API's own surface.
+ */
+export function useWorkflowsManagement(): UseWorkflowsManagement {
+    const [workflows, setWorkflows] = useState<WorkflowSummaryView[] | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const controller = useRef<AbortController | null>(null);
+
+    const load = useCallback(async (signal: AbortSignal) => {
+        try {
+            const response = await fetch('/api/workflows', { signal });
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+                reportUnauthenticated();
+                setLoading(false);
+                return;
+            }
+            if (!response.ok) {
+                const refusal = await refusalOf(response);
+                setError(refusal.error);
+                setLoading(false);
+                return;
+            }
+            const body = (await response.json()) as { workflows: WorkflowSummaryView[] };
+            setWorkflows(body.workflows);
+            setError(null);
+        } catch (e) {
+            if (signal.aborted) return;
+            setError((e as Error).message);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    const refresh = useCallback(() => {
+        controller.current?.abort();
+        const own = new AbortController();
+        controller.current = own;
+        void load(own.signal);
+    }, [load]);
+
+    useEffect(() => {
+        refresh();
+        return () => controller.current?.abort();
+    }, [refresh]);
+
+    const fetchOne = useCallback(async (id: string): Promise<WorkflowResult> => {
+        try {
+            const response = await fetch(`/api/workflows/${id}`);
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+                reportUnauthenticated();
+                return { ok: false, error: 'Your session expired' };
+            }
+            if (!response.ok) return { ok: false, ...(await refusalOf(response)) };
+            return { ok: true, record: (await response.json()) as WorkflowDetailView };
+        } catch (e) {
+            return { ok: false, error: (e as Error).message };
+        }
+    }, []);
+
+    const create = useCallback(
+        async (input: { name: string; scope: 'org' | 'user'; definition: unknown }): Promise<WorkflowResult> => {
+            try {
+                const response = await fetch('/api/workflows', {
+                    method: 'POST',
+                    headers: JSON_HEADERS,
+                    body: JSON.stringify(input),
+                });
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+                    reportUnauthenticated();
+                    return { ok: false, error: 'Your session expired' };
+                }
+                if (!response.ok) return { ok: false, ...(await refusalOf(response)) };
+                const record = (await response.json()) as WorkflowDetailView;
+                refresh();
+                return { ok: true, record };
+            } catch (e) {
+                return { ok: false, error: (e as Error).message };
+            }
+        },
+        [refresh]
+    );
+
+    const update = useCallback(
+        async (id: string, input: { name: string; definition: unknown }): Promise<WorkflowResult> => {
+            try {
+                const response = await fetch(`/api/workflows/${id}`, {
+                    method: 'PUT',
+                    headers: JSON_HEADERS,
+                    body: JSON.stringify(input),
+                });
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+                    reportUnauthenticated();
+                    return { ok: false, error: 'Your session expired' };
+                }
+                if (!response.ok) return { ok: false, ...(await refusalOf(response)) };
+                const record = (await response.json()) as WorkflowDetailView;
+                refresh();
+                return { ok: true, record };
+            } catch (e) {
+                return { ok: false, error: (e as Error).message };
+            }
+        },
+        [refresh]
+    );
+
+    const remove = useCallback(
+        async (id: string): Promise<string | null> => {
+            try {
+                const response = await fetch(`/api/workflows/${id}`, { method: 'DELETE' });
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+                    reportUnauthenticated();
+                    return 'Your session expired';
+                }
+                if (!response.ok) return (await refusalOf(response)).error;
+                refresh();
+                return null;
+            } catch (e) {
+                return (e as Error).message;
+            }
+        },
+        [refresh]
+    );
+
+    return { workflows, loading, error, fetchOne, create, update, remove };
 }

@@ -57,10 +57,8 @@ function ShellStub({ withSession }: { withSession: Session | null }) {
                 scope: 'org',
                 setScope: () => {},
                 session: withSession,
-                refreshing: false,
                 progress: null,
                 error: null,
-                refresh: () => {},
                 tasks: { jobs: null, error: null },
             }}
         />
@@ -81,22 +79,21 @@ const renderPage = (withSession: Session | null): string =>
 describe('dashboard scope toggle', () => {
     it('renders beside the range selector when the session reports a signed-in member', () => {
         const html = renderPage(session('github'));
-        expect(html).toContain('range-presets');
-        expect(html).toContain('scope-label'); // the RadioGroup is labelled by the visible Scope text
-        expect(html).toContain('Me');
+        expect(html).toContain('id="range-select"');
+        expect(html).toContain('id="scope-select"');
+        expect(html).toContain('>Organization</button>');
     });
 
     it('does not render under AUTH_MODE=none, where the session is the local stand-in, not a me', () => {
         // The none-mode server still answers /api/auth/me with the __local__ stand-in, so the
-        // mode is the tell: a toggle for the deployment itself would advertise a filter the
-        // server refuses with SCOPE_REQUIRES_USER.
+        // mode is the tell: a dropdown for the deployment itself would advertise a filter the
+        // server refuses with SCOPE_REQUIRES_USER. The read-only Organization value still shows.
         const local = renderPage(session('none'));
-        expect(local).toContain('range-presets');
-        expect(local).not.toContain('scope-label');
-        expect(local).not.toContain('Me');
+        expect(local).toContain('id="range-select"');
+        expect(local).not.toContain('id="scope-select"');
 
         // And with no session at all (signed out on a github-mode board): absent the same way.
         const anonymous = renderPage(null);
-        expect(anonymous).not.toContain('scope-label');
+        expect(anonymous).not.toContain('id="scope-select"');
     });
 });

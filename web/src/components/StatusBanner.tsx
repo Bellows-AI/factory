@@ -28,7 +28,7 @@ export function StatusBanner({
                 {error}
                 {hasData && lastGoodSelection
                     ? ` — showing the last successful read (${lastGoodSelection}), fetched ${relativeTime(fetchedAt, now)}.`
-                    : ' — nothing has rendered yet. Check the telemetry store, then Refresh.'}
+                    : ' — nothing has rendered yet. Check the telemetry store; the next poll retries automatically.'}
             </p>
         );
     }

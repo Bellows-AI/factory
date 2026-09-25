@@ -46,6 +46,8 @@ const META: StatsPayload['meta'] = {
 } as StatsPayload['meta'];
 
 /** A minimal "ready" telemetry: two measured sessions with real totals for the summary panel. */
+const ACCEPTED_EDITS = 2;
+const TOTAL_EDIT_DECISIONS = 3;
 const READY_TELEMETRY = {
     totals: {
         sessions: 2,
@@ -53,7 +55,12 @@ const READY_TELEMETRY = {
         activeHours: 1.5,
         linesAdded: 5,
         linesRemoved: 2,
-        editAcceptance: { accepted: 2, rejected: 1, decisions: 3, ratio: 2 / 3 },
+        editAcceptance: {
+            accepted: ACCEPTED_EDITS,
+            rejected: 1,
+            decisions: TOTAL_EDIT_DECISIONS,
+            ratio: ACCEPTED_EDITS / TOTAL_EDIT_DECISIONS,
+        },
     },
     otherRepoSessions: 1,
     sessionsWithoutHook: 1,
@@ -74,11 +81,12 @@ const NO_TELEMETRY = {
 } as unknown as TelemetryStats;
 
 const dist = (tasks: number) => ({ avg: null, p50: null, p95: null, tasks });
+const MEASURED_TASK_COUNT = 7;
 const MEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(7),
-    jobTurnsPerTask: dist(7),
-    agentTurnsPerTask: dist(7),
-    wallClockPerTask: dist(7),
+    tokensPerTask: dist(MEASURED_TASK_COUNT),
+    jobTurnsPerTask: dist(MEASURED_TASK_COUNT),
+    agentTurnsPerTask: dist(MEASURED_TASK_COUNT),
+    wallClockPerTask: dist(MEASURED_TASK_COUNT),
 } as unknown as TaskUsageStats;
 const UNMEASURED_TASKS: TaskUsageStats = {
     tokensPerTask: dist(0),
@@ -104,16 +112,8 @@ interface RenderOpts {
     progress?: FetchState | null;
 }
 
-/** The shell context with the dashboard's range/scope/refresh wiring handed over. */
-function ShellStub({
-    data,
-    refreshing = false,
-    opts = {},
-}: {
-    data: StatsPayload | null;
-    refreshing?: boolean;
-    opts?: RenderOpts;
-}) {
+/** The shell context with the dashboard's range/scope wiring handed over. */
+function ShellStub({ data, opts = {} }: { data: StatsPayload | null; opts?: RenderOpts }) {
     return (
         <Outlet
             context={{
@@ -123,21 +123,19 @@ function ShellStub({
                 scope: opts.scope ?? DEFAULT_SCOPE,
                 setScope: () => {},
                 session: opts.session ?? null,
-                refreshing,
                 progress: opts.progress ?? null,
                 error: opts.error ?? null,
-                refresh: () => {},
                 tasks: fakeTasks,
             }}
         />
     );
 }
 
-const render = (data: StatsPayload | null, opts: RenderOpts & { refreshing?: boolean } = {}) =>
+const render = (data: StatsPayload | null, opts: RenderOpts = {}) =>
     renderToStaticMarkup(
         <MemoryRouter initialEntries={['/']}>
             <Routes>
-                <Route element={<ShellStub data={data} refreshing={opts.refreshing ?? false} opts={opts} />}>
+                <Route element={<ShellStub data={data} opts={opts} />}>
                     <Route path="*" element={<DashboardPage />} />
                 </Route>
             </Routes>
@@ -175,16 +173,17 @@ describe('page header', () => {
         expect(html).toContain('<h1>Usage overview</h1>');
         expect(html).toContain('page-header-description');
         expect(html).toContain('page-header-meta');
-        expect(html).toContain('page-header-actions');
+        expect(html).not.toContain('page-header-actions');
         expect(html).toContain('bellows.ai');
-        expect(html).toContain('AI usage telemetry');
-        expect(html).toContain('>Refresh</button>');
+        expect(html).not.toContain('AI usage telemetry');
+        expect(html).not.toContain('Refresh');
     });
 
     it('keeps the h1 and drops the loading text while the first read is cold', () => {
         const html = render(null);
         expect(html.match(/<h1/g)).toHaveLength(1);
-        expect(html).toContain('AI usage telemetry');
+        expect(html).not.toContain('page-header-description');
+        expect(html).not.toContain('AI usage telemetry');
         expect(html).not.toContain('loading…');
     });
 });
@@ -197,16 +196,16 @@ describe('analytics toolbar', () => {
         expect(html).toContain('1 repository');
     });
 
-    it('renders a read-only Organization scope in open mode, never a dead Me option', () => {
+    it('renders a read-only Organization scope in open mode, never a dead Scope dropdown', () => {
         const html = render(READY);
-        expect(html).toContain('Organization');
-        expect(html).not.toMatch(/Me<\/button>/);
+        expect(html).toContain('<span class="toolbar-value">Organization</span>');
+        expect(html).not.toContain('id="scope-select"');
     });
 
-    it('renders the Org/Me toggle when the session carries a personal scope', () => {
+    it('renders the Scope dropdown when the session carries a personal scope', () => {
         const html = render(READY, { session: GITHUB_SESSION });
-        expect(html).toMatch(/Org<\/button>/);
-        expect(html).toMatch(/Me<\/button>/);
+        expect(html).toContain('id="scope-select"');
+        expect(html).toContain('>Organization</button>');
     });
 });
 
@@ -226,7 +225,7 @@ describe('rendered-data summary', () => {
     });
 });
 
-describe('last updated and Refresh', () => {
+describe('last updated', () => {
     it('renders relative copy with the precise stamp exposed through a time element', () => {
         const html = render(READY);
         expect(html).toContain('Updated');
@@ -237,12 +236,6 @@ describe('last updated and Refresh', () => {
 
     it('says Not updated yet before any successful read', () => {
         expect(render(null)).toContain('Not updated yet');
-    });
-
-    it('disables Refresh and names the in-flight state while refreshing', () => {
-        const html = render(READY, { refreshing: true });
-        expect(html).toContain('Refreshing…');
-        expect(html).toContain('disabled=""');
     });
 });
 
@@ -259,6 +252,8 @@ describe('the shared state model', () => {
         expect(html).toContain('connection refused');
         expect(html).not.toContain('usage-summary');
         expect(html).not.toContain('class="card"');
+        // The Refresh control is gone; the error copy must not instruct the reader to use it.
+        expect(html).not.toContain('Refresh');
     });
 
     it('keeps the last good data visible and names it when a later read fails', () => {

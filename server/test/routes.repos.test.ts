@@ -5,6 +5,8 @@ import type { GitHubAppClient, InstallationListing } from '../src/github/app-cli
 import { createRepoSource } from '../src/github/repo-source.js';
 import { staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
+const HTTP_OK = 200;
+
 let app: FastifyInstance | null = null;
 afterEach(async () => {
     await app?.close();
@@ -39,7 +41,7 @@ describe('GET /api/repos', () => {
         const { app } = await boot(stubAppClient(async () => listing()));
         const response = await app.inject({ method: 'GET', url: '/api/repos' });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         const body = response.json();
         expect(body.repos).toEqual([
             { owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: '2026-08-20T00:00:00.000Z' },
@@ -56,7 +58,7 @@ describe('GET /api/repos', () => {
         const { app } = await boot(undefined);
         const response = await app.inject({ method: 'GET', url: '/api/repos' });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().repos).toEqual([]);
         expect(response.json().meta.error).toBeNull();
     });

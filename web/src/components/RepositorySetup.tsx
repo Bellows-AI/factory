@@ -31,14 +31,17 @@ export interface RepositorySetupSummaryProps {
      */
     listNotice: string | null;
     rootNull: boolean;
-    dirty: boolean;
-    saveState: SelectionSaveState;
-    saving: boolean;
-    savedNote: boolean;
-    failure: string | null;
     /** A later workspace poll failed over last-good rows: the facts stay, marked stale. */
     staleError: string | null;
-    onSave: () => void;
+}
+
+/** The installation line's sentence, or null when there is no installation to name yet. */
+function installationNote(installation: RepositorySetupSummaryProps['installation']): string | null {
+    if (!installation) return null;
+    const scope = installation.repositorySelection
+        ? ` — access to ${installation.repositorySelection} repositories`
+        : '';
+    return `Installation: ${installation.account ?? 'GitHub App'}${scope}.`;
 }
 
 export function RepositorySetupSummary({
@@ -48,33 +51,24 @@ export function RepositorySetupSummary({
     fetchedAt,
     listNotice,
     rootNull,
-    dirty,
-    saveState,
-    saving,
-    savedNote,
-    failure,
     staleError,
-    onSave,
 }: RepositorySetupSummaryProps) {
+    const note = installationNote(installation);
     return (
         <section className="panel">
             <div className="panel-head">
                 <h2>Availability</h2>
             </div>
             {listNotice ? <p className="status">{listNotice}</p> : null}
-            {counts ? (
-                <p>
-                    {counts.enabled} of {counts.available} repositories enabled · {counts.ready} ready ·{' '}
-                    {counts.settingUp} setting up · {counts.failed} failed
-                </p>
-            ) : null}
-            {installation ? (
-                <p className="muted">
-                    Installation: {installation.account ?? 'GitHub App'}
-                    {installation.repositorySelection
-                        ? ` — access to ${installation.repositorySelection} repositories`
-                        : ''}
-                    .
+            {counts || note ? (
+                <p className="repo-summary">
+                    {counts ? (
+                        <span>
+                            {counts.enabled} of {counts.available} repositories enabled · {counts.ready} ready ·{' '}
+                            {counts.settingUp} setting up · {counts.failed} failed
+                        </span>
+                    ) : null}
+                    {note ? <span className="muted">{note}</span> : null}
                 </p>
             ) : null}
             {cachedError ? (
@@ -89,23 +83,6 @@ export function RepositorySetupSummary({
                 </p>
             ) : null}
             {staleError ? <p className="status">Checkout status is stale — {staleError}</p> : null}
-            {dirty ? <p className="status">Selection changed — save to update your workspace</p> : null}
-            {saveState.reason ? (
-                <p className="status" id="repo-save-reason">
-                    {saveState.reason}
-                </p>
-            ) : null}
-            {failure ? <p className="status">{failure}</p> : null}
-            {savedNote ? <p className="muted">Selection saved. Checkouts are being prepared.</p> : null}
-            <button
-                type="button"
-                className="primary"
-                onClick={onSave}
-                disabled={saveState.disabled}
-                aria-describedby={saveState.reason ? 'repo-save-reason' : undefined}
-            >
-                {saving ? 'Saving selection…' : 'Save repository selection'}
-            </button>
         </section>
     );
 }
@@ -133,6 +110,138 @@ export interface RepositorySetupListProps {
     onDeselectAbsent: (key: string) => void;
     /** A successful response arrived: only then may "no match" be stated. */
     loaded: boolean;
+    dirty: boolean;
+    saveState: SelectionSaveState;
+    savedNote: boolean;
+    failure: string | null;
+    onSave: () => void;
+}
+
+/**
+ * The save action itself, beside the "Repository list" heading in the list panel's `panel-head`
+ * (the same beside-the-heading placement `EnvPanelBanner` uses for Save) rather than in a
+ * separate Availability card. `primary` renders only while a dirty, unblocked selection is worth
+ * prompting for — saving, blocked, clean and just-saved states stay quiet so the one loud action
+ * on the page is loud only when there is something to act on.
+ */
+function RepositorySaveButton({
+    dirty,
+    saveState,
+    saving,
+    onSave,
+}: {
+    dirty: boolean;
+    saveState: SelectionSaveState;
+    saving: boolean;
+    onSave: () => void;
+}) {
+    const prominent = dirty && !saveState.disabled;
+    return (
+        <div className="panel-actions">
+            <button
+                type="button"
+                className={prominent ? 'primary repo-save' : 'repo-save'}
+                onClick={onSave}
+                disabled={saveState.disabled}
+                aria-describedby={saveState.reason ? 'repo-save-reason' : undefined}
+            >
+                {saving ? 'Saving selection…' : 'Save repository selection'}
+            </button>
+        </div>
+    );
+}
+
+/** The save action's status lines, under the list panel's head. Split out of
+ * `RepositorySetupList` so its own line count does not add to that function's. */
+function RepositorySaveStatus({
+    dirty,
+    saveState,
+    savedNote,
+    failure,
+}: {
+    dirty: boolean;
+    saveState: SelectionSaveState;
+    savedNote: boolean;
+    failure: string | null;
+}) {
+    return (
+        <>
+            {dirty ? <p className="status">Selection changed — save to update your workspace</p> : null}
+            {saveState.reason ? (
+                <p className="status" id="repo-save-reason">
+                    {saveState.reason}
+                </p>
+            ) : null}
+            {failure ? <p className="status">{failure}</p> : null}
+            {savedNote ? <p className="muted">Selection saved. Checkouts are being prepared.</p> : null}
+        </>
+    );
+}
+
+/** One repository's row: selection, identity, checkout status and Configure. Split out of
+ * `RepositorySetupList` so the table's map callback stays under the per-function line limit. */
+function RepositoryRow({
+    repo,
+    chosen,
+    workspaceState,
+    rows,
+    loadingCheckouts,
+    rootNull,
+    saving,
+    atCeiling,
+    onToggle,
+    configured,
+    onConfigure,
+}: {
+    repo: InstallationRepo;
+    chosen: ReadonlySet<string>;
+    workspaceState: WorkspaceState;
+    rows: ReadonlyMap<string, WorkspaceRepo | undefined>;
+    loadingCheckouts: boolean;
+    rootNull: boolean;
+    saving: boolean;
+    atCeiling: boolean;
+    onToggle: (key: string) => void;
+    configured: string | null;
+    onConfigure: (key: string) => void;
+}) {
+    const key = repoKey(repo);
+    const selected = chosen.has(key);
+    const row = rows.get(key);
+    const text = checkoutText(checkoutCell(selected, row, workspaceState));
+    return (
+        <tr>
+            <td data-label="Enabled">
+                {/* While the workspace poll is unresolved the box is not shown at all: a
+                    disabled unchecked box would still read as a selection fact, and there is
+                    none yet. */}
+                {loadingCheckouts ? (
+                    '—'
+                ) : (
+                    <input
+                        type="checkbox"
+                        aria-label={`Enable ${key} in my workspace`}
+                        checked={selected}
+                        disabled={rootNull || saving || (!selected && atCeiling)}
+                        onChange={() => onToggle(key)}
+                    />
+                )}
+            </td>
+            <td data-label="Repository">
+                {key}
+                {repo.private ? <span className="pill">private</span> : null}
+            </td>
+            <td data-label="Checkout status">{text}</td>
+            <td data-label="Branch">{row?.branch ?? repo.defaultBranch ?? '—'}</td>
+            <td data-label="Last commit">{row?.lastCommit ? commitDate(row.lastCommit.at) : '—'}</td>
+            <td data-label="Size">{bytes(row?.sizeBytes ?? null)}</td>
+            <td>
+                <button type="button" aria-current={configured === key} onClick={() => onConfigure(key)}>
+                    Configure
+                </button>
+            </td>
+        </tr>
+    );
 }
 
 export function RepositorySetupList({
@@ -152,13 +261,20 @@ export function RepositorySetupList({
     absent,
     onDeselectAbsent,
     loaded,
+    dirty,
+    saveState,
+    savedNote,
+    failure,
+    onSave,
 }: RepositorySetupListProps) {
     const atCeiling = !canSelect(chosen);
     return (
         <section className="panel">
             <div className="panel-head">
                 <h2>Repository list</h2>
+                <RepositorySaveButton dirty={dirty} saveState={saveState} saving={saving} onSave={onSave} />
             </div>
+            <RepositorySaveStatus dirty={dirty} saveState={saveState} savedNote={savedNote} failure={failure} />
             <div className="repo-search">
                 <label htmlFor="repo-setup-search">Search repositories</label>
                 <input
@@ -173,12 +289,12 @@ export function RepositorySetupList({
                         Clear search
                     </button>
                 ) : null}
+                <span className="muted">Selections are limited to {MAX_SELECTED_REPOS} repositories.</span>
             </div>
-            <p className="muted">Selections are limited to {MAX_SELECTED_REPOS} repositories.</p>
             {shown.length ? (
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" aria-label="Repositories" tabIndex={0}>
-                    <table className="data">
+                    <table className="data repo-table">
                         <thead>
                             <tr>
                                 <th scope="col">Enabled</th>
@@ -193,49 +309,22 @@ export function RepositorySetupList({
                             </tr>
                         </thead>
                         <tbody>
-                            {shown.map((repo) => {
-                                const key = repoKey(repo);
-                                const selected = chosen.has(key);
-                                const text = checkoutText(checkoutCell(selected, rows.get(key), workspaceState));
-                                const row = rows.get(key);
-                                return (
-                                    <tr key={key}>
-                                        <td>
-                                            {/* While the workspace poll is unresolved the box is not
-                                                shown at all: a disabled unchecked box would still
-                                                read as a selection fact, and there is none yet. */}
-                                            {loadingCheckouts ? (
-                                                '—'
-                                            ) : (
-                                                <input
-                                                    type="checkbox"
-                                                    aria-label={`Enable ${key} in my workspace`}
-                                                    checked={selected}
-                                                    disabled={rootNull || saving || (!selected && atCeiling)}
-                                                    onChange={() => onToggle(key)}
-                                                />
-                                            )}
-                                        </td>
-                                        <td>
-                                            {key}
-                                            {repo.private ? <span className="pill">private</span> : null}
-                                        </td>
-                                        <td>{text}</td>
-                                        <td>{row?.branch ?? repo.defaultBranch ?? '—'}</td>
-                                        <td>{row?.lastCommit ? commitDate(row.lastCommit.at) : '—'}</td>
-                                        <td>{bytes(row?.sizeBytes ?? null)}</td>
-                                        <td>
-                                            <button
-                                                type="button"
-                                                aria-current={configured === key}
-                                                onClick={() => onConfigure(key)}
-                                            >
-                                                Configure
-                                            </button>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
+                            {shown.map((repo) => (
+                                <RepositoryRow
+                                    key={repoKey(repo)}
+                                    repo={repo}
+                                    chosen={chosen}
+                                    workspaceState={workspaceState}
+                                    rows={rows}
+                                    loadingCheckouts={loadingCheckouts}
+                                    rootNull={rootNull}
+                                    saving={saving}
+                                    atCeiling={atCeiling}
+                                    onToggle={onToggle}
+                                    configured={configured}
+                                    onConfigure={onConfigure}
+                                />
+                            ))}
                         </tbody>
                     </table>
                 </section>

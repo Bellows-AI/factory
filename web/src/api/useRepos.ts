@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { refusalOf } from './refusal.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 export interface InstallationRepo {
     owner: string;
@@ -41,13 +42,12 @@ export function useRepos(enabled: boolean): UseRepos {
         setLoading(true);
         try {
             const response = await fetch('/api/repos', { signal });
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 reportUnauthenticated();
                 return;
             }
             if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                setError(body.error ?? `Request failed (${response.status})`);
+                setError((await refusalOf(response)).error);
                 return;
             }
             setData((await response.json()) as ReposPayload);

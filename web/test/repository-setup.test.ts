@@ -84,11 +84,12 @@ describe('orderByRecency', () => {
             repo({ name: 'also-old', pushedAt: '2020-01-01T00:00:00.000Z' }),
         ]);
         const keys = ordered.map(repoKey);
+        const RECENCY_BAND_SIZE = 2;
         // The tie between the two 2020 entries sorts by key under localeCompare, whose order for
         // punctuation differs by locale — the pinned contract is the recency bands, not the tie.
-        expect(keys.slice(0, 2)).toEqual(['acme/newest', 'acme/newer']);
-        expect(keys.slice(2, 4).sort()).toEqual(['acme/also-old', 'acme/old']);
-        expect(keys[4]).toBe('acme/zebra');
+        expect(keys.slice(0, RECENCY_BAND_SIZE)).toEqual(['acme/newest', 'acme/newer']);
+        expect(keys.slice(RECENCY_BAND_SIZE, RECENCY_BAND_SIZE * 2).sort()).toEqual(['acme/also-old', 'acme/old']);
+        expect(keys[RECENCY_BAND_SIZE * 2]).toBe('acme/zebra');
     });
 });
 

@@ -5,6 +5,8 @@ export interface UserExecutor {
     readonly type: string;
     readonly createdAt: string;
     readonly updatedAt: string;
+    /** The row the composer autoselects on a new task draft. At most one true per member. */
+    readonly isDefault: boolean;
 }
 
 /** What `configFor` answers: the row's type and the raw config the member pasted. */
@@ -24,7 +26,12 @@ export interface UserExecutorStore {
      */
     replace(
         userId: string,
-        executors: readonly { name: string; type: string; config: Record<string, unknown> }[]
+        executors: readonly {
+            name: string;
+            type: string;
+            config: Record<string, unknown>;
+            isDefault?: boolean;
+        }[]
     ): Promise<void>;
     list(userId: string): Promise<UserExecutor[]>;
     /**
@@ -37,7 +44,8 @@ export interface UserExecutorStore {
     /**
      * The one executor row a task label names, WITH its pasted config — the claim-time read the
      * job store makes to hand a runner the member's own executor configuration
-     * (`OPENCODE_CONFIG_CONTENT`). `list()` deliberately never selects `config`, because it feeds
+     * (`OPENCODE_CONFIG_CONTENT` / `CLAUDE_CODE_CONFIG_CONTENT`). `list()` deliberately never
+     * selects `config`, because it feeds
      * a two-second poll; this is the one read that must, and it runs on the claim's transaction
      * for the same reason the env resolver does: a claim holds one connection, so enough
      * concurrent claims can never wedge the pool against itself.
@@ -50,6 +58,7 @@ interface Row {
     type: string;
     created_at: Date;
     updated_at: Date;
+    is_default: boolean;
 }
 
 const toUserExecutor = (row: Row): UserExecutor => ({
@@ -57,6 +66,7 @@ const toUserExecutor = (row: Row): UserExecutor => ({
     type: row.type,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
+    isDefault: row.is_default,
 });
 
 /** The organization is bound at construction, for the reason createUserRepoStore's header gives. */
@@ -82,15 +92,21 @@ export function createUserExecutorStore({
                     where org_id = ${orgId} and user_id = ${userId}
                 `;
                 if (executors.length) {
-                    const rows = executors.map((executor) => ({
+                    // `position` is the member's own order, taken from the array index. It has to
+                    // be stored rather than inferred: this is one transaction, so every row lands
+                    // with the same `now()` and a created_at sort is a total tie (041's header).
+                    const rows = executors.map((executor, index) => ({
                         org_id: orgId,
                         user_id: userId,
                         name: executor.name,
                         type: executor.type,
                         config: executor.config as never,
+                        is_default: executor.isDefault ?? false,
+                        position: index,
                     }));
                     await tx`
-                        insert into user_executor ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config')}
+                        insert into user_executor
+                            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'is_default', 'position')}
                     `;
                 }
             });
@@ -101,10 +117,10 @@ export function createUserExecutorStore({
             // `config` is deliberately not selected: the routes echo these rows on every poll, and
             // pasted config may hold credentials.
             const rows = await sql<Row[]>`
-                select name, type, created_at, updated_at
+                select name, type, created_at, updated_at, is_default
                 from user_executor
                 where org_id = ${orgId} and user_id = ${userId}
-                order by created_at asc, name asc
+                order by position asc, name asc
             `;
             return rows.map(toUserExecutor);
         },
@@ -112,10 +128,10 @@ export function createUserExecutorStore({
         async listWithConfigs(userId) {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select name, type, created_at, updated_at, config
+                select name, type, created_at, updated_at, is_default, config
                 from user_executor
                 where org_id = ${orgId} and user_id = ${userId}
-                order by created_at asc, name asc
+                order by position asc, name asc
             `;
             return rows.map((row) => ({ ...toUserExecutor(row), config: row.config }));
         },

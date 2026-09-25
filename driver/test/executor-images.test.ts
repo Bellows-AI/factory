@@ -1,5 +1,14 @@
-import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +27,7 @@ const read = (rel: string): string => readFileSync(join(ROOT, rel), 'utf8');
 
 const CLAUDE_REPORTER = 'docker/claude-executor/branch-reporter.cjs';
 const OPENCODE_REPORTER = 'docker/opencode-executor/branch-reporter.cjs';
+const CLAUDE_PROGRESS = 'docker/claude-executor/claude-progress.cjs';
 
 describe('the executor branch reporter', () => {
     // Deliberate copies, like the collector's per-branch blocks: one file per image, byte-equal
@@ -33,17 +43,22 @@ describe('the executor branch reporter', () => {
         expect(opencode).toContain("const AGENT = 'opencode';");
     });
 
-    // claude-home/ cannot hold it: the Remote Control auth volume mounts over CLAUDE_CONFIG_DIR
-    // and would shadow the script on exactly the runs that most want to be attributed.
+    // claude-home/ cannot hold it: the transcript redirect moves CLAUDE_CONFIG_DIR onto the
+    // workspaces volume, so a script baked into a config home is not a stable path.
     it('is copied to /usr/local/bin by both Dockerfiles, never into a config home', () => {
         for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
             const dockerfile = read(`${dir}/Dockerfile`);
-            expect(dockerfile).toMatch(
-                new RegExp(`COPY[^\\n]*branch-reporter\\.cjs /usr/local/bin/branch-reporter\\.cjs`)
-            );
+            expect(dockerfile).toMatch(/COPY[^\n]*branch-reporter\.cjs \/usr\/local\/bin\/branch-reporter\.cjs/);
             expect(dockerfile).not.toMatch(/home\/COPY[^\n]*branch-reporter/);
             expect(dockerfile).not.toMatch(/branch-reporter[^\n]*-home\//);
         }
+    });
+
+    it('ships the Claude progress formatter beside the entrypoint, outside the mutable config home', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toMatch(/COPY[^\n]*claude-progress\.cjs \/usr\/local\/bin\/claude-progress\.cjs/);
+        expect(dockerfile).toMatch(/chmod 0755[^\n]*claude-progress\.cjs/);
+        expect(dockerfile).not.toMatch(/claude-progress[^\n]*claude-home\//);
     });
 
     // The entrypoint shape: launched beside the CLI (never as its child, so a CLI crash cannot
@@ -64,10 +79,25 @@ describe('the executor branch reporter', () => {
         );
         // Both children tracked: the reporter and the CLI each hand their PID back to the shell.
         expect(entry).toMatch(/^REPORTER_PID=\$!$/m);
-        expect(entry).toMatch(new RegExp(`^${cli} "\\$@" &$`, 'm'));
+        // The CLI is forked through a subshell that clears the inherited handler and execs. A
+        // background child keeps the parent's traps until it execs, so a TERM landing in that
+        // sliver runs `on_term` IN THE CHILD, which swallows the signal meant to kill it: the CLI
+        // then execs and runs on, and `docker stop` waits out its grace period for a process that
+        // was already told to stop. Measured at 3 of 12 under bash-as-/bin/sh; ash and dash reset
+        // the handler themselves, which is why the images never showed it and the host suite could.
+        if (cli === 'claude') {
+            expect(entry).toMatch(
+                /\(\n {4}trap - TERM INT\n {4}exec claude --output-format stream-json --verbose "\$@"\n\) > "\$PROGRESS_FIFO" &$/m
+            );
+            expect(entry).toMatch(/node "\$\(dirname "\$0"\)\/claude-progress\.cjs" < "\$PROGRESS_FIFO" &/);
+            expect(entry).toMatch(/^PROGRESS_PID=\$!$/m);
+        } else {
+            expect(entry).toMatch(/\(\n {4}trap - TERM INT\n {4}exec opencode "\$@"\n\) &$/m);
+        }
         expect(entry).toMatch(/^CLI_PID=\$!$/m);
-        // The CLI runs as a background child now, so the close-time sample can run after it;
-        // a leftover `exec` would turn the script into the PID-1 replacement and skip it.
+        // The `exec` above is INSIDE the subshell, so it replaces that child and leaves $! pointing
+        // at the CLI. At the top level it would replace this shell instead, taking the wait loop
+        // and the close-time sample with it.
         expect(entry).not.toMatch(new RegExp(`^exec ${cli} `, 'm'));
         // TERM/INT reaching PID 1 is forwarded to every child — CLI, reporter and, in the
         // opencode image (the only one that ships it, #68), the rate-limit watch — without
@@ -78,19 +108,63 @@ describe('the executor branch reporter', () => {
         // (the kill -0 probe), and the reporter is terminated and reaped before the close-time
         // sample so nothing outlives the run.
         expect(entry).toMatch(
-            /while :; do\n    wait "\$CLI_PID"\n    STATUS=\$\?\n    kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/
+            /while :; do\n {4}wait "\$CLI_PID"\n {4}STATUS=\$\?\n {4}kill -0 "\$CLI_PID" 2>\/dev\/null \|\| break\ndone/
         );
+        // The forwarding kill takes its pids UNQUOTED, unlike every other expansion in these
+        // files. The trap is installed before any child exists (asserted below), so each pid is
+        // empty until its child starts, and an empty "$VAR" would hand kill an empty argument
+        // instead of nothing at all.
         if (cli === 'opencode') {
-            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID" "\$WATCHER_PID"/);
+            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$WATCHER_PID/);
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
         } else {
-            expect(entry).toMatch(/kill -TERM "\$CLI_PID" "\$REPORTER_PID"/);
+            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$PROGRESS_PID/);
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
+            expect(entry).toMatch(/wait "\$PROGRESS_PID" 2>\/dev\/null \|\| true/);
         }
         expect(entry).toMatch(/branch-reporter\.cjs --once/);
         expect(entry).toMatch(/exit "\$STATUS"/);
+
+        // The trap is installed BEFORE the first child is forked, and that ordering is the
+        // assertion — not a detail of it. With the trap after the last `&`, PID 1 carries the
+        // default TERM action across the gap between them, so a `docker stop` landing there kills
+        // this shell and orphans the CLI until the runtime's forced kill: precisely what the trap
+        // exists to prevent. The gap is also unobservable from outside, which is why the offline
+        // signal test below could only guess at its width with a sleep, and why it failed about
+        // one full-suite run in three until the ordering changed.
+        // `cmd & PID=$!` is two commands, so a signal can land between the fork and the
+        // assignment: the child is running, the shell does not know its pid, and the forward
+        // reaches nothing. The handler records that it fired and the shell re-delivers once every
+        // pid is known — without it that TERM is silently dropped and the run continues.
+        expect(entry).toMatch(/^TERM_PENDING=''$/m);
+        expect(entry).toMatch(/^ {4}TERM_PENDING=1$/m);
+        expect(entry).toMatch(/if \[ -n "\$TERM_PENDING" \]; then\n {4}#[^\n]*\n {4}kill -TERM \$CLI_PID /);
+
+        const trapAt = entry.search(/^trap \w+ TERM INT$/m);
+        const firstChildAt = entry.search(/^node --disable-warning=ExperimentalWarning .*&$/m);
+        expect(trapAt, 'no trap line').toBeGreaterThan(-1);
+        expect(firstChildAt, 'no backgrounded first child').toBeGreaterThan(-1);
+        expect(trapAt, 'the TERM trap must be installed before the first child is forked').toBeLessThan(firstChildAt);
+    });
+
+    it('turns Claude protocol events into safe live progress', () => {
+        const { linesFor } = requireCjs(join(ROOT, CLAUDE_PROGRESS)) as { linesFor(event: unknown): string[] };
+        expect(linesFor({ type: 'system', subtype: 'init' })).toEqual(['Claude session started.']);
+        expect(
+            linesFor({
+                type: 'assistant',
+                message: {
+                    content: [
+                        { type: 'tool_use', name: 'Bash', input: { command: 'export TOKEN=secret; npm test' } },
+                        { type: 'text', text: 'I am running the test suite.' },
+                    ],
+                },
+            })
+        ).toEqual(['Running Bash.', 'I am running the test suite.']);
+        expect(linesFor({ type: 'stream_event', event: { type: 'content_block_delta' } })).toEqual([]);
+        expect(linesFor(null)).toEqual([]);
     });
 
     // opencode mints its own session ids and tells nobody before the run starts — discovery
@@ -112,10 +186,8 @@ describe('the executor branch reporter', () => {
  * FACTORY_TRANSCRIPT_DIR, the entrypoint moves CLAUDE_CONFIG_DIR onto the workspaces volume
  * BEFORE the seed block — the settings.json-keyed seed then runs against the thread dir, so the
  * baked git guard and every baked setting ride along (the spec's "baked runner configuration
- * survives the redirect"). TRUST_WORKDIR is the Remote Control-only env; the combination is a
- * contract violation the driver must never produce, refused loudly rather than silently
- * mis-homing the config dir onto the auth volume or vice versa. Pinned against drift like every
- * baked script: the block's exact shape, and its position before the seed.
+ * survives the redirect"). Pinned against drift like every baked script: the block's exact shape,
+ * and its position before the seed.
  */
 describe('the claude-executor transcript redirect', () => {
     const ENTRYPOINT = 'docker/claude-executor/entrypoint.sh';
@@ -123,15 +195,12 @@ describe('the claude-executor transcript redirect', () => {
     it('redirects CLAUDE_CONFIG_DIR only when the driver hands it a transcript dir', () => {
         const entry = read(ENTRYPOINT);
         expect(entry).toMatch(/if \[ -n "\$\{FACTORY_TRANSCRIPT_DIR:-\}" \]; then/);
-        expect(entry).toMatch(/\n    mkdir -p "\$FACTORY_TRANSCRIPT_DIR"\n/);
-        expect(entry).toMatch(/\n    export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
+        expect(entry).toMatch(/\n {4}mkdir -p "\$FACTORY_TRANSCRIPT_DIR"\n/);
+        expect(entry).toMatch(/\n {4}export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
     });
 
-    it('refuses the Remote Control combination loudly', () => {
-        const entry = read(ENTRYPOINT);
-        expect(entry).toMatch(
-            /\n    if \[ -n "\$\{TRUST_WORKDIR:-\}" \]; then\n        echo "claude-executor: refusing FACTORY_TRANSCRIPT_DIR together with TRUST_WORKDIR\." >&2\n        echo "The transcript store is headless-only; Remote Control keeps the auth volume\." >&2\n        exit 2\n    fi\n/
-        );
+    it('carries no Remote Control trust patch', () => {
+        expect(read(ENTRYPOINT)).not.toContain('TRUST_WORKDIR');
     });
 
     it('redirects before the seed, so the thread dir is seeded from the baked home', () => {
@@ -157,10 +226,9 @@ describe('the claude-executor transcript redirect', () => {
  */
 const STUB = `#!/bin/sh
 # Stand-in CLI. Installs its own TERM trap FIRST (an early forward must still leave the
-# marker), records that it started only after a settle — the entrypoint needs a fork plus
-# two builtins to get its trap up, and the test must never signal before that — then blocks
-# in the wait builtin, which a trap interrupts at once, where a foreground sleep would
-# defer it. Without a signal it exits with STUB_STATUS after STUB_SLEEP seconds.
+# marker), records that it started, then blocks in the wait builtin, which a trap interrupts
+# at once, where a foreground sleep would defer it. Without a signal it exits with STUB_STATUS
+# after STUB_SLEEP seconds.
 trap 'echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
 sleep "\${STUB_SETTLE:-0}"
 echo started > "$STUB_DIR/started"
@@ -169,12 +237,25 @@ wait "$!"
 exit "\${STUB_STATUS:-0}"
 `;
 
-// Signaling before the entrypoint's trap exists would kill the shell with the default action
-// and make the test measure nothing; half a second covers the fork-and-two-builtins window
-// with a margin that survives a loaded CI box.
-const STUB_SETTLE_S = '0.5';
+/**
+ * No settle. The entrypoints install their TERM trap BEFORE forking the first child, so this
+ * stub can only be running at all if the trap is already up: the `started` marker IS the
+ * readiness signal, and the test can send its TERM the instant it appears.
+ *
+ * This used to be half a second of sleep, chosen to cover the window between the CLI's `&` and
+ * a `trap` line that came after it. A duration guess is not a synchronisation primitive — under
+ * the load of a full suite run the window outgrew the guess and the case failed roughly one run
+ * in three, because the signal arrived while PID 1 still had the default TERM action. Moving the
+ * trap ahead of the fork closed the window in the entrypoints themselves, which is where the
+ * race actually lived; keep this at 0 so the test would notice if it reopened.
+ */
+const STUB_SETTLE_S = '0';
 const EXIT_TIMEOUT_MS = 10_000;
 const STARTED_TIMEOUT_MS = 5_000;
+/** The stub CLI's own chosen exit status, for the "re-raises it" assertion. */
+const STUB_EXIT_CODE = 7;
+/** A signal death's exit status: 128 + the signal number (SIGTERM is 15). */
+const TERM_DEATH_EXIT_CODE = 143;
 
 interface Sandbox {
     bin: string;
@@ -186,7 +267,9 @@ interface Sandbox {
 // A PATH-shimmed directory with a stub for each image's CLI name, plus the env the
 // entrypoints expect: WORKDIR must exist (they exit 2 otherwise), HOME and CLAUDE_CONFIG_DIR
 // point at the sandbox, and the container-only blocks — /opt/claude-home seeding, the OTEL
-// rewrites, TRUST_WORKDIR — are all skipped because their guards are absent locally.
+// rewrites — are all skipped because their guards are absent locally.
+const EXECUTABLE_MODE = 0o755;
+
 const makeSandbox = (): Sandbox => {
     const root = mkdtempSync(join(tmpdir(), 'executor-entrypoint-'));
     const bin = join(root, 'bin');
@@ -195,7 +278,7 @@ const makeSandbox = (): Sandbox => {
     mkdirSync(work);
     for (const cli of ['claude', 'opencode']) {
         writeFileSync(join(bin, cli), STUB);
-        chmodSync(join(bin, cli), 0o755);
+        chmodSync(join(bin, cli), EXECUTABLE_MODE);
     }
     return {
         bin,
@@ -231,13 +314,15 @@ const whenExited = (child: ReturnType<typeof spawn>, ms: number): Promise<number
         });
     });
 
+const FILE_POLL_INTERVAL_MS = 25;
+
 const whenFileExists = (path: string, ms: number): Promise<void> =>
     new Promise((resolve, reject) => {
         const deadline = Date.now() + ms;
         const poll = () => {
             if (existsSync(path)) return resolve();
             if (Date.now() > deadline) return reject(new Error(`${path} never appeared`));
-            setTimeout(poll, 25);
+            setTimeout(poll, FILE_POLL_INTERVAL_MS);
         };
         poll();
     });
@@ -249,8 +334,8 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
     ])('%s re-raises the CLI’s own chosen exit status', async (entrypoint) => {
         const sandbox = makeSandbox();
         try {
-            const child = runEntrypoint(entrypoint, sandbox, { STUB_STATUS: '7' });
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(7);
+            const child = runEntrypoint(entrypoint, sandbox, { STUB_STATUS: String(STUB_EXIT_CODE) });
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
         } finally {
             sandbox.cleanup();
         }
@@ -270,7 +355,7 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
             // 143 is the CLI's own signal death (128+TERM), re-raised by the shell — and
             // reaching an exit at all proves the reporter was reaped: the shell would
             // otherwise still sit in wait on it when the timeout SIGKILLs the lot.
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(143);
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(TERM_DEATH_EXIT_CODE);
             // The substance: the marker is written by the STUB's own trap, so it exists only
             // if the signal truly reached the CLI rather than the shell merely dying.
             expect(readFileSync(join(sandbox.bin, 'signaled'), 'utf8')).toMatch(/^\d+$/m);
@@ -358,9 +443,9 @@ describe('the claude-executor git guard', () => {
         expect(junk.stdout).toBe('');
     });
 
-    // /usr/local/bin, like the branch reporter: the Remote Control auth volume mounts over
-    // CLAUDE_CONFIG_DIR and would shadow a hook script baked into a config home — and the
-    // settings.json hook command names this exact absolute path.
+    // /usr/local/bin, like the branch reporter: the transcript redirect moves CLAUDE_CONFIG_DIR
+    // off the baked config home — and the settings.json hook command names this exact absolute
+    // path.
     it('is baked at /usr/local/bin by the Dockerfile, never into a config home', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
         expect(dockerfile).toMatch(/COPY[^\n]*git-guard\.cjs \/usr\/local\/bin\/git-guard\.cjs/);
@@ -388,18 +473,88 @@ describe('the claude-executor git guard', () => {
 });
 
 /*
+ * One set of skills for both executors: docker/skills/ is baked into each image's own skills
+ * directory through the named `skills` build context, so a task sees the same skills whichever
+ * executor its profile picks. The repo's dev skills follow the same rule from the other side —
+ * .claude/skills/ is the one directory both Claude Code and OpenCode discover.
+ */
+describe('the shared executor skills', () => {
+    const SKILLS = 'docker/skills';
+    const IMAGES = [
+        { dockerfile: 'docker/claude-executor/Dockerfile', target: '/home/node/.claude/skills/' },
+        { dockerfile: 'docker/opencode-executor/Dockerfile', target: '/home/node/.config/opencode/skills/' },
+    ];
+
+    it('bakes docker/skills into both images', () => {
+        for (const { dockerfile, target } of IMAGES) {
+            expect(read(dockerfile)).toContain(`COPY --from=skills --chown=node:node . ${target}`);
+        }
+    });
+
+    it('lands in claude-executor before the /opt/claude-home seed is snapshotted', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        const copy = dockerfile.indexOf('COPY --from=skills');
+        expect(copy).toBeGreaterThan(-1);
+        expect(copy).toBeLessThan(dockerfile.indexOf('cp -a /home/node/.claude/. /opt/claude-home/'));
+    });
+
+    it('is the only home: neither per-image config directory carries skills of its own', () => {
+        expect(existsSync(join(ROOT, 'docker/claude-executor/claude-home/skills'))).toBe(false);
+        expect(existsSync(join(ROOT, 'docker/opencode-executor/opencode-home/skills'))).toBe(false);
+    });
+
+    it('names every skill after its directory, as opencode requires', () => {
+        const names = readdirSync(join(ROOT, SKILLS));
+        expect(names.length).toBeGreaterThan(0);
+        for (const name of names) {
+            expect(read(`${SKILLS}/${name}/SKILL.md`)).toMatch(new RegExp(`^---\nname: ${name}\n`));
+        }
+    });
+
+    // Without the flag `COPY --from=skills` resolves `skills` as an image to pull, and the
+    // build fails far from the missing argument.
+    it('every executor image build passes the skills context', () => {
+        const files = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+            .split('\0')
+            .filter((file) => file && existsSync(join(ROOT, file)) && read(file).includes('docker build'));
+        let builds = 0;
+        for (const file of files) {
+            // Unwrap comment and prose line breaks so a command split across lines reads whole.
+            const text = read(file).replace(/\\?\n\s*#?\s*/g, ' ');
+            const invocations =
+                text.match(
+                    /docker build\b(?:(?!docker build)[^`])*?(?:docker\/(?:claude|opencode)-executor|"\$HERE"|\s\.\s>)/g
+                ) ?? [];
+            // `-f` names a Dockerfile elsewhere — the dashboard and driver images, not a runner.
+            for (const line of invocations.filter((build) => !/\s-f\s/.test(build))) {
+                builds++;
+                expect(line, `${file}: ${line}`).toContain('--build-context skills=');
+            }
+        }
+        expect(builds).toBeGreaterThan(0);
+    });
+
+    it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {
+        expect(existsSync(join(ROOT, '.opencode/skills'))).toBe(false);
+        expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(
+            expect.arrayContaining(['fix', 'openspec-propose', 'openspec-apply-change'])
+        );
+    });
+});
+
+/*
  * The PR boundary (issue #82): executors do not open pull requests — that is the driver
  * publish's, with the title/description written by the summarizer script. The enforcement is
  * the two guards above; these pins keep the INSTRUCTIONS from teaching the old behavior, the
  * way the baked github skill once did ("open the PR without waiting to be asked").
  */
 describe('the executor PR boundary', () => {
-    const GITHUB_SKILL = 'docker/claude-executor/claude-home/skills/github/SKILL.md';
+    const GITHUB_SKILL = 'docker/skills/github/SKILL.md';
 
     it('no baked skill instructs opening a pull request', () => {
         const skills = [
             GITHUB_SKILL,
-            'docker/claude-executor/claude-home/skills/backend-fix/SKILL.md',
+            'docker/skills/backend-fix/SKILL.md',
             'docker/opencode-executor/opencode-home/AGENTS.md',
         ];
         for (const skill of skills) {
@@ -502,6 +657,56 @@ describe('the opencode-executor git guard policy', () => {
         expect(policy.permission.webfetch).toBe('deny');
         expect(policy.permission.external_directory['*']).toBe('deny');
         expect(policy.permission.bash['*']).toBe('allow');
+    });
+
+    // The baked allows name origin/main only; the entrypoint adds the same exact allows for a
+    // repo whose origin/HEAD names another default, appended so they still rank last.
+    const MERGE_ALLOWS = (ref: string) => [
+        `git merge ${ref}`,
+        `git merge --no-edit ${ref}`,
+        `git merge ${ref} --no-edit`,
+    ];
+
+    const runWithDefault = async (defaultBranch: string | null) => {
+        const sandbox = makeSandbox();
+        try {
+            const git = (...args: string[]) => execFileSync('git', args, { cwd: sandbox.work, stdio: 'ignore' });
+            git('init', '-q');
+            if (defaultBranch) {
+                git('symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${defaultBranch}`);
+            }
+            const config = join(sandbox.env.HOME!, '.config', 'opencode');
+            mkdirSync(config, { recursive: true });
+            writeFileSync(join(config, 'opencode.json'), read(PATH));
+            const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig') };
+            const child = spawn('/bin/sh', [join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run'], {
+                env,
+                stdio: 'ignore',
+            });
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            return JSON.parse(readFileSync(join(config, 'opencode.json'), 'utf8')).permission.bash as Record<
+                string,
+                string
+            >;
+        } finally {
+            sandbox.cleanup();
+        }
+    };
+
+    it('allows merging the origin/HEAD default when it is not main, ranked last', async () => {
+        const bash = await runWithDefault('develop');
+        const keys = Object.keys(bash);
+        expect(keys.slice(-3)).toEqual(MERGE_ALLOWS('origin/develop'));
+        for (const rule of MERGE_ALLOWS('origin/develop')) expect(bash[rule]).toBe('allow');
+        expect(bash['git merge *']).toBe('deny');
+    });
+
+    it.each([
+        ['main', 'main'],
+        ['no origin/HEAD', null],
+    ])('adds nothing when the default is %s', async (_label, defaultBranch) => {
+        const bash = await runWithDefault(defaultBranch);
+        expect(bash).toEqual(JSON.parse(read(PATH)).permission.bash);
     });
 });
 

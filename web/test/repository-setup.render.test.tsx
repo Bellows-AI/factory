@@ -52,13 +52,7 @@ const summary = (overrides: Record<string, unknown> = {}) =>
             cachedError={null}
             listNotice={null}
             rootNull={false}
-            dirty={false}
-            saveState={{ disabled: false, reason: null }}
-            saving={false}
-            savedNote={false}
-            failure={null}
             staleError={null}
-            onSave={() => {}}
             {...overrides}
         />
     );
@@ -82,6 +76,11 @@ const list = (overrides: Record<string, unknown> = {}) =>
             absent={[]}
             onDeselectAbsent={() => {}}
             loaded={true}
+            dirty={false}
+            saveState={{ disabled: false, reason: null }}
+            savedNote={false}
+            failure={null}
+            onSave={() => {}}
             {...overrides}
         />
     );
@@ -121,25 +120,6 @@ describe('RepositorySetupSummary', () => {
         const html = summary({ rootNull: true });
         expect(html).toContain('no workspace root');
         expect(html).toContain('/settings/workspace');
-        // The save is blocked with it: the guard comes from the pure state, and the summary
-        // disables the button the same way.
-        expect(summary({ rootNull: true, saveState: { disabled: true, reason: null } })).toContain('disabled');
-    });
-
-    it('shows the dirty sentence and the mandated save action', () => {
-        expect(summary({ dirty: true })).toContain('Selection changed — save to update your workspace');
-        expect(summary()).toContain('Save repository selection');
-    });
-
-    it('locks the action and renames it while a save runs', () => {
-        const html = summary({ saving: true, saveState: { disabled: true, reason: null } });
-        expect(html).toContain('Saving selection…');
-        expect(html).not.toContain('>Save repository selection</button>');
-    });
-
-    it('announces an adopted save, and keeps a failure beside the action', () => {
-        expect(summary({ savedNote: true })).toContain('Selection saved. Checkouts are being prepared.');
-        expect(summary({ failure: 'Too many repositories' })).toContain('Too many repositories');
     });
 
     it('marks last-good checkout facts stale when a later poll fails', () => {
@@ -155,8 +135,66 @@ describe('RepositorySetupSummary', () => {
         expect(summary({ listNotice: null })).not.toContain('Could not reach GitHub');
     });
 
-    it('associates the save-blocking reason with the disabled action', () => {
+    it('carries no save action — the save lives beside the list', () => {
+        expect(summary()).not.toContain('<button');
+        expect(summary()).not.toContain('Save repository selection');
+    });
+
+    it('states counts and installation as one concise summary line', () => {
         const html = summary({
+            counts: { available: 5, enabled: 2, ready: 1, settingUp: 1, failed: 0 },
+            installation: { account: 'Acme Inc', repositorySelection: 'selected' },
+        });
+        expect(html).toMatch(
+            /<p class="repo-summary">[\s\S]*2 of 5 repositories enabled[\s\S]*Installation: Acme Inc[\s\S]*<\/p>/
+        );
+        expect(summary()).not.toContain('repo-summary');
+    });
+});
+
+describe('RepositorySetupList', () => {
+    it('puts the save action in the list head, before the search and the table', () => {
+        const html = list();
+        const headAt = html.indexOf('<h2>Repository list</h2>');
+        const saveAt = html.indexOf('Save repository selection');
+        const searchAt = html.indexOf('id="repo-setup-search"');
+        expect(headAt).toBeGreaterThanOrEqual(0);
+        expect(saveAt).toBeGreaterThan(headAt);
+        expect(searchAt).toBeGreaterThan(saveAt);
+        expect(html).toContain('class="panel-actions"');
+    });
+
+    it('makes the save prominent only while a dirty selection can save', () => {
+        expect(list({ dirty: true })).toMatch(/class="primary repo-save"[^>]*>Save repository selection/);
+        expect(list()).not.toContain('class="primary');
+        expect(list({ savedNote: true })).not.toContain('class="primary');
+        expect(list({ dirty: true, saving: true, saveState: { disabled: true, reason: null } })).not.toContain(
+            'class="primary'
+        );
+        expect(list({ dirty: true, saveState: { disabled: true, reason: 'x' } })).not.toContain('class="primary');
+        expect(list({ dirty: true, failure: 'Too many repositories' })).toMatch(
+            /class="primary repo-save"[^>]*>Save repository selection/
+        );
+    });
+
+    it('locks the action and renames it while a save runs', () => {
+        const html = list({ saving: true, saveState: { disabled: true, reason: null } });
+        expect(html).toContain('Saving selection…');
+        expect(html).not.toContain('>Save repository selection</button>');
+    });
+
+    it('announces an adopted save, and keeps a failure beside the action', () => {
+        expect(list({ savedNote: true })).toContain('Selection saved. Checkouts are being prepared.');
+        expect(list({ failure: 'Too many repositories' })).toContain('Too many repositories');
+    });
+
+    it('shows the dirty sentence', () => {
+        expect(list({ dirty: true })).toContain('Selection changed — save to update your workspace');
+        expect(list()).toContain('Save repository selection');
+    });
+
+    it('associates the save-blocking reason with the disabled action', () => {
+        const html = list({
             saveState: {
                 disabled: true,
                 reason: 'Remove repositories GitHub no longer reports before saving other selection changes.',
@@ -165,9 +203,22 @@ describe('RepositorySetupSummary', () => {
         expect(html).toContain('id="repo-save-reason"');
         expect(html).toMatch(/aria-describedby="repo-save-reason"/);
     });
-});
 
-describe('RepositorySetupList', () => {
+    it('names the ceiling inside the search row', () => {
+        expect(list()).toMatch(
+            /class="repo-search">[\s\S]*Selections are limited to 20 repositories\.[\s\S]*aria-label="Repositories"/
+        );
+    });
+
+    it('labels every data cell for the narrow stacked layout, and leaves the action unlabeled', () => {
+        const html = list();
+        expect(html).toContain('class="data repo-table"');
+        for (const label of ['Enabled', 'Repository', 'Checkout status', 'Branch', 'Last commit', 'Size']) {
+            expect(html).toContain(`data-label="${label}"`);
+        }
+        expect(html.match(/data-label=/g)?.length).toBe(6);
+    });
+
     it('labels the search field, and clears it only once it holds text', () => {
         expect(list()).toContain('Search repositories');
         expect(list()).not.toContain('Clear search');
@@ -265,7 +316,8 @@ describe('RepositorySetupList', () => {
         const full = new Set(Array.from({ length: MAX_SELECTED_REPOS }, (_, i) => `other/r${i}`));
         const html = list({ chosen: full });
         expect(html).toMatch(/<input[^>]*aria-label="Enable acme\/web in my workspace"[^>]*disabled/);
-        const checked = list({ chosen: new Set([...full].slice(0, 19).concat('acme/web')) });
+        const ROOM_FOR_THIS_ROW = MAX_SELECTED_REPOS - 1;
+        const checked = list({ chosen: new Set([...full].slice(0, ROOM_FOR_THIS_ROW).concat('acme/web')) });
         expect(checked).not.toMatch(/aria-label="Enable acme\/web in my workspace"[^>]*disabled/);
     });
 

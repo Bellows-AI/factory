@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DateRange, OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
-import { reportUnauthenticated } from './useSession.js';
+import { refusalOf } from './refusal.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 export interface TelemetryMeta {
     /**
@@ -58,13 +59,13 @@ export interface UseStats {
     data: StatsPayload | null;
     /** True only before anything has ever rendered. */
     loading: boolean;
-    refreshing: boolean;
     progress: FetchState | null;
     error: string | null;
-    refresh: () => void;
 }
 
 const POLL_MS = 2000;
+/** The board's "still fetching from GitHub" status — distinct from a completed 200. */
+const HTTP_STATUS_ACCEPTED = 202;
 
 /** `query` is the range query string; changing it re-polls without clearing what is on screen. */
 export function useStats(query = 'range=all'): UseStats {
@@ -79,7 +80,7 @@ export function useStats(query = 'range=all'): UseStats {
             try {
                 const response = await fetch(`/api/stats?${query}`, { signal });
 
-                if (response.status === 202) {
+                if (response.status === HTTP_STATUS_ACCEPTED) {
                     const body = (await response.json()) as { fetch: FetchState };
                     setProgress(body.fetch);
                     setPending(true);
@@ -92,17 +93,16 @@ export function useStats(query = 'range=all'): UseStats {
                 // and in the generic branch it renders a banner that never clears, because every
                 // request that follows 401s too. Handing it to the gate is the only thing that can
                 // actually resolve it.
-                if (response.status === 401) {
+                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                     reportUnauthenticated();
                     setPending(false);
                     return;
                 }
 
                 if (!response.ok) {
-                    const body = (await response.json().catch(() => ({}))) as { error?: string };
                     // Deliberately does not clear `data`: an outage leaves
                     // whatever is on screen the most accurate view available.
-                    setError(body.error ?? `Request failed (${response.status})`);
+                    setError((await refusalOf(response)).error);
                     setPending(false);
                     return;
                 }
@@ -132,23 +132,10 @@ export function useStats(query = 'range=all'): UseStats {
         };
     }, [poll]);
 
-    const refresh = useCallback(() => {
-        const controller = new AbortController();
-        setPending(true);
-        void fetch('/api/refresh', { method: 'POST' })
-            .then(() => poll(controller.signal))
-            .catch((e: Error) => {
-                setError(e.message);
-                setPending(false);
-            });
-    }, [poll]);
-
     return {
         data,
         loading: pending && data === null,
-        refreshing: pending && data !== null,
         progress,
         error,
-        refresh,
     };
 }

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { AuthConfig } from '../src/config.js';
-import type { JobStore } from '../src/db/job-store.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { MemoryAuthStore } from './helpers.js';
@@ -11,6 +11,13 @@ import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryCli
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
+const HTTP_OK = 200;
+const HTTP_CREATED = 201;
+const HTTP_ACCEPTED = 202;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
 
 // The prefixes are the wire contract — greppable when leaked — so they are asserted as literals
 // here rather than re-imported from the implementation.
@@ -62,7 +69,7 @@ async function build(auth: AuthConfig, store: MemoryAuthStore, authors: string[]
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
-describe('personal access tokens', () => {
+describe('personal access tokens: authentication', () => {
     it('acts as its user on the board reads', async () => {
         const store = memoryAuthStore();
         const caller = store.seedMember(ORG, 'octocat');
@@ -71,7 +78,7 @@ describe('personal access tokens', () => {
 
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode).toBe(HTTP_OK);
     });
 
     it('queues a job with its user as the author', async () => {
@@ -88,7 +95,7 @@ describe('personal access tokens', () => {
             headers: bearer(token),
         });
 
-        expect(response.statusCode).toBe(201);
+        expect(response.statusCode).toBe(HTTP_CREATED);
         expect(authors).toEqual([caller.user.id]);
     });
 
@@ -102,7 +109,7 @@ describe('personal access tokens', () => {
 
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
 
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('is refused when minted for another organization', async () => {
@@ -113,7 +120,7 @@ describe('personal access tokens', () => {
 
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
 
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('dies with the membership', async () => {
@@ -121,16 +128,20 @@ describe('personal access tokens', () => {
         const caller = store.seedMember(ORG, 'octocat');
         const token = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
         const server = await build(githubAuth(), store);
-        expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) })).statusCode).toBe(200);
+        expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) })).statusCode).toBe(
+            HTTP_OK
+        );
 
         // Nothing in production deletes a membership except the sign-in propagation — this
         // stands in for GitHub no longer reporting the installation.
         store.removeMembership(ORG, caller.user.id);
 
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
+});
 
+describe('personal access tokens: credential precedence and lifecycle', () => {
     it('wins over a cookie when both arrive', async () => {
         const store = memoryAuthStore();
         const alice = store.seedMember(ORG, 'alice');
@@ -154,9 +165,9 @@ describe('personal access tokens', () => {
             headers: { cookie: 'factory_session=made-up.signature', ...bearer(token) },
         });
 
-        expect(both.statusCode).toBe(201);
+        expect(both.statusCode).toBe(HTTP_CREATED);
         expect(authors).toEqual([bob.user.id]);
-        expect(forgedCookie.statusCode).toBe(200);
+        expect(forgedCookie.statusCode).toBe(HTTP_OK);
         expect(alice.user.id).not.toBe(bob.user.id);
     });
 
@@ -171,7 +182,7 @@ describe('personal access tokens', () => {
             payload: { label: 'my laptop' },
             headers: { cookie: await signedIn(store, caller) },
         });
-        expect(created.statusCode).toBe(201);
+        expect(created.statusCode).toBe(HTTP_CREATED);
         const { id, token } = created.json() as { id: string; token: string };
         expect(token.startsWith(FAT)).toBe(true);
 
@@ -187,7 +198,7 @@ describe('personal access tokens', () => {
             url: '/api/tokens',
             headers: { cookie: await signedIn(store, caller) },
         });
-        expect(listed.statusCode).toBe(200);
+        expect(listed.statusCode).toBe(HTTP_OK);
         const body = JSON.stringify(listed.json());
         expect(body).not.toContain(token);
         expect(body).not.toContain('tokenHash');
@@ -198,24 +209,29 @@ describe('personal access tokens', () => {
             url: `/api/tokens/${id}/revoke`,
             headers: { cookie: await signedIn(store, caller) },
         });
-        expect(revoked.statusCode).toBe(200);
-        expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) })).statusCode).toBe(401);
+        expect(revoked.statusCode).toBe(HTTP_OK);
+        expect((await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) })).statusCode).toBe(
+            HTTP_UNAUTHORIZED
+        );
     });
+});
 
+describe('personal access tokens: label and ownership validation', () => {
     it('refuses a label that is empty or over the ceiling', async () => {
         const store = memoryAuthStore();
         const caller = store.seedMember(ORG, 'octocat');
         const cookie = await signedIn(store, caller);
         const server = await build(githubAuth(), store);
 
-        for (const label of ['', '   ', 'x'.repeat(129)]) {
+        const OVER_LABEL_LIMIT = 129;
+        for (const label of ['', '   ', 'x'.repeat(OVER_LABEL_LIMIT)]) {
             const response = await server.inject({
                 method: 'POST',
                 url: '/api/tokens',
                 payload: { label },
                 headers: { cookie },
             });
-            expect(response.statusCode).toBe(400);
+            expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
             expect(response.json().code).toBe('BAD_LABEL');
         }
     });
@@ -234,11 +250,11 @@ describe('personal access tokens', () => {
             headers: { cookie: await signedIn(store, bob) },
         });
 
-        expect(response.statusCode).toBe(404);
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
     });
 });
 
-describe('organization access tokens', () => {
+describe('organization access tokens: allowlist and reads', () => {
     it('reaches exactly the allowlisted routes', async () => {
         const store = memoryAuthStore();
         const token = store.seedAccessToken(ORG, 'org');
@@ -249,27 +265,28 @@ describe('organization access tokens', () => {
         // start refusing a legitimate read or admitting one that was never meant.
         const allowed: [string, string, number][] = [
             // The cold cache answers 202 — a fetch-pending poll, not an auth refusal.
-            ['GET', '/api/stats?range=all', 202],
-            ['POST', '/api/refresh', 202],
-            ['GET', '/api/repos', 200],
-            ['GET', '/api/jobs', 200],
+            ['GET', '/api/stats?range=all', HTTP_ACCEPTED],
+            ['GET', '/api/repos', HTTP_OK],
+            ['GET', '/api/jobs', HTTP_OK],
             // The stub board holds no such job, so the read itself 404s — the point is the wall.
-            ['GET', `/api/jobs/${JOB_ID}`, 404],
-            ['GET', `/api/jobs/${JOB_ID}/thread`, 200],
+            ['GET', `/api/jobs/${JOB_ID}`, HTTP_NOT_FOUND],
+            ['GET', `/api/jobs/${JOB_ID}/thread`, HTTP_OK],
         ];
         for (const [method, url, expected] of allowed) {
             const response = await server.inject({ method, url, headers: bearer(token) });
             expect(response.statusCode, `${method} ${url}`).toBe(expected);
         }
 
-        // Off the list — a person route and a management route — is 403, before the route runs.
+        // Off the list — a person route, a management route, and the retired cache poke — is 403,
+        // before the route runs (or, for /api/refresh, before there is a route to run at all).
         const refused: [string, string][] = [
             ['POST', '/api/jobs'],
             ['GET', '/api/tokens'],
+            ['POST', '/api/refresh'],
         ];
         for (const [method, url] of refused) {
             const response = await server.inject({ method, url, headers: bearer(token) });
-            expect(response.statusCode, `${method} ${url}`).toBe(403);
+            expect(response.statusCode, `${method} ${url}`).toBe(HTTP_FORBIDDEN);
         }
     });
 
@@ -281,9 +298,9 @@ describe('organization access tokens', () => {
         // /api/stats answers 202 while the first telemetry fetch is still in flight — that is the
         // cache's cold start, not an auth refusal, so both answers mean "past the wall".
         const stats = await server.inject({ method: 'GET', url: '/api/stats?range=all', headers: bearer(token) });
-        expect([200, 202]).toContain(stats.statusCode);
+        expect([HTTP_OK, HTTP_ACCEPTED]).toContain(stats.statusCode);
         const jobs = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
-        expect(jobs.statusCode).toBe(200);
+        expect(jobs.statusCode).toBe(HTTP_OK);
     });
 
     it('cannot queue a job — the author of a job is a person, always', async () => {
@@ -300,7 +317,7 @@ describe('organization access tokens', () => {
         });
 
         // 403, not 401: the token did authenticate — the org is known — but this route needs a person.
-        expect(response.statusCode).toBe(403);
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
         expect(response.json().code).toBe('FORBIDDEN');
         expect(authors).toEqual([]);
     });
@@ -317,9 +334,11 @@ describe('organization access tokens', () => {
             headers: bearer(token),
         });
 
-        expect(response.statusCode).toBe(403);
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
     });
+});
 
+describe('organization access tokens: lifecycle and validation', () => {
     it('is refused once revoked', async () => {
         const store = memoryAuthStore();
         const token = store.seedAccessToken(ORG, 'org');
@@ -329,7 +348,7 @@ describe('organization access tokens', () => {
 
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
 
-        expect(response.statusCode).toBe(401);
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('is minted by any member — the roles that gated it retired with the roster (#99)', async () => {
@@ -346,7 +365,7 @@ describe('organization access tokens', () => {
             payload: { label: 'ci' },
             headers: { cookie: memberCookie },
         });
-        expect(mint.statusCode).toBe(201);
+        expect(mint.statusCode).toBe(HTTP_CREATED);
         expect((mint.json() as { token: string }).token.startsWith(OAT)).toBe(true);
 
         const list = await server.inject({
@@ -354,7 +373,7 @@ describe('organization access tokens', () => {
             url: '/api/tokens/org',
             headers: { cookie: memberCookie },
         });
-        expect(list.statusCode).toBe(200);
+        expect(list.statusCode).toBe(HTTP_OK);
         expect(list.json()).toMatchObject({ tokens: [{ label: 'ci' }] });
 
         // Still a real revoke: a member-revoked org token dies like any other.
@@ -364,7 +383,7 @@ describe('organization access tokens', () => {
             url: `/api/tokens/org/${mintedId}/revoke`,
             headers: { cookie: memberCookie },
         });
-        expect(revoke.statusCode).toBe(200);
+        expect(revoke.statusCode).toBe(HTTP_OK);
         expect(revoke.json()).toMatchObject({ revoked: true });
     });
 
@@ -380,7 +399,7 @@ describe('organization access tokens', () => {
             headers: { cookie },
         });
 
-        expect(response.statusCode).toBe(400);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_ID');
     });
 
@@ -395,7 +414,7 @@ describe('organization access tokens', () => {
             url: '/api/jobs',
             headers: bearer(`${FAT}not-a-real-token`),
         });
-        expect(unknown.statusCode).toBe(401);
+        expect(unknown.statusCode).toBe(HTTP_UNAUTHORIZED);
 
         // An fwt_ bearer names a worker credential; on a person route it must not silently become
         // the cookie-holder's session.
@@ -404,7 +423,7 @@ describe('organization access tokens', () => {
             url: '/api/jobs',
             headers: { cookie, ...bearer('fwt_something-else') },
         });
-        expect(workerPrefix.statusCode).toBe(401);
+        expect(workerPrefix.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });
 
@@ -421,6 +440,6 @@ describe('AUTH_MODE=none', () => {
             headers: bearer(`${FAT}meaningless-here`),
         });
 
-        expect(response.statusCode).toBe(201);
+        expect(response.statusCode).toBe(HTTP_CREATED);
     });
 });

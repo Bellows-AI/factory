@@ -1,3 +1,4 @@
+import { roleLabel } from '../api/useSession.js';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
@@ -31,7 +32,7 @@ export function SettingsOrganizationPage() {
                     <KeyValues
                         pairs={[
                             ['Organization', session.organization.name],
-                            ['Your role', session.role === 'admin' ? 'Admin' : 'Member'],
+                            ['Your role', roleLabel(session.role)],
                         ]}
                     />
                 </section>

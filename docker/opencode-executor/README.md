@@ -3,10 +3,9 @@
 opencode in a container, with a fixed configuration baked in. It runs an agent against a mounted
 checkout; it does not build or run this repo's application.
 
-Headless only. The driver selects it with `RUNNER_CLI=opencode`, and that combination refuses
-`RUNNER_REMOTE_CONTROL` and `RUNNER_SKIP_PERMISSIONS` at startup — Remote Control is claude-code's
-bridge, and opencode takes its permissions from the config baked into this image, not from a CLI
-flag.
+Headless only. The driver selects it when the task's chosen executor profile has type `opencode`.
+`RUNNER_SKIP_PERMISSIONS` applies only to Claude Code tasks; OpenCode takes
+its permissions from the config baked into this image, not from a CLI flag.
 
 ## Layout
 
@@ -20,17 +19,21 @@ flag.
 | `opencode-home/opencode.json` | the baked permission policy plus the plugin references (telemetry, context mode), at `OPENCODE_CONFIG` |
 | `opencode-home/otel.json` | the telemetry plugin's config: the compose collector, http/json, delta temporality |
 | `opencode-home/AGENTS.md` | the global instructions every run loads |
+| `../skills/` | `/home/node/.config/opencode/skills` — the same skills claude-executor bakes, loaded on demand |
 
 ## Build
 
 ```bash
-docker build -t opencode-executor docker/opencode-executor
+docker build --build-context skills=docker/skills -t opencode-executor docker/opencode-executor
 
 # Pin the CLI instead of tracking latest:
-docker build --build-arg OPENCODE_VERSION=1.18.29 -t opencode-executor docker/opencode-executor
+docker build --build-context skills=docker/skills --build-arg OPENCODE_VERSION=1.18.29 \
+    -t opencode-executor docker/opencode-executor
 ```
 
-The build context is this directory, not the repo root.
+The build context is this directory, not the repo root. The skills are the exception: they live in
+`docker/skills/`, shared with the other executor image, and arrive as the named `skills` context —
+leave the flag off and the build fails trying to pull an image called `skills`.
 
 ## Test
 
@@ -96,8 +99,10 @@ HEAD off the task branch). `git merge` initiation stays denied except for the ex
 `git merge origin/main` forms (with `--continue`): merging the remote default in is the one exit
 from a conflicts dead-end the sync's rebase refuses, and a merge moves neither HEAD nor the
 published commits — the claude-executor's parser accepts any `origin/<ref>` operand, where this
-table's exact-match allows cannot glob, so a repo whose default is not `main` needs the table
-widened by hand. Because opencode
+table's exact-match allows cannot glob, so the entrypoint reads the checkout's `origin/HEAD` at
+start and, for a default other than `main`, appends the same three exact allows for
+`origin/<default>`. A redirected or piped merge (`git merge origin/main 2>&1 | tail`) is a
+different string and stays denied here. Because opencode
 resolves rules with the **last matching rule winning**, key order is load-bearing: the catch-all
 first, the deny globs next, the allows last — and the allows are **exact matches** (`git worktree
 list`, `git rebase --abort`, `git merge --quit`, …). A trailing-glob allow (say
@@ -124,6 +129,40 @@ To run another policy, mount your own over the baked file:
 whole baked config, the plugin references included: mount an `opencode.json` that lists
 `"plugin": ["/usr/local/lib/node_modules/@gcornut/opencode-otel", "/usr/local/lib/node_modules/context-mode"]`
 if you still want telemetry and context mode.
+
+## Master prompt
+
+Every claim carries a board-rendered `masterPrompt` (issue #244) — a short, versioned Factory
+execution context naming the mode, the workflow/node, and which capabilities Factory itself runs
+around this turn. Delivered through a reserved PRIMARY agent, `factory`, merged into
+`OPENCODE_CONFIG_CONTENT` by the driver as `{"agent": {"factory": {"mode": "primary", "prompt":
+"<the board's text>", "disable": false}}}` — layered over whatever `agent`/`model`/`permission` keys
+the member's own executor config already carries, never dropping them. Every run, fresh or resumed, is launched
+`opencode run --agent factory ...`, and the driver replaces a member-declared `agent.factory`
+wholesale rather than merging it, within `OPENCODE_CONFIG_CONTENT`: a value pasted there cannot
+rename, disable, or rewrite the reserved agent's `mode`/`prompt`. This is distinct from three other
+things that can also shape a run: the current
+task's own command (the node's authored prompt, or a workflow node's template — docs/workflows.md),
+this checkout's `AGENTS.md` (read by the agent at its own discretion, never injected), and
+opencode's own provider-default system prompt, which the `factory` agent's `prompt` field replaces
+for THIS run, exactly like any other opencode agent definition.
+
+Two consequences of `--agent factory` being a REPLACEMENT rather than the additive
+`--append-system-prompt` Claude Code gets: this is opencode's own native primary-agent surface (the
+issue this shipped under asks for exactly this mechanism, unlike Claude Code's explicit
+"never replace the built-in prompt"), and a member whose executor config sets `model` only under
+some OTHER named agent (never at the top level, and never under `factory` itself) sees that
+preference silently not apply, because every run now launches as `factory` regardless of which
+agent the member had been using before. A top-level `model` key is preserved and still applies.
+The legacy top-level `mode` map some opencode builds still fold into `agent` gets the same
+`factory`-key stripping `agent` does, for the same reason. This merge only ever touches ONE config
+layer, `OPENCODE_CONFIG_CONTENT` — opencode itself deep-merges several (a project `opencode.json`,
+any file named by `OPENCODE_CONFIG`, a project checkout's own `.opencode/agent/*.md`, this image's
+baked config), and any key our reserved entry does not itself set — `permission`, `tools`, other
+provider-specific fields a later opencode version adds — still comes from whichever OTHER layer
+declares it. Stripping the name from `OPENCODE_CONFIG_CONTENT`'s own `agent`/`mode` closes the one
+channel a member's executor config reaches this driver through; a checkout's own committed
+`.opencode/agent/factory.md` is a different, file-based surface this merge cannot see or refuse.
 
 ## Context mode
 
@@ -155,8 +194,7 @@ outlives the container, which is the whole mechanism: a follow-up runs `run --se
 fresh container, and that only works if the session is still in the database it reads. After a
 run the driver reads the newest root session out of the database with one throwaway node
 container (`node:sqlite`, read-only) and reports the id to the board, which is what makes the
-task follow-up-able. A job run by this image still shows no session link — the link is built from
-claude-code's Remote Control id, which opencode does not have. Its runs still emit OTLP through the image's baked plugin, and the server's metric map prices the `opencode.*` metrics under the `opencode` agent.
+task follow-up-able. Its runs emit OTLP through the image's baked plugin, and the server's metric map prices the `opencode.*` metrics under the `opencode` agent.
 
 ## Branch reporter
 

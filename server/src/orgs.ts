@@ -1,7 +1,12 @@
 import type { Sql } from 'postgres';
 import type { AppConfig } from './config.js';
+import {
+    createDefaultWorkflowSettingsStore,
+    type DefaultWorkflowSettingsStore,
+} from './db/default-workflow-settings-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
-import { createJobStore, type JobStore } from './db/job-store.js';
+import { createJobStore } from './db/job-store.js';
+import type { JobStore } from './db/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
 import { createUserRepoStore, type UserRepoStore } from './db/user-repo-store.js';
@@ -10,6 +15,7 @@ import { installationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
 import { trackedRepos } from './db/tracked-repos.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflow-store.js';
+import { createPrLifecycleStore, type PrLifecycleStore } from './db/pr-lifecycle-store.js';
 import { createStatsService, type StatsService } from './stats-service.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
@@ -39,9 +45,13 @@ export interface OrgRuntime {
     jobs?: JobStore | undefined;
     /** The workflow definitions (027) this org's tasks may walk; present with the other stores. */
     workflows?: WorkflowStore | undefined;
+    /** The PR lifecycle (036): the thread's publication identity and its PR waits. */
+    prs?: PrLifecycleStore | undefined;
     envVars?: EnvVarStore | undefined;
     userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
+    /** A member's saved default-workflow switches (035). Present with the other stores. */
+    workflowDefaults?: DefaultWorkflowSettingsStore | undefined;
     cloneQueue?: CloneQueue | undefined;
 }
 
@@ -60,6 +70,75 @@ export interface OrgRegistryDeps {
     config: AppConfig;
     /** False in the route-test mode: the stats routes resolve, the stores stay unregistered. */
     withStores: boolean;
+}
+
+/** The per-org write-side stores, built only under `withStores` (#99's route-test bypass). */
+function buildOrgStores({
+    sql,
+    orgId,
+    ready,
+    config,
+    tokens,
+}: {
+    sql: Sql;
+    orgId: string;
+    ready: Promise<unknown>;
+    config: AppConfig;
+    tokens: ReturnType<typeof installationTokenProvider> | undefined;
+}): {
+    envVars: EnvVarStore;
+    userExecutors: UserExecutorStore;
+    userRepos: UserRepoStore;
+    workflowDefaults: DefaultWorkflowSettingsStore;
+    prs: PrLifecycleStore;
+    cloneQueue: CloneQueue | undefined;
+    jobs: JobStore;
+    workflows: WorkflowStore;
+} {
+    const envVars = createEnvVarStore({ sql, orgId, ready });
+    const userExecutors = createUserExecutorStore({ sql, orgId, ready });
+    const userRepos = createUserRepoStore({ sql, orgId, ready });
+    const workflowDefaults = createDefaultWorkflowSettingsStore({ sql, orgId, ready });
+    // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
+    // transaction records the thread's publication identity through it.
+    const prs = createPrLifecycleStore({ sql, orgId, ready });
+    const cloneQueue = config.workspaceRoot
+        ? createCloneQueue({
+              store: userRepos,
+              root: config.workspaceRoot,
+              orgId,
+              tokens,
+              log: (m) => console.log(`[workspace] ${m}`),
+          })
+        : undefined;
+    const jobs = createJobStore({
+        sql,
+        orgId,
+        hasWorkspaces: config.workspaceRoot !== null,
+        ready,
+        env: envVars,
+        executorConfig: userExecutors,
+        // Gates are read off the server's own workspace mount, per claim, for the job's
+        // author and repo label — worktree-first, falling back to the clone.
+        ...(config.workspaceRoot
+            ? {
+                  gates: {
+                      readFor: (workspacePath: string, repo: string, worktreeId: string | null) =>
+                          readGatesFile({ root: config.workspaceRoot!, workspacePath, repo, worktreeId }),
+                  },
+              }
+            : {}),
+        // The claim mints the org's installation token under the runner env as its base
+        // layer. Per-org here is the whole point: a runner gets the installation of the
+        // org whose board it is working, and no other.
+        ...(tokens ? { githubToken: tokens } : {}),
+        // The completion surface records the thread's publication identity in the same
+        // transaction as the verdict (and cancel/remove sweep the thread's waits).
+        prs,
+    });
+    // Workflow definitions (027): the process a task walks, stored per scope inside this org.
+    const workflows = createWorkflowStore({ sql, orgId, ready });
+    return { envVars, userExecutors, userRepos, workflowDefaults, prs, cloneQueue, jobs, workflows };
 }
 
 export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistryDeps): OrgRegistry {
@@ -107,56 +186,25 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
         };
 
         if (withStores) {
-            const envVars = createEnvVarStore({ sql, orgId, ready });
-            const userExecutors = createUserExecutorStore({ sql, orgId, ready });
-            const userRepos = createUserRepoStore({ sql, orgId, ready });
-            const cloneQueue = config.workspaceRoot
-                ? createCloneQueue({
-                      store: userRepos,
-                      root: config.workspaceRoot,
-                      orgId,
-                      tokens,
-                      log: (m) => console.log(`[workspace] ${m}`),
-                  })
-                : undefined;
-            const jobs = createJobStore({
-                sql,
-                orgId,
-                hasWorkspaces: config.workspaceRoot !== null,
-                ready,
-                env: envVars,
-                executorConfig: userExecutors,
-                // Gates are read off the server's own workspace mount, per claim, for the job's
-                // author and repo label — worktree-first, falling back to the clone.
-                ...(config.workspaceRoot
-                    ? {
-                          gates: {
-                              readFor: (workspacePath: string, repo: string, worktreeId: string | null) =>
-                                  readGatesFile({ root: config.workspaceRoot!, workspacePath, repo, worktreeId }),
-                          },
-                      }
-                    : {}),
-                // The claim mints the org's installation token under the runner env as its base
-                // layer. Per-org here is the whole point: a runner gets the installation of the
-                // org whose board it is working, and no other.
-                ...(tokens ? { githubToken: tokens } : {}),
-            });
-            runtime.envVars = envVars;
-            runtime.userExecutors = userExecutors;
-            runtime.userRepos = userRepos;
-            runtime.cloneQueue = cloneQueue;
-            runtime.jobs = jobs;
-            // Workflow definitions (027): the process a task walks, stored per scope inside this
-            // org. The base `fix-issue` workflow seeds here too — org-level, idempotent by name,
-            // fired with the same posture as the clone queue: not awaited, because no route on
-            // the read path needs it, and a task naming `fix-issue` in the seeding's first
-            // seconds simply refuses with UNKNOWN_WORKFLOW yet.
-            const workflows = createWorkflowStore({ sql, orgId, ready });
-            runtime.workflows = workflows;
-            void workflows.seedBase().catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
+            const stores = buildOrgStores({ sql, orgId, ready, config, tokens });
+            runtime.envVars = stores.envVars;
+            runtime.userExecutors = stores.userExecutors;
+            runtime.userRepos = stores.userRepos;
+            runtime.workflowDefaults = stores.workflowDefaults;
+            runtime.cloneQueue = stores.cloneQueue;
+            runtime.jobs = stores.jobs;
+            runtime.prs = stores.prs;
+            runtime.workflows = stores.workflows;
+            // The base `fix-issue` workflow seeds here too — org-level, idempotent by name, fired
+            // with the same posture as the clone queue: not awaited, because no route on the read
+            // path needs it, and a task naming `fix-issue` in the seeding's first seconds simply
+            // refuses with UNKNOWN_WORKFLOW yet.
+            void stores.workflows
+                .seedBase()
+                .catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
             // Fired, not awaited: recovering stranded clones is minutes of network no route on
             // the read path needs. The org's queue only starts once — with the org's runtime.
-            void cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
+            void stores.cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
         }
 
         return runtime;
@@ -196,10 +244,16 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
 
         async warmAll() {
             await ready;
-            for (const org of await this.list()) {
-                const rt = await this.for(org.id);
-                rt?.service.ensureFresh();
-            }
+            // In parallel: the whole point is to beat the first visitor to the cold read, and a
+            // cold `for()` is a real build — serialising them hands org #2 onward the very wait
+            // this exists to remove. `for` never rejects (it logs and answers null), so one
+            // broken org cannot take the sweep down with it.
+            await Promise.all(
+                (await this.list()).map(async (org) => {
+                    const rt = await this.for(org.id);
+                    rt?.service.ensureFresh();
+                })
+            );
         },
     };
 }

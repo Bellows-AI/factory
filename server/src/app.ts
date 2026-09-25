@@ -18,8 +18,11 @@ import { taskRoutes } from './routes/tasks.js';
 import { tokenRoutes } from './routes/tokens.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
+import { workflowSettingsRoutes } from './routes/workflow-settings.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import type { TelemetryStore } from './telemetry/store.js';
+
+const HTTP_NOT_FOUND = 404;
 
 export interface AppDeps {
     config: AppConfig;
@@ -65,6 +68,8 @@ export interface AppDeps {
      * reports repo tracking as unavailable — the offline shape, where there is no App client.
      */
     installationListing?: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined;
+    /** The migration run main.ts started — what `/api/ready` reports. Absent in the route tests. */
+    ready?: Promise<unknown> | undefined;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
     logger?: boolean;
@@ -100,6 +105,7 @@ export async function buildApp({
     identity,
     appSlug,
     installationListing,
+    ready,
     now = Date.now,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
@@ -118,7 +124,7 @@ export async function buildApp({
     if (auth) await registerAuth(app, { config, store: auth, orgOfLease, orgOfJob, orgOfReclaim });
     else app.decorateRequest('auth', null);
 
-    await app.register(healthRoutes());
+    await app.register(healthRoutes(ready));
     if (auth) {
         await app.register(authRoutes({ config, store: auth, orgs, identity, appSlug, installationListing }));
         // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
@@ -131,7 +137,7 @@ export async function buildApp({
         // The installation webhook exists exactly when its secret does — its credential IS the
         // HMAC signature, so without one there is nothing to verify and no route may answer.
         if (config.webhookSecret) {
-            await app.register(webhookRoutes({ store: auth, secret: config.webhookSecret }));
+            await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
     }
     await app.register(statsRoutes(config, orgs, auth, now));
@@ -142,6 +148,10 @@ export async function buildApp({
     await app.register(jobRoutes({ orgs }));
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
+    // A member's own settings, not a workflow definition — its own route module (#203) so it
+    // lands without editing generic workflow CRUD, registered next to it because it is the same
+    // area of the API.
+    await app.register(workflowSettingsRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
     await app.register(
         workspaceRoutes({
@@ -157,7 +167,7 @@ export async function buildApp({
         const { default: fastifyStatic } = await import('@fastify/static');
         await app.register(fastifyStatic, { root: config.webRoot });
         app.setNotFoundHandler(async (request, reply) => {
-            if (request.url.startsWith('/api/')) return reply.code(404).send({ error: 'Not found' });
+            if (request.url.startsWith('/api/')) return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
             return reply.sendFile('index.html');
         });
     }

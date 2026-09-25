@@ -1,4 +1,4 @@
-import type { ExecutorType } from '@factory-ai/core';
+import { CLAUDE_CODE, type ExecutorType, OPENCODE } from '@factory-ai/core';
 
 /**
  * Client-side structural validation for the pasted executor config.
@@ -13,30 +13,32 @@ import type { ExecutorType } from '@factory-ai/core';
  * exists and can be wrong about them. Adding a type's requirements is one line here.
  */
 export const REQUIRED_FIELDS: Record<ExecutorType, readonly string[]> = {
-    'claude-code': [],
-    opencode: [],
+    [CLAUDE_CODE]: [],
+    [OPENCODE]: [],
 };
 
 /**
  * What each type's config actually does, in the words the dialog and the list show.
  *
- * The copy is contractual, not decorative (issue 183): claude-code configs are stored-only today —
- * no consumer reads them — and opencode configs are merged over the deployment's baked
- * configuration with `permission` stripped board-side to preserve the runner fence (see
- * docs/workspace.md). The `Record` shape is the same exhaustiveness guard REQUIRED_FIELDS uses: a
- * new EXECUTOR_TYPES entry cannot compile until it declares its own truth.
+ * The copy is contractual, not decorative (issue 183): claude-code configs are merged into the
+ * runner's settings.json with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped
+ * board-side (the git guard hook and the baked context-mode plugin install), and opencode configs
+ * are merged over the runner's baked configuration with `permission` stripped board-side to
+ * preserve the runner fence (see docs/workspace.md). The `Record` shape is the same exhaustiveness
+ * guard REQUIRED_FIELDS uses: a new EXECUTOR_TYPES entry cannot compile until it declares its own
+ * truth.
  */
 export const EXECUTOR_TYPE_META: Record<ExecutorType, { label: string; configHelp: string; example: string }> = {
-    'claude-code': {
+    [CLAUDE_CODE]: {
         label: 'Claude Code',
         configHelp:
-            'This JSON is stored with the executor but is not consumed by the current Claude Code runner. Use {} unless your deployment documents another consumer.',
+            'This JSON is merged into the runner settings.json. hooks, enabledPlugins and extraKnownMarketplaces are stripped to preserve the runner guard hook and plugin install; everything else — model, env, permissions.allow — applies, except that the baked telemetry env (CLAUDE_CODE_ENABLE_TELEMETRY, OTEL_*) always wins over anything pasted here.',
         example: '{}',
     },
-    opencode: {
+    [OPENCODE]: {
         label: 'OpenCode',
         configHelp:
-            'When the deployment runs OpenCode, this object is merged over its baked configuration. Model and provider settings apply; permission rules are ignored to preserve the runner fence.',
+            'Tasks using this executor run OpenCode. This object is merged over its baked configuration; model and provider settings apply, while permission rules are ignored to preserve the runner fence.',
         example:
             '{ "model": "<provider-id>/<model-id>", "provider": { "api_key": "<from your provider, not stored here>" } }',
     },
@@ -48,7 +50,7 @@ export function executorTypeLabel(type: string): string {
 }
 
 /** Half the 64 KiB body budget, so the serialized envelope cannot blow the server limit. */
-export const MAX_CONFIG_BYTES = 32 * 1024;
+export const MAX_CONFIG_BYTES = 32_768;
 
 export type ValidExecutor = {
     name: string;
@@ -116,6 +118,7 @@ export type ExecutorRow = {
     name: string;
     type: string;
     config: object;
+    isDefault: boolean;
 };
 
 /**
@@ -135,13 +138,52 @@ export function mergeExecutors(
     const clash = existing.some((row) => row.name === next.name && row.name !== editing);
     if (clash) return { ok: false, error: `An executor named "${next.name}" already exists.` };
 
-    if (editing === null) return { ok: true, value: [...existing, next] };
+    if (editing === null) return { ok: true, value: [...existing, { ...next, isDefault: false }] };
 
     const index = existing.findIndex((row) => row.name === editing);
     if (index === -1) {
         return { ok: false, error: `"${editing}" no longer exists — refresh and try again.` };
     }
     const value = existing.slice();
-    value[index] = next;
+    value[index] = { ...next, isDefault: existing[index]!.isDefault };
     return { ok: true, value };
 }
+
+/**
+ * Flags exactly the named row as the default and clears every other — the "Make default" action's
+ * whole effect, folded back into the list the PUT takes. Re-flagging the current default is a
+ * no-op rather than an error: a stale click on a row that is already the default must not fail.
+ */
+export function withDefault(
+    existing: readonly ExecutorRow[],
+    name: string
+): { ok: true; value: ExecutorRow[] } | { ok: false; error: string } {
+    if (!existing.some((row) => row.name === name)) {
+        return { ok: false, error: `"${name}" no longer exists — refresh and try again.` };
+    }
+    return { ok: true, value: existing.map((row) => ({ ...row, isDefault: row.name === name })) };
+}
+
+/**
+ * The executor a new task draft autoselects: the flagged default, or the first row when none is
+ * flagged — the fallback issue 183 shipped before this default existed. `''` when the list is
+ * empty, the composer's own "nothing configured" sentinel.
+ */
+export function defaultExecutorName(executors: readonly { name: string; isDefault?: boolean }[]): string {
+    return executors.find((executor) => executor.isDefault)?.name ?? executors[0]?.name ?? '';
+}
+
+/**
+ * The member-facing copy for the executor surfaces, kept here rather than beside the components
+ * that render it: this module is plain TypeScript with no React, so the e2e specs can import these
+ * and assert what the DOM must say instead of holding their own copies of the sentences. Three of
+ * those copies had already drifted out of sync with the product, and nothing caught it —
+ * `verify:ui` needs Playwright and two databases to run at all.
+ */
+
+/** The panel-level sentence on both executor surfaces: what an executor decides for a task. */
+export const EXECUTOR_GUIDANCE =
+    'Each task runs with its selected executor. The executor type chooses Claude Code or OpenCode, and its JSON config is applied to that runner.';
+
+/** What choosing a Type does; tied to the select with aria-describedby. */
+export const TYPE_CONFIG_NOTE = 'Tasks using this executor run with the selected type: Claude Code or OpenCode.';

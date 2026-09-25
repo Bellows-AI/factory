@@ -1,5 +1,14 @@
 import { PAD, formatTick, type Scale } from './scale.js';
 
+/** How far a Y-axis tick label sits from the axis line, horizontally. */
+const TICK_LABEL_GAP_PX = 6;
+/** Nudges a tick label's baseline down so it centers on its gridline rather than sitting above it. */
+const TICK_LABEL_BASELINE_NUDGE_PX = 4;
+/** The Y-axis label's gap above the chart's top padding. */
+const AXIS_LABEL_GAP_PX = 4;
+/** The gap between the chart's bottom padding and an X-axis label below it. */
+const X_LABEL_GAP_PX = 16;
+
 interface YAxisProps {
     scale: Scale;
     max: number;
@@ -26,8 +35,8 @@ export function YAxis({ scale, max, width, side = 'left', label, ticks = 4 }: YA
                             className={side === 'left' ? 'grid' : 'grid grid-alt'}
                         />
                         <text
-                            x={side === 'left' ? x - 6 : x + 6}
-                            y={y + 4}
+                            x={side === 'left' ? x - TICK_LABEL_GAP_PX : x + TICK_LABEL_GAP_PX}
+                            y={y + TICK_LABEL_BASELINE_NUDGE_PX}
                             className="tick"
                             textAnchor={side === 'left' ? 'end' : 'start'}
                         >
@@ -37,7 +46,12 @@ export function YAxis({ scale, max, width, side = 'left', label, ticks = 4 }: YA
                 );
             })}
             {label ? (
-                <text x={x} y={PAD.top - 4} className="axis-label" textAnchor={side === 'left' ? 'start' : 'end'}>
+                <text
+                    x={x}
+                    y={PAD.top - AXIS_LABEL_GAP_PX}
+                    className="axis-label"
+                    textAnchor={side === 'left' ? 'start' : 'end'}
+                >
                     {label}
                 </text>
             ) : null}
@@ -57,7 +71,13 @@ export function XLabels({ labels, bandCentre, height, every = 1 }: XLabelsProps)
         <>
             {labels.map((label, i) =>
                 i % every !== 0 && i !== labels.length - 1 ? null : (
-                    <text key={i} x={bandCentre(i)} y={height - PAD.bottom + 16} className="tick" textAnchor="middle">
+                    <text
+                        key={i}
+                        x={bandCentre(i)}
+                        y={height - PAD.bottom + X_LABEL_GAP_PX}
+                        className="tick"
+                        textAnchor="middle"
+                    >
                         {label}
                     </text>
                 )

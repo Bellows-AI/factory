@@ -9,7 +9,7 @@
  * carried node — and a loop count is a count of the thread's rows for the target node, dead rows
  * included (attempts are retries, rounds are rows). No instance-state table exists to drift.
  */
-import type { GateReport } from './job-store.js';
+import type { GateReport } from './job-store-types.js';
 import {
     type EdgeRule,
     type ParamValues,
@@ -50,8 +50,12 @@ export interface CompletedRun {
  * - `loop_bound`        the matching edge is exhausted: the thread already holds `max` rows for
  *                       its target, dead rows included.
  * - `command_too_large` the interpolated prompt exceeded the command cap even with bounded tails.
+ * - `no_publication`     the transition would enter a block's own helper-driven node from outside
+ *                       its scope with no recorded publication to hand the helper (issue #209) —
+ *                       never a runnable claim with a null publication, which the helper itself
+ *                       cannot act on (`job-store-worker.ts`'s `runWorkflowTransition`).
  */
-export type RestReason = 'off_graph' | 'no_edge' | 'loop_bound' | 'command_too_large';
+export type RestReason = 'off_graph' | 'no_edge' | 'loop_bound' | 'command_too_large' | 'no_publication';
 
 export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }
@@ -113,41 +117,49 @@ export function nextTransition(input: {
     for (const edge of input.snapshot.edges) {
         if (edge.from !== halted) continue;
         if (!ruleMatches(edge.when, input.completed)) continue;
-
-        // Loop bound from the audit trail: every row the thread already holds for the target
-        // node counts, whatever status it reached — a dead review row is still a round.
-        if (edge.max !== undefined) {
-            const rounds = input.rows.filter((row) => row.node === edge.to).length;
-            if (rounds >= edge.max) return { action: 'rest', reason: 'loop_bound' };
-        }
-
-        const target = nodeOf(input.snapshot, edge.to);
-        if (target === undefined) return { action: 'rest', reason: 'no_edge' };
-
-        const command = interpolate(target.prompt, {
-            nodeOutput: (name) => {
-                for (let i = input.rows.length - 1; i >= 0; i--) {
-                    const row = input.rows[i]!;
-                    if (row.node === name && row.output !== null) return row.output;
-                }
-                return '';
-            },
-            gateName: failed?.name ?? '',
-            gateOutput: failed?.output ?? '',
-            param: (name) => input.params[name] ?? '',
-            command: input.command,
-        });
-        if (command.length > COMMAND_LIMIT) return { action: 'rest', reason: 'command_too_large' };
-
-        return {
-            action: 'insert',
-            node: target,
-            command,
-            session: target.session,
-            publish: target.publish === true,
-        };
+        return followEdge(edge, input, failed);
     }
     return { action: 'rest', reason: 'no_edge' };
+}
+
+/** The chosen edge's outcome: a loop bound, an unresolvable target, an oversized command, or the insert. */
+function followEdge(
+    edge: WorkflowDefinition['edges'][number],
+    input: { snapshot: WorkflowDefinition; params: ParamValues; command: string; rows: EngineRow[] },
+    failed: GateReport | null
+): Transition {
+    // Loop bound from the audit trail: every row the thread already holds for the target
+    // node counts, whatever status it reached — a dead review row is still a round.
+    if (edge.max !== undefined) {
+        const rounds = input.rows.filter((row) => row.node === edge.to).length;
+        if (rounds >= edge.max) return { action: 'rest', reason: 'loop_bound' };
+    }
+
+    const target = nodeOf(input.snapshot, edge.to);
+    if (target === undefined) return { action: 'rest', reason: 'no_edge' };
+
+    const command = interpolate(target.prompt, {
+        nodeOutput: (name) => {
+            for (let i = input.rows.length - 1; i >= 0; i--) {
+                const row = input.rows[i]!;
+                if (row.node === name && row.output !== null) return row.output;
+            }
+            return '';
+        },
+        gateName: failed?.name ?? '',
+        gateOutput: failed?.output ?? '',
+        param: (name) => input.params[name] ?? '',
+        command: input.command,
+    });
+    if (command.length > COMMAND_LIMIT) return { action: 'rest', reason: 'command_too_large' };
+
+    return {
+        action: 'insert',
+        node: target,
+        command,
+        session: target.session,
+        publish: target.publish === true,
+    };
 }
 
 /** The thread's newest row that carries a node, excluding the completed row itself. */

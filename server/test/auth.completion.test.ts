@@ -21,9 +21,12 @@ const ORG = '999999';
  * screen would be holding. `reselect=1` parks even a first sign-in, which is how these tests get
  * a screen to complete with a single installation.
  */
+const HTTP_FOUND = 302;
+const HTTP_OK = 200;
+
 async function beginOnboarding(app: FastifyInstance): Promise<string> {
     const begin = await app.inject({ method: 'GET', url: '/api/auth/github?reselect=1' });
-    expect(begin.statusCode).toBe(302);
+    expect(begin.statusCode).toBe(HTTP_FOUND);
     const state = begin.cookies.find((c) => c.name === OAUTH_COOKIE)!.value;
     const callback = await app.inject({
         method: 'GET',
@@ -106,7 +109,7 @@ describe('completion and the org repo cache', () => {
         }
         release();
 
-        expect((await done).statusCode).toBe(200);
+        expect((await done).statusCode).toBe(HTTP_OK);
         await racing;
 
         // The drained produce captured the pre-write allowlist; if completion let it stand

@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { gateAdvertiseUrlFor, loadDriverConfig } from '../src/config.js';
 
-describe('the driver config', () => {
+describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
         const config = loadDriverConfig({});
 
         expect(config).toMatchObject({
             boardUrl: 'http://127.0.0.1:8080',
             // No orgId. It only ever built the runner's WORKDIR, and the board sends that path now.
-            image: 'claude-executor',
+            executorImages: {
+                'claude-code': 'claude-executor',
+                opencode: 'opencode-executor',
+            },
             workspaceVolume: 'factory-ai_workspaces',
             workspaceMount: '/workspaces',
             network: null,
@@ -17,9 +20,6 @@ describe('the driver config', () => {
             leaseSeconds: 300,
             jobTimeoutMs: 7_200_000,
             skipPermissions: false,
-            remoteControl: false,
-            idleMs: 3_600_000,
-            authVolume: 'claude-executor-auth',
         });
         expect(config.passEnv).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
     });
@@ -48,19 +48,12 @@ describe('the driver config', () => {
         expect(loadDriverConfig({ RUNNER_SKIP_PERMISSIONS: '' }).skipPermissions).toBe(false);
     });
 
-    // Turning this on stops a job being run-to-completion: the container lives until the session is
-    // ended or the timeout kills it. A typo must not read as "on".
-    it('treats only an explicit value as a request for Remote Control', () => {
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' }).remoteControl).toBe(true);
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '0' }).remoteControl).toBe(false);
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: 'false' }).remoteControl).toBe(false);
-        expect(loadDriverConfig({ RUNNER_REMOTE_CONTROL: '' }).remoteControl).toBe(false);
-    });
-
     it('reads RUNNER_ENV as a list of names', () => {
         expect(loadDriverConfig({ RUNNER_ENV: 'A, B ,,C' }).passEnv).toEqual(['A', 'B', 'C']);
     });
+});
 
+describe('the driver config: executor and endpoints', () => {
     // The executor choice is a runner selection, not a tuning knob: docker on the host, kubernetes
     // against the API server the driver's own pod talks to. A typo in it must not read as "docker
     // is fine" and silently spawn nothing — hence a fatal, explicit enum.
@@ -126,6 +119,21 @@ describe('the driver config', () => {
         ).toBe('claude-credentials');
     });
 
+    it('reads RUNNER_IMAGE_PULL_SECRETS as a trimmed name list, empty unless set', () => {
+        expect(loadDriverConfig({}).imagePullSecrets).toEqual([]);
+        expect(loadDriverConfig({ RUNNER_IMAGE_PULL_SECRETS: ' regcred,,mirror ' }).imagePullSecrets).toEqual([
+            'regcred',
+            'mirror',
+        ]);
+    });
+
+    it('leaves DRIVER_HEARTBEAT_FILE off unless set', () => {
+        expect(loadDriverConfig({}).heartbeatFile).toBeNull();
+        expect(loadDriverConfig({ DRIVER_HEARTBEAT_FILE: '/tmp/heartbeat' }).heartbeatFile).toBe('/tmp/heartbeat');
+    });
+});
+
+describe('the driver config: policy and gates', () => {
     // An explicit enum, like EXECUTOR: the API server would reject a bad policy only at
     // job-create time, which is attempt-burning — this loader exists to move failures to startup.
     it('accepts only a real image pull policy', () => {
@@ -137,26 +145,16 @@ describe('the driver config', () => {
         expect(() => loadDriverConfig({ RUNNER_IMAGE_PULL_POLICY: 'sometimes' })).toThrow(/RUNNER_IMAGE_PULL_POLICY/);
     });
 
-    /**
-     * Remote Control needs a tty held open, a login volume and an idle-parking loop — three things
-     * that are decided in docker terms inside the docker runner and have no k8s counterpart yet.
-     * A config that half-works is worse than one that refuses to start: the session would run and
-     * simply never appear at claude.ai/code.
-     */
-    it('refuses Remote Control under the kubernetes executor', () => {
-        expect(() => loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_REMOTE_CONTROL: '1' })).toThrow(
-            /RUNNER_REMOTE_CONTROL.*EXECUTOR|EXECUTOR.*RUNNER_REMOTE_CONTROL/s
-        );
-        // And the same combination is fine under docker, which is the only executor that has it.
-        expect(() => loadDriverConfig({ RUNNER_REMOTE_CONTROL: '1' })).not.toThrow();
-    });
-
     // The gate environment cooldown: how long a container outlives the task that started it, so
     // the task's NEXT turn does not pay startup again. The issue names ten minutes as the default.
+    const DEFAULT_GATE_MS = 600_000;
     it('keeps gate environments alive for a configurable cooldown, ten minutes by default', () => {
-        expect(loadDriverConfig({}).gateCooldownMs).toBe(600_000);
+        const OVERRIDE_GATE_COOLDOWN_MS = 60_000;
+        expect(loadDriverConfig({}).gateCooldownMs).toBe(DEFAULT_GATE_MS);
         expect(loadDriverConfig({ GATE_COOLDOWN_MS: '0' }).gateCooldownMs).toBe(0);
-        expect(loadDriverConfig({ GATE_COOLDOWN_MS: '60000' }).gateCooldownMs).toBe(60_000);
+        expect(loadDriverConfig({ GATE_COOLDOWN_MS: String(OVERRIDE_GATE_COOLDOWN_MS) }).gateCooldownMs).toBe(
+            OVERRIDE_GATE_COOLDOWN_MS
+        );
         expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: '-1' })).toThrow(/GATE_COOLDOWN_MS/);
         expect(() => loadDriverConfig({ GATE_COOLDOWN_MS: 'later' })).toThrow(/GATE_COOLDOWN_MS/);
     });
@@ -175,20 +173,24 @@ describe('the driver config', () => {
     // The listener binds an ephemeral port, so a configured URL without one cannot name it in
     // advance — the bound port is appended. One with a port is the operator's word and stays.
     it('appends the bound port to a portless advertise URL and leaves a ported one verbatim', () => {
-        expect(gateAdvertiseUrlFor(null, 44_685)).toBe('http://host.docker.internal:44685');
-        expect(gateAdvertiseUrlFor('http://driver', 44_685)).toBe('http://driver:44685');
-        expect(gateAdvertiseUrlFor('http://driver:9099', 44_685)).toBe('http://driver:9099');
+        const EPHEMERAL_PORT = 44_685;
+        expect(gateAdvertiseUrlFor(null, EPHEMERAL_PORT)).toBe('http://host.docker.internal:44685');
+        expect(gateAdvertiseUrlFor('http://driver', EPHEMERAL_PORT)).toBe('http://driver:44685');
+        expect(gateAdvertiseUrlFor('http://driver:9099', EPHEMERAL_PORT)).toBe('http://driver:9099');
         // Agents concatenate request paths onto this string, so no trailing slash may survive.
-        expect(gateAdvertiseUrlFor('http://driver/', 44_685)).toBe('http://driver:44685');
+        expect(gateAdvertiseUrlFor('http://driver/', EPHEMERAL_PORT)).toBe('http://driver:44685');
         // An unparseable URL is passed through: the failure stays at the fetch, unchanged.
-        expect(gateAdvertiseUrlFor('not a url', 44_685)).toBe('not a url');
+        expect(gateAdvertiseUrlFor('not a url', EPHEMERAL_PORT)).toBe('not a url');
     });
 
     // The cap on ONE gate: the runner's timeout covers the agent, this covers a gate that hangs.
     // A timed-out gate is a failed gate, not a stalled verdict.
     it('bounds each gate with a configurable timeout, ten minutes by default', () => {
-        expect(loadDriverConfig({}).gateTimeoutMs).toBe(600_000);
-        expect(loadDriverConfig({ GATE_TIMEOUT_MS: '30000' }).gateTimeoutMs).toBe(30_000);
+        const OVERRIDE_GATE_TIMEOUT_MS = 30_000;
+        expect(loadDriverConfig({}).gateTimeoutMs).toBe(DEFAULT_GATE_MS);
+        expect(loadDriverConfig({ GATE_TIMEOUT_MS: String(OVERRIDE_GATE_TIMEOUT_MS) }).gateTimeoutMs).toBe(
+            OVERRIDE_GATE_TIMEOUT_MS
+        );
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: '500' })).toThrow(/GATE_TIMEOUT_MS/);
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: 'whenever' })).toThrow(/GATE_TIMEOUT_MS/);
     });

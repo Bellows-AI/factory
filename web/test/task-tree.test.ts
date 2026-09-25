@@ -27,6 +27,9 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => ({
     author: over.author ?? null,
     activity: over.activity ?? null,
     summary: over.summary ?? null,
+    waitReason: over.waitReason ?? null,
+    waitingSince: over.waitingSince ?? null,
+    waitTerminalReason: over.waitTerminalReason ?? null,
     createdAt: over.createdAt ?? '2026-09-01T12:00:00.000Z',
     activityAt: over.activityAt ?? '2026-09-01T12:10:00.000Z',
 });
@@ -47,12 +50,13 @@ describe('taskStatusLabel', () => {
         status: over.status ?? null,
         cancelRequestedAt: over.cancelRequestedAt ?? null,
         doneAt: over.doneAt ?? null,
+        waitReason: over.waitReason ?? null,
+        waitTerminalReason: over.waitTerminalReason ?? null,
     });
 
     it('names the moving states, a stop request louder than the run itself', () => {
         expect(taskStatusLabel(status({ status: 'running' }))).toBe('Running');
         expect(taskStatusLabel(status({ status: 'queued' }))).toBe('Queued');
-        expect(taskStatusLabel(status({ status: 'standby' }))).toBe('Parked');
         expect(taskStatusLabel(status({ status: 'running', cancelRequestedAt: '2026-09-01T12:00:00.000Z' }))).toBe(
             'Stopping'
         );
@@ -69,6 +73,25 @@ describe('taskStatusLabel', () => {
         expect(taskStatusLabel(status({ status: 'succeeded', doneAt: '2026-09-01T13:00:00.000Z' }))).toBe('Done');
         expect(taskStatusLabel(status({ status: 'failed', doneAt: '2026-09-01T13:00:00.000Z' }))).toBe('Done');
     });
+
+    it('reads an open PR-review wait as waiting, whatever non-terminal status it is parked under', () => {
+        expect(taskStatusLabel(status({ status: 'queued', waitReason: 'review' }))).toBe('Waiting for review');
+        // Never as running or queued while a wait is genuinely open.
+        expect(taskStatusLabel(status({ status: 'queued', waitReason: 'review' }))).not.toBe('Queued');
+    });
+
+    it('never overrides a live run with a waiting label — running stays the loudest state', () => {
+        expect(taskStatusLabel(status({ status: 'running', waitReason: 'review' }))).toBe('Running');
+    });
+
+    it('appends the terminal wait reason to the ordinary needs-review copy once the wait has ended', () => {
+        expect(
+            taskStatusLabel(status({ status: 'succeeded', waitReason: 'review', waitTerminalReason: 'exhausted' }))
+        ).toBe('Succeeded · Needs review · exhausted');
+        expect(
+            taskStatusLabel(status({ status: 'failed', waitReason: 'review', waitTerminalReason: 'cancelled' }))
+        ).toBe('Failed · Needs review · cancelled');
+    });
 });
 
 describe('taskDotClass', () => {
@@ -76,6 +99,8 @@ describe('taskDotClass', () => {
         status: over.status ?? null,
         cancelRequestedAt: over.cancelRequestedAt ?? null,
         doneAt: over.doneAt ?? null,
+        waitReason: over.waitReason ?? null,
+        waitTerminalReason: over.waitTerminalReason ?? null,
     });
 
     it('breathes green for a live run, grey while a stop request travels', () => {
@@ -85,8 +110,7 @@ describe('taskDotClass', () => {
         );
     });
 
-    it('holds grey for parked and queued runs', () => {
-        expect(taskDotClass(status({ status: 'standby' }))).toBe('sidenav-dot-paused');
+    it('holds grey for queued runs', () => {
         expect(taskDotClass(status({ status: 'queued' }))).toBe('sidenav-dot-paused');
     });
 
@@ -97,6 +121,14 @@ describe('taskDotClass', () => {
         expect(taskDotClass(status({ status: 'failed', doneAt: '2026-09-01T13:00:00.000Z' }))).toBe('sidenav-dot-done');
         expect(taskDotClass(status({ status: 'stopped' }))).toBe('');
         expect(taskDotClass(status({}))).toBe('');
+    });
+
+    it('holds grey for an open wait, never green or red, whatever status it is parked under', () => {
+        expect(taskDotClass(status({ status: 'queued', waitReason: 'review' }))).toBe('sidenav-dot-paused');
+    });
+
+    it('leaves a live run breathing even with a stray wait — running stays the loudest state', () => {
+        expect(taskDotClass(status({ status: 'running', waitReason: 'review' }))).toBe('sidenav-dot-running');
     });
 });
 
@@ -125,7 +157,9 @@ describe('taskSummary', () => {
         taskWallClockMs: null,
         summary: null,
         sessionId: null,
-        remoteSessionId: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
         ...overrides,
     });
 
@@ -141,11 +175,11 @@ describe('taskSummary', () => {
         expect(taskSummary(root.id, [root, child])).toBe('→ Bash npm test');
     });
 
-    it('keeps it out of parked and finished tasks, and of blank activity lines', () => {
+    it('keeps it out of queued and finished tasks, and of blank activity lines', () => {
         const finished = threadJob('11111111-1111-4111-8111-111111111111');
         expect(taskSummary(finished.id, [finished])).toBeNull();
-        const parked = threadJob('22222222-2222-4222-8222-222222222222', { status: 'standby' });
-        expect(taskSummary(parked.id, [parked])).toBeNull();
+        const queued = threadJob('22222222-2222-4222-8222-222222222222', { status: 'queued' });
+        expect(taskSummary(queued.id, [queued])).toBeNull();
         const blank = threadJob('33333333-3333-4333-8333-333333333333', {
             status: 'running',
             runtime: { cpuPercent: 1, memUsedMb: 1, memPercent: null, activity: '   ', sampledAt: 'x' },
@@ -165,25 +199,30 @@ describe('sidenavPreview', () => {
         review: over.review ?? [],
     });
 
+    const UUID_SUFFIX_WIDTH = 12;
     const running = (i: number) =>
-        summary({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, status: 'running' });
+        summary({ id: `00000000-0000-4000-8000-${String(i).padStart(UUID_SUFFIX_WIDTH, '0')}`, status: 'running' });
     const review = (i: number) =>
-        summary({ id: `10000000-0000-4000-8000-${String(i).padStart(12, '0')}`, status: 'failed' });
+        summary({ id: `10000000-0000-4000-8000-${String(i).padStart(UUID_SUFFIX_WIDTH, '0')}`, status: 'failed' });
+
+    const THIRD = 3;
+    const FOURTH = 4;
+    const MAX_PREVIEW_ROWS = 5;
 
     it('caps the preview at five rows and never shows past tasks', () => {
         const nav = navigation({
-            running: [running(1), running(2), running(3)],
-            review: [review(1), review(2), review(3), review(4)],
+            running: [running(1), running(2), running(THIRD)],
+            review: [review(1), review(2), review(THIRD), review(FOURTH)],
             counts: { running: 3, review: 4, past: 40 },
         });
         const { rows } = sidenavPreview(nav, null);
-        expect(rows).toHaveLength(5);
+        expect(rows).toHaveLength(MAX_PREVIEW_ROWS);
         expect(rows.every((task) => task.status !== 'succeeded' || task.doneAt === null || true)).toBe(true);
         // Three running first, then the newest review.
         expect(rows.map((task) => task.id)).toEqual([
             running(1).id,
             running(2).id,
-            running(3).id,
+            running(THIRD).id,
             review(1).id,
             review(2).id,
         ]);
@@ -191,13 +230,14 @@ describe('sidenavPreview', () => {
 
     it('fills the slots review tasks leave open with more running, and reports the overflow', () => {
         const nav = navigation({
-            running: [running(1), running(2), running(3)],
+            running: [running(1), running(2), running(THIRD)],
             review: [review(1), review(2)],
             counts: { running: 3, review: 12, past: 0 },
         });
         const preview = sidenavPreview(nav, null);
-        expect(preview.rows).toHaveLength(5);
-        expect(preview.moreReview).toBe(10);
+        expect(preview.rows).toHaveLength(MAX_PREVIEW_ROWS);
+        const EXPECTED_OVERFLOW = 10;
+        expect(preview.moreReview).toBe(EXPECTED_OVERFLOW);
     });
 
     it('reports zero overflow when every review task fits', () => {
@@ -207,18 +247,18 @@ describe('sidenavPreview', () => {
 
     it('injects the open task when it is running or in review but outside the five rows', () => {
         const nav = navigation({
-            running: [running(1), running(2), running(3)],
-            review: [review(1), review(2), review(3)],
+            running: [running(1), running(2), running(THIRD)],
+            review: [review(1), review(2), review(THIRD)],
             counts: { running: 3, review: 3, past: 0 },
         });
-        const { rows } = sidenavPreview(nav, review(3).id);
-        expect(rows).toHaveLength(5);
+        const { rows } = sidenavPreview(nav, review(THIRD).id);
+        expect(rows).toHaveLength(MAX_PREVIEW_ROWS);
         expect(rows.map((task) => task.id)).toEqual([
             running(1).id,
             running(2).id,
-            running(3).id,
+            running(THIRD).id,
             review(1).id,
-            review(3).id, // injected, displacing the last review slot
+            review(THIRD).id, // injected, displacing the last review slot
         ]);
     });
 
@@ -230,7 +270,8 @@ describe('sidenavPreview', () => {
             review(1).id,
         ]);
         const unknown = '99999999-9999-4999-8999-999999999999';
-        expect(sidenavPreview(nav, unknown).rows).toHaveLength(3);
+        const EXPECTED_ROW_COUNT = 3;
+        expect(sidenavPreview(nav, unknown).rows).toHaveLength(EXPECTED_ROW_COUNT);
     });
 
     it('answers an empty preview for a null navigation and a quiet board', () => {

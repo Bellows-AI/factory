@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useDefaultWorkflowSettings } from '../api/useDefaultWorkflowSettings.js';
+import type { QueueTaskInput } from '../api/useTasks.js';
 import { useWorkflows } from '../api/useWorkflows.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { TaskComposer } from '../panels/TaskComposer.js';
@@ -28,18 +30,13 @@ export function TaskComposerPage() {
     const [actionError, setActionError] = useState<string | null>(null);
     const [repo, setRepo] = useState<string | null>(null);
     const workflows = useWorkflows(repo);
+    const defaultWorkflowSettings = useDefaultWorkflowSettings();
 
-    const send = async (
-        command: string,
-        chosenRepo: string | null,
-        executor: string | null,
-        workflow: string | null,
-        workflowParams: Record<string, string> | null
-    ): Promise<string | null> => {
+    const send = async (input: QueueTaskInput): Promise<string | null> => {
         setActionError(null);
         setSending(true);
         try {
-            const result = await tasks.actions.queue(command, chosenRepo, executor, workflow, workflowParams);
+            const result = await tasks.actions.queue(input);
             if (result.error !== null) {
                 setActionError(result.error);
                 return result.error;
@@ -67,6 +64,7 @@ export function TaskComposerPage() {
                 // Passed through as-is: null while the list is pending or from another context,
                 // and the composer hides the workflow section for exactly that duration.
                 workflows={workflows.workflows}
+                defaultWorkflowSettings={defaultWorkflowSettings.data}
                 actionError={actionError}
                 sending={sending}
                 onSend={send}

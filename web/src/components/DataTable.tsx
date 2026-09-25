@@ -110,6 +110,42 @@ export function sortRows<T>(rows: readonly T[], columns: readonly DataTableColum
 }
 
 /**
+ * One header cell: a real button when the column sorts (keyboard-reachable, unlike a click
+ * handler on the th), plain text otherwise. `aria-sort` is owned only by the column actually
+ * sorted. Split out of `DataTable` so its own class-name and direction logic stays under the
+ * complexity limit.
+ */
+function SortableHeaderCell<T>({
+    column,
+    sort,
+    onActivate,
+}: {
+    column: DataTableColumn<T>;
+    sort: SortState | null;
+    onActivate: (column: DataTableColumn<T>) => void;
+}) {
+    const active = sort !== null && sort.key === column.key;
+    // A sort state naming a non-sortable column (a bad `initialSort`) must not dress a plain
+    // th up as the active sort.
+    const direction = active && sort !== null && column.sortValue ? sort.direction : null;
+    const align = column.align === 'end' ? ' align-end' : '';
+    const className = column.sortValue
+        ? `sortable${direction ? (direction === 'ascending' ? ' asc' : ' desc') : ''}${align}`
+        : align.trim();
+    return (
+        <th scope="col" className={className || undefined} aria-sort={direction ?? undefined}>
+            {column.sortValue ? (
+                <button type="button" onClick={() => onActivate(column)}>
+                    {column.label}
+                </button>
+            ) : (
+                column.label
+            )}
+        </th>
+    );
+}
+
+/**
  * The shared sortable table: the whole header cell of a sortable column is a real button
  * (keyboard-reachable, unlike a click handler on the th), and `aria-sort` is owned only by
  * the column actually sorted. The wrapper is a labeled, focusable scroll region — a wide
@@ -142,32 +178,9 @@ export function DataTable<T>({ labelledBy, rows, columns, rowKey, initialSort, e
             <table className="data">
                 <thead>
                     <tr>
-                        {columns.map((column) => {
-                            const active = sort !== null && sort.key === column.key;
-                            // A sort state naming a non-sortable column (a bad `initialSort`)
-                            // must not dress a plain th up as the active sort.
-                            const direction = active && sort !== null && column.sortValue ? sort.direction : null;
-                            const align = column.align === 'end' ? ' align-end' : '';
-                            const className = column.sortValue
-                                ? `sortable${direction ? (direction === 'ascending' ? ' asc' : ' desc') : ''}${align}`
-                                : align.trim();
-                            return (
-                                <th
-                                    key={column.key}
-                                    scope="col"
-                                    className={className || undefined}
-                                    aria-sort={direction ?? undefined}
-                                >
-                                    {column.sortValue ? (
-                                        <button type="button" onClick={() => activate(column)}>
-                                            {column.label}
-                                        </button>
-                                    ) : (
-                                        column.label
-                                    )}
-                                </th>
-                            );
-                        })}
+                        {columns.map((column) => (
+                            <SortableHeaderCell key={column.key} column={column} sort={sort} onActivate={activate} />
+                        ))}
                     </tr>
                 </thead>
                 <tbody>

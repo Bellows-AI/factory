@@ -1,8 +1,12 @@
-import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import type { WorkflowStore } from '../db/workflow-store.js';
-import { UUID, bad, badSegment, body } from './helpers.js';
+import type { WorkflowStore, WorkflowSummary } from '../db/workflow-store.js';
+import type { Caller } from '../auth/store.js';
+import { blockCatalog } from '../db/workflow-blocks/index.js';
+import { bad, body, repoReason } from './helpers.js';
+import { resolveCallerRoute } from './route-guards.js';
+import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 
 export interface WorkflowRouteDeps {
     /**
@@ -12,25 +16,24 @@ export interface WorkflowRouteDeps {
     orgs: OrgRegistry;
 }
 
-const BODY_LIMIT = 64 * 1024;
+const BYTES_PER_KIB = 1024;
+const BODY_LIMIT_KIB = 64;
+const BODY_LIMIT = BODY_LIMIT_KIB * BYTES_PER_KIB;
+/** No payload past an id or a query string needs more than a control route's headroom. */
+const CONTROL_BODY_LIMIT = 4096;
 
-/**
- * The repository context a list or a repo-scoped create names: `owner/name`, the same label a job
- * row carries. Shape only — the same discipline as the job's repo label; a repo nobody can see
- * simply has no workflows.
- */
-function repoReason(value: string): string | null {
-    const parts = value.split('/');
-    if (parts.length !== 2) return 'repo must be owner/name';
-    for (const [label, part] of [
-        ['owner', parts[0]!],
-        ['name', parts[1]!],
-    ] as const) {
-        if (part.length === 0 || part.length > 100) return `${label} must be 1..100 characters`;
-        const reason = badSegment(label, part);
-        if (reason) return reason;
-    }
-    return null;
+const HTTP_OK = 200;
+const HTTP_CREATED = 201;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
+const HTTP_CONFLICT = 409;
+const HTTP_UNAVAILABLE = 503;
+
+/** No store behind the caller's org — every route here refuses the same way. */
+function noStore(reply: FastifyReply) {
+    return bad(reply, ERROR_CODES.WORKFLOWS_UNAVAILABLE, 'No workflow store for this organization', HTTP_UNAVAILABLE);
 }
 
 /**
@@ -41,115 +44,227 @@ function repoReason(value: string): string | null {
  * - `GET /api/workflows?repo=owner/name` — the caller-visible list (the org's, their own, the
  *   named repository's), the composer's dropdown feed.
  * - `POST /api/workflows` — create; org-level is an admin's move, user- and repo-level are any
- *   member's.
+ *   member's. A `kind: "block"` node is compiled (registry lookup, availability, config, expansion)
+ *   before storage — an unknown/unavailable/misconfigured block refuses the same way a schema
+ *   error does (issue #204, docs/workflows.md "Built-in blocks").
+ * - `GET /api/workflow-blocks` — the board-owned catalog every `uses` may reference: id,
+ *   description, config schema, availability. Never a prompt or script body — those stay inside
+ *   the registry, unserialized. Static, org-independent metadata; gated the same as the other
+ *   routes here because block selection is the same human authoring surface.
+ * - `GET /api/workflows/:id` — the full record, `definition` included: visibility mirrors the
+ *   list (org rows to any signed-in member, a user row to its own owner only, a repo row to any
+ *   member), a 404 for anything outside it so an invisible id never confirms its own existence.
+ * - `PUT /api/workflows/:id` — replaces `name`/`definition` under the same validator `POST` runs,
+ *   gated by visibility (like `GET`, above) THEN the same modify matrix `DELETE` uses (an admin
+ *   for org scope, the owning member for user scope, any member for repo scope) — stricter than
+ *   `DELETE` alone for a user-scope row: `DELETE` lets an admin remove one they cannot see, but a
+ *   blind admin EDIT of a member's private definition is a bigger blast radius than a delete, so
+ *   `PUT` refuses 404 before it ever reaches the modify check. A `scope` field in the body is a
+ *   `BAD_SCOPE` refusal, since scope is immutable after create. The base org workflow's own row
+ *   can never be edited in place — its name is reserved (`checkCreateInput`) — but renaming it to
+ *   anything else frees the name, and the next boot's `seedBase` reseeds a fresh copy into the
+ *   freed slot. That is the documented, working shape of "edit the base workflow": never a bug to
+ *   chase.
  * - `DELETE /api/workflows/:id` — an admin, the owning member, or any member within repo scope.
  *
  * Refusals carry named codes: a pasted foreign pipeline fails loudly (UNKNOWN_KEY, UNKNOWN_NODE,
  * BAD_RULE, … are the validator's own), and NAME_TAKEN answers 409 — the request was
  * well-formed, the name was gone.
  */
+/**
+ * The workflow definitions a request touches are its caller's org's (#99) — the same resolution
+ * the job board makes. Absent in the route-test mode with no stores behind the registry.
+ */
+async function storeOf(orgs: OrgRegistry, request: FastifyRequest): Promise<WorkflowStore | null> {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.workflows ?? null;
+}
+
+/** The `repo` query field: absent, or a valid `owner/name`. */
+function validateRepoQuery(repoField: unknown): { ok: true; value: string | null } | { ok: false; message: string } {
+    if (repoField === undefined) return { ok: true, value: null };
+    if (typeof repoField !== 'string') return { ok: false, message: 'repo must be a string' };
+    const reason = repoReason(repoField);
+    if (reason) return { ok: false, message: reason };
+    return { ok: true, value: repoField };
+}
+
+/**
+ * Board-owned, org-independent metadata — no `storeOf` gate. Auth-gated anyway: block selection
+ * is part of the same human workflow-authoring surface as the routes below.
+ */
+function handleWorkflowBlocks(request: FastifyRequest, reply: FastifyReply) {
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+    return reply.code(HTTP_OK).send({ blocks: blockCatalog() });
+}
+
+async function handleListWorkflows(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+
+    const parsed = validateRepoQuery(body(request.query as unknown).repo);
+    if (!parsed.ok) return bad(reply, ERROR_CODES.BAD_REPO, parsed.message);
+
+    const workflows = await store.listVisible({ userId: caller.user.id, repo: parsed.value });
+    return reply.code(HTTP_OK).send({ workflows });
+}
+
+type ResolvedScope = { kind: 'org' } | { kind: 'user'; userId: string } | { kind: 'repo'; owner: string; name: string };
+
+/**
+ * The exactly-one-scope a create body names, resolved to what `store.create` expects. Org-level is
+ * admin-gated here — a member's private process must not quietly become everyone's default. Repo-
+ * and user-level are any member's: a member's own process, for their own tasks or a repository
+ * they already queue against.
+ */
+function resolveScope(
+    fields: Record<string, unknown>,
+    caller: Caller
+): { ok: true; value: ResolvedScope } | { ok: false; code: string; message: string; status?: number } {
+    const scopeName = fields.scope;
+    if (scopeName !== 'org' && scopeName !== 'user' && scopeName !== 'repo') {
+        return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: 'scope must be "org", "user" or "repo"' };
+    }
+    if (scopeName === 'org') {
+        if (caller.role !== ADMIN_ROLE) {
+            return {
+                ok: false,
+                code: ERROR_CODES.FORBIDDEN,
+                message: 'Only an admin can publish an org-level workflow',
+                status: HTTP_FORBIDDEN,
+            };
+        }
+        return { ok: true, value: { kind: 'org' } };
+    }
+    if (scopeName === 'user') return { ok: true, value: { kind: 'user', userId: caller.user.id } };
+    if (typeof fields.repo !== 'string') {
+        return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: 'repo scope must name a repository' };
+    }
+    const reason = repoReason(fields.repo);
+    if (reason) return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: reason };
+    const [owner, name] = fields.repo.split('/') as [string, string];
+    return { ok: true, value: { kind: 'repo', owner, name } };
+}
+
+async function handleCreateWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+
+    const fields = body(request.body);
+    const { name, definition } = fields;
+    if (typeof name !== 'string') return bad(reply, ERROR_CODES.BAD_NAME, 'name must be a string');
+
+    const scope = resolveScope(fields, caller);
+    if (!scope.ok) return bad(reply, scope.code, scope.message, scope.status);
+
+    const created = await store.create({ name, scope: scope.value, definition, createdBy: caller.user.id });
+    if ('refused' in created) {
+        const taken = created.code === ERROR_CODES.NAME_TAKEN;
+        return bad(reply, created.code, created.message, taken ? HTTP_CONFLICT : HTTP_BAD_REQUEST);
+    }
+    const record = await store.get(created.id);
+    return reply.code(HTTP_CREATED).send(record);
+}
+
+/** Whether a record is visible at all: org rows to anyone signed in, a user row to its own owner
+ * only, a repo row to any member — the same rule `listVisible` applies at the list level, reused
+ * here for the single-record read since a fetch-one has no repo query to narrow it by. */
+function canSee(caller: Caller, record: WorkflowSummary): boolean {
+    return record.scope !== 'user' || record.userId === caller.user.id;
+}
+
+/** Whether a caller may change or remove a record — shared by `PUT` and `DELETE`. */
+function canModify(caller: Caller, record: WorkflowSummary): boolean {
+    if (caller.role === ADMIN_ROLE) return true;
+    if (record.scope === 'org') return false;
+    if (record.scope === 'user' && record.userId !== caller.user.id) return false;
+    return true;
+}
+
+async function handleGetWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const route = resolveCallerRoute(request, reply);
+    if (!route) return reply;
+    const { caller, id } = route;
+
+    const record = await store.get(id);
+    if (!record || !canSee(caller, record)) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
+    return reply.code(HTTP_OK).send(record);
+}
+
+async function handleUpdateWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const route = resolveCallerRoute(request, reply);
+    if (!route) return reply;
+    const { caller, id } = route;
+
+    const fields = body(request.body);
+    // Scope is immutable after create: silently ignoring a `scope` field would let a caller
+    // believe they moved a definition between scopes when nothing changed, which is exactly the
+    // quiet re-gate the issue calls out — refused instead, loudly.
+    if ('scope' in fields) return bad(reply, ERROR_CODES.BAD_SCOPE, 'scope cannot change after create');
+    const { name, definition } = fields;
+    if (typeof name !== 'string') return bad(reply, ERROR_CODES.BAD_NAME, 'name must be a string');
+
+    const record = await store.get(id);
+    if (!record || !canSee(caller, record)) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
+    if (!canModify(caller, record)) {
+        return bad(reply, ERROR_CODES.FORBIDDEN, 'You cannot edit this workflow', HTTP_FORBIDDEN);
+    }
+
+    const updated = await store.update(id, { name, definition });
+    if ('notFound' in updated) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
+    if ('refused' in updated) {
+        const taken = updated.code === ERROR_CODES.NAME_TAKEN;
+        return bad(reply, updated.code, updated.message, taken ? HTTP_CONFLICT : HTTP_BAD_REQUEST);
+    }
+    return reply.code(HTTP_OK).send(await store.get(id));
+}
+
+async function handleDeleteWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const route = resolveCallerRoute(request, reply);
+    if (!route) return reply;
+    const { caller, id } = route;
+
+    const record = await store.get(id);
+    if (!record) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such workflow' });
+    if (!canModify(caller, record)) {
+        return bad(reply, ERROR_CODES.FORBIDDEN, 'You cannot delete this workflow', HTTP_FORBIDDEN);
+    }
+    const removed = await store.remove(id);
+    return reply.code(HTTP_OK).send({ id, removed });
+}
+
 export const workflowRoutes =
     ({ orgs }: WorkflowRouteDeps): FastifyPluginAsync =>
     async (app) => {
-        /**
-         * The workflow definitions a request touches are its caller's org's (#99) — the same
-         * resolution the job board makes. Absent in the route-test mode with no stores behind
-         * the registry.
-         */
-        const storeOf = async (request: FastifyRequest): Promise<WorkflowStore | null> => {
-            const rt = await orgs.for(orgOf(request));
-            return rt?.workflows ?? null;
-        };
-
-        app.get('/api/workflows', { bodyLimit: 4096 }, async (request, reply) => {
-            const store = await storeOf(request);
-            if (!store) return bad(reply, 'WORKFLOWS_UNAVAILABLE', 'No workflow store for this organization', 503);
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-
-            const repoField = body(request.query as unknown).repo;
-            if (repoField !== undefined && (typeof repoField !== 'string' || repoReason(repoField))) {
-                return bad(
-                    reply,
-                    'BAD_REPO',
-                    typeof repoField === 'string'
-                        ? (repoReason(repoField) ?? 'repo must be owner/name')
-                        : 'repo must be a string'
-                );
-            }
-            const workflows = await store.listVisible({
-                userId: caller.user.id,
-                repo: typeof repoField === 'string' ? repoField : null,
-            });
-            return reply.code(200).send({ workflows });
-        });
-
-        app.post('/api/workflows', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            const store = await storeOf(request);
-            if (!store) return bad(reply, 'WORKFLOWS_UNAVAILABLE', 'No workflow store for this organization', 503);
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-
-            const fields = body(request.body);
-            const { name, definition } = fields;
-            if (typeof name !== 'string') return bad(reply, 'BAD_NAME', 'name must be a string');
-
-            // Exactly one scope, named in the body like an env-var PUT names its path. Org-level
-            // is admin-gated here — a member's private process must not quietly become everyone's
-            // default. Repo- and user-level are any member's: a member's own process, for their
-            // own tasks or a repository they already queue against.
-            const scopeName = fields.scope;
-            if (scopeName !== 'org' && scopeName !== 'user' && scopeName !== 'repo') {
-                return bad(reply, 'BAD_SCOPE', 'scope must be "org", "user" or "repo"');
-            }
-            if (scopeName === 'org' && caller.role !== 'admin') {
-                return bad(reply, 'FORBIDDEN', 'Only an admin can publish an org-level workflow', 403);
-            }
-            let repo: string | null = null;
-            if (scopeName === 'repo') {
-                if (typeof fields.repo !== 'string')
-                    return bad(reply, 'BAD_SCOPE', 'repo scope must name a repository');
-                const reason = repoReason(fields.repo);
-                if (reason) return bad(reply, 'BAD_SCOPE', reason);
-                repo = fields.repo;
-            }
-
-            const created = await store.create({
-                name,
-                scope:
-                    scopeName === 'org'
-                        ? { kind: 'org' }
-                        : scopeName === 'user'
-                          ? { kind: 'user', userId: caller.user.id }
-                          : { kind: 'repo', owner: repo!.split('/')[0]!, name: repo!.split('/')[1]! },
-                definition,
-                createdBy: caller.user.id,
-            });
-            if ('refused' in created) {
-                const taken = created.code === 'NAME_TAKEN';
-                return bad(reply, created.code, created.message, taken ? 409 : 400);
-            }
-            const record = await store.get(created.id);
-            return reply.code(201).send(record);
-        });
-
-        app.delete('/api/workflows/:id', { bodyLimit: 4096 }, async (request, reply) => {
-            const store = await storeOf(request);
-            if (!store) return bad(reply, 'WORKFLOWS_UNAVAILABLE', 'No workflow store for this organization', 503);
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, 'UNAUTHENTICATED', 'Sign in required', 401);
-            const { id } = request.params as { id: string };
-            if (!UUID.test(id)) return bad(reply, 'BAD_ID', 'id must be a uuid');
-
-            const record = await store.get(id);
-            if (!record) return reply.code(404).send({ error: 'No such workflow' });
-            if (
-                caller.role !== 'admin' &&
-                (record.scope === 'org' || (record.scope === 'user' && record.userId !== caller.user.id))
-            ) {
-                return bad(reply, 'FORBIDDEN', 'You cannot delete this workflow', 403);
-            }
-            const removed = await store.remove(id);
-            return reply.code(200).send({ id, removed });
-        });
+        app.get('/api/workflows', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleListWorkflows(orgs, request, reply)
+        );
+        // Board-owned, org-independent metadata — no `storeOf` gate. Auth-gated anyway: block
+        // selection is part of the same human workflow-authoring surface as the routes below.
+        app.get('/api/workflow-blocks', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleWorkflowBlocks(request, reply)
+        );
+        app.post('/api/workflows', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+            handleCreateWorkflow(orgs, request, reply)
+        );
+        app.get('/api/workflows/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleGetWorkflow(orgs, request, reply)
+        );
+        app.put('/api/workflows/:id', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+            handleUpdateWorkflow(orgs, request, reply)
+        );
+        app.delete('/api/workflows/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleDeleteWorkflow(orgs, request, reply)
+        );
     };

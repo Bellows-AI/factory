@@ -3,6 +3,7 @@ import { AccessTokensSection } from '../panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../panels/IdentityPanel.js';
 import { TrackedOrgsPanel } from '../panels/TrackedOrgsPanel.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { ADMIN_ROLE } from '@factory-ai/core';
 
 /**
  * The member's own account: identity, then the access tokens minted from here (#70). Sections
@@ -41,7 +42,7 @@ export function AccountPage() {
                 <>
                     <TrackedOrgsPanel session={session} />
                     <AccessTokensSection scope="personal" />
-                    {session.role === 'admin' ? (
+                    {session.role === ADMIN_ROLE ? (
                         <AccessTokensSection scope="org" />
                     ) : (
                         <section className="panel">

@@ -1,41 +1,64 @@
-# The Factory stack on Kubernetes: the dashboard (API + SPA on one port), an in-chart TimescaleDB,
-# the workspaces volume the checkouts live on, and the driver running its runners as Jobs in this
-# namespace.
+# The Factory stack on Kubernetes: the dashboard (API + SPA on one port), the workspaces volume the
+# checkouts live on, and the driver running its runners as Jobs in this namespace. The database is
+# external (`database.url`).
 #
 # Every knob is an environment variable on the container it belongs to — configuration in this
 # repository is environment-only (docs/configuration.md), and the chart is a way to set that
 # environment, not a second config system.
+#
+# Render-time refusals for half-configured values live in templates/validate.yaml.
+
+# Registry pull Secrets (names, in this namespace) for every pod the chart runs AND every pod the
+# driver specs — runners, aux Jobs, gates and services pull the same way (RUNNER_IMAGE_PULL_SECRETS).
+imagePullSecrets: []
+# Scheduling for the chart's own pods (dashboard, driver, collector). Runner pods are specced by
+# the driver and schedule wherever the workspaces claim can attach.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
 
 # The dashboard image, built from the `runtime` stage:
-#   docker build -f docker/Dockerfile --target runtime -t factory-ai .
+#   docker build -f docker/Dockerfile --target runtime -t factory-ai:<tag> .
 dashboard:
-    image: factory-ai
+    image:
+        repository: factory-ai
+        # Empty uses the chart's appVersion, so a chart version names the exact build it deploys
+        # and an upgrade to a new build changes the pod spec — an untagged image never would.
+        tag: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
-    replicas: 1
     port: 8080
     # Where the checkouts are written. The runners mount the same claim at the same path — the
     # board owns the layout and the driver owns the mount point, and the two agree because the
     # chart sets both.
     workspaceRoot: /workspaces
-    resources: {}
+    # The code-only no-fetch entry (server/dist/offline.js): nothing is fetched or cloned and the
+    # GitHub App credential is not needed. The local profile turns it on.
+    offline: false
+    # Requests only: a limit on the process that clones every member's checkouts would turn a big
+    # repository into an OOM kill mid-clone.
+    resources:
+        requests:
+            cpu: 100m
+            memory: 256Mi
 
 auth:
     # `github` is the chart default, exactly as compose pins it: this deployment holds checkouts and
-    # serves POST /api/jobs, which runs shell commands. `none` needs AUTH_ALLOW_PUBLIC_BIND on a
-    # 0.0.0.0 bind — see loadConfig, which refuses an unauthenticated non-loopback port without it.
+    # serves POST /api/jobs, which runs shell commands. `none` needs allowPublicBind on the 0.0.0.0
+    # bind — see loadConfig, which refuses an unauthenticated non-loopback port without it.
     mode: github
     # REQUIRED under mode=github: the origin GitHub redirects back to. loadConfig makes it fatal to
     # boot github auth without one on a non-loopback host.
     publicUrl: ''
     cookieSecure: ''
     allowPublicBind: ''
-    # Not a secret: GitHub's OAuth App client id is public by design.
+    # Not a secret: GitHub's OAuth App client id is public by design. REQUIRED under mode=github.
     oauthClientId: ''
 
 github:
-    # The id and the key are required: without them the server refuses to boot — there is no
-    # no-fetch mode to fall back to.
+    # The id and the key are required unless dashboard.offline: without them the server refuses to
+    # boot — there is no no-fetch mode to fall back to.
     appId: ''
     # The PEM (or its base64) lands in the chart's Secret, never in the pod spec or a command line.
     appPrivateKey: ''
@@ -46,20 +69,19 @@ telemetry:
     ingestToken: ''
 
 database:
-    # Overridden to the in-chart service when `timescale.enabled` is true.
+    # The chart deploys no database: point this at a managed TimescaleDB (metric_point is a
+    # hypertable). REQUIRED when the chart creates the Secret — the URL carries the password, so it
+    # lands there as `database-url` and reaches the pod by secretKeyRef. With
+    # `secret.existingSecret`, put the `database-url` key in that Secret instead. Local clusters
+    # get one from charts/factory-local-state (values-local.yaml points here).
     url: ''
-
-timescale:
-    # The in-chart database, for a stack that is self-contained — the same plain TimescaleDB
-    # container compose runs. For anything real, set enabled=false and point `database.url` at a
-    # managed instance.
-    enabled: true
-    image: timescale/timescaledb:latest-pg17
-    user: factory
-    password: factory
-    database: factory_dev
-    storageSize: 10Gi
-    resources: {}
+    # Runs `pg_isready -d $DATABASE_URL` in an init container before the server starts: the
+    # server's migration retry gives up after ~55s and then serves every DB-backed route as a 500.
+    # Any image with the postgres client tools will do.
+    waitImage: postgres:17-alpine
+    # How long the wait holds before failing the init container — a visible Init:Error the kubelet
+    # retries with backoff, rather than a pod parked in Init forever with nothing in its events.
+    waitTimeoutSeconds: 300
 
 # The checkouts. Default ReadWriteMany because the dashboard pod and every runner pod share one
 # claim across nodes; values-local.yaml overrides ReadWriteOnce (single node). A default
@@ -74,47 +96,50 @@ workspaces:
 secret:
     # Creates the dashboard Secret from the values below. With existingSecret set, the chart
     # creates nothing and references that one — for a Secret managed by external-secrets or
-    # sealed-secrets.
+    # sealed-secrets. Every key but `database-url` is optional in the pod spec, so a managed Secret
+    # carries only the keys its auth mode needs and the server names any it still misses.
     create: true
     existingSecret: ''
+    # REQUIRED under mode=github.
     oauthClientSecret: ''
+    # REQUIRED under mode=github, at least 32 characters.
     sessionSecret: ''
     # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route
     # does not exist and a GitHub-side removal waits for the removed account's next sign-in.
     githubWebhookSecret: ''
     # The shared board secret: the dashboard validates `Bearer $JOB_BOARD_TOKEN` on the worker
     # routes against it and the driver presents it. One value, both sides — generate with
-    # `openssl rand -hex 32`. Required in github mode (the server refuses to boot without it);
-    # empty is fine for the AUTH_MODE=none local profile, where the worker routes are open.
-    #
-    # Upgrading from a release that had `jobBoardTokens` (one `job-board-token-<org>` key per
-    # installation): set this value BEFORE `helm upgrade`. The upgrade renders and the pod starts
-    # without it — nothing in the chart makes the key mandatory — and the server then refuses to
-    # boot ("AUTH_MODE is github but JOB_BOARD_TOKEN is not set"). With `secret.existingSecret`
-    # the chart creates nothing, so add the `job-board-token` key to your managed Secret yourself;
-    # the old per-org keys are dead once the upgrade is in.
+    # `openssl rand -hex 32`. REQUIRED under mode=github (at least 32 characters); empty is fine for
+    # the AUTH_MODE=none local profile, where the worker routes are open.
     jobBoardToken: ''
 
 driver:
     # Built from docker/driver.Dockerfile:
-    #   docker build -f docker/driver.Dockerfile -t factory-driver .
-    image: factory-driver
+    #   docker build -f docker/driver.Dockerfile -t factory-driver:<tag> .
+    image:
+        repository: factory-driver
+        tag: ''
     imagePullPolicy: IfNotPresent
+    # Safe above one: each driver claims under its own pod name (DRIVER_WORKER), advertises its OWN
+    # pod IP as the gate endpoint, and the re-claim fence's checkout claim keeps two drivers off
+    # one checkout (docs/kubernetes.md).
     replicas: 1
-    executorImage: claude-executor
-    # Which CLI the runner image speaks: claude-code's `--session-id`/`-p` form, or opencode's
-    # headless `run [--session <id>] <command>`. Switching this to opencode requires switching
-    # executorImage too — an image that does not speak RUNNER_CLI's dialect is a mismatch nothing
-    # guards against. Under opencode the runner persists session databases on the workspaces
-    # volume and scrapes the session id at close; Remote Control and skip-permissions are
-    # refused at startup (opencode takes its permissions from the config baked into its image).
-    runnerCli: claude-code
+    # One driver serves both task-selected executor types. These values choose image locations —
+    # full references, tag included; the task's executor profile chooses which one a claim runs.
+    executorImages:
+        claudeCode: claude-executor
+        opencode: opencode-executor
     # Every number below is an environment variable, quoted so helm cannot stringify one of them
     # into scientific notation (`1.8e+06` parses as an integer nowhere).
     concurrency: '2'
     pollMs: '5000'
     leaseSeconds: '300'
     jobTimeoutMs: '7200000'
+    # On SIGTERM the driver stops claiming and drains: in-flight jobs finish, then it exits. This is
+    # how long the kubelet waits before SIGKILL. A killed drain loses nothing durable — each runner
+    # Job keeps running under its own deadline and the job's lease expires and is re-offered — but
+    # the work in flight is redone. Raise it toward jobTimeoutMs to trade slower rollouts for that.
+    terminationGracePeriodSeconds: 600
     # Off by default and a real decision, here as everywhere: on, the agent edits and runs whatever
     # it likes inside the runner without asking. Read docs/jobs.md first.
     skipPermissions: ''
@@ -127,22 +152,69 @@ driver:
     # default; '0' opts out for an operator who wants nothing started that no file asked for.
     # Read docs/jobs.md first.
     services: '1'
-    resources: {}
+    resources:
+        requests:
+            cpu: 50m
+            memory: 128Mi
 
 # The in-chart OTLP collector, receiving from the runner pods and forwarding to the dashboard
 # ingest route — what `collector` is to the compose stack. Off, the driver runs without naming an
 # endpoint, and runner telemetry goes nowhere unless `driver.runnerOtelEndpoint` points elsewhere.
 collector:
     enabled: true
-    image: otel/opentelemetry-collector-contrib
+    image:
+        repository: otel/opentelemetry-collector-contrib
+        # Pinned, never `latest`: the collector's config keys move between releases, and an
+        # unpinned image is whichever version a node happened to cache first.
+        tag: '0.161.0'
     imagePullPolicy: IfNotPresent
+    resources:
+        requests:
+            cpu: 50m
+            memory: 128Mi
+        limits:
+            memory: 512Mi
+
+# Runner pods execute agent-written code next to this release's credentials, so the chart confines
+# them. Both halves need nothing from the operator beyond a cluster that can enforce them.
+isolation:
+    # A ValidatingAdmissionPolicy bound to the driver's ServiceAccount (Kubernetes >= 1.30): the
+    # Role lets the driver create pods and Jobs, and a pod may mount any Secret in its namespace —
+    # so without this, "create pods" is "read every Secret", the dashboard's App key included. The
+    # policy admits only pod specs that reference the driver's own per-attempt Secrets, the runner
+    # credentials and the pull secrets above, with no host access, and deletes only of objects the
+    # driver labelled `factory.job`. Off only for a cluster that enforces the same some other way.
+    admissionPolicy: true
+    # A NetworkPolicy on every runner pod (the `factory.job` label). Ingress only from other runner
+    # pods (declared services); egress to DNS (kube-dns and `dnsCidrs` only), this release's
+    # dashboard, collector and driver, other runner pods, and anywhere outside `blockedCidrs`. Needs
+    # a CNI that enforces NetworkPolicy — without one the object is inert, never an outage.
+    networkPolicy: true
+    # The only addresses runner pods may reach on port 53 besides the `k8s-app: kube-dns` pods in
+    # kube-system. The default is NodeLocal DNSCache's link-local address, which no pod selector
+    # matches. A cluster whose DNS carries other labels (or listens elsewhere) must list its
+    # resolver here, or runners lose DNS.
+    dnsCidrs:
+        - 169.254.20.10/32
+    # Private and link-local ranges runner pods may not reach: the cluster's own pod and service
+    # networks, a database on a private address, the cloud metadata endpoint (169.254.169.254)
+    # that hands out node credentials. Trim it when runners legitimately need a private host (an
+    # internal git server, a registry mirror) — or add that host as a /32 to `allowedCidrs`.
+    blockedCidrs:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+    allowedCidrs: []
 
 runner:
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
     env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
-    # Created by this chart from the two values beneath it when secret.create is true. Referencing
-    # the Secret by name is the whole point: the credential never appears in the pod spec, which
-    # anyone who can `get pods` can read.
+    # Created by this chart when secret.create is true, with one key per `env` name, valued from
+    # `credentials` (empty when absent). Referencing the Secret by name is the whole point: the
+    # credential never appears in the pod spec, which anyone who can `get pods` can read.
     credentialsExistingSecret: ''
-    claudeCodeOauthToken: ''
-    anthropicApiKey: ''
+    credentials:
+        CLAUDE_CODE_OAUTH_TOKEN: ''
+        ANTHROPIC_API_KEY: ''

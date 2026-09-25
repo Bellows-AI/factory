@@ -93,38 +93,188 @@ interface RawGate {
     command?: string;
 }
 
-export function parseBellows(text: string): BellowsConfig | null {
-    let image: string | null = null;
-    let inEnvironment = false;
-    let inGates = false;
+interface BellowsState {
+    image: string | null;
+    inEnvironment: boolean;
+    inGates: boolean;
     /** Inside a top-level `services:` block — the services half, not this parser's grammar. */
-    let inServices = false;
-    let seenServices = false;
-    let itemIndent = -1;
+    inServices: boolean;
+    seenServices: boolean;
+    itemIndent: number;
     /** Where the gate currently being read began — the line its errors name. */
-    let itemLine = 0;
-    let current: RawGate | null = null;
-    const gates: GateDef[] = [];
+    itemLine: number;
+    current: RawGate | null;
+    gates: GateDef[];
+}
 
-    const finish = (): void => {
-        if (current) {
-            const line = itemLine;
-            if (current.command === undefined) {
-                fail(line, `gate "${current.name ?? '?'}" has no command`);
-            }
-            if (current.command.trim() === '') {
-                fail(line, `gate "${current.name ?? '?'}" has an empty command`);
-            }
-            const name = checkName(line, current.name ?? '');
-            if (gates.some((gate) => gate.name === name)) {
-                fail(line, `gate "${name}" is declared twice`);
-            }
-            if (gates.length >= MAX_GATES) {
-                fail(line, `more than ${MAX_GATES} gates`);
-            }
-            gates.push({ name, command: current.command });
-            current = null;
+function finishGate(state: BellowsState): void {
+    if (!state.current) return;
+    const line = state.itemLine;
+    const current = state.current;
+    if (current.command === undefined) {
+        fail(line, `gate "${current.name ?? '?'}" has no command`);
+    }
+    if (current.command.trim() === '') {
+        fail(line, `gate "${current.name ?? '?'}" has an empty command`);
+    }
+    const name = checkName(line, current.name ?? '');
+    if (state.gates.some((gate) => gate.name === name)) {
+        fail(line, `gate "${name}" is declared twice`);
+    }
+    if (state.gates.length >= MAX_GATES) {
+        fail(line, `more than ${MAX_GATES} gates`);
+    }
+    state.gates.push({ name, command: current.command });
+    state.current = null;
+}
+
+/**
+ * A top-level (indent 0) line: `environment:` opens the block this parser reads; `services:` is
+ * skipped wholesale as the driver's own grammar; anything else is refused.
+ */
+function handleTopLevelLine(state: BellowsState, line: number, trimmed: string): void {
+    finishGate(state);
+    state.inGates = false;
+    state.itemIndent = -1;
+    const match = KEY_VALUE.exec(trimmed);
+    if (!match) {
+        fail(line, `expected "environment:" at the top level, got "${trimmed}"`);
+    }
+    if (match[1] === 'services') {
+        if (state.seenServices) fail(line, 'a second "services:" block');
+        if (match[3] !== undefined && match[3] !== '') {
+            fail(line, 'services takes a list, not a value');
         }
+        state.seenServices = true;
+        state.inServices = true;
+        return;
+    }
+    if (match[1] !== 'environment') {
+        fail(line, `unknown top-level key "${match[1]}" — only "environment:" and "services:" are read`);
+    }
+    if (state.inEnvironment) fail(line, 'a second "environment:" block');
+    if (match[3] !== undefined && match[3] !== '') {
+        fail(line, 'environment takes no inline value');
+    }
+    state.inEnvironment = true;
+}
+
+/** A `- name: <name>` line opening one gate list item. */
+function handleGateStart(state: BellowsState, line: number, indent: number, trimmed: string): void {
+    if (!state.inGates) fail(line, 'a list item outside "gates:"');
+    finishGate(state);
+    state.itemIndent = indent;
+    state.itemLine = line;
+    const rest = trimmed.slice(2);
+    const match = KEY_VALUE.exec(rest);
+    if (!match || match[1] !== 'name' || match[3] === undefined) {
+        fail(line, `a gate starts with "- name: <name>", got "${trimmed}"`);
+    }
+    state.current = { name: scalar(line, match[3], 'name') };
+}
+
+/** A field indented under the currently open gate item (`name:` / `command:`). */
+function handleGateField({
+    state,
+    line,
+    indent,
+    key,
+    match,
+}: {
+    state: BellowsState;
+    line: number;
+    indent: number;
+    key: string;
+    match: RegExpExecArray;
+}): void {
+    if (state.itemIndent === -1 || indent <= state.itemIndent) {
+        fail(line, `"${key}" is not indented under its "- name:" item`);
+    }
+    if (!state.current) fail(line, `"${key}" before the "- name:" that opens the gate`);
+    const hasValue = match[3] !== undefined;
+    if (key === 'name') {
+        if (!hasValue) fail(line, 'name takes a value');
+        state.current.name = scalar(line, match[3] ?? '', 'name');
+    } else if (key === 'command') {
+        if (!hasValue) fail(line, 'command takes a value');
+        if ((match[3] ?? '').length > MAX_COMMAND_LENGTH) {
+            fail(line, `command is longer than ${MAX_COMMAND_LENGTH} characters`);
+        }
+        state.current.command = scalar(line, match[3] ?? '', 'command');
+    } else {
+        fail(line, `unknown gate field "${key}" — only name and command are read`);
+    }
+}
+
+/** A direct child of `environment:` (`image:` / `gates:`). */
+function handleEnvironmentField(state: BellowsState, line: number, key: string, match: RegExpExecArray): void {
+    const hasValue = match[3] !== undefined;
+    if (key === 'image') {
+        if (!hasValue) fail(line, 'image takes a value');
+        state.image = checkImage(line, scalar(line, match[3] ?? '', 'image'));
+    } else if (key === 'gates') {
+        // `gates:` with nothing after it — including a trailing space, the same courtesy
+        // `environment:` gets — opens the list. A real inline value is outside the subset.
+        if (hasValue && match[3] !== '') fail(line, 'gates takes a list, not a value');
+        state.inGates = true;
+    } else {
+        fail(line, `unknown key "${key}" inside environment — only image and gates are read`);
+    }
+}
+
+/** One non-blank, non-comment line of the file, dispatched to the block its indentation names. */
+function processLine(state: BellowsState, line: number, rawLine: string): void {
+    const trimmed = rawLine.trim();
+    const indent = rawLine.length - rawLine.trimStart().length;
+    if (rawLine.slice(0, indent).includes('\t')) {
+        fail(line, 'tabs are not allowed for indentation, use spaces');
+    }
+
+    // The services half of the file: every line of its body is deeper than the top level, so
+    // indentation alone ends the block and hands the next top-level key back to this loop.
+    // The check sits before the list-item branch — a `- name:` inside `services:` is Drone's,
+    // not a gate list item.
+    if (state.inServices) {
+        if (indent > 0) return;
+        state.inServices = false;
+    }
+
+    if (indent === 0) {
+        handleTopLevelLine(state, line, trimmed);
+        return;
+    }
+
+    if (!state.inEnvironment) {
+        fail(line, `indented content before "environment:" — "${trimmed}"`);
+    }
+
+    if (trimmed.startsWith('- ')) {
+        handleGateStart(state, line, indent, trimmed);
+        return;
+    }
+
+    const match = KEY_VALUE.exec(trimmed);
+    if (!match) fail(line, `cannot read "${trimmed}"`);
+    const key = match[1] ?? '';
+
+    if (state.inGates) {
+        handleGateField({ state, line, indent, key, match });
+    } else {
+        handleEnvironmentField(state, line, key, match);
+    }
+}
+
+export function parseBellows(text: string): BellowsConfig | null {
+    const state: BellowsState = {
+        image: null,
+        inEnvironment: false,
+        inGates: false,
+        inServices: false,
+        seenServices: false,
+        itemIndent: -1,
+        itemLine: 0,
+        current: null,
+        gates: [],
     };
 
     const lines = text.split('\n');
@@ -133,109 +283,13 @@ export function parseBellows(text: string): BellowsConfig | null {
         const line = index + 1;
         const trimmed = rawLine.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
-        const indent = rawLine.length - rawLine.trimStart().length;
-        if (rawLine.slice(0, indent).includes('\t')) {
-            fail(line, 'tabs are not allowed for indentation, use spaces');
-        }
-
-        // The services half of the file: every line of its body is deeper than the top level, so
-        // indentation alone ends the block and hands the next top-level key back to this loop.
-        // The check sits before the list-item branch — a `- name:` inside `services:` is Drone's,
-        // not a gate list item.
-        if (inServices) {
-            if (indent > 0) continue;
-            inServices = false;
-        }
-
-        if (indent === 0) {
-            finish();
-            inGates = false;
-            itemIndent = -1;
-            const match = KEY_VALUE.exec(trimmed);
-            if (!match) {
-                fail(line, `expected "environment:" at the top level, got "${trimmed}"`);
-            }
-            if (match[1] === 'services') {
-                if (seenServices) fail(line, 'a second "services:" block');
-                if (match[3] !== undefined && match[3] !== '') {
-                    fail(line, 'services takes a list, not a value');
-                }
-                seenServices = true;
-                inServices = true;
-                continue;
-            }
-            if (match[1] !== 'environment') {
-                fail(line, `unknown top-level key "${match[1]}" — only "environment:" and "services:" are read`);
-            }
-            if (inEnvironment) fail(line, 'a second "environment:" block');
-            if (match[3] !== undefined && match[3] !== '') {
-                fail(line, 'environment takes no inline value');
-            }
-            inEnvironment = true;
-            continue;
-        }
-
-        if (!inEnvironment) {
-            fail(line, `indented content before "environment:" — "${trimmed}"`);
-        }
-
-        if (trimmed.startsWith('- ')) {
-            if (!inGates) fail(line, 'a list item outside "gates:"');
-            finish();
-            itemIndent = indent;
-            itemLine = line;
-            const rest = trimmed.slice(2);
-            const match = KEY_VALUE.exec(rest);
-            if (!match || match[1] !== 'name' || match[3] === undefined) {
-                fail(line, `a gate starts with "- name: <name>", got "${trimmed}"`);
-            }
-            current = { name: scalar(line, match[3], 'name') };
-            continue;
-        }
-
-        const match = KEY_VALUE.exec(trimmed);
-        if (!match) fail(line, `cannot read "${trimmed}"`);
-        const key = match[1] ?? '';
-        const hasValue = match[3] !== undefined;
-
-        if (inGates) {
-            if (itemIndent === -1 || indent <= itemIndent) {
-                fail(line, `"${key}" is not indented under its "- name:" item`);
-            }
-            if (!current) fail(line, `"${key}" before the "- name:" that opens the gate`);
-            if (key === 'name') {
-                if (!hasValue) fail(line, 'name takes a value');
-                current.name = scalar(line, match[3] ?? '', 'name');
-            } else if (key === 'command') {
-                if (!hasValue) fail(line, 'command takes a value');
-                if ((match[3] ?? '').length > MAX_COMMAND_LENGTH) {
-                    fail(line, `command is longer than ${MAX_COMMAND_LENGTH} characters`);
-                }
-                current.command = scalar(line, match[3] ?? '', 'command');
-            } else {
-                fail(line, `unknown gate field "${key}" — only name and command are read`);
-            }
-            continue;
-        }
-
-        // Direct children of `environment:`.
-        if (key === 'image') {
-            if (!hasValue) fail(line, 'image takes a value');
-            image = checkImage(line, scalar(line, match[3] ?? '', 'image'));
-        } else if (key === 'gates') {
-            // `gates:` with nothing after it — including a trailing space, the same courtesy
-            // `environment:` gets — opens the list. A real inline value is outside the subset.
-            if (hasValue && match[3] !== '') fail(line, 'gates takes a list, not a value');
-            inGates = true;
-        } else {
-            fail(line, `unknown key "${key}" inside environment — only image and gates are read`);
-        }
+        processLine(state, line, rawLine);
     }
-    finish();
+    finishGate(state);
 
-    if (!inEnvironment) return null;
-    if (image === null) throw new BellowsError('.bellows.yaml: environment declares no image');
-    return { image, gates };
+    if (!state.inEnvironment) return null;
+    if (state.image === null) throw new BellowsError('.bellows.yaml: environment declares no image');
+    return { image: state.image, gates: state.gates };
 }
 
 /**
@@ -272,6 +326,54 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * worktree's file, which is the tree that actually holds the run's gates. `worktreeId` is
  * re-asserted as a uuid before it joins a path, exactly like the user segment.
  */
+interface GatesPathInput {
+    root: string;
+    workspacePath: string;
+    repo: string;
+    worktreeId?: string | null;
+}
+
+/** Validates the read's inputs and builds its candidate paths, worktree-first — see `readGatesFile`. */
+function resolveGatesPaths(input: GatesPathInput): { ok: true; paths: string[] } | { ok: false; error: string } {
+    const { root, workspacePath, repo, worktreeId } = input;
+    const name = repo.includes('/') ? repo.slice(repo.indexOf('/') + 1) : repo;
+    // Same rules a checkout directory obeys. Unreachable from the create route (which validates
+    // the whole label), asserted anyway: this module is handed strings, not trusted rows.
+    if (!name || /[/\\]/.test(name) || /^[-.]/.test(name)) {
+        return { ok: false, error: `repo label does not name a checkout directory: ${repo}` };
+    }
+    const userId = workspacePath.split('/')[1] ?? '';
+    if (!UUID.test(userId)) {
+        return { ok: false, error: `workspace path is not <orgId>/<userId>: ${workspacePath}` };
+    }
+    if (worktreeId !== undefined && worktreeId !== null && !UUID.test(worktreeId)) {
+        return { ok: false, error: `worktree id is not a uuid: ${worktreeId}` };
+    }
+    const paths = worktreeId
+        ? [join(root, workspacePath, '.worktrees', worktreeId, GATES_FILE), join(root, workspacePath, name, GATES_FILE)]
+        : [join(root, workspacePath, name, GATES_FILE)];
+    return { ok: true, paths };
+}
+
+/**
+ * Reads the first candidate path that exists. A later candidate is a fallback for "does not exist
+ * yet"; a candidate that exists but cannot be read answers immediately — that failure is the run's.
+ */
+async function readFirstExisting(
+    paths: string[],
+    readFile: (path: string) => Promise<string>
+): Promise<{ text: string | null } | { error: string }> {
+    for (const path of paths) {
+        try {
+            return { text: await readFile(path) };
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+            return { error: (e as Error).message };
+        }
+    }
+    return { text: null };
+}
+
 export async function readGatesFile(options: {
     /** Null = this deployment has no workspace root, so no checkout and no gates anywhere. */
     root: string | null;
@@ -284,42 +386,19 @@ export async function readGatesFile(options: {
     /** Test seam: lets the suite assert the path and simulate failures without a filesystem. */
     readFile?: (path: string) => Promise<string>;
 }): Promise<GatesRead> {
-    const { root, workspacePath, repo, worktreeId, readFile = defaultRead } = options;
+    const { root, workspacePath, repo, worktreeId = null, readFile = defaultRead } = options;
     if (!root || !repo) return { config: null, error: null };
 
-    const name = repo.includes('/') ? repo.slice(repo.indexOf('/') + 1) : repo;
-    // Same rules a checkout directory obeys. Unreachable from the create route (which validates
-    // the whole label), asserted anyway: this module is handed strings, not trusted rows.
-    if (!name || /[/\\]/.test(name) || /^[-.]/.test(name)) {
-        return { config: null, error: `repo label does not name a checkout directory: ${repo}` };
-    }
-    const userId = workspacePath.split('/')[1] ?? '';
-    if (!UUID.test(userId)) {
-        return { config: null, error: `workspace path is not <orgId>/<userId>: ${workspacePath}` };
-    }
-    if (worktreeId !== undefined && worktreeId !== null && !UUID.test(worktreeId)) {
-        return { config: null, error: `worktree id is not a uuid: ${worktreeId}` };
-    }
+    const resolved = resolveGatesPaths({ root, workspacePath, repo, worktreeId });
+    if (!resolved.ok) return { config: null, error: resolved.error };
 
-    const paths = worktreeId
-        ? [join(root, workspacePath, '.worktrees', worktreeId, GATES_FILE), join(root, workspacePath, name, GATES_FILE)]
-        : [join(root, workspacePath, name, GATES_FILE)];
-    let text: string | null = null;
-    for (const path of paths) {
-        try {
-            text = await readFile(path);
-            break;
-        } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
-            // A worktree file that exists but cannot be read is the run's answer — the same
-            // named-error channel a clone file's failure takes. Only a missing file falls
-            // through to the next candidate.
-            return { config: null, error: (e as Error).message };
-        }
-    }
-    if (text === null) return { config: null, error: null };
+    const read = await readFirstExisting(resolved.paths, readFile);
+    if ('error' in read) return { config: null, error: read.error };
+    // A worktree file that exists but cannot be read is the run's answer — the same named-error
+    // channel a clone file's failure takes. Only a missing file falls through to no config.
+    if (read.text === null) return { config: null, error: null };
     try {
-        return { config: parseBellows(text), error: null };
+        return { config: parseBellows(read.text), error: null };
     } catch (e) {
         return { config: null, error: (e as Error).message };
     }
@@ -332,7 +411,9 @@ const GATES_FILE = '.bellows.yaml';
  * gates × 4096-char commands). Member-authored repo content read on the claim path — bounded
  * before it is read, not after, the same posture every other route-level limit takes.
  */
-const GATES_FILE_LIMIT = 64 * 1024;
+const GATES_FILE_LIMIT_KIB = 64;
+const BYTES_PER_KIB = 1024;
+const GATES_FILE_LIMIT = GATES_FILE_LIMIT_KIB * BYTES_PER_KIB;
 
 const defaultRead = async (path: string): Promise<string> => {
     // Only the final path component is checkout-controlled — the repository's content decides

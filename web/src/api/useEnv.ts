@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { reportUnauthenticated } from './useSession.js';
+import { refusalOf } from './refusal.js';
+import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
+import { JSON_HEADERS } from '@factory-ai/core';
 
 /** What a list read echoes. A secret's `value` is null for every caller — the write-only contract. */
 export interface EnvVarView {
@@ -65,7 +67,7 @@ export function useEnv(): UseEnv {
     const load = useCallback(async (signal: AbortSignal) => {
         try {
             const response = await fetch('/api/env', { signal });
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 // Handed to the gate rather than rendered as a banner — every later request would
                 // 401 too, so a banner would never clear.
                 reportUnauthenticated();
@@ -73,8 +75,7 @@ export function useEnv(): UseEnv {
                 return;
             }
             if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                setError(body.error ?? `Request failed (${response.status})`);
+                setError((await refusalOf(response)).error);
                 setLoading(false);
                 return;
             }
@@ -105,16 +106,15 @@ export function useEnv(): UseEnv {
         try {
             const response = await fetch(url, {
                 method: 'PUT',
-                headers: { 'content-type': 'application/json' },
+                headers: JSON_HEADERS,
                 body: JSON.stringify(body),
             });
-            if (response.status === 401) {
+            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 reportUnauthenticated();
                 return { error: 'Your session expired', vars: [] };
             }
             if (!response.ok) {
-                const body = (await response.json().catch(() => ({}))) as { error?: string };
-                return { error: body.error ?? `Could not save (${response.status})`, vars: [] };
+                return { error: (await refusalOf(response, 'Could not save')).error, vars: [] };
             }
             const saved = (await response.json()) as { vars: EnvVarView[] };
             return { error: null, vars: saved.vars };

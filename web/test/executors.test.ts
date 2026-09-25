@@ -4,10 +4,13 @@ import {
     EXECUTOR_TYPE_META,
     MAX_CONFIG_BYTES,
     REQUIRED_FIELDS,
+    defaultExecutorName,
     executorTypeLabel,
     mergeExecutors,
     validateExecutorConfig,
     validateExecutorPayload,
+    withDefault,
+    type ExecutorRow,
     type ValidExecutor,
 } from '../src/workspace/executors.js';
 
@@ -107,7 +110,7 @@ describe('validateExecutorConfig', () => {
     it('requires no config fields for opencode either', () => {
         // Same raw-JSON contract as claude-code: field rules wait for a consumer that can be
         // wrong about them.
-        expect(REQUIRED_FIELDS['opencode']).toEqual([]);
+        expect(REQUIRED_FIELDS.opencode).toEqual([]);
     });
 });
 
@@ -118,17 +121,19 @@ describe('EXECUTOR_TYPE_META', () => {
         for (const type of EXECUTOR_TYPES) expect(type in EXECUTOR_TYPE_META).toBe(true);
     });
 
-    it('labels claude-code as stored-but-not-consumed, with an empty-object example', () => {
+    it('tells the claude-code truth: the config is merged, with the guard/plugin keys stripped', () => {
         const meta = EXECUTOR_TYPE_META['claude-code'];
         expect(meta.label).toBe('Claude Code');
-        expect(meta.configHelp).toMatch(/stored/);
-        expect(meta.configHelp).toMatch(/not consumed by the current Claude Code runner/);
+        expect(meta.configHelp).toMatch(/merged into the runner/);
+        expect(meta.configHelp).toMatch(/hooks.*enabledPlugins.*extraKnownMarketplaces/);
+        expect(meta.configHelp).toMatch(/CLAUDE_CODE_ENABLE_TELEMETRY.*OTEL_.*always wins/);
         expect(JSON.parse(meta.example)).toEqual({});
     });
 
-    it('tells the opencode truth: the deployment CLI is authoritative and permission is ignored', () => {
+    it('tells the opencode truth: the profile selects OpenCode and permission is ignored', () => {
         const meta = EXECUTOR_TYPE_META.opencode;
         expect(meta.label).toBe('OpenCode');
+        expect(meta.configHelp).toMatch(/Tasks using this executor run OpenCode/);
         expect(meta.configHelp).toMatch(/merged over its baked configuration/);
         expect(meta.configHelp).toMatch(/permission rules are ignored/);
         // The example illustrates the keys that do apply, and carries nothing that looks like a
@@ -149,33 +154,35 @@ describe('EXECUTOR_TYPE_META', () => {
 describe('mergeExecutors', () => {
     const first: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'sonnet' } };
     const second: ValidExecutor = { name: 'oc', type: 'opencode', config: { model: 'x' } };
+    const firstRow: ExecutorRow = { ...first, isDefault: false };
+    const secondRow: ExecutorRow = { ...second, isDefault: false };
 
     it('appends a new executor and preserves order', () => {
-        const result = mergeExecutors([first], null, second);
-        expect(result).toEqual({ ok: true, value: [first, second] });
+        const result = mergeExecutors([firstRow], null, second);
+        expect(result).toEqual({ ok: true, value: [firstRow, secondRow] });
     });
 
     it('replaces the edited row, matched by its original name, keeping its position', () => {
         // A rename changes the name the row is saved under; the match is still against the name
         // the row had when the dialog opened.
         const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {} };
-        const result = mergeExecutors([first, second], 'main', renamed);
-        expect(result).toEqual({ ok: true, value: [renamed, second] });
+        const result = mergeExecutors([firstRow, secondRow], 'main', renamed);
+        expect(result).toEqual({ ok: true, value: [{ ...renamed, isDefault: false }, secondRow] });
     });
 
     it('allows saving an edit with the name unchanged', () => {
         const changed: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'opus' } };
-        const result = mergeExecutors([first, second], 'main', changed);
-        expect(result).toEqual({ ok: true, value: [changed, second] });
+        const result = mergeExecutors([firstRow, secondRow], 'main', changed);
+        expect(result).toEqual({ ok: true, value: [{ ...changed, isDefault: false }, secondRow] });
     });
 
     it('rejects a rename onto another row’s name', () => {
-        const result = mergeExecutors([first, second], 'main', { ...first, name: 'oc' });
+        const result = mergeExecutors([firstRow, secondRow], 'main', { ...first, name: 'oc' });
         expect(result).toEqual({ ok: false, error: 'An executor named "oc" already exists.' });
     });
 
     it('rejects an add onto an existing name', () => {
-        const result = mergeExecutors([first], null, { ...first, config: {} });
+        const result = mergeExecutors([firstRow], null, { ...first, config: {} });
         expect(result).toEqual({ ok: false, error: 'An executor named "main" already exists.' });
     });
 
@@ -184,5 +191,63 @@ describe('mergeExecutors', () => {
         // Merging it back would silently resurrect it; the caller says so instead.
         const result = mergeExecutors([], 'main', first);
         expect(result.ok).toBe(false);
+    });
+
+    it('keeps the default flag across a rename', () => {
+        const defaultRow: ExecutorRow = { ...firstRow, isDefault: true };
+        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {} };
+        const result = mergeExecutors([defaultRow, secondRow], 'main', renamed);
+        expect(result).toEqual({ ok: true, value: [{ ...renamed, isDefault: true }, secondRow] });
+    });
+
+    it('never makes an added row the default', () => {
+        const defaultRow: ExecutorRow = { ...firstRow, isDefault: true };
+        const result = mergeExecutors([defaultRow], null, second);
+        expect(result).toEqual({ ok: true, value: [defaultRow, secondRow] });
+    });
+});
+
+describe('withDefault', () => {
+    const first: ExecutorRow = { name: 'main', type: 'claude-code', config: {}, isDefault: false };
+    const second: ExecutorRow = { name: 'oc', type: 'opencode', config: {}, isDefault: true };
+
+    it('flags exactly the named row and clears every other', () => {
+        const result = withDefault([first, second], 'main');
+        expect(result).toEqual({
+            ok: true,
+            value: [
+                { ...first, isDefault: true },
+                { ...second, isDefault: false },
+            ],
+        });
+    });
+
+    it('is a no-op when the named row is already the default', () => {
+        const result = withDefault([first, second], 'oc');
+        expect(result).toEqual({ ok: true, value: [first, second] });
+    });
+
+    it('refuses a name that no longer exists', () => {
+        const result = withDefault([first, second], 'gone');
+        expect(result).toEqual({ ok: false, error: '"gone" no longer exists — refresh and try again.' });
+    });
+});
+
+describe('defaultExecutorName', () => {
+    it('answers the flagged row even when it is not first', () => {
+        const rows = [
+            { name: 'main', isDefault: false },
+            { name: 'heavy', isDefault: true },
+        ];
+        expect(defaultExecutorName(rows)).toBe('heavy');
+    });
+
+    it('falls back to the first row when none is flagged', () => {
+        const rows = [{ name: 'main', isDefault: false }, { name: 'heavy' }];
+        expect(defaultExecutorName(rows)).toBe('main');
+    });
+
+    it('answers an empty string for an empty list', () => {
+        expect(defaultExecutorName([])).toBe('');
     });
 });

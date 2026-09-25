@@ -93,7 +93,7 @@ from the agent-turn distribution only, while its tokens and job turns still coun
   screen and explain itself, not blank the dashboard. `useStats` likewise never clears `data` on
   error.
 - **`ERROR_COOLDOWN_MS` (30s) after a failed read.** Without it every request restarts the read and
-  a rejected query becomes a request loop. `POST /api/refresh` bypasses it.
+  a rejected query becomes a request loop. There is no bypass.
 - **`INSTALLATION_REPOS_TTL_MS` (10 min) on the repo list.** Long, because the answer changes when
   a human installs or uninstalls the GitHub App — minutes, not seconds — and every read of it
   costs a rate-limit point. Short enough that granting the App a new repository shows up without a

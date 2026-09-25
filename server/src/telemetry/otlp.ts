@@ -83,6 +83,9 @@ function attributes(list: { key: string; value: AnyValue }[] | undefined): Recor
     return out;
 }
 
+/** Nanoseconds per millisecond, as a bigint divisor. */
+const NANOS_PER_MS = 1_000_000n;
+
 /**
  * OTLP timestamps are nanoseconds. Dividing by 1e9 instead of 1e6 puts every point in 1970,
  * which makes the branch join return nothing — a failure that looks like a broken hook rather
@@ -90,7 +93,7 @@ function attributes(list: { key: string; value: AnyValue }[] | undefined): Recor
  */
 function isoFromNanos(nanos: string | number | undefined): string | null {
     if (nanos === undefined || nanos === null || nanos === '') return null;
-    const ms = Number(BigInt(nanos) / 1_000_000n);
+    const ms = Number(BigInt(nanos) / NANOS_PER_MS);
     return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
@@ -107,71 +110,118 @@ function numeric(point: { asInt?: string | number; asDouble?: number }): number 
     return null;
 }
 
-export function flattenMetrics(body: unknown): FlattenResult {
+type Skipped = FlattenResult['skipped'];
+type RawPoint = {
+    attributes?: { key: string; value: AnyValue }[];
+    timeUnixNano?: string | number;
+    startTimeUnixNano?: string | number;
+    asInt?: string | number;
+    asDouble?: number;
+};
+
+/** Rows for one metric's datapoints; a datapoint with no readable value or time is counted, not thrown. */
+function rowsFromDataPoints({
+    dataPoints,
+    temporality,
+    resourceAttrs,
+    name,
+    skipped,
+}: {
+    dataPoints: unknown[] | undefined;
+    temporality: MetricRow['temporality'];
+    resourceAttrs: Record<string, string>;
+    name: string;
+    skipped: Skipped;
+}): MetricRow[] {
     const rows: MetricRow[] = [];
-    const skipped = { histogram: 0, noValue: 0, deniedMetric: 0 };
-
-    const resourceMetrics = (body as { resourceMetrics?: unknown[] })?.resourceMetrics ?? [];
-    for (const resource of resourceMetrics as Record<string, never>[]) {
-        // Resource attributes are promoted onto every datapoint, because that is where
-        // OTEL_RESOURCE_ATTRIBUTES keys arrive and datapoint attributes are what we query.
-        const resourceAttrs = attributes(
-            (resource['resource'] as { attributes?: { key: string; value: AnyValue }[] } | undefined)?.attributes
-        );
-
-        for (const scope of (resource['scopeMetrics'] as unknown as Record<string, never>[] | undefined) ?? []) {
-            for (const metric of (scope['metrics'] as unknown as Record<string, never>[] | undefined) ?? []) {
-                const name = metric['name'] as unknown as string;
-                if (typeof name !== 'string' || !name) continue;
-                if (METRIC_DENYLIST.has(name)) {
-                    skipped.deniedMetric += 1;
-                    continue;
-                }
-                if (metric['histogram'] || metric['exponentialHistogram'] || metric['summary']) {
-                    skipped.histogram += 1;
-                    continue;
-                }
-
-                const sum = metric['sum'] as { dataPoints?: unknown[]; aggregationTemporality?: unknown } | undefined;
-                const gauge = metric['gauge'] as { dataPoints?: unknown[] } | undefined;
-                const container = sum ?? gauge;
-                if (!container) continue;
-
-                // A gauge has no temporality; treating it as a delta would make it summable,
-                // which it is not.
-                const temporality = sum ? temporalityOf(sum.aggregationTemporality) : 'unspecified';
-
-                for (const raw of container.dataPoints ?? []) {
-                    const point = raw as {
-                        attributes?: { key: string; value: AnyValue }[];
-                        timeUnixNano?: string | number;
-                        startTimeUnixNano?: string | number;
-                        asInt?: string | number;
-                        asDouble?: number;
-                    };
-                    const value = numeric(point);
-                    const time = isoFromNanos(point.timeUnixNano);
-                    if (value === null || time === null) {
-                        skipped.noValue += 1;
-                        continue;
-                    }
-
-                    const attrs = { ...resourceAttrs, ...attributes(point.attributes) };
-                    const sessionId = attrs['session.id'] ?? null;
-                    rows.push({
-                        agent: attrs['agent'] ?? agentOf(name),
-                        metric: name,
-                        field: canonicalField(name, attrs),
-                        sessionId,
-                        value,
-                        temporality,
-                        startTime: isoFromNanos(point.startTimeUnixNano),
-                        time,
-                        attrs,
-                    });
-                }
-            }
+    for (const raw of dataPoints ?? []) {
+        const point = raw as RawPoint;
+        const value = numeric(point);
+        const time = isoFromNanos(point.timeUnixNano);
+        if (value === null || time === null) {
+            skipped.noValue += 1;
+            continue;
         }
+        const attrs = { ...resourceAttrs, ...attributes(point.attributes) };
+        rows.push({
+            agent: attrs.agent ?? agentOf(name),
+            metric: name,
+            field: canonicalField(name, attrs),
+            sessionId: attrs['session.id'] ?? null,
+            value,
+            temporality,
+            startTime: isoFromNanos(point.startTimeUnixNano),
+            time,
+            attrs,
+        });
+    }
+    return rows;
+}
+
+/** The metric's datapoint container (sum or gauge) and its temporality, or null for anything else. */
+function metricContainer(
+    metric: Record<string, never>
+): { dataPoints: unknown[] | undefined; temporality: MetricRow['temporality'] } | null {
+    const sum = metric.sum as { dataPoints?: unknown[]; aggregationTemporality?: unknown } | undefined;
+    const gauge = metric.gauge as { dataPoints?: unknown[] } | undefined;
+    const container = sum ?? gauge;
+    if (!container) return null;
+    // A gauge has no temporality; treating it as a delta would make it summable, which it is not.
+    const temporality = sum ? temporalityOf(sum.aggregationTemporality) : 'unspecified';
+    return { dataPoints: container.dataPoints, temporality };
+}
+
+/** Rows for one metric entry — the denylist, histogram skip, and container resolution in one place. */
+function rowsFromMetric(
+    metric: Record<string, never>,
+    resourceAttrs: Record<string, string>,
+    skipped: Skipped
+): MetricRow[] {
+    const name = metric.name as unknown as string;
+    if (typeof name !== 'string' || !name) return [];
+    if (METRIC_DENYLIST.has(name)) {
+        skipped.deniedMetric += 1;
+        return [];
+    }
+    if (metric.histogram || metric.exponentialHistogram || metric.summary) {
+        skipped.histogram += 1;
+        return [];
+    }
+    const container = metricContainer(metric);
+    if (!container) return [];
+    return rowsFromDataPoints({
+        dataPoints: container.dataPoints,
+        temporality: container.temporality,
+        resourceAttrs,
+        name,
+        skipped,
+    });
+}
+
+/** Rows for one resource entry: its attributes promoted onto every scope's metrics. */
+function rowsFromResource(resource: Record<string, never>, skipped: Skipped): MetricRow[] {
+    // Resource attributes are promoted onto every datapoint, because that is where
+    // OTEL_RESOURCE_ATTRIBUTES keys arrive and datapoint attributes are what we query.
+    const resourceAttrs = attributes(
+        (resource.resource as { attributes?: { key: string; value: AnyValue }[] } | undefined)?.attributes
+    );
+
+    const rows: MetricRow[] = [];
+    for (const scope of (resource.scopeMetrics as unknown as Record<string, never>[] | undefined) ?? []) {
+        for (const metric of (scope.metrics as unknown as Record<string, never>[] | undefined) ?? []) {
+            rows.push(...rowsFromMetric(metric, resourceAttrs, skipped));
+        }
+    }
+    return rows;
+}
+
+export function flattenMetrics(body: unknown): FlattenResult {
+    const skipped: Skipped = { histogram: 0, noValue: 0, deniedMetric: 0 };
+    const resourceMetrics = (body as { resourceMetrics?: unknown[] })?.resourceMetrics ?? [];
+
+    const rows: MetricRow[] = [];
+    for (const resource of resourceMetrics as Record<string, never>[]) {
+        rows.push(...rowsFromResource(resource, skipped));
     }
 
     return { rows, skipped };

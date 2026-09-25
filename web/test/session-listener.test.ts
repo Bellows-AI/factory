@@ -12,7 +12,7 @@ describe('the 401 listener', () => {
         const shell = vi.fn();
         const page = vi.fn();
         const offShell = subscribeUnauthenticated(shell);
-        const offPage = subscribeUnauthenticated(page);
+        subscribeUnauthenticated(page);
 
         reportUnauthenticated();
         expect(shell).toHaveBeenCalledTimes(1);
