@@ -369,6 +369,7 @@ Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a
 | `TelemetryFrame.tsx` | alert, badge |
 | `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
 | `UsageSummaryPanel.tsx` | metric summary, badge |
+| `WorkflowsPanel.tsx` | panel, panel-head, table-wrap, data, pill, muted, status, primary, env-raw |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 | `env-draft.ts` | helper — no markup |
 | `env-raw.ts` | helper — no markup |

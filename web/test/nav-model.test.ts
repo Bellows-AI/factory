@@ -36,7 +36,7 @@ describe('nav model', () => {
             ['/settings/workspace', 'Workspace'],
             ['/settings/repos', 'Repositories'],
             ['/settings/executors', 'Executors'],
-            ['/settings/workflows', 'Default workflow'],
+            ['/settings/workflows', 'Workflows'],
         ]);
     });
 

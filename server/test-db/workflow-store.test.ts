@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
+import { BASE_WORKFLOW } from '../src/db/workflow-templates.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -168,6 +169,84 @@ describe.skipIf(!enabled)('the workflow store', () => {
 
         const someoneElse = await store.listVisible({ userId: '00000000-0000-4000-8000-00000000e999', repo: null });
         expect(someoneElse.map((row) => row.name)).toEqual(['org-wf']);
+    });
+
+    it('updates the name and definition, and bumps updated_at', async () => {
+        const created = await store.create({ name: 'walk', scope: { kind: 'org' }, definition, createdBy: ALICE });
+        if (!('id' in created)) throw new Error('create was refused');
+        const before = await store.get(created.id);
+
+        const renamed = {
+            ...definition,
+            nodes: definition.nodes.map((n) => (n.name === 'first' ? { ...n, prompt: 'do it differently' } : n)),
+        };
+        const updated = await store.update(created.id, { name: 'walked', definition: renamed });
+        expect(updated).toEqual({ id: created.id });
+
+        const after = await store.get(created.id);
+        expect(after?.name).toBe('walked');
+        expect(after?.definition).toEqual(renamed);
+        expect(after?.createdAt).toBe(before?.createdAt);
+        // >= , not >: both stamps are millisecond ISO strings and the two `now()` calls are a
+        // couple of local round trips apart, close enough to land in the same millisecond — the
+        // same precedent `default-workflow-settings-store.test.ts` uses for the same reason.
+        expect(new Date(after!.updatedAt).getTime()).toBeGreaterThanOrEqual(new Date(before!.updatedAt).getTime());
+    });
+
+    it('refuses a rename into a name already taken in the same scope, leaving the row unchanged', async () => {
+        const a = await store.create({ name: 'alpha', scope: { kind: 'org' }, definition, createdBy: ALICE });
+        const b = await store.create({ name: 'beta', scope: { kind: 'org' }, definition, createdBy: ALICE });
+        if (!('id' in a) || !('id' in b)) throw new Error('create was refused');
+
+        const result = await store.update(b.id, { name: 'alpha', definition });
+        expect(result).toMatchObject({ refused: true, code: 'NAME_TAKEN' });
+        expect((await store.get(b.id))?.name).toBe('beta');
+    });
+
+    it('returns notFound for an id the org does not hold', async () => {
+        const result = await store.update('99999999-9999-4999-8999-999999999999', { name: 'x', definition });
+        expect(result).toEqual({ notFound: true });
+    });
+
+    it('stores the expanded graph when an update carries a block definition', async () => {
+        const created = await store.create({ name: 'plain', scope: { kind: 'org' }, definition, createdBy: ALICE });
+        if (!('id' in created)) throw new Error('create was refused');
+
+        const updated = await store.update(created.id, {
+            name: 'plain',
+            definition: {
+                entry: 'review',
+                params: [],
+                nodes: [
+                    { name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' },
+                    { name: 'ship', kind: 'agent', session: 'fresh', prompt: 'ship', publish: true },
+                ],
+                edges: [{ from: 'review', to: 'ship', when: 'succeeded' }],
+            },
+        });
+        expect(updated).toHaveProperty('id');
+        const record = await store.get(created.id);
+        expect(record?.definition.nodes.map((n) => n.name).sort()).toEqual(
+            ['review--collect', 'review--wait', 'review--repair', 'review--reply', 'ship'].sort()
+        );
+    });
+
+    it('refuses to rename the org-scope base workflow in place, but a rename AWAY frees the reserved name', async () => {
+        await store.seedBase();
+        const [base] = await store.listVisible({ userId: null, repo: null });
+
+        // Editing the seed while keeping its name hits the same reservation `create` enforces —
+        // the row is the board's, and `seedBase` would silently clobber an admin edit at the next
+        // boot otherwise (docs/workflows.md).
+        const inPlace = await store.update(base!.id, { name: BASE_WORKFLOW.name, definition });
+        expect(inPlace).toMatchObject({ refused: true, code: 'NAME_TAKEN' });
+
+        // Renaming it away succeeds and frees the reserved name for the next boot's reseed.
+        const renamed = await store.update(base!.id, { name: 'my-fork-of-fix-issue', definition });
+        expect(renamed).toEqual({ id: base!.id });
+        await store.seedBase();
+        const rows = await store.listVisible({ userId: null, repo: null });
+        expect(rows.map((r) => r.name).sort()).toEqual([BASE_WORKFLOW.name, 'my-fork-of-fix-issue'].sort());
     });
 
     it('carries the declared params on the list summaries, for the composer to render inputs', async () => {
