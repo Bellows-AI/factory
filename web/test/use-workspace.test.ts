@@ -18,18 +18,18 @@ afterEach(() => {
 
 describe('listExecutorConfigs', () => {
     it('issues exactly one GET /api/workspace/executors and lands the full rows', async () => {
-        const fetch = vi
-            .fn()
-            .mockResolvedValue(
-                json({ executors: [{ name: 'main', type: 'claude-code', createdAt: 'x', config: {} }] })
-            );
+        const fetch = vi.fn().mockResolvedValue(
+            json({
+                executors: [{ name: 'main', type: 'claude-code', createdAt: 'x', isDefault: false, config: {} }],
+            })
+        );
         vi.stubGlobal('fetch', fetch);
         const result = await listExecutorConfigs();
         expect(fetch).toHaveBeenCalledTimes(1);
         expect(fetch).toHaveBeenCalledWith('/api/workspace/executors');
         expect(result).toEqual({
             ok: true,
-            executors: [{ name: 'main', type: 'claude-code', createdAt: 'x', config: {} }],
+            executors: [{ name: 'main', type: 'claude-code', createdAt: 'x', isDefault: false, config: {} }],
         });
     });
 
@@ -44,6 +44,19 @@ describe('listExecutorConfigs', () => {
         expect(await listExecutorConfigs()).toEqual({ ok: false, error: unexpected });
 
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ executors: [{ name: 'main', type: 'claude-code' }] })));
+        expect(await listExecutorConfigs()).toEqual({ ok: false, error: unexpected });
+    });
+
+    it('refuses a row whose isDefault is not a boolean', async () => {
+        const unexpected = 'Could not load the executors: unexpected response shape.';
+        vi.stubGlobal(
+            'fetch',
+            vi.fn().mockResolvedValue(
+                json({
+                    executors: [{ name: 'main', type: 'claude-code', createdAt: 'x', isDefault: 'yes', config: {} }],
+                })
+            )
+        );
         expect(await listExecutorConfigs()).toEqual({ ok: false, error: unexpected });
     });
 

@@ -50,6 +50,12 @@ restart with a warm database serves real data on the first request rather than a
   answers both switches `true` with a null `updatedAt` for a missing row and never inserts one, so
   the default lives in one place — the read — instead of a column that would need migrating the day
   the default changes. Keyed `(org_id, user_id)`, the same argument 012 made for `user_executor`.
+- **`040_user_executor_default.sql` is a flag on the row, not a settings table like 035's.** The
+  difference is `replace()`: `user_executor` is deleted and re-inserted wholesale on every PUT
+  (012's header), so a preference keyed by executor name in a separate table would lose its link on
+  every save. A column travels with the row through that same replace, and a deleted row takes its
+  flag with it for free. One default per member is a partial unique index, `027_workflows.sql`'s
+  `workflow_default_uk` precedent.
 
 **Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
 `npm test`**. That is the price of keeping the default suite offline and database-free; they are

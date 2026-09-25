@@ -2,7 +2,7 @@ import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 
 export interface MemoryUserExecutorStore extends UserExecutorStore {
     /** Every row, so a test can assert what a PUT wrote and what a later PUT replaced. */
-    rows(): { userId: string; name: string; type: string; config: Record<string, unknown> }[];
+    rows(): { userId: string; name: string; type: string; config: Record<string, unknown>; isDefault: boolean }[];
 }
 
 /**
@@ -15,6 +15,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         name: string;
         type: string;
         config: Record<string, unknown>;
+        isDefault: boolean;
         createdAt: string;
         updatedAt: string;
     }
@@ -28,6 +29,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 name: r.name,
                 type: r.type,
                 config: structuredClone(r.config),
+                isDefault: r.isDefault,
             })),
 
         async replace(userId, executors) {
@@ -40,6 +42,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                     name: executor.name,
                     type: executor.type,
                     config: structuredClone(executor.config),
+                    isDefault: executor.isDefault ?? false,
                     createdAt: at(),
                     updatedAt: at(),
                 });
@@ -55,6 +58,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                         type: r.type,
                         createdAt: r.createdAt,
                         updatedAt: r.updatedAt,
+                        isDefault: r.isDefault,
                     }))
                     // The SQL orders the same way; created_at ties break on name.
                     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name))
@@ -69,6 +73,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                     type: r.type,
                     createdAt: r.createdAt,
                     updatedAt: r.updatedAt,
+                    isDefault: r.isDefault,
                     config: structuredClone(r.config),
                 }))
                 .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.name.localeCompare(b.name));

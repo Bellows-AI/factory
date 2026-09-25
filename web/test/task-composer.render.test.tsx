@@ -129,6 +129,19 @@ describe('TaskComposer', () => {
         expect(empty).toContain('disabled');
     });
 
+    it('preselects the persisted default over the first row (issue 215)', () => {
+        const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Start task<'));
+
+        const html = renderComposer({
+            repos: [],
+            executors: [
+                { name: 'main', type: 'claude' },
+                { name: 'heavy', type: 'claude', isDefault: true },
+            ],
+        });
+        expect(trigger(html)).toContain('>heavy</span></button>');
+    });
+
     it('keeps the composer reachable when no repository is selected, and says where to fix that', () => {
         // A member with nothing picked can still queue: the task simply carries no repo. The
         // remediation is a pointer at Settings, never a blocker — an absent repository is a

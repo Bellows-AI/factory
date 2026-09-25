@@ -194,9 +194,18 @@ come and go with a PUT).
   its Add action and the page renders a sentence pointing at workspace setup — both executor
   routes would answer 409 `WORKSPACE_DISABLED` anyway, so the client refuses first instead of
   discovering it after a fetch.
-- **The first row's marker describes the composer, not a default.** A new-task draft autoselects
-  the first row of the polled list — that is all "Selected first on new tasks" says. Nothing is
-  persisted: there is no default, no ordering UI, no make-default action.
+- **A member may flag one executor as the default (issue 215).** Each row's `is_default` column
+  (040) is a real preference, not list order: the panel's Make default action flags a row and
+  clears every other, `withDefault` folds that back into the whole-list PUT the same way
+  `mergeExecutors` folds a dialog save, and 040's partial unique index makes "at most one default
+  per member" a database fact — the route refuses a body naming two before it ever reaches the
+  row. The task composer and the settings overview both read it through `defaultExecutorName`,
+  which falls back to the first row when none is flagged — the pre-215 behavior, unchanged for a
+  member who has never used the action. A rename keeps the flag (matched by the row's original
+  name, same as `mergeExecutors`); dropping the default row from a PUT clears it rather than
+  reviving it on another row — the flag lives on the row, not on a name. "Selected first on new
+  tasks" is what the fallback still says; the flagged row says "Default — selected on new tasks"
+  instead.
 - **The dialog says what each type's config does.** The claude-code help: merged into the
   runner's settings.json, with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped —
   everything else applies, except that the `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env values
@@ -209,9 +218,9 @@ come and go with a PUT).
 - **Types are labelled for people, stored for machines.** List and dialog show "Claude Code" and
   "OpenCode"; the stored `type` stays the raw union value (`claude-code`, `opencode`).
 - **`config` is never echoed by the poll — one on-demand read excepted.** It may hold credentials
-  the member pasted, and `GET /api/workspace` can run every two seconds. The row's `name`, `type`
-  and `createdAt` travel; the JSON stays in the table (the claim-time `configFor` read is the one
-  read that selects it) — except for `GET /api/workspace/executors`, which answers WITH the configs
+  the member pasted, and `GET /api/workspace` can run every two seconds. The row's `name`, `type`,
+  `createdAt` and `isDefault` travel; the JSON stays in the table (the claim-time `configFor` read
+  is the one read that selects it) — except for `GET /api/workspace/executors`, which answers WITH the configs
   because the edit dialog cannot pre-fill without them. It is fetched once per dialog open, never
   on a tick, which is what keeps the credentials out of the poll without making an executor
   uneditable.

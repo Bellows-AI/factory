@@ -1,1 +1,1 @@
-{"schema":"merge-conflict-probe/v1","version":1,"ok":true,"output":{"verdict":"rebased","baseSha":"036b7b782bc508f09f7e61a2e2e3eb65b0299d89","headSha":"6a628fcec994441307bd088d762c0d5c8c2063d3","conflictingPaths":[]}}
+{"schema":"merge-conflict-probe/v1","version":1,"ok":true,"output":{"verdict":"up-to-date","baseSha":"dd12ae57316a209bceb2a2f26dcb30120b6dfae9","headSha":"e2c45b5f456debfedaf61c80827c74b558d9852a","conflictingPaths":[]}}

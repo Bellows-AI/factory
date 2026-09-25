@@ -297,6 +297,63 @@ describe('executors: listing and replacing', () => {
 
         expect(executors.rows().map((row) => row.userId)).toEqual([a.user.id]);
     });
+
+    it('persists the default and echoes it on the poll, the PUT response and the config read', async () => {
+        const { app, cookie } = await boot();
+        const put = await putExecutors(app, cookie, [
+            CLAUDE_CODE,
+            { name: 'oc', type: 'opencode', config: {}, isDefault: true },
+        ]);
+        expect(put.json().executors).toEqual([
+            expect.objectContaining({ name: 'main', isDefault: false }),
+            expect.objectContaining({ name: 'oc', isDefault: true }),
+        ]);
+
+        const poll = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(poll.executors).toEqual([
+            expect.objectContaining({ name: 'main', isDefault: false }),
+            expect.objectContaining({ name: 'oc', isDefault: true }),
+        ]);
+
+        const config = (
+            await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } })
+        ).json();
+        expect(config.executors).toEqual([
+            expect.objectContaining({ name: 'main', isDefault: false }),
+            expect.objectContaining({ name: 'oc', isDefault: true }),
+        ]);
+    });
+
+    it('a row sent without isDefault is not the default', async () => {
+        const { app, cookie } = await boot();
+        const put = await putExecutors(app, cookie, [CLAUDE_CODE]);
+        expect(put.json().executors).toEqual([expect.objectContaining({ name: 'main', isDefault: false })]);
+    });
+
+    it('a later PUT moves the default', async () => {
+        const { app, cookie } = await boot();
+        await putExecutors(app, cookie, [
+            { ...CLAUDE_CODE, isDefault: true },
+            { name: 'oc', type: 'opencode', config: {} },
+        ]);
+        const second = await putExecutors(app, cookie, [
+            { ...CLAUDE_CODE, isDefault: false },
+            { name: 'oc', type: 'opencode', config: {}, isDefault: true },
+        ]);
+        expect(second.json().executors).toEqual([
+            expect.objectContaining({ name: 'main', isDefault: false }),
+            expect.objectContaining({ name: 'oc', isDefault: true }),
+        ]);
+    });
+
+    it('dropping the default row clears it, rather than reviving it on another row', async () => {
+        const { app, cookie } = await boot();
+        await putExecutors(app, cookie, [{ ...CLAUDE_CODE, isDefault: true }]);
+        await putExecutors(app, cookie, [{ name: 'oc', type: 'opencode', config: {} }]);
+
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.executors).toEqual([expect.objectContaining({ name: 'oc', isDefault: false })]);
+    });
 });
 
 describe('executors: validation', () => {
@@ -364,6 +421,27 @@ describe('executors: validation', () => {
         expect((await putExecutors(app, cookie, [{ name: 'x', type: 'claude-code' }])).statusCode).toBe(
             HTTP_BAD_REQUEST
         );
+    });
+
+    it('refuses two defaults as BAD_BODY, not TOO_MANY_EXECUTORS', async () => {
+        const { app, cookie, executors } = await boot();
+        const response = await putExecutors(app, cookie, [
+            { ...CLAUDE_CODE, isDefault: true },
+            { name: 'oc', type: 'opencode', config: {}, isDefault: true },
+        ]);
+
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_BODY');
+        expect(executors.rows()).toEqual([]);
+    });
+
+    it('refuses a non-boolean isDefault', async () => {
+        const { app, cookie } = await boot();
+        for (const isDefault of ['yes', 1]) {
+            const response = await putExecutors(app, cookie, [{ ...CLAUDE_CODE, isDefault }]);
+            expect(response.statusCode, String(isDefault)).toBe(HTTP_BAD_REQUEST);
+            expect(response.json().code, String(isDefault)).toBe('BAD_BODY');
+        }
     });
 });
 

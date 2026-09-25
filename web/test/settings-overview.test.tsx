@@ -243,8 +243,18 @@ describe('deriveReadiness — executors', () => {
                     workspace: {
                         data: workspaceData({
                             executors: [
-                                { name: 'fast-box', type: 'claude', createdAt: '2026-01-01T00:00:00Z' },
-                                { name: 'big-box', type: 'claude', createdAt: '2026-01-02T00:00:00Z' },
+                                {
+                                    name: 'fast-box',
+                                    type: 'claude',
+                                    createdAt: '2026-01-01T00:00:00Z',
+                                    isDefault: false,
+                                },
+                                {
+                                    name: 'big-box',
+                                    type: 'claude',
+                                    createdAt: '2026-01-02T00:00:00Z',
+                                    isDefault: false,
+                                },
                             ],
                         }),
                     },
@@ -255,6 +265,32 @@ describe('deriveReadiness — executors', () => {
         expect(items.get('executors')?.tone).toBe('ok');
         expect(JSON.stringify(items.get('executors')?.facts)).toContain('fast-box is selected first on new tasks.');
         expect(items.get('executors')?.action).toEqual({ label: 'Manage executors', to: '/settings/executors' });
+    });
+
+    it('names the default executor, not the first row (issue 215)', () => {
+        const items = byId(
+            ...deriveReadiness(
+                input({
+                    workspace: {
+                        data: workspaceData({
+                            executors: [
+                                {
+                                    name: 'fast-box',
+                                    type: 'claude',
+                                    createdAt: '2026-01-01T00:00:00Z',
+                                    isDefault: false,
+                                },
+                                { name: 'big-box', type: 'claude', createdAt: '2026-01-02T00:00:00Z', isDefault: true },
+                            ],
+                        }),
+                    },
+                })
+            )
+        );
+        expect(JSON.stringify(items.get('executors')?.facts)).toContain(
+            'big-box is the default executor for new tasks.'
+        );
+        expect(JSON.stringify(items.get('executors')?.facts)).not.toContain('selected first on new tasks');
     });
 });
 

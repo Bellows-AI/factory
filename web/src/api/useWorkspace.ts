@@ -25,6 +25,8 @@ export interface WorkspaceExecutor {
     name: string;
     type: string;
     createdAt: string;
+    /** The row a new task draft autoselects. At most one true per member. */
+    isDefault: boolean;
     /** Deliberately absent from the payload: it may hold credentials, and this is polled. */
 }
 
@@ -51,7 +53,9 @@ export interface UseWorkspace {
     error: string | null;
     saving: boolean;
     save: (repos: { owner: string; name: string }[]) => Promise<string | null>;
-    saveExecutors: (executors: { name: string; type: string; config: object }[]) => Promise<string | null>;
+    saveExecutors: (
+        executors: { name: string; type: string; config: object; isDefault: boolean }[]
+    ) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
@@ -115,6 +119,7 @@ const isExecutorFull = (row: unknown): row is WorkspaceExecutorFull =>
     typeof (row as WorkspaceExecutorFull).name === 'string' &&
     typeof (row as WorkspaceExecutorFull).type === 'string' &&
     typeof (row as WorkspaceExecutorFull).createdAt === 'string' &&
+    typeof (row as WorkspaceExecutorFull).isDefault === 'boolean' &&
     typeof (row as WorkspaceExecutorFull).config === 'object' &&
     (row as WorkspaceExecutorFull).config !== null;
 
@@ -260,7 +265,9 @@ export function useWorkspace(): UseWorkspace {
      * The executor PUT is not asynchronous — nothing clones — so no re-arm timing is needed.
      */
     const saveExecutors = useCallback(
-        async (executors: { name: string; type: string; config: object }[]): Promise<string | null> => {
+        async (
+            executors: { name: string; type: string; config: object; isDefault: boolean }[]
+        ): Promise<string | null> => {
             setSaving(true);
             try {
                 const response = await fetch('/api/workspace/executors', {

@@ -86,15 +86,15 @@ function parseSelection(raw: unknown): Repo[] | string {
  * deepening validation belongs to the day an actual consumer exists and can be wrong about the
  * fields. The route guards shape; 012's check constraints guard the row.
  */
-function parseExecutors(raw: unknown): { name: string; type: string; config: Record<string, unknown> }[] | string {
+function parseExecutors(raw: unknown): ExecutorEntry[] | string {
     const list = jsonBody(raw).executors;
     if (!Array.isArray(list)) return 'executors must be an array of { name, type, config }';
     if (list.length > MAX_EXECUTORS_PER_USER) {
         return `at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`;
     }
-    const parsed: { name: string; type: string; config: Record<string, unknown> }[] = [];
+    const parsed: ExecutorEntry[] = [];
     for (const entry of list) {
-        const item = entry as { name?: unknown; type?: unknown; config?: unknown };
+        const item = entry as { name?: unknown; type?: unknown; config?: unknown; isDefault?: unknown };
         if (typeof item?.name !== 'string' || typeof item?.type !== 'string') {
             return 'each entry must be { name: string, type: string, config: object }';
         }
@@ -104,12 +104,20 @@ function parseExecutors(raw: unknown): { name: string; type: string; config: Rec
         if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
             return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
         }
-        parsed.push({ name: item.name, type: item.type, config: item.config as Record<string, unknown> });
+        if (item.isDefault !== undefined && typeof item.isDefault !== 'boolean') {
+            return `isDefault for "${item.name}" must be a boolean`;
+        }
+        parsed.push({
+            name: item.name,
+            type: item.type,
+            config: item.config as Record<string, unknown>,
+            isDefault: item.isDefault ?? false,
+        });
     }
     return parsed;
 }
 
-type ExecutorEntry = { name: string; type: string; config: Record<string, unknown> };
+type ExecutorEntry = { name: string; type: string; config: Record<string, unknown>; isDefault: boolean };
 
 type WorkspaceRuntime =
     | {
@@ -262,6 +270,12 @@ function validateExecutorList(
     if (names.size !== list.length) {
         return { ok: false, code: ERROR_CODES.EXECUTOR_NAME_CONFLICT, message: 'executor names must be unique' };
     }
+    // Same argument, for the partial unique index 040 puts on `is_default`: a body naming two
+    // defaults would otherwise surface as that index's violation, a 503 for a 400 the client
+    // could have avoided by construction.
+    if (list.filter((executor) => executor.isDefault).length > 1) {
+        return { ok: false, code: ERROR_CODES.BAD_BODY, message: 'only one executor can be the default' };
+    }
     return { ok: true, value: list };
 }
 
@@ -319,6 +333,7 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
+            isDefault: row.isDefault,
         })),
     });
 }
@@ -407,6 +422,7 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
+            isDefault: row.isDefault,
             config: row.config,
         })),
     });
@@ -452,6 +468,7 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
+            isDefault: row.isDefault,
         })),
     });
 }
