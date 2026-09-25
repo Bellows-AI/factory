@@ -33,7 +33,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping, per-repo rendering | [docs/repos.md](docs/repos.md) |
 | `config.ts`, compose env blocks, `.env.example` | [docs/configuration.md](docs/configuration.md) |
 | `server/src/workspace/*`, `011_user_workspace.sql`, `ORG_WORKSPACE_ROOT`, the `git` install in the runtime image | [docs/workspace.md](docs/workspace.md) |
-| `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/factory/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
+| `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/factory/`, `charts/factory-local-state/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh`, `scripts/test-k8s.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
 | `server/src/routes/jobs.ts`, `db/job-store*.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |

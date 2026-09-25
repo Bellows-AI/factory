@@ -37,18 +37,3 @@ kubernetes form of the docker volume the two compose services share by name.
 {{- define "factory.workspaceClaim" -}}
 {{- default (printf "%s-workspaces" (include "factory.fullname" .)) .Values.workspaces.existingClaim -}}
 {{- end -}}
-
-{{/*
-Where the dashboard finds its database: the in-chart TimescaleDB service when it is enabled, the
-operator's URL when it is not. The in-chart credentials default to compose's local ones, which are
-not secrets the same way the App key is — the database is reachable only inside the cluster.
-*/}}
-{{- define "factory.databaseUrl" -}}
-{{- if .Values.database.url -}}
-{{- .Values.database.url -}}
-{{- else if .Values.timescale.enabled -}}
-{{- printf "postgres://%s:%s@%s-timescale:5432/%s" .Values.timescale.user .Values.timescale.password (include "factory.fullname" .) .Values.timescale.database -}}
-{{- else -}}
-{{- fail "database.url must be set when timescale.enabled is false" -}}
-{{- end -}}
-{{- end -}}

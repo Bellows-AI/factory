@@ -10,13 +10,22 @@
 # the local cluster with the stub executor image, queues a job, and watches it come back succeeded
 # — real pods, no Claude, no credential.
 #
-# Everything it creates it removes: one helm release, its claims.
+# Everything it creates it removes: two helm releases — the app and the local state it runs against
+# (charts/factory-local-state: the database and the workspaces claim) — and the state's claims.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 RELEASE="factory-k8s-test-$(date +%s)"
+# The app chart deploys no database; locally the state chart stands in for the managed one. Its
+# object names are its release name plus a fixed suffix, so the app release is pointed at them the
+# same way values-local.yaml points `dev` at `factory-state`.
+STATE_RELEASE="$RELEASE-state"
+STATE_SETS=(
+    --set "database.url=postgres://factory:factory@$STATE_RELEASE-timescale:5432/factory_dev"
+    --set "workspaces.existingClaim=$STATE_RELEASE-workspaces"
+)
 NAMESPACE="${NAMESPACE:-default}"
 DASH_IMAGE="${DASH_IMAGE:-factory-ai}"
 DRIVER_IMAGE="${DRIVER_IMAGE:-factory-driver}"
@@ -54,15 +63,20 @@ expect_not_contains() { # expect_not_contains <name> <haystack> <needle>
 cleanup() {
     if [ "${installed:-}" = '1' ]; then
         helm uninstall "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
-        kubectl delete pvc -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
         # The runner Jobs were created at runtime by the driver, not by the release, so the
         # uninstall leaves them — and their pods — behind. On this test cluster, every Job carrying
-        # the factory.job label is one of ours.
+        # the factory.job label is one of ours. They go BEFORE the claims: a runner pod that still
+        # mounts the workspaces claim holds it under pvc-protection, and a waiting claim delete
+        # issued first blocks forever on a pod whose delete it never reaches.
         kubectl delete jobs -l factory.job -n "$NAMESPACE" >/dev/null 2>&1
+    fi
+    if [ "${state_installed:-}" = '1' ]; then
+        helm uninstall "$STATE_RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
+        kubectl delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" -n "$NAMESPACE" --wait=false >/dev/null 2>&1
         # Block until the claims are really gone, not just terminating: the next run of this script
-        # builds its own release, and an RWO volume still attached to a dying pod would hold the
+        # builds its own releases, and an RWO volume still attached to a dying pod would hold the
         # fresh dashboard pod in Pending for its whole timeout.
-        kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$RELEASE" \
+        kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" \
             -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     fi
     rm -rf "$work"
@@ -78,11 +92,18 @@ command -v helm >/dev/null || {
 
 echo '# chart'
 
-helm lint charts/factory >/dev/null 2>&1 && ok 'helm lint passes' || bad 'helm lint passes' 'lint failed'
+# Linted with the local profile: the app chart's defaults carry no database.url, which is required.
+helm lint charts/factory -f charts/factory/values-local.yaml >/dev/null 2>&1 && ok 'helm lint passes' ||
+    bad 'helm lint passes' 'lint failed'
+helm lint charts/factory-local-state >/dev/null 2>&1 && ok 'helm lint passes on the local state chart' ||
+    bad 'helm lint passes on the local state chart' 'lint failed'
 
 # Rendered with the local profile, which is the shape the cluster phase installs: offline auth,
-# ReadWriteOnce claim, stub executor.
-render() { helm template "$RELEASE" charts/factory -f charts/factory/values-local.yaml --namespace "$NAMESPACE"; }
+# the state release's database and claim, stub executor.
+render() {
+    helm template "$RELEASE" charts/factory -f charts/factory/values-local.yaml "${STATE_SETS[@]}" \
+        --namespace "$NAMESPACE"
+}
 render >"$work/rendered.yaml" || {
     echo 'test-k8s: helm template failed'
     exit 1
@@ -119,7 +140,7 @@ expect_not_contains 'the collector config stays inside its block scalar' "$(cat 
 # rule — the executor reading its credentials from RUNNER_CREDENTIALS_SECRET — is pinned in
 # driver/test/k8s.test.ts, where the runner spec lives.)
 credentials_clean=1
-for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN; do
+for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN DATABASE_URL; do
     next="$(grep -A1 -- "- name: $cred\$" "$work/rendered.yaml" | sed -n '2p' | tr -d ' ')"
     if [ "$next" = 'valueFrom:' ]; then
         continue
@@ -168,14 +189,17 @@ expect_contains     'the driver role reads the runner vitals' "$rbac" \
       verbs: ['get']"
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
-# The dashboard writes checkouts into the same claim the runners mount.
+# The dashboard writes checkouts into the same claim the runners mount — the state release's, so an
+# app reinstall keeps them — and the app release creates no claim of its own.
 expect_contains 'the dashboard mounts the workspaces claim' "$(cat "$work/rendered.yaml")" \
-    "claimName: $RELEASE-factory-workspaces"
+    "claimName: $STATE_RELEASE-workspaces"
 expect_contains 'the driver is told that claim name'        "$(cat "$work/rendered.yaml")" \
-    "value: \"$RELEASE-factory-workspaces\""
+    "value: \"$STATE_RELEASE-workspaces\""
+expect_not_contains 'the app release creates no claim' "$(cat "$work/rendered.yaml")" \
+    'kind: PersistentVolumeClaim'
 
 # The service selects the DASHBOARD and only the dashboard. The shared instance labels alone also
-# match the driver and timescale pods, and a port-forward landing on the driver fails on a missing
+# match the driver pod, and a port-forward landing on the driver fails on a missing
 # named port — or worse, on a probe against the wrong container.
 service_selector="$(awk '/^# Source: factory\/templates\/service.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains    'the service selects the dashboard component' "$service_selector" 'component: dashboard'
@@ -216,16 +240,31 @@ else
     ok 'the driver forwards no ingest token'
 fi
 
-# The dashboard pod must not start its server until the in-chart database accepts connections: the
-# server's migration retry gives up after ~45s and then serves every DB-backed route as a 500
-# forever — a state no amount of client-side polling recovers. On a cold cluster the database
-# image pulls for minutes, so the wait has to live in the pod spec, as an init container running
-# the same pg_isready the database pod's readiness probe runs.
+# The dashboard pod must not start its server until the database accepts connections: the server's
+# migration retry gives up after ~45s and then serves every DB-backed route as a 500 forever — a
+# state no amount of client-side polling recovers. On a cold cluster the database image pulls for
+# minutes, and a managed database can be mid-failover, so the wait has to live in the pod spec, as
+# an init container running pg_isready against the very URL the server reads.
 dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' "$work/rendered.yaml")"
 expect_contains 'the dashboard waits for the database before starting' "$dashboard" \
     'wait-for-database'
 expect_contains 'the wait is an init container, not a sidecar' "$dashboard" 'initContainers:'
-expect_contains 'the wait is the database readiness predicate' "$dashboard" 'pg_isready'
+expect_contains 'the wait probes the URL the server reads' "$dashboard" 'pg_isready -q -d "$DATABASE_URL"'
+
+# Production runs no database in the cluster: the app chart has no database objects to switch on,
+# and without a URL it refuses to render rather than boot a server with nowhere to write.
+expect_not_contains 'the app chart deploys no database' "$(cat "$work/rendered.yaml")" 'component: timescale'
+if helm template "$RELEASE" charts/factory >/dev/null 2>&1; then
+    bad 'the app chart refuses to render without database.url' 'helm template succeeded with no database.url'
+else
+    ok 'the app chart refuses to render without database.url'
+fi
+
+# The state chart: one database writer on one claim, so its Deployment recreates rather than rolls.
+state="$(helm template "$STATE_RELEASE" charts/factory-local-state --namespace "$NAMESPACE")"
+expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-timescale"
+expect_contains 'the state chart names the workspaces claim'  "$state" "name: $STATE_RELEASE-workspaces"
+expect_contains 'the state database never runs two writers'   "$state" 'type: Recreate'
 
 # --- Phase two: the cluster -------------------------------------------------------------------
 
@@ -341,8 +380,13 @@ for image in "$DASH_IMAGE" "$DRIVER_IMAGE" "$STUB_IMAGE" "$COLLECTOR_IMAGE"; do
     }
 done
 
-echo "installing the release $RELEASE"
-helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml \
+echo "installing the releases $STATE_RELEASE and $RELEASE"
+helm install "$STATE_RELEASE" charts/factory-local-state -n "$NAMESPACE" >/dev/null || {
+    echo 'test-k8s: helm install of the state chart failed'
+    exit 1
+}
+state_installed=1
+helm install "$RELEASE" charts/factory -f charts/factory/values-local.yaml "${STATE_SETS[@]}" \
     --set "dashboard.image=$DASH_IMAGE" \
     --set "driver.image=$DRIVER_IMAGE" \
     --set "driver.executorImages.claudeCode=$STUB_IMAGE" \
@@ -361,7 +405,7 @@ installed=1
 # queueing before it is available fails every POST no matter how long the queue step polls.
 kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
-    "deployment/$RELEASE-factory-timescale" "deployment/$RELEASE-factory-collector" \
+    "deployment/$STATE_RELEASE-timescale" "deployment/$RELEASE-factory-collector" \
     -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
@@ -388,6 +432,25 @@ done
     exit 1
 }
 
+# A task runs only under an executor from its author's own list — there is no global fallback, and
+# a claim whose label matches nothing is failed by the driver — so the fresh database needs one
+# before anything is queued. The PUT replaces the whole list, so repeating it is harmless: it
+# retries through the same migration grace the queue loop below allows.
+configured=""
+for _ in $(seq 1 60); do
+    [ "$(node -e '
+fetch(process.argv[1], { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }] }) })
+    .then((r) => process.stdout.write(String(r.status)))
+    .catch(() => process.stdout.write("000"));
+' "$BASE/api/workspace/executors")" = '200' ] && {
+        configured=1
+        break
+    }
+    sleep 1
+done
+[ -n "$configured" ] && ok 'the board stores the task executor' ||
+    bad 'the board stores the task executor' 'PUT /api/workspace/executors never answered 200'
+
 # The wait above covers the cold case (database image still pulling); this poll covers the
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
 # still land inside it. The server adopts the database on the attempt that works; the script
@@ -408,7 +471,7 @@ reconcile=0
 for _ in $(seq 1 60); do
     if [ "$reconcile" = '0' ]; then
         response="$(node -e '
-fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster" }) })
+fetch(process.argv[1], { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ command: "hello from the cluster", executor: "claude" }) })
     .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id); })
     .catch(() => process.stdout.write("000|"));
 ' "$BASE/api/jobs")"

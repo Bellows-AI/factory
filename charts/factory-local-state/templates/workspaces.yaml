@@ -1,0 +1,20 @@
+{{/*
+The checkouts, outside the factory release so an app reinstall keeps them alongside the database
+that records them. The factory release mounts it by name through `workspaces.existingClaim`.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: {{ .Release.Name }}-workspaces
+    labels:
+        {{- include "state.labels" . | nindent 8 }}
+        app.kubernetes.io/component: workspaces
+spec:
+    accessModes:
+        {{- toYaml .Values.workspaces.accessModes | nindent 8 }}
+    {{- with .Values.workspaces.storageClass }}
+    storageClassName: {{ . | quote }}
+    {{- end }}
+    resources:
+        requests:
+            storage: {{ .Values.workspaces.storageSize }}

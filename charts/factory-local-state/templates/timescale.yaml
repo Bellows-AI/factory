@@ -1,16 +1,15 @@
 {{/*
-The in-chart database — the same plain TimescaleDB container compose runs, not the upstream Helm
+The local database — the same plain TimescaleDB container compose runs, not the upstream Helm
 chart: one deployment, one claim, no subchart dependency. TimescaleDB rather than plain Postgres
-for the same reason compose names it: metric_point is a hypertable. For anything real, disable
-this and point `database.url` at a managed instance.
+for the same reason compose names it: metric_point is a hypertable. Production does not run this;
+it points the factory chart's `database.url` at a managed instance.
 */}}
-{{- if .Values.timescale.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-    name: {{ include "factory.fullname" . }}-timescale
+    name: {{ .Release.Name }}-timescale
     labels:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "state.labels" . | nindent 8 }}
         app.kubernetes.io/component: timescale
 spec:
     type: ClusterIP
@@ -19,15 +18,15 @@ spec:
           port: 5432
           targetPort: postgres
     selector:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "state.labels" . | nindent 8 }}
         app.kubernetes.io/component: timescale
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-    name: {{ include "factory.fullname" . }}-timescale
+    name: {{ .Release.Name }}-timescale
     labels:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "state.labels" . | nindent 8 }}
         app.kubernetes.io/component: timescale
 spec:
     accessModes:
@@ -39,9 +38,9 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-    name: {{ include "factory.fullname" . }}-timescale
+    name: {{ .Release.Name }}-timescale
     labels:
-        {{- include "factory.labels" . | nindent 8 }}
+        {{- include "state.labels" . | nindent 8 }}
         app.kubernetes.io/component: timescale
 spec:
     replicas: 1
@@ -50,12 +49,12 @@ spec:
         type: Recreate
     selector:
         matchLabels:
-            {{- include "factory.labels" . | nindent 12 }}
+            {{- include "state.labels" . | nindent 12 }}
             app.kubernetes.io/component: timescale
     template:
         metadata:
             labels:
-                {{- include "factory.labels" . | nindent 16 }}
+                {{- include "state.labels" . | nindent 16 }}
                 app.kubernetes.io/component: timescale
         spec:
             containers:
@@ -71,10 +70,10 @@ spec:
                         value: {{ .Values.timescale.password | quote }}
                       - name: POSTGRES_DB
                         value: {{ .Values.timescale.database | quote }}
-                      {{- with .Values.timescale.resources }}
-                      resources:
-                          {{- toYaml . | nindent 26 }}
-                      {{- end }}
+                  {{- with .Values.timescale.resources }}
+                  resources:
+                      {{- toYaml . | nindent 22 }}
+                  {{- end }}
                   readinessProbe:
                       exec:
                           command: ['pg_isready', '-U', {{ .Values.timescale.user | quote }}, '-d', {{ .Values.timescale.database | quote }}]
@@ -86,5 +85,4 @@ spec:
             volumes:
                 - name: data
                   persistentVolumeClaim:
-                      claimName: {{ include "factory.fullname" . }}-timescale
-{{- end }}
+                      claimName: {{ .Release.Name }}-timescale

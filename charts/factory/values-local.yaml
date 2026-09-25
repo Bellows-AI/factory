@@ -10,6 +10,7 @@
 #   kind load docker-image factory-ai --name factory
 #   kind load docker-image factory-driver --name factory
 #   kind load docker-image echo-executor --name factory
+#   helm install factory-state charts/factory-local-state
 #   helm install dev charts/factory -f charts/factory/values-local.yaml
 #
 # See charts/factory/README.md for the walkthrough and scripts/test-k8s.sh for the scripted version.
@@ -29,13 +30,16 @@ auth:
     # The bind is 0.0.0.0 inside the container, so loadConfig demands this hatch for an open mode.
     allowPublicBind: '1'
 
-# One node, so the claim is ReadWriteOnce: the local provisioner cannot serve ReadWriteMany.
-workspaces:
-    accessModes:
-        - ReadWriteOnce
+# The database and the checkouts live in the `factory-state` release (charts/factory-local-state),
+# not this one, so uninstalling this release keeps both. These two values are that release's
+# object names: `<release>-timescale` and `<release>-workspaces`.
+database:
+    url: postgres://factory:factory@factory-state-timescale:5432/factory_dev
+    # The database pod already pulled this image onto the one node, so the wait costs no pull.
+    waitImage: timescale/timescaledb:latest-pg17
 
-timescale:
-    enabled: true
+workspaces:
+    existingClaim: factory-state-workspaces
 
 secret:
     # No board secret: the local board runs AUTH_MODE=none, where the worker routes are open and

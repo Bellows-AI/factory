@@ -1,0 +1,6 @@
+apiVersion: v2
+name: factory-local-state
+description: The local-only persistent state for the factory chart — TimescaleDB and the workspaces claim
+type: application
+version: 0.1.0
+appVersion: '0.1.0'
