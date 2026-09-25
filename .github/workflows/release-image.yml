@@ -32,10 +32,12 @@ jobs:
                   TAG: ${{ github.ref_name }}
               run: |
                   FOLDED=$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_.-' '-')
-                  # Folding is lossy — v1.0.0+build.1 and v1.0.0-build.1 collapse to one string.
-                  # When it changed anything, a digest of the original keeps the releases apart.
-                  if [ "$FOLDED" != "$TAG" ]; then
-                      FOLDED="$FOLDED-$(printf '%s' "$TAG" | sha1sum | cut -c1-7)"
+                  # Folding is lossy — v1.0.0+build.1 and v1.0.0-build.1 collapse to one string —
+                  # and a docker tag is 128 characters at most, which a git tag is not. Anything
+                  # the fold changed, or that is too long to carry, keeps a digest of the original
+                  # so two releases can never land on one tag. 120 + '-' + 7 = the 128 limit.
+                  if [ "$FOLDED" != "$TAG" ] || [ ${#TAG} -gt 128 ]; then
+                      FOLDED="$(printf '%s' "$FOLDED" | cut -c1-120)-$(printf '%s' "$TAG" | sha1sum | cut -c1-7)"
                   fi
                   printf 'IMAGE_TAG=%s\n' "$FOLDED" >>"$GITHUB_ENV"
             # The command AGENTS.md documents, plus the tag. No registry, no credential and no

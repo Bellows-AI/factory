@@ -144,6 +144,10 @@ describe('ci workflows', () => {
         // in the image tag, the tarball name and the artifact name, none of which may carry a
         // raw ref (a ref may contain a pipe; an artifact name may not).
         expect(normalize!.run).toMatch(/sha1sum/);
+        // A docker tag is 128 characters at most; a git tag is not, so the fold truncates to
+        // leave room for the digest (120 + '-' + 7).
+        expect(normalize!.run).toMatch(/cut -c1-120/);
+        expect(normalize!.run).toMatch(/\$\{#TAG\} -gt 128/);
         const save = runSteps(image).find((step) => step.run.includes('docker save'))!;
         expect(save.run).toContain('-o "factory-ai-$IMAGE_TAG.tar"');
         const upload = (image.steps ?? []).find((step) => step.uses?.startsWith('actions/upload-artifact@'))!;
