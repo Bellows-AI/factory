@@ -140,10 +140,14 @@ describe('ci workflows', () => {
         const normalize = runSteps(image).find((step) => step.run.includes('IMAGE_TAG='));
         expect(normalize, 'the git tag reaches docker unnormalized').toBeTruthy();
         expect(normalize!.run).toMatch(/tr -c 'A-Za-z0-9_\.-'/);
-        // A docker step still naming the raw ref would reintroduce the illegal character.
-        for (const step of runSteps(image)) {
-            if (step.run.includes('docker ')) expect(step.run, step.name).not.toContain('$TAG');
-        }
+        // Only the image tag is charset-limited. Folding the tarball and the artifact too would
+        // make two refs differing by a folded character indistinguishable on the releases page,
+        // so those keep the raw ref.
+        const save = runSteps(image).find((step) => step.run.includes('docker save'))!;
+        expect(save.run).toContain('-o "factory-ai-$TAG.tar"');
+        const upload = (image.steps ?? []).find((step) => step.uses?.startsWith('actions/upload-artifact@'))!;
+        expect(upload.with!.name).toContain('github.ref_name');
+        expect(upload.with!.path).toContain('github.ref_name');
     });
 
     it('never interpolates a ref name into shell text', () => {

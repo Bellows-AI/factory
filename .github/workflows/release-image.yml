@@ -35,10 +35,15 @@ jobs:
             # build arg — the runtime stage takes none, and .dockerignore keeps .env out.
             - name: docker build --target runtime
               run: docker build -f docker/Dockerfile --target runtime -t "factory-ai:$IMAGE_TAG" .
+            # The tarball and the artifact carry the RAW ref: only a docker tag is charset-limited,
+            # so folding the filename too would make two refs that differ by a folded character
+            # (v1.0.0+build.1 and v1.0.0-build.1) indistinguishable on the releases page.
             - name: docker save
-              run: docker save "factory-ai:$IMAGE_TAG" -o "factory-ai-$IMAGE_TAG.tar"
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: docker save "factory-ai:$IMAGE_TAG" -o "factory-ai-$TAG.tar"
             - uses: actions/upload-artifact@v4
               with:
-                  name: factory-ai-image-${{ env.IMAGE_TAG }}
-                  path: factory-ai-${{ env.IMAGE_TAG }}.tar
+                  name: factory-ai-image-${{ github.ref_name }}
+                  path: factory-ai-${{ github.ref_name }}.tar
                   retention-days: 7

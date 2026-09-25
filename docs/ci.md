@@ -46,8 +46,11 @@ pull-request runs and never cancels a run on `main`.
 Triggers on `v*` tags. `validate` calls `ci.yml`; because a called workflow sees the caller's event,
 `e2e`'s `if` correctly skips on a tag push. The git tag is folded into a docker tag first — a docker
 tag admits only `[A-Za-z0-9_.-]`, so `v1.0.0+build.1` is a legal git tag that `docker build` would
-refuse; everything outside that set becomes a dash, and the image and artifact carry the folded
-name. Then `image` builds
+refuse; everything outside that set becomes a dash. Only the image tag is folded — the tarball and
+the artifact keep the raw ref, so two releases are always told apart by their filenames. The stated
+limit: two refs that differ *only* in a folded character (`v1.0.0+build.1` and `v1.0.0-build.1`)
+produce two distinct artifacts holding images that carry the same docker tag, so loading both in
+one daemon leaves the second owning the tag. Then `image` builds
 `docker build -f docker/Dockerfile --target runtime -t factory-ai:<tag> .`, `docker save`s it and
 uploads the tarball for 7 days. No build arg, no credential, no registry — publishing, deployment
 and release notes are out of scope until a target registry exists.
