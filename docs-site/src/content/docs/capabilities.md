@@ -6,11 +6,12 @@ editUrl: https://github.com/Bellows-AI/factory/edit/main/docs-site/src/content/d
 
 ## Observe engineering activity
 
-- Receive OTLP metrics and logs from supported agent runners.
+- Receive OTLP metrics from supported agent runners. OTLP logs are accepted and discarded.
 - Attribute sessions to a repository and branch.
 - Report sessions, token input and output, cache reads and creation, lines written, active time, and
   telemetry coverage.
-- Filter dashboard data by organization, repository, person, and date range.
+- Filter dashboard data by organization, repository, and date range, and, when signed in with
+  `AUTH_MODE=github`, narrow it to your own sessions.
 - Preserve the last good telemetry snapshot when a database read temporarily fails.
 
 ## Manage repositories and workspaces
@@ -40,4 +41,4 @@ editUrl: https://github.com/Bellows-AI/factory/edit/main/docs-site/src/content/d
 
 Factory does not provide an in-memory database, silently fall back when required credentials are absent,
 or make Docker-only runner features appear to work on Kubernetes. See
-[Known limitations](./operations/known-limitations.md) for current constraints.
+[Known limitations](/factory/operations/known-limitations/) for current constraints.

@@ -11,7 +11,7 @@ protected routes require a session cookie or an accepted bearer token.
 
 | Route group | Credential |
 | --- | --- |
-| `GET /api/health`, `/api/auth/*`, SPA assets | Open |
+| `GET /api/health`, `GET /api/ready`, `/api/auth/*`, SPA assets | Open |
 | Human and organization reads/actions | Session cookie or personal `Bearer fat_...`; organization `oat_...` tokens are read-only |
 | Job claims and worker reports | `Bearer $JOB_BOARD_TOKEN` |
 | OTLP metrics and logs | Optional `X-Factory-Ingest-Token` |
@@ -23,9 +23,9 @@ protected routes require a session cookie or an accepted bearer token.
 | Method and path | Purpose |
 | --- | --- |
 | `GET /api/health` | Process liveness and uptime; never touches GitHub or PostgreSQL. |
+| `GET /api/ready` | `200` once database migrations have applied; `503` while they are pending or after they failed. |
 | `GET /api/auth/me` | Current authentication, user, organization, and workspace state. |
 | `GET /api/stats` | Telemetry and task-usage aggregates with range and scope filters. |
-| `POST /api/refresh` | Start a single-flight telemetry refresh. |
 | `GET /api/repos` | Repositories visible to the current App installation. |
 | `GET /api/workspace` | Current member's checkout and executor summary. |
 | `PUT /api/workspace/repos` | Replace the member's selected repository list; cloning is asynchronous. |
@@ -48,7 +48,7 @@ protected routes require a session cookie or an accepted bearer token.
 
 ## Worker and ingest routes
 
-The driver uses `/api/jobs/claim`, the heartbeat/session/output/gates/publish-token/suspend/complete
+The driver uses `/api/jobs/claim`, the heartbeat/session/output/gates/gates-reread/publish-token/suspend/complete
 routes under `/api/jobs/:id`, and `/api/reclaims/*`. These endpoints are lease-sensitive automation
 contracts, not general user APIs.
 

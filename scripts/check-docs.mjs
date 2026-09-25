@@ -12,7 +12,7 @@ function walk(directory) {
     });
 }
 
-function candidatesFor(source, rawTarget) {
+function candidatesFor(rawTarget) {
     const withoutFragment = rawTarget.split('#', 1)[0].split('?', 1)[0];
     if (!withoutFragment) return [];
 
@@ -23,10 +23,7 @@ function candidatesFor(source, rawTarget) {
         decoded = withoutFragment;
     }
 
-    const base = decoded.startsWith('/factory/')
-        ? path.join(docsRoot, decoded.slice('/factory/'.length))
-        : path.resolve(path.dirname(source), decoded);
-
+    const base = path.join(docsRoot, decoded.slice('/factory/'.length).replace(/\/+$/, ''));
     if (path.extname(base)) return [base];
     return [base, `${base}.md`, `${base}.mdx`, path.join(base, 'index.md'), path.join(base, 'index.mdx')];
 }
@@ -58,12 +55,18 @@ for (const file of files) {
     for (const match of prose.matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g)) {
         const target = match[1].trim().replace(/^<|>$/g, '');
         if (/^(?:[a-z]+:|#)/i.test(target)) continue;
-        if (target.startsWith('/') && !target.startsWith('/factory/')) {
-            errors.push(`${relative}: site-absolute link must start with /factory/: ${target}`);
+        // Astro emits link targets verbatim, and trailingSlash makes every page a directory, so a
+        // relative or `.md` target resolves against the wrong URL and 404s on the published site.
+        if (!target.startsWith('/factory/')) {
+            errors.push(`${relative}: internal link must be site-absolute (/factory/<slug>/): ${target}`);
+            continue;
+        }
+        if (/\.mdx?(?:[#?]|$)/.test(target)) {
+            errors.push(`${relative}: internal link must name the page URL, not its .md file: ${target}`);
             continue;
         }
 
-        const candidates = candidatesFor(file, target);
+        const candidates = candidatesFor(target);
         if (candidates.length && !candidates.some((candidate) => fs.existsSync(candidate))) {
             errors.push(`${relative}: broken internal link ${target}`);
         }

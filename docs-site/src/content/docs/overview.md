@@ -13,9 +13,10 @@ Factory has four cooperating parts:
 1. **Dashboard and API** — the browser application and HTTP board used by people, telemetry producers,
    and workers.
 2. **TimescaleDB** — the required source of truth for telemetry, organizations, workspaces, tasks,
-   workflows, credentials metadata, and audit history.
-3. **Driver** — a stateless HTTP client that claims queued work and creates runners. It never connects
-   directly to the database.
+   workflows, and audit history. It also stores runner secret values in plaintext; sessions and access
+   tokens are stored only as hashes.
+3. **Driver** — a client of the board's HTTP API that claims queued work and creates runners. It
+   never connects directly to the database.
 4. **Executors** — Claude Code or OpenCode runners launched as Docker containers or Kubernetes Jobs
    against repository worktrees.
 
@@ -33,7 +34,7 @@ OAuth App signs people into the dashboard when `AUTH_MODE=github`.
 
 ## Where to go next
 
-- Review the [capability map](./capabilities.md).
-- Compare [development and production deployments](./getting-started/deployment-options.md).
-- Learn the [system architecture](./concepts/architecture.md).
-- Read the [security model](./operations/security.md) before exposing a deployment.
+- Review the [capability map](/factory/capabilities/).
+- Compare [development and production deployments](/factory/getting-started/deployment-options/).
+- Learn the [system architecture](/factory/concepts/architecture/).
+- Read the [security model](/factory/operations/security/) before exposing a deployment.

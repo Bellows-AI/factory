@@ -28,19 +28,24 @@ runner or laptop plugin
   -> GET /api/stats
 ```
 
+Repository and branch samples bypass the collector. The runner's branch reporter and the laptop
+plugin post them directly to `POST /api/sessions/branch`.
+
 ## Task path
 
 People create tasks through the dashboard or API. The driver polls the board over HTTP, claims a task
 with a lease, prepares its worktree, and launches the chosen executor. Output, heartbeats, session
 identity, gate results, and completion travel back through lease-guarded HTTP calls.
 
-The driver deliberately shares no server package or database connection. Docker and Kubernetes are
-two implementations of the same runner behavior; runner selection changes transport, not the board
-contract.
+The driver deliberately shares no server package or database connection. Kubernetes is the primary
+executor for deployments; Docker is for local development. Both implement the same runner behavior,
+so the executor changes transport, not the board contract.
 
 ## GitHub path
 
-The server mints short-lived installation tokens from the GitHub App private key. Installations define
-the organizations and available repositories. A task claim receives only the credentials and scoped
-environment required for its attempt. Publishing requests a fresh installation token immediately
-before the final push so a long run does not depend on the claim-time token still being valid.
+The server mints short-lived installation tokens from the GitHub App private key. Installations
+define the organizations; each organization's repositories are those the installation reports,
+narrowed by the repositories tracked during onboarding. A task claim receives only the credentials
+and scoped environment required for its attempt. Publishing requests a fresh installation token
+immediately before the final push so a long run does not depend on the claim-time token still being
+valid; if that request returns nothing, the driver falls back to the claim-time token.
