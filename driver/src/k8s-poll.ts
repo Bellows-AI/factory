@@ -14,6 +14,7 @@ import {
 } from './k8s-auxspec.js';
 import { envBodyToData, jobsPath, runnerName, secretBody } from './k8s-podspec.js';
 import {
+    containerFailure,
     expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
@@ -303,20 +304,24 @@ export async function readRunnerVerdict(
 /**
  * The verdict is the pod log — one JSON line, the same answer the docker sync/reclaim containers
  * print. A pod gone before its log could be read is a failed run: running on a tree of unknown
- * state would compound whatever went wrong. Empty for anything unreadable.
+ * state would compound whatever went wrong. Empty for anything unreadable. `failure` is the
+ * container's own status when it ended badly — a container that never started (an image with no
+ * `node`) has no log at all, and its status is the only place the cause survives.
  */
-async function readJobLog(deps: K8sDeps, jobName: string): Promise<string> {
+async function readJobLog(deps: K8sDeps, jobName: string): Promise<{ log: string; failure: string | null }> {
+    let failure: string | null = null;
     try {
         const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, jobName));
         const pod = livePod(pods.body);
+        failure = containerFailure(pod);
         if (pod?.metadata?.name) {
             const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, null));
-            if (log.status < HTTP_ERROR_STATUS) return log.body;
+            if (log.status < HTTP_ERROR_STATUS) return { log: log.body, failure };
         }
     } catch {
         // Unreadable is empty, same as a pod that never carried a log.
     }
-    return '';
+    return { log: '', failure };
 }
 
 /**
@@ -359,8 +364,10 @@ export async function runSyncJob(
         failed: null,
     });
     if (pollFailure) return { ok: false, reason: pollFailure };
-    const body = await readJobLog(deps, jobName);
-    return parseLastJsonLine<SyncResult>(body, () => syncUnreadable);
+    const { log, failure } = await readJobLog(deps, jobName);
+    return parseLastJsonLine<SyncResult>(log, () =>
+        failure ? { ok: false, reason: `the worktree sync container failed: ${failure}` } : syncUnreadable
+    );
 }
 
 /**
@@ -380,6 +387,10 @@ export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<Recla
         failed: null,
     });
     if (pollFailure) return { ok: false, removed: false, reason: pollFailure };
-    const body = await readJobLog(deps, jobName);
-    return parseLastJsonLine<ReclaimResult>(body, () => reclaimUnreadable);
+    const { log, failure } = await readJobLog(deps, jobName);
+    return parseLastJsonLine<ReclaimResult>(log, () =>
+        failure
+            ? { ok: false, removed: false, reason: `the worktree reclaim container failed: ${failure}` }
+            : reclaimUnreadable
+    );
 }

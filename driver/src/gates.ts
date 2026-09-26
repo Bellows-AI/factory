@@ -9,6 +9,7 @@ import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName, gateExecArgs } from './docker.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import { networkName } from './services.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
 const run = promisify(execFile);
@@ -63,6 +64,10 @@ interface Entry {
     envBody: string;
     /** The pending teardown timer, when release() has armed one. */
     teardown: NodeJS.Timeout | null;
+    /** The attempt the newest acquire filed — its services network is the one gates must reach. */
+    job: BoardJob | null;
+    /** The services network this container has joined, so each attempt connects once. */
+    network: string | null;
 }
 
 export interface GateManager {
@@ -70,8 +75,8 @@ export interface GateManager {
      * Ensures the environment for the checkout exists, cancelling any teardown already
      * scheduled for it. Idempotent: an existing environment is reused as-is, env included.
      * The job is the attempt context the kubernetes manager files gate runs under (labels,
-     * names, its own per-run env Secret); the docker manager keys everything off the checkout
-     * and ignores it.
+     * names, its own per-run env Secret); the docker manager keys the container off the checkout
+     * and uses the job only to join the attempt's services network before a gate runs.
      */
     acquire(key: string, image: string, envBody?: string, job?: BoardJob): Promise<void>;
     /** Runs one declared gate inside the checkout's environment container. */
@@ -178,10 +183,29 @@ export function createGateManager({
         return chained;
     };
 
+    /**
+     * Joins the attempt's services network, so a gate reaches `.bellows.yaml`'s services by name
+     * the way the runner does. Once per attempt: the network is named after the lease. A job with
+     * no services has no network, and the refused connect is left for the next gate to retry —
+     * a gate with nothing to reach is not a harness failure.
+     */
+    const joinServices = async (entry: Entry): Promise<void> => {
+        if (!config.servicesEnabled || !entry.job) return;
+        const network = networkName(entry.job);
+        if (entry.network === network) return;
+        try {
+            await execDocker(['network', 'connect', network, entry.name]);
+            entry.network = network;
+        } catch {
+            // No services network for this attempt — nothing to join.
+        }
+    };
+
     return {
-        async acquire(key, image, envBody = '', _job?: BoardJob) {
+        async acquire(key, image, envBody = '', job?: BoardJob) {
             const existing = entries.get(key);
             if (existing) {
+                if (job) existing.job = job;
                 if (existing.teardown) {
                     clearTimeout(existing.teardown);
                     existing.teardown = null;
@@ -191,7 +215,11 @@ export function createGateManager({
             await serialize(key, async () => {
                 // Re-check inside the critical section: the acquire we just queued behind may
                 // have created the entry this one was looking for.
-                if (entries.has(key)) return;
+                const queued = entries.get(key);
+                if (queued) {
+                    if (job) queued.job = job;
+                    return;
+                }
                 // The fence every spawn here shares: anything holding the name is a leftover of a
                 // container whose teardown never ran (a dead driver's), and this claim exists only
                 // because that one is gone.
@@ -201,7 +229,7 @@ export function createGateManager({
                     await writeFile(envFileFor(key), envBody, { mode: 0o600 });
                 }
                 await execDocker(gateEnvArgs(config, key, image, envBody ? envFileFor(key) : undefined));
-                entries.set(key, { name, image, envBody, teardown: null });
+                entries.set(key, { name, image, envBody, teardown: null, job: job ?? null, network: null });
             });
         },
 
@@ -225,6 +253,7 @@ export function createGateManager({
             }
             return serialize(key, async () => {
                 try {
+                    await joinServices(entry);
                     const read = await execDocker(gateExecArgs(entry.name, command), { timeout: gateTimeoutMs });
                     return { exitCode: 0, output: reportTail(read.stdout.trim()) };
                 } catch (e) {
@@ -267,15 +296,23 @@ export function createGateManager({
  * `.bellows.yaml` declared — never an arbitrary command. The values travel by env file into the
  * runner, never in argv, like every credential here.
  */
+/** One gated job's registration with the ad-hoc endpoint. */
+export interface GateClaim {
+    key: string;
+    image: string;
+    envBody?: string;
+    job: BoardJob;
+    gates: readonly { name: string; command: string }[];
+}
+
 export interface GateServer {
     /**
-     * Registers one gated job: its minted token, the checkout key, the environment image and the
-     * gates that job's `.bellows.yaml` declared. Unregistered on every exit path by the loop.
+     * Registers one gated job: its minted token, the checkout key, the environment image, the
+     * gates that job's `.bellows.yaml` declared, and the job itself — the attempt context every
+     * acquire needs (the kubernetes manager refuses one without it). Unregistered on every exit
+     * path by the loop.
      */
-    register(
-        token: string,
-        claim: { key: string; image: string; envBody?: string; gates: readonly { name: string; command: string }[] }
-    ): void;
+    register(token: string, claim: GateClaim): void;
     unregister(token: string): void;
     /** Idempotent. Resolves with the bound port, which is what the advertised URL is built from. */
     listen(): Promise<number>;
@@ -324,11 +361,11 @@ const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> 
  */
 const runRegisteredGate = async (
     manager: Pick<GateManager, 'acquire' | 'runGate'>,
-    claim: { key: string; image: string; envBody: string },
+    claim: GateClaim,
     gate: { name: string; command: string }
 ): Promise<{ status: number; body: unknown }> => {
     try {
-        await manager.acquire(claim.key, claim.image, claim.envBody);
+        await manager.acquire(claim.key, claim.image, claim.envBody ?? '', claim.job);
     } catch (e) {
         return {
             status: HTTP_INTERNAL_SERVER_ERROR,
@@ -353,10 +390,7 @@ export function createGateServer({
     host: string;
     manager: Pick<GateManager, 'acquire' | 'runGate'>;
 }): GateServer {
-    const claims = new Map<
-        string,
-        { key: string; image: string; envBody: string; gates: readonly { name: string; command: string }[] }
-    >();
+    const claims = new Map<string, GateClaim>();
     let server: Server | null = null;
     let listening: Promise<number> | null = null;
 
@@ -389,7 +423,7 @@ export function createGateServer({
 
     return {
         register(token, claim) {
-            claims.set(token, { key: claim.key, image: claim.image, envBody: claim.envBody ?? '', gates: claim.gates });
+            claims.set(token, { ...claim, envBody: claim.envBody ?? '' });
         },
         unregister(token) {
             claims.delete(token);

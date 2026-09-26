@@ -1,18 +1,19 @@
-# A single-node local Kubernetes stack: the real board behind real GitHub sign-in, with a stub
-# executor whose entrypoint echoes — the same trick scripts/test-jobs.sh uses — so a queued job
-# runs a real pod and reports a real exit code without a model call.
+# A single-node local Kubernetes stack: the real board behind real GitHub sign-in, running the
+# real runner images — the same claude-executor and opencode-executor `make runners` builds for
+# the docker executor. A stub image cannot run a repository job at all: the pre-run worktree sync
+# runs `node` inside the executor image, so a stub without it fails every such job before it starts.
 #
-# This file holds no credential. The auth and App values come from the repo-root .env, rendered by
+# This file holds no credential. The auth, App and model values come from the repo-root .env, rendered by
 # scripts/k8s-local-values.mjs and piped to helm on stdin, so no secret lands in a file or on a
 # command line:
 #
 #   kind create cluster --name factory
 #   docker build -f docker/Dockerfile --target runtime -t factory-ai .
 #   docker build -f docker/driver.Dockerfile -t factory-driver .
-#   printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' | docker build -t echo-executor -
-#   kind load docker-image factory-ai --name factory
-#   kind load docker-image factory-driver --name factory
-#   kind load docker-image echo-executor --name factory
+#   make runners
+#   for image in factory-ai factory-driver claude-executor opencode-executor; do
+#       kind load docker-image "$image" --name factory
+#   done
 #   helm install factory-state charts/factory-local-state
 #   node scripts/k8s-local-values.mjs | helm install dev charts/factory -f charts/factory/values-local.yaml -f -
 #
@@ -41,5 +42,5 @@ driver:
         repository: factory-driver
         tag: latest
     executorImages:
-        claudeCode: echo-executor
-        opencode: echo-executor
+        claudeCode: claude-executor
+        opencode: opencode-executor

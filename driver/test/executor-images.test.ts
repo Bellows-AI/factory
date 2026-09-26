@@ -6,6 +6,7 @@ import {
     mkdtempSync,
     readdirSync,
     readFileSync,
+    realpathSync,
     rmSync,
     writeFileSync,
 } from 'node:fs';
@@ -434,6 +435,64 @@ describe('the entrypoint acli sign-in', () => {
             const child = runEntrypoint(entrypoint, sandbox, partial);
             expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
             expect(existsSync(join(sandbox.bin, 'acli-argv'))).toBe(false);
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+});
+
+/*
+ * Workspace trust. The runner's cwd is the task worktree, but Claude Code files trust under the
+ * repository's MAIN checkout — the git common dir's parent — and an untrusted workspace ignores
+ * the checkout's `.claude/settings.json` ("Ignoring 18 permissions.allow entries … this workspace
+ * has not been trusted", observed 2026-09-25). No one can accept a dialog in an unattended
+ * container, so the entrypoint records the acceptance for both paths before the CLI starts.
+ */
+describe('the claude-executor workspace trust', () => {
+    const ENTRYPOINT = 'docker/claude-executor/entrypoint.sh';
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+    const projectsOf = (configDir: string) =>
+        (JSON.parse(readFileSync(join(configDir, '.claude.json'), 'utf8')) as {
+            hasCompletedOnboarding?: boolean;
+            projects?: Record<string, { hasTrustDialogAccepted?: boolean; allowedTools?: string[] }>;
+        }) ?? {};
+
+    it('trusts the worktree and the main checkout it belongs to, keeping what was there', async () => {
+        const sandbox = makeSandbox();
+        try {
+            const repo = join(sandbox.work, 'leeloo.ai');
+            const worktree = join(sandbox.work, '.worktrees', 'root-job');
+            mkdirSync(repo);
+            git(repo, 'init', '-q');
+            git(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+            git(repo, 'worktree', 'add', '-q', '-b', 'factory/root-job', worktree);
+            // git names the main checkout by its real path (macOS: /var is /private/var).
+            const main = realpathSync(repo);
+            const configDir = sandbox.env.CLAUDE_CONFIG_DIR!;
+            writeFileSync(
+                join(configDir, '.claude.json'),
+                JSON.stringify({ hasCompletedOnboarding: true, projects: { [main]: { allowedTools: ['Bash'] } } })
+            );
+
+            const child = runEntrypoint(ENTRYPOINT, sandbox, { WORKDIR: worktree });
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+
+            const config = projectsOf(configDir);
+            expect(config.hasCompletedOnboarding).toBe(true);
+            expect(config.projects?.[worktree]?.hasTrustDialogAccepted).toBe(true);
+            expect(config.projects?.[main]).toEqual({ allowedTools: ['Bash'], hasTrustDialogAccepted: true });
+        } finally {
+            sandbox.cleanup();
+        }
+    });
+
+    it('trusts a plain directory that is no git checkout at all', async () => {
+        const sandbox = makeSandbox();
+        try {
+            const child = runEntrypoint(ENTRYPOINT, sandbox, {});
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            const config = projectsOf(sandbox.env.CLAUDE_CONFIG_DIR!);
+            expect(config.projects?.[sandbox.work]?.hasTrustDialogAccepted).toBe(true);
         } finally {
             sandbox.cleanup();
         }

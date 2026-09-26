@@ -59,11 +59,12 @@ runners: runners-build
 # The Kubernetes stack, end to end on a local kind cluster — the chart walkthrough
 # (charts/factory/README.md) as one command. Builds the images, loads them into the cluster and
 # installs the chart with charts/factory/values-local.yaml: GitHub sign-in and the GitHub App, as
-# everywhere the chart runs, with a stub echo executor — no Claude credential. The auth and App
-# values come from .env through scripts/k8s-local-values.mjs, which names any that are missing;
+# everywhere the chart runs, with the real runner images `make runners` builds. The auth and App
+# values — and the model credential, when .env has one — come from .env through
+# scripts/k8s-local-values.mjs, which names any required value that is missing;
 # sign in at the forwarded port. Re-runs upgrade the release in place, keeping its data. Once everything is up the port-forward
 # takes the foreground; Ctrl-C detaches it and leaves the stack running. `make build` is the hot
-# half against a running stack — rebuild the code images, load them into the node, restart the
+# half against a running stack — rebuild the code and runner images, load them into the node, restart the
 # workloads — no install, no port-forward, release and data kept. K8S_PORT defaults to 8081
 # so it can sit beside a running dev stack on 8080, the same reasoning as BAKED_PORT.
 #
@@ -81,7 +82,6 @@ K8S_RELEASE ?= dev
 K8S_STATE_RELEASE := factory-state
 K8S_PORT ?= 8081
 DRIVER_IMAGE ?= factory-driver
-STUB_IMAGE ?= echo-executor
 # The credential values for the local release, on stdout: `$(LOCAL_VALUES) | helm ... -f -`.
 LOCAL_VALUES = K8S_PORT=$(K8S_PORT) node scripts/k8s-local-values.mjs
 # Whatever the chart pins — read from the render, so the image loaded is the image the pod names.
@@ -89,15 +89,16 @@ COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/
 
 .PHONY: build start stop reset
 
-# Update a running cluster with new code. The stub executor and the collector are static — start's
-# build left them in the node — so only the two code images are rebuilt and re-loaded. The restart
-# exists because the images are side-loaded under one tag and read with IfNotPresent: nothing rolls
-# on its own, and the running pods would keep the old layers. With no release installed the target
-# stops after the load and says so, so `make build && make start` is a valid cold sequence too.
-build:
+# Update a running cluster with new code. The collector is static — start's pull left it in the
+# node — so only the code and runner images are rebuilt and re-loaded. Runner pods are minted per
+# job, so a re-loaded runner tag reaches the next job with no restart; the restart exists because
+# the images are side-loaded under one tag and read with IfNotPresent: nothing rolls on its own, and
+# the running pods would keep the old layers. With no release installed the target stops after the
+# load and says so, so `make build && make start` is a valid cold sequence too.
+build: runners-build
 	docker build -f docker/Dockerfile --target runtime -t $(IMAGE) .
 	docker build -f docker/driver.Dockerfile -t $(DRIVER_IMAGE) .
-	@for image in $(IMAGE) $(DRIVER_IMAGE); do \
+	@for image in $(IMAGE) $(DRIVER_IMAGE) $(RUNNER_CLAUDE) $(RUNNER_OPENCODE); do \
 		kind load docker-image $$image --name $(CLUSTER) || exit 1; \
 	done
 	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_RELEASE)-factory >/dev/null 2>&1; then \
@@ -118,10 +119,10 @@ start:
 	@echo 'building the images on the host daemon'
 	docker build -f docker/Dockerfile --target runtime -t $(IMAGE) .
 	docker build -f docker/driver.Dockerfile -t $(DRIVER_IMAGE) .
-	printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' | docker build -t $(STUB_IMAGE) -
+	$(MAKE) runners-build
 	docker pull -q $(COLLECTOR_IMAGE)
 	@echo "loading the images into the kind cluster $(CLUSTER)"
-	@for image in $(IMAGE) $(DRIVER_IMAGE) $(STUB_IMAGE) $(COLLECTOR_IMAGE); do \
+	@for image in $(IMAGE) $(DRIVER_IMAGE) $(RUNNER_CLAUDE) $(RUNNER_OPENCODE) $(COLLECTOR_IMAGE); do \
 		kind load docker-image $$image --name $(CLUSTER) || exit 1; \
 	done
 	@echo "installing the releases $(K8S_STATE_RELEASE) and $(K8S_RELEASE)"
@@ -138,7 +139,7 @@ start:
 		--timeout=600s
 	@echo
 	@echo "board on http://127.0.0.1:$(K8S_PORT) — sign in with GitHub, then queue a job and watch it"
-	@echo 'run through a pod (the executor is the echo stub).'
+	@echo 'run through a pod on the real runner images.'
 	@echo
 	# The forward lands on one ready endpoint of the service, and a restart — this start's own
 	# rollout, or any future one — can take that pod out from under it ("lost connection to

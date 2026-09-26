@@ -42,6 +42,27 @@ if [ -e "$WORKDIR/.git" ]; then
     git config --global --add safe.directory "$WORKDIR" 2>/dev/null || true
 fi
 
+# Workspace trust. An untrusted workspace makes the CLI ignore the checkout's .claude/settings.json
+# ("Ignoring N permissions.allow entries … this workspace has not been trusted"), and nobody can
+# accept the trust dialog in an unattended container. The CLI files trust under the repository's
+# MAIN checkout — the git common dir's parent — not under the task worktree it runs in, so both are
+# recorded, merged into whatever .claude.json already holds. A directory that is no git checkout
+# records itself only. Trusting the tree grants nothing new: the agent already runs arbitrary code
+# in it.
+TRUST_MAIN="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+TRUST_MAIN="${TRUST_MAIN%/.git}"
+CLAUDE_JSON="$CLAUDE_CONFIG_DIR/.claude.json" node -e "
+    const fs = require('fs');
+    const f = process.env.CLAUDE_JSON;
+    let c = {};
+    try { c = JSON.parse(fs.readFileSync(f, 'utf8')); } catch {}
+    c.projects = c.projects || {};
+    for (const dir of process.argv.slice(1).filter(Boolean)) {
+        c.projects[dir] = { ...(c.projects[dir] || {}), hasTrustDialogAccepted: true };
+    }
+    fs.writeFileSync(f, JSON.stringify(c, null, 2));
+" "$WORKDIR" "$TRUST_MAIN" || echo "claude-executor: could not record workspace trust in .claude.json" >&2
+
 # Jira sign-in (docs/env.md): acli keeps credentials in ~/.config/acli, which a fresh container
 # does not have, so when the claim env carries all three ATLASSIAN_* names — configured on the
 # Environment page like any other secret — log in before the CLI starts. The token goes in on

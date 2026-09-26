@@ -569,6 +569,11 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             });
         } finally {
             if (gateSession) releaseGateSession(rt, gateSession);
+            // The services outlived run() for the declared gates' sake; they go now, on every
+            // exit path — a thrown run included, whose own cleanup no longer takes them.
+            await rt.runner
+                .releaseServices(job)
+                .catch((e: Error) => log(`job ${job.id}: could not tear down the services: ${e.message}`));
         }
     } catch (e) {
         // The container never ran — docker is missing, or the daemon refused. Deliberately NOT

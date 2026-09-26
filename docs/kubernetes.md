@@ -225,16 +225,19 @@ kind walkthrough. Decisions that look like cruft and are not:
   `secret.jobBoardToken` are refused at render time when missing; the driver's `JOB_BOARD_TOKEN`
   reference is not `optional`, because a driver without it would poll into 401s forever.
 - **The local profile carries no credentials; `.env` does.** `values-local.yaml` holds only the
-  local shape (image tags, the state release's objects, the stub executor);
+  local shape (image tags, the state release's objects, the runner images);
   `scripts/k8s-local-values.mjs` reads the repo-root `.env` — the App, the OAuth client, the
-  session secret, the board token — and prints them as a values document that `make start` pipes
+  session secret, the board token, and the optional model credential for the runner Secret — and prints them as a values document that `make start` pipes
   to `helm -f -`, so no secret lands in a file or on a command line. It exits naming anything
   missing before an image is built. `.env`'s `PUBLIC_URL` is not read (it is the dev stack's);
   the origin is `K8S_PUBLIC_URL`, defaulting to `http://127.0.0.1:$K8S_PORT` — GitHub accepts any
   port on a loopback redirect, so the dev stack's OAuth App serves the cluster too.
-- **`values-local.yaml` points the executor at a stub echo image**, the same trick
-  `scripts/test-jobs.sh` uses: a queued job runs a real pod that echoes its prompt, which proves
-  the board → driver → Job → pod → complete path with no Claude credential.
+- **`values-local.yaml` points the executor at the real runner images** (`claude-executor`,
+  `opencode-executor`, built by `make runners`), not a stub. A stub cannot run a repository job:
+  the pre-run worktree sync runs `node` inside the executor image, so an echo image fails every
+  such job at the sync with `StartError: exec: "node": executable file not found`. The stub
+  survives only in `scripts/test-k8s.sh --cluster`, which `--set`s it over this file and queues a
+  job with no repository.
 - **`dashboard.offline` survives only for `scripts/test-k8s.sh --cluster`.** It boots the
   code-only no-fetch entry under the same auth wall; with no App nobody can sign in, so the
   cluster test mints a personal access token straight into the database and queues through it.
@@ -376,8 +379,10 @@ the author's file already was. The DNS half is the whole trick: the runner resol
 attempt's pod — no port list needed, which the strict parser's refusal of `ports:` requires.
 The name is namespace-global, so a collision with a concurrent job's service answers 409 and
 fails the job terminally, naming the conflict — the "wrong database came up" rule, one platform
-later. The fleet is attempt-scoped by lease label, swept by the fence, and torn down when the
-run ends, the same three moments docker's is. Its states ride the vitals flush
+later. The fleet is attempt-scoped by lease label, swept by the fence, and torn down by the
+loop's `releaseServices` once the declared gates are done — never inside `run()`, because the
+gate Jobs resolve the same headless Services and test against them (docs/jobs.md, "The fleet
+outlives `run()`") — the same three moments docker's is. Its states ride the vitals flush
 (`runtime.services`), read off the lease-scoped pod list — pod phases lowercased, `unknown`
 before the API has phased a pod. The CPU/mem numbers need the metrics API; the fleet does not,
 so a cluster with no metrics-server still reports its services — the sample carries null numbers

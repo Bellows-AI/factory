@@ -52,9 +52,9 @@ kind create cluster --name factory
 
 docker build -f docker/Dockerfile --target runtime -t factory-ai .
 docker build -f docker/driver.Dockerfile -t factory-driver .
-printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' | docker build -t echo-executor -
+make runners   # claude-executor, opencode-executor
 docker pull otel/opentelemetry-collector-contrib:0.161.0   # the chart's pin
-for image in factory-ai factory-driver echo-executor otel/opentelemetry-collector-contrib:0.161.0; do
+for image in factory-ai factory-driver claude-executor opencode-executor otel/opentelemetry-collector-contrib:0.161.0; do
     kind load docker-image "$image" --name factory
 done
 
@@ -65,17 +65,18 @@ kubectl port-forward svc/dev-factory 8081:8080
 ```
 
 The chart always runs GitHub sign-in, locally too. `values-local.yaml` carries no credential: the
-App, the OAuth client, the session secret and the board token come from the repo-root `.env`,
-which `scripts/k8s-local-values.mjs` renders as a values document on stdout (it names anything
+App, the OAuth client, the session secret, the board token and — when set — the model credential
+(`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`) come from the repo-root `.env`, which
+`scripts/k8s-local-values.mjs` renders as a values document on stdout (it names any required value
 missing). The origin is `K8S_PUBLIC_URL`, default `http://127.0.0.1:8081` — the forward above.
-The executor is the stub image, so a queued job runs a real pod and echoes its prompt back. Its
+The executors are the real runner images, so a queued job runs the agent in a pod. Its
 `database.url` and `workspaces.existingClaim` name the `factory-state` release's objects
 (`factory-state-timescale`, `factory-state-workspaces`), so that release name is fixed.
 `make start` does all of the above.
 
 Then open `http://127.0.0.1:8081`, sign in with GitHub, add an executor on the workspace page — a
 task runs only under one of its author's executors, there is no global fallback — and queue a
-task. The driver claims it, a pod runs the stub image, the board records the result.
+task. The driver claims it, a pod runs the runner image, the board records the result.
 
 `scripts/test-k8s.sh` runs the same walkthrough as assertions (`npm run test:k8s`), plus
 `helm lint`/`helm template` checks that do not need a cluster at all. Its cluster phase runs

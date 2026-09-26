@@ -521,7 +521,9 @@ through a throwaway container over the workspaces volume (a readout Job over the
 kubernetes), because it has no host path into a named
 volume — starts one detached container per service, and puts
 the runner on the same user-defined network. **The service's `name` is its DNS name inside the
-job**: `postgres://db:5432` resolves for exactly as long as the job runs, and to nothing afterwards.
+job** — for the runner AND for the job's gates: `postgres://db:5432` resolves from the agent's
+turn, from its ad-hoc gate calls, and from the declared gates after it, and to nothing once the
+attempt is over.
 Service exit codes are ignored, and there is no health wait: the agent can watch a service refuse a
 connection and retry, which is what agents are for.
 
@@ -563,7 +565,7 @@ connection and retry, which is what agents are for.
   token (`factory-job-<id>-<token>-svc-<name>`, `factory-job-<id>-<token>-services`). The
   re-claim fence — the one job-scoped sweep, run before anything is created — removes every
   leftover container and network of the job by the `factory.job` label, previous attempts'
-  services included; the teardown after the run, on kill, on timeout filters by `factory.lease`,
+  services included; the teardown after the gates, on kill, on timeout filters by `factory.lease`,
   so it can only ever remove the attempt's own fleet. Teardown is the feature's own machinery,
   but the fence runs regardless of the flag, so a fleet from before a `RUNNER_SERVICES` flip off
   meets the next claim's fence all the same; reclaim a fleet that has no next claim by hand with
@@ -576,7 +578,20 @@ connection and retry, which is what agents are for.
   through the driver's socket — one capability the runner container deliberately does not have. It
   is the same trust the checkout already carried: the agent runs arbitrary code in that tree, and
   the tree now also names containers. What it does not do is widen the blast radius across
-  members: services are per-job, on a per-job network, reachable only from that job's runner.
+  members: services are per-job, on a per-job network, reachable only from that job's runner and
+  its gate environment.
+- **The fleet outlives `run()`; the loop tears it down after the gates.** The declared gates run
+  after the agent finishes, and they are what tests against the services — so `run()` leaves the
+  fleet up and the loop calls `Runner.releaseServices` once the gates are done, in the same
+  `finally` that releases the gate session, on every exit path (a thrown run included). Torn down
+  inside `run()`, every service-backed gate failed on a name that no longer resolved
+  (`ENOTFOUND test-mongo`, observed 2026-09-25 under kubernetes). `kill()` still takes the fleet
+  down at once. On docker the gate environment is a separate warm container, so before each gate
+  it joins the attempt's services network (`docker network connect`, once per attempt — the
+  network is named after the lease); a job with no services has no network and the refused
+  connect is ignored. Docker refuses to remove a network with an endpoint attached, so the
+  teardown detaches whatever is still on it first. Under kubernetes a gate pod resolves the
+  headless Services namespace-wide and needs nothing extra.
 - **Both executors run them.** Docker starts sibling containers on a per-job network; kubernetes
   starts service pods with a headless Service as the DNS name ([kubernetes.md](kubernetes.md),
   "Gates and services on this platform"). `RUNNER_SERVICES` decides whether they run at all, on

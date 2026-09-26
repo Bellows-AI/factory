@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { createGateManager } from '../src/gates.js';
+import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
+import { networkName } from '../src/services.js';
 
 /**
  * The gate environment registry and its ad-hoc HTTP channel.
@@ -45,6 +47,21 @@ beforeAll(async () => {
 const KEY = `bellows/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555`;
 const NAME = gateEnvContainerName(KEY);
 const config = loadDriverConfig({});
+
+/** The attempt a gate runs under — its id and lease token name the services network. */
+const JOB: BoardJob = {
+    id: '55555555-5555-4555-8555-555555555555',
+    command: 'fix the failing build',
+    attempts: 1,
+    leaseToken: '22222222-2222-4222-8222-222222222222',
+    leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
+    masterPrompt: 'You are running inside Factory.',
+    resumeSessionId: null,
+    followUp: false,
+    userId: '44444444-4444-4444-8444-444444444444',
+    workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
+};
 
 /** The execFile-shaped seam: resolves on exit 0, rejects with `.code` otherwise. */
 type ExecResult = { stdout: string; stderr: string };
@@ -195,6 +212,69 @@ describe('the gate environment manager: running gates', () => {
         releaseFirst();
         await expect(first).resolves.toMatchObject({ exitCode: 0 });
         await expect(second).resolves.toMatchObject({ exitCode: 0 });
+        await manager.stop();
+    });
+
+    /*
+     * The declared services live on the attempt's own network, and a gate is where the tests
+     * that need them run — so the environment joins that network before the gate execs, once
+     * per attempt. A job with no services has no network: the connect is refused, and the gate
+     * runs anyway (nothing to reach is not a harness failure).
+     */
+    it('joins the attempt’s services network before running a gate, once per attempt', async () => {
+        const seen: string[][] = [];
+        const servicesExec = exec((args) => {
+            seen.push(args);
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({
+            config: loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            cooldownMs: 1000,
+            execDocker: servicesExec,
+        });
+        await manager.acquire(KEY, 'node:24', '', JOB);
+        await manager.runGate(KEY, 'test', 'npm test');
+        await manager.runGate(KEY, 'lint', 'npm run lint');
+
+        const connect = ['network', 'connect', networkName(JOB), NAME];
+        expect(seen.filter((args) => args.join(' ') === connect.join(' '))).toHaveLength(1);
+        const connectAt = seen.findIndex((args) => args.join(' ') === connect.join(' '));
+        expect(seen.findIndex((args) => args[0] === 'exec')).toBeGreaterThan(connectAt);
+
+        // A later attempt on the same warm environment joins ITS network.
+        const next = { ...JOB, leaseToken: '33333333-3333-4333-8333-333333333333' };
+        await manager.acquire(KEY, 'node:24', '', next);
+        await manager.runGate(KEY, 'test', 'npm test');
+        expect(seen).toContainEqual(['network', 'connect', networkName(next), NAME]);
+        await manager.stop();
+    });
+
+    it('runs the gate anyway when the attempt has no services network to join', async () => {
+        const noNetwork = exec((args) => {
+            if (args[0] === 'network') return fails(1, 'Error: No such network\n');
+            if (args[0] === 'exec') return { stdout: 'green\n', stderr: '' };
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({
+            config: loadDriverConfig({ RUNNER_SERVICES: '1' }),
+            cooldownMs: 1000,
+            execDocker: noNetwork,
+        });
+        await manager.acquire(KEY, 'node:24', '', JOB);
+        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toEqual({ exitCode: 0, output: 'green' });
+        await manager.stop();
+    });
+
+    it('joins no network when services are off', async () => {
+        logs.length = 0;
+        const manager = createGateManager({
+            config: loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            cooldownMs: 1000,
+            execDocker: recording,
+        });
+        await manager.acquire(KEY, 'node:24', '', JOB);
+        await manager.runGate(KEY, 'test', 'npm test');
+        expect(logs.some((args) => args[0] === 'network')).toBe(false);
         await manager.stop();
     });
 
@@ -370,8 +450,13 @@ describe('the gate environment manager: failure and edge cases', () => {
 describe('the gate server', () => {
     it('runs a declared gate for a bearer token and answers the verdict', async () => {
         const seen: { key: string; name: string; command: string }[] = [];
+        const acquiredFor: (BoardJob | undefined)[] = [];
         const manager = {
-            acquire: async () => {},
+            // The job is the attempt context: the kubernetes manager refuses an acquire without
+            // one, and the docker manager joins the attempt's services network by it.
+            acquire: async (_key: string, _image: string, _envBody?: string, job?: BoardJob) => {
+                acquiredFor.push(job);
+            },
             runGate: async (key: string, name: string, command: string) => {
                 seen.push({ key, name, command });
                 return { exitCode: 0, output: 'ok' };
@@ -381,6 +466,7 @@ describe('the gate server', () => {
         server.register('tok-1', {
             key: KEY,
             image: 'node:24',
+            job: JOB,
             gates: [{ name: 'test', command: 'npm test' }],
         });
         const port = await server.listen();
@@ -393,6 +479,7 @@ describe('the gate server', () => {
         expect(response.status).toBe(OK_STATUS);
         await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'ok' });
         expect(seen).toEqual([{ key: KEY, name: 'test', command: 'npm test' }]);
+        expect(acquiredFor).toEqual([JOB]);
         await server.close();
     });
 
@@ -405,6 +492,7 @@ describe('the gate server', () => {
         server.register('tok-2', {
             key: KEY,
             image: 'node:24',
+            job: JOB,
             gates: [{ name: 'test', command: 'npm test' }],
         });
         const port = await server.listen();
@@ -437,6 +525,7 @@ describe('the gate server', () => {
         server.register('tok-3', {
             key: KEY,
             image: 'node:24',
+            job: JOB,
             gates: [{ name: 'test', command: 'npm test' }],
         });
         const port = await server.listen();
@@ -465,6 +554,7 @@ describe('the gate server', () => {
         server.register('tok-enoent', {
             key: KEY,
             image: 'node:24',
+            job: JOB,
             gates: [{ name: 'test', command: 'npm test' }],
         });
         const port = await server.listen();
@@ -492,6 +582,7 @@ describe('the gate server: body size and bind resilience', () => {
         server.register('tok-4', {
             key: KEY,
             image: 'node:24',
+            job: JOB,
             gates: [{ name: 'test', command: 'npm test' }],
         });
         const port = await server.listen();
@@ -510,7 +601,12 @@ describe('the gate server: body size and bind resilience', () => {
     it('retries the bind after a failure instead of caching the broken server', async () => {
         const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
         const server = createGateServer({ host: '999.999.999.999', manager });
-        server.register('tok-5', { key: KEY, image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
+        server.register('tok-5', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
 
         await expect(server.listen()).rejects.toThrow();
         // The retry re-attempts a fresh bind — here still failing (same bad host), which is the
@@ -527,7 +623,12 @@ describe('the gate server: body size and bind resilience', () => {
         const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
         const before = createdServers.length;
         const server = createGateServer({ host: '127.0.0.1', manager });
-        server.register('tok-late', { key: KEY, image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
+        server.register('tok-late', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
         const port = await server.listen();
         expect(port).toBeGreaterThan(0);
 

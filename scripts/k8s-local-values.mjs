@@ -52,5 +52,13 @@ const values = {
         jobBoardToken: required.JOB_BOARD_TOKEN,
         githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET?.trim() ?? '',
     },
+    // The model credential the real runner images need, into the chart's runner Secret. Optional:
+    // a board env var can carry it instead, and an unset one stays the chart's empty value.
+    runner: {
+        credentials: {
+            CLAUDE_CODE_OAUTH_TOKEN: env.CLAUDE_CODE_OAUTH_TOKEN?.trim() ?? '',
+            ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY?.trim() ?? '',
+        },
+    },
 };
 process.stdout.write(`${JSON.stringify(values)}\n`);

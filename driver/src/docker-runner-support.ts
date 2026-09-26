@@ -231,16 +231,16 @@ export async function setupJobServices(
  *
  * Cleanup is explicit (`--rm` is not on the spawn argv, precisely so the inspect above can see
  * the container): the fence on the next claim would catch it anyway, but leaving one daemon
- * round-trip of litter behind is not tidiness worth keeping. The services outlive the runner by
- * one teardown, UNCONDITIONALLY and safely so: the teardown is scoped to this attempt's lease, so
- * a close that lands arbitrarily late can only ever name and remove what THIS attempt created.
+ * round-trip of litter behind is not tidiness worth keeping. The services are NOT torn down
+ * here: they outlive the runner so the loop's declared gates can test against them, and the
+ * loop's releaseServices takes them down after — scoped to this attempt's lease, so a release
+ * that lands arbitrarily late can only ever name and remove what THIS attempt created.
  */
 export async function dockerRunVerdict(
     code: number | null,
     ctx: {
         execDocker: ExecDocker;
         job: BoardJob;
-        serviceTeardown: (job: BoardJob) => Promise<void>;
         output: string;
         timedOut: boolean;
         cacheLost: string | null;
@@ -258,7 +258,6 @@ export async function dockerRunVerdict(
         }
     }
     await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
-    await ctx.serviceTeardown(ctx.job);
     return {
         exitCode: code,
         output: ctx.output,

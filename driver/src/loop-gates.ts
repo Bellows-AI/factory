@@ -61,8 +61,8 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     // which is exactly what a test suite needs to reach the forge.
     const envBody = envFileBody(job);
     // The job is the kubernetes gate manager's attempt context — its gate Jobs carry the
-    // job and lease labels, and their names are derived from them. The docker manager
-    // ignores it.
+    // job and lease labels, and their names are derived from them. The docker manager joins
+    // the attempt's services network by it.
     await gates.manager.acquire(key, job.gates.image, envBody, job);
     // A stand-down that landed while the acquire was in flight leaves the environment here:
     // the caller has stopped waiting and holds no session to release through (issue #126).
@@ -73,7 +73,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     try {
         const port = await gates.server.listen();
         const token = randomUUID();
-        gates.server.register(token, { key, image: job.gates.image, envBody, gates: job.gates.gates });
+        gates.server.register(token, { key, image: job.gates.image, envBody, job, gates: job.gates.gates });
         // Beside `env`, not inside it: the reserved-name filter keeps a member-configured
         // BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
         job.gateEnv = {

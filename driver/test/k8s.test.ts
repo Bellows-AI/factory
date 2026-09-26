@@ -552,6 +552,37 @@ const FAKE: Record<string, unknown> = {
     secretDelete: { status: 200, body: '{}' },
 };
 
+/**
+ * A pod whose container never started — the kubelet's answer when the image has no `node` — and
+ * the log endpoint's refusal that goes with it. The aux Job verdict must name the kubelet's reason.
+ */
+const NEVER_STARTED: Record<string, unknown> = {
+    pods: {
+        status: 200,
+        body: JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName },
+                    status: {
+                        containerStatuses: [
+                            {
+                                state: {
+                                    terminated: {
+                                        exitCode: 128,
+                                        reason: 'StartError',
+                                        message: 'exec: "node": executable file not found in $PATH',
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                },
+            ],
+        }),
+    },
+    log: { status: 400, body: 'container has not started' },
+};
+
 /** A request function that answers from FAKE, or throws if the test did not script the call. */
 const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sRequest; calls: Call[] } => {
     const calls: Call[] = [];
@@ -906,6 +937,15 @@ describe('the worktree sync', () => {
         expect(result).toEqual({ ok: false, reason: 'the worktree sync answered nothing readable' });
     });
 
+    it('names the kubelet’s reason when the sync container never started', async () => {
+        const { request } = fakeRequest(NEVER_STARTED);
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: 'the worktree sync container failed: StartError: exec: "node": executable file not found in $PATH',
+        });
+    });
+
     /*
      * The fence before the sync (PR #46 review): the loop calls syncCheckout before run(), so
      * the sync is the FIRST writer on the task worktree — and the only mutual exclusion it can
@@ -1234,6 +1274,16 @@ describe('the worktree reclaim', () => {
         const result = await runner(request).reclaimWorktree(repoJob);
         expect(result.ok).toBe(false);
         expect(result.reason).toContain('registered worktree');
+    });
+
+    it('names the kubelet’s reason when the reclaim container never started', async () => {
+        const { request } = fakeRequest(NEVER_STARTED);
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            removed: false,
+            reason: 'the worktree reclaim container failed: StartError: exec: "node": executable file not found in $PATH',
+        });
     });
 
     it('reclaims nothing for a job that names no repository', async () => {
@@ -1829,11 +1879,8 @@ describe('the kubernetes runner', () => {
             ...cturnsCalls(job),
             `GET ${claimPathFor(job.id)}`,
             `DELETE ${claimPathFor(job.id)}`,
-            // The close-time teardown lists this attempt's service fleet by lease; the empty
-            // answers mean nothing was ever started.
-            'GET /api/v1/namespaces/factory/pods',
-            'GET /api/v1/namespaces/factory/services',
-            // The Secret goes with the attempt.
+            // No fleet teardown here: the services outlive run() for the declared gates, and the
+            // loop's releaseServices takes them down. The Secret goes with the attempt.
             `DELETE /api/v1/namespaces/factory/secrets/${secretName(job)}`,
         ]);
         expect(outcome).toEqual({
@@ -2234,8 +2281,6 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'DELETE',
-            'GET',
-            'GET',
             'DELETE',
         ]);
         expect(calls[1].path).toContain(`labelSelector=${encodeURIComponent(`factory.job=${job.id}`)}`);
@@ -2461,8 +2506,6 @@ describe('the kubernetes runner', () => {
             ...cturnsCalls(newerJob),
             `GET ${claimPath}`,
             `DELETE ${claimPath}`,
-            'GET /api/v1/namespaces/factory/pods',
-            'GET /api/v1/namespaces/factory/services',
             `DELETE /api/v1/namespaces/factory/secrets/${secretName(newerJob)}`,
         ]);
     });
@@ -2756,7 +2799,7 @@ describe('the kubernetes runner', () => {
         // Claim, LIST ×3 (finds both in jobs; pods and services empty), claim confirmed ours,
         // two deletes, LIST ×3 (clean), claim re-verified before the create, create, claim
         // verified again, then the status poll, the pod list, the log, the claim release and
-        // the lease teardown.
+        // the Secret's reap.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
@@ -2783,8 +2826,6 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'DELETE',
-            'GET',
-            'GET',
             'DELETE',
         ]);
     });
@@ -2903,8 +2944,6 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'DELETE',
-            'GET',
-            'GET',
             'DELETE',
         ]);
     });
@@ -2977,8 +3016,6 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'DELETE',
-            'GET',
-            'GET',
             'DELETE',
         ]);
     });
@@ -3060,8 +3097,6 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'DELETE',
-            'GET',
-            'GET',
             'DELETE',
         ]);
     });
@@ -3074,12 +3109,12 @@ describe('the kubernetes runner', () => {
      */
     it('releases the claim when the run ends, and never releases a claim it no longer holds', async () => {
         const claimPath = claimPathFor(job.id);
-        // (a) A successful run ends with the claim read and released — then the service fleet's
-        // lease lists (empty), and the env Secret's reap is the last call.
+        // (a) A successful run ends with the claim read and released, and the env Secret's reap
+        // is the last call — the service fleet outlives run() until the loop releases it.
         const envJob: BoardJob = { ...job, env: { CORE_TOKEN: 'shh' } };
         const released = fakeRequest();
         await runner(released.request).run(envJob, { id: SESSION, resume: false });
-        const tail = released.calls.slice(-5);
+        const tail = released.calls.slice(-3);
         expect(tail[0]).toEqual({ method: 'GET', path: claimPath });
         expect(tail[1]?.method).toBe('DELETE');
         expect(tail[1]?.path).toBe(claimPath);
@@ -3087,14 +3122,6 @@ describe('the kubernetes runner', () => {
             'claim-uid-1'
         );
         expect(tail[2]).toEqual({
-            method: 'GET',
-            path: `/api/v1/namespaces/${namespace}/pods?labelSelector=${encodeURIComponent(`factory.lease=${envJob.leaseToken}`)},factory.service`,
-        });
-        expect(tail[3]).toEqual({
-            method: 'GET',
-            path: `/api/v1/namespaces/${namespace}/services?labelSelector=${encodeURIComponent(`factory.lease=${envJob.leaseToken}`)},factory.service`,
-        });
-        expect(tail[4]).toEqual({
             method: 'DELETE',
             path: `/api/v1/namespaces/${namespace}/secrets/${secretName(envJob)}`,
         });
@@ -4232,7 +4259,7 @@ describe('the kubernetes runner', () => {
         expect(outcome.exitCode).toBe(0);
         // LIST ×3 (leftover in jobs; pods/services empty), verify 503 → no delete, LIST ×3
         // (leftover again), verify ours → DELETE, LIST ×3 (clean), claim re-verified, create,
-        // verify, poll, pods, log, release, release-delete, lease teardown ×2.
+        // verify, poll, pods, log, release, release-delete, Secret reap.
         expect(calls.map((call) => call.method)).toEqual([
             'POST',
             'GET',
@@ -4262,8 +4289,6 @@ describe('the kubernetes runner', () => {
             'DELETE',
             'GET',
             'DELETE',
-            'GET',
-            'GET',
             'DELETE',
         ]);
         expect(calls[9]?.path).toBe(`${jobPath(namespace, leftover)}?propagationPolicy=Foreground`);
@@ -5141,9 +5166,10 @@ describe('the kubernetes services flow', () => {
             async () => {}
         );
 
-    it('starts the declared fleet before the runner and tears it down with the attempt', async () => {
+    it('starts the declared fleet before the runner and keeps it up until the loop releases it', async () => {
         const { request, calls } = servicesFake();
-        const outcome = await servicesRunner(request).run(job, { id: SESSION, resume: false });
+        const runner = servicesRunner(request);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
         // The readout Job ran first, then the service pod and its DNS name, and only then the
@@ -5164,10 +5190,20 @@ describe('the kubernetes services flow', () => {
         expect(dnsPost).toBeGreaterThan(podPost);
         expect(jobPost).toBeGreaterThan(dnsPost);
 
-        // And the fleet goes with the attempt: the close-time teardown lists by lease. The
-        // claim's release (GET, DELETE) precedes it; the attempt Secret's reap is the last call.
-        const tail = calls.slice(-5);
-        expect(tail.map((c) => c.method)).toEqual(['GET', 'DELETE', 'GET', 'GET', 'DELETE']);
+        // The fleet OUTLIVES run(): the declared gates run after it and test against these
+        // services, so run() ends with the claim's release (GET, DELETE) and the attempt
+        // Secret's reap — no lease-scoped fleet list.
+        const leaseList = (c: Call) =>
+            c.method === 'GET' &&
+            (c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`) ||
+                c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`));
+        expect(calls.slice(-3).map((c) => c.method)).toEqual(['GET', 'DELETE', 'DELETE']);
+        expect(calls.slice(jobPost).some(leaseList)).toBe(false);
+
+        // The loop's release takes it down, by lease: the pods and the DNS objects.
+        const releasedAt = calls.length;
+        await runner.releaseServices(job);
+        expect(calls.slice(releasedAt).filter(leaseList)).toHaveLength(2);
     });
 
     it('refuses a DNS-name collision terminally, naming the conflict instead of ordering the race', async () => {

@@ -122,6 +122,13 @@ export interface Runner {
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
     /**
+     * Tears down the attempt's `.bellows.yaml` services. run() starts the fleet and deliberately
+     * leaves it up: the declared gates run after it and are what test against those services, so
+     * the loop calls this once the gates are done — and on every other way the attempt ends,
+     * run() thrown included. Attempt-scoped and idempotent, like every teardown here.
+     */
+    releaseServices(job: BoardJob): Promise<void>;
+    /**
      * Publishes the work the run produced: task branch (when the checkout sits on the default
      * one), commit, push, and a PR. The deterministic end of a task — a succeeded verdict may not
      * describe work that exists only in a local checkout. The loop decides WHEN this is called (a

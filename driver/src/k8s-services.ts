@@ -88,7 +88,10 @@ async function sweepFleetKind(deps: K8sDeps, listPath: string, basePath: string)
     }
 }
 
-/** The declared services go with the runner: torn down whenever the run ends, whatever it came back with. */
+/**
+ * The attempt's declared services, torn down by lease: on kill, on a refused start, and — through
+ * the runner's releaseServices — once the loop's declared gates are done with them.
+ */
 export async function teardownServices(deps: K8sDeps, job: BoardJob): Promise<void> {
     for (const [listPath, basePath] of [
         [podsByLeasePath(deps.config.k8sNamespace, job), podsPath(deps.config.k8sNamespace)],

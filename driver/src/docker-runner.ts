@@ -121,6 +121,21 @@ async function dockerServiceTeardown(deps: RunnerDeps, job: BoardJob): Promise<v
     for (const id of linesOf(found.stdout)) {
         await deps.execDocker(['rm', '-f', id]).catch(() => undefined);
     }
+    // The gate environment joins this network to reach the fleet, and outlives the attempt on
+    // its cooldown; docker refuses to remove a network with an endpoint still attached, so
+    // whatever is left on it is detached first.
+    const attached = await deps
+        .execDocker([
+            'network',
+            'inspect',
+            '--format',
+            '{{range .Containers}}{{println .Name}}{{end}}',
+            networkName(job),
+        ])
+        .catch(() => ({ stdout: '' }));
+    for (const name of linesOf(attached.stdout)) {
+        await deps.execDocker(['network', 'disconnect', '-f', networkName(job), name]).catch(() => undefined);
+    }
     await deps.execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
 }
 
@@ -536,7 +551,6 @@ async function dockerRun(
             dockerRunVerdict(code, {
                 execDocker,
                 job,
-                serviceTeardown: (j) => dockerServiceTeardown(deps, j),
                 output,
                 timedOut,
                 cacheLost: cacheState.cacheLost,
@@ -661,6 +675,7 @@ export function createDockerRunner(
     const deps: RunnerDeps = { config, execDocker, files, spawnFn, killed: new Set() };
     return {
         kill: (job) => dockerKill(deps, job),
+        releaseServices: (job) => dockerServiceTeardown(deps, job),
         syncCheckout: (job) => dockerSyncCheckout(deps, job),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),

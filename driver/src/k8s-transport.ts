@@ -233,7 +233,7 @@ export interface K8sPod {
     status?: {
         containerStatuses?: {
             state?: {
-                terminated?: { exitCode?: number };
+                terminated?: { exitCode?: number; reason?: string; message?: string };
                 waiting?: { reason?: string; message?: string };
             };
         }[];
@@ -250,6 +250,24 @@ export interface K8sPodList {
  */
 export function livePod(body: string): K8sPod | undefined {
     return parse<K8sPodList>(body).items?.find((item) => !item.metadata?.deletionTimestamp);
+}
+
+/**
+ * Why a pod's container ended without success, in the kubelet's own words — `StartError: exec:
+ * "node": executable file not found` — or null when it exited 0 or has no state to read. The k8s
+ * twin of the docker runner's `dockerErrorDetail`: a container that never started prints no
+ * verdict line, and its status is the only place the cause survives.
+ */
+export function containerFailure(pod: K8sPod | undefined): string | null {
+    const state = pod?.status?.containerStatuses?.[0]?.state;
+    const terminated = state?.terminated;
+    if (terminated && terminated.exitCode !== 0) {
+        const reason = terminated.reason ?? `exit ${terminated.exitCode ?? 'unknown'}`;
+        return terminated.message ? `${reason}: ${terminated.message}` : reason;
+    }
+    const waiting = state?.waiting;
+    if (waiting?.reason) return waiting.message ? `${waiting.reason}: ${waiting.message}` : waiting.reason;
+    return null;
 }
 
 /** Parses what the API server answers; a body that is not JSON reads as an empty object. */

@@ -258,7 +258,9 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 
 // Every throw after create() succeeded — poll exhaustion, a vanished Job, a failed verdict read —
 // must still reap the env Secret AND release the checkout claim: the loop's catch never calls
-// kill(), and when the job retires dead there is no next attempt to do either.
+// kill(), and when the job retires dead there is no next attempt to do either. The service fleet
+// is NOT torn down here: the declared gates run after run() and test against it, so the loop's
+// releaseServices takes it down once they are done — on every exit path, a throw included.
 async function run(
     deps: K8sDeps,
     job: BoardJob,
@@ -270,7 +272,6 @@ async function run(
         return await run0(deps, job, { session, onOutput, cleanup });
     } finally {
         if (!cleanup.holdClaim) await releaseClaim(deps, job);
-        await teardownServices(deps, job);
         await forgetSecret(deps, job);
     }
 }
@@ -416,6 +417,7 @@ export function createKubernetesRunner(
     return {
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
+        releaseServices: (job: BoardJob) => teardownServices(deps, job),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),

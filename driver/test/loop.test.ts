@@ -179,9 +179,14 @@ function stubRunner(
     publishTokens: (string | undefined)[];
     synced: BoardJob[];
     reclaimed: BoardJob[];
+    servicesReleased: string[];
 } {
     const { sample = null, publish = null, sync = null, reclaim = null } = options;
     const runner = {
+        servicesReleased: [] as string[],
+        async releaseServices(releasedJob: BoardJob) {
+            runner.servicesReleased.push(releasedJob.id);
+        },
         killed: [] as string[],
         samples: 0,
         published: [] as BoardJob[],
@@ -2355,6 +2360,43 @@ describe('verification gates', () => {
 
         expect(ran).toBe(0);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', exitCode: null });
+    });
+
+    /*
+     * The declared services are what the gates test against — `.bellows.yaml` names `db` so that
+     * `npm test` can reach it — so the fleet must outlive the run until the last gate has run.
+     * Torn down inside run(), every service-backed gate failed on a name that no longer resolved.
+     */
+    it('keeps the services up through the declared gates and releases them after', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok());
+        let gatesRunAtRelease: string[] | null = null;
+        runner.releaseServices = async (released) => {
+            gatesRunAtRelease = [...stack.stack.ran.names];
+            runner.servicesReleased.push(released.id);
+        };
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(gatesRunAtRelease).toEqual(['test', 'lint']);
+        expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    it('releases the services on every way a run can end', async () => {
+        const plain = stubRunner(async () => ok());
+        await drive({ ...stubBoard([job(1)]), runner: plain });
+        expect(plain.servicesReleased).toEqual([job(1).id]);
+
+        const unstarted = stubRunner(async () => ok({ started: false }));
+        await drive({ ...stubBoard([job(2)]), runner: unstarted });
+        expect(unstarted.servicesReleased).toEqual([job(2).id]);
+
+        const thrown = stubRunner(async () => {
+            throw new Error('the daemon refused');
+        });
+        await drive({ ...stubBoard([job(3)]), runner: thrown });
+        expect(thrown.servicesReleased).toEqual([job(3).id]);
     });
 
     it('runs no gates for a never-started or a lost run', async () => {

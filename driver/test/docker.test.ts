@@ -1897,8 +1897,12 @@ describe('the docker runner', () => {
 describe('auxiliary services (RUNNER_SERVICES)', () => {
     const READOUT = '###__bellows:demo\nservices:\n  - name: stub\n    image: stub-svc:1\n';
 
-    const daemon = (readout: string, opts: { readoutFails?: boolean; serviceFails?: boolean } = {}) =>
+    const daemon = (
+        readout: string,
+        opts: { readoutFails?: boolean; serviceFails?: boolean; attached?: string } = {}
+    ) =>
         vitest.fn(async (args: string[]) => {
+            if (args[0] === 'network' && args[1] === 'inspect') return { stdout: opts.attached ?? '' };
             if (args[0] === 'run' && args.includes('--entrypoint')) {
                 if (opts.readoutFails) throw new Error('daemon refused the readout');
                 return { stdout: readout };
@@ -2140,19 +2144,42 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(exec.mock.calls.map((call) => call[0])).not.toContainEqual(['network', 'create', networkName(job)]);
     });
 
-    it('tears the services and the network down after the run, whatever the verdict', async () => {
+    /*
+     * The fleet outlives run(): the loop runs the declared gates after it, and those are what
+     * test against the services. The close tears down only the runner container; the loop's
+     * releaseServices takes the fleet down once the gates are done.
+     */
+    it('keeps the services up past the run, and tears them down on release', async () => {
         const exec = daemon(READOUT);
-        await servicesRunner(exec, spawnRecording('', 1).fn).run(job, { id: SESSION, resume: false });
+        const runner = servicesRunner(exec, spawnRecording('', 1).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+
+        const createAt = exec.mock.calls.findIndex((call) => call[0][0] === 'network' && call[0][1] === 'create');
+        const afterSetup = exec.mock.calls.slice(createAt).map((call) => call[0]);
+        expect(afterSetup).not.toContainEqual(['network', 'rm', networkName(job)]);
+        expect(afterSetup).not.toContainEqual(['rm', '-f', 'svc-id-1']);
+
+        const releasedAt = exec.mock.calls.length;
+        await runner.releaseServices(job);
+        const released = exec.mock.calls.slice(releasedAt).map((call) => call[0]);
+        expect(released).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(released).toContainEqual(['network', 'rm', networkName(job)]);
+    });
+
+    // The gate environment joins the services network to reach the fleet, and docker refuses to
+    // remove a network with an endpoint still attached — so the release detaches whatever is
+    // left on it first, or the network would outlive the attempt.
+    it('detaches the gate environment from the network before removing it', async () => {
+        const exec = daemon(READOUT, { attached: 'factory-gateenv-x\n' });
+        await servicesRunner(exec, spawnRecording('', 0).fn).releaseServices(job);
 
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
-        const networkRmAt = calls.findIndex((a) => a[0] === 'network' && a[1] === 'rm');
-        expect(networkRmAt).toBeGreaterThanOrEqual(0);
-        // After the teardown, the close-time claude-code turn read runs its own throwaway
-        // container over the workspaces volume — the last thing the runner does.
-        const last = calls[calls.length - 1] as string[];
-        expect(last[0]).toBe('run');
-        expect(last).toContain(`CLAUDE_SESSION_ID=${SESSION}`);
+        const disconnectAt = calls.findIndex(
+            (a) => a.join(' ') === ['network', 'disconnect', '-f', networkName(job), 'factory-gateenv-x'].join(' ')
+        );
+        const removeAt = calls.findIndex((a) => a.join(' ') === ['network', 'rm', networkName(job)].join(' '));
+        expect(disconnectAt).toBeGreaterThanOrEqual(0);
+        expect(removeAt).toBeGreaterThan(disconnectAt);
     });
 
     it('fences leftover services before anything is created', async () => {
@@ -2395,7 +2422,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     // A's close that lands LATE: A was killed — kill() tore A's own fleet down while it was
     // still legitimately A's own — and the loop re-claimed the job as B before A's CLI client
-    // finally exited. A's verdict still runs its teardown, gate-free: the teardown is scoped to
+    // finally exited. The loop's release after A's verdict still runs its teardown, gate-free: the teardown is scoped to
     // A's lease, so whatever it names is A's own, and B's live fleet is structurally
     // unaddressable no matter how late the close lands.
     it("scopes a killed attempt's late verdict teardown to its own lease when the replacement has stood its fleet up", async () => {
@@ -2439,9 +2466,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const afterBCreation = exec.mock.calls.length;
 
         // A's CLI client only now exits — daemon slowness makes the close arbitrarily late —
-        // and its verdict lands over B's live fleet.
+        // and its verdict lands over B's live fleet; the loop releases A's services after it.
         closeA();
         await runA;
+        await runner.releaseServices(attemptA);
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         // The teardown ran — and every call of it is A's: the ps filters carry A's lease, the
@@ -2460,7 +2488,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // server-side and the board re-claims the job as B before any heartbeat delivers 'lost' —
     // so the loop never kills A, and A's `killed` marker is never recorded. B's fence removes
     // A's leftovers, which closes A's CLI client, and A's verdict then lands over B's live
-    // fleet. Not-killed is not a free pass to skip the teardown — it runs unconditionally —
+    // fleet. Not-killed is not a free pass to skip the release — it runs unconditionally —
     // and it is safe unconditionally: scoped to A's lease, it can only ever name A's own.
     it("scopes a natural close's late verdict teardown to its own lease when a replacement claim has stood its fleet up", async () => {
         // Both children hold their close until released, so the interleaving — A still alive
@@ -2500,9 +2528,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await closeOf(1); // B spawned; its network and service are live
         const afterBCreation = exec.mock.calls.length;
 
-        // A's CLI client only now closes naturally — its container was fenced away by B.
+        // A's CLI client only now closes naturally — its container was fenced away by B — and
+        // the loop releases A's services after it.
         closeA();
         await runA;
+        await runner.releaseServices(attemptA);
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
