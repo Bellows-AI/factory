@@ -132,6 +132,10 @@ driver:
     pollMs: '5000'
     leaseSeconds: '300'
     jobTimeoutMs: '7200000'
+    # The wall-clock cap on ONE gate run — the gate Job's activeDeadlineSeconds. A gate that
+    # outlives it fails with exit 124. A declared gate that installs dependencies into a fresh
+    # worktree before running a whole suite needs more than the ten-minute default.
+    gateTimeoutMs: '600000'
     # On SIGTERM the driver stops claiming and drains: in-flight jobs finish, then it exits. This is
     # how long the kubelet waits before SIGKILL. A killed drain loses nothing durable — each runner
     # Job keeps running under its own deadline and the job's lease expires and is re-offered — but

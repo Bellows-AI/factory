@@ -70,10 +70,18 @@ export async function readVerdict(deps: K8sDeps, path: string, what: string, fai
     return readVerdict(deps, path, what, failures + 1);
 }
 
-/** Whether a terminal Job's own conditions show the kubelet's `activeDeadlineSeconds` fired. */
+/**
+ * Whether a terminal Job's own conditions show the kubelet's `activeDeadlineSeconds` fired. A
+ * current cluster (observed on v1.37) first marks it `FailureTarget` — already counting the pod
+ * failed, the pod still terminating — and adds `Failed` only once the pod is gone. The poll reads
+ * the first terminal status it sees, so both spellings are the deadline; knowing only `Failed`
+ * reported a gate that ran long as "exit 1, empty output".
+ */
 export function timedOutOf(status: K8sJobStatus): boolean {
     return (status.conditions ?? []).some(
-        (condition) => condition.type === 'Failed' && condition.reason === 'DeadlineExceeded'
+        (condition) =>
+            (condition.type === 'Failed' || condition.type === 'FailureTarget') &&
+            condition.reason === 'DeadlineExceeded'
     );
 }
 

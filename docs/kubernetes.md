@@ -362,8 +362,12 @@ task worktree, and a gate writing as the declared image's default (root, usually
 files the uid-1000 sync and reclaim Jobs can never remove (observed 2026-09-13 on the docker
 twin: a gate-built `core/dist` left a worktree whose reclaim died with EACCES).
 `activeDeadlineSeconds` carries
-`GATE_TIMEOUT_MS`, and a `DeadlineExceeded` Job is reported exit 124, the convention the docker
-manager's own timeout kill uses. Gate Jobs carry the attempt's `factory.job`/`factory.lease`
+`GATE_TIMEOUT_MS` (the chart's `driver.gateTimeoutMs`; thirty minutes in the local profile), and
+a `DeadlineExceeded` Job is reported exit 124, the convention the docker manager's own timeout
+kill uses. A current cluster (observed on v1.37) first marks the deadline `FailureTarget`, the
+pod still terminating and `Failed` only later; `timedOutOf` reads both, because the poll acts on
+the first terminal status and reading only `Failed` reported a long gate as "exit 1, empty
+output". The runner's and the helpers' deadlines go through the same function. Gate Jobs carry the attempt's `factory.job`/`factory.lease`
 labels, which is what puts them inside the re-claim fence's sweep. What is deliberately not
 ported is the docker cooldown's warm start: pod admission per gate run costs seconds, and a
 per-checkout sleeper pod would buy back only that. `pods/exec` stays ungranted — running a

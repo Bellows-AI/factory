@@ -243,6 +243,8 @@ expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.
 # would be refused by the driver's own integer check at boot.
 render | grep -q 'value: "7200000"' && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
+render | grep -A1 'name: GATE_TIMEOUT_MS' | grep -q 'value: "1800000"' && ok 'the gate timeout renders as an integer' ||
+    bad 'the gate timeout renders as an integer' "$(render | grep -A1 GATE_TIMEOUT_MS)"
 
 # The runner's branch attribution credential is attempt-scoped: the driver mints nothing here and
 # forwards no deployment-wide ingest token — the runner presents the job id and lease token of the

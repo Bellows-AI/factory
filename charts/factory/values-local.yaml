@@ -44,3 +44,6 @@ driver:
     executorImages:
         claudeCode: claude-executor
         opencode: opencode-executor
+    # Thirty minutes: a real repository's test gate installs its dependencies into a fresh
+    # worktree before it runs the suite, and ten minutes cut one off mid-run.
+    gateTimeoutMs: '1800000'

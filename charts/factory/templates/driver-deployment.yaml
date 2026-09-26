@@ -112,6 +112,8 @@ spec:
                         value: {{ $.Values.driver.leaseSeconds | quote }}
                       - name: DRIVER_JOB_TIMEOUT_MS
                         value: {{ $.Values.driver.jobTimeoutMs | quote }}
+                      - name: GATE_TIMEOUT_MS
+                        value: {{ $.Values.driver.gateTimeoutMs | quote }}
                       # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port; the
                       # runner reaches it at THIS pod's IP, the driver appending the bound port. A
                       # Service name would resolve to every driver replica — and, during a rollout,

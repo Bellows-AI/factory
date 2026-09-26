@@ -4531,6 +4531,22 @@ describe('the kubernetes runner', () => {
         expect(outcome.timedOut).toBe(true);
     });
 
+    // A current cluster marks the deadline `FailureTarget` first and `Failed` only once the pod is
+    // gone; the runner reads the first terminal status it sees, so it must know both.
+    it('treats a DeadlineExceeded FailureTarget as a timeout too', async () => {
+        const { request } = fakeRequest({
+            job: {
+                status: 200,
+                body: JSON.stringify({
+                    status: { failed: 1, conditions: [{ type: 'FailureTarget', reason: 'DeadlineExceeded' }] },
+                }),
+            },
+        });
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+
+        expect(outcome.timedOut).toBe(true);
+    });
+
     // The runner never started — creation was refused. Reporting `failed` would blame the command
     // for the driver's problem, so the error propagates and the loop leaves the job to its lease.
     it('leaves a job to its lease when the job cannot be created', async () => {
@@ -4929,6 +4945,34 @@ describe('the kubernetes gate manager', () => {
         await m.acquire(KEY, 'node:24', '', job);
         const outcome = await m.runGate(KEY, 'test', 'npm test');
         expect(outcome.exitCode).toBe(124);
+    });
+
+    /*
+     * What a deadline looks like the moment it fires on a current cluster (observed on v1.37): the
+     * Job already counts the pod failed but carries only `FailureTarget` — `Failed` lands later,
+     * once the pod is gone — and the pod is terminating, so there is no live pod to read. Read as
+     * an ordinary failure, that reported "exit 1, empty output" over a gate that simply ran long.
+     */
+    it('reports a deadline still at FailureTarget, pod terminating, as the timeout it is', async () => {
+        const { request } = gateFake({
+            job: {
+                status: 200,
+                body: JSON.stringify({
+                    status: { failed: 1, conditions: [{ type: 'FailureTarget', reason: 'DeadlineExceeded' }] },
+                }),
+            },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [{ metadata: { name: 'gate-pod', deletionTimestamp: '2026-09-26T05:40:24Z' } }],
+                }),
+            },
+        });
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+        const outcome = await m.runGate(KEY, 'test', 'npm test');
+        expect(outcome.exitCode).toBe(124);
+        expect(outcome.output).toMatch(/gate killed after \d+ms/);
     });
 
     it('rejects with the harness code when the cluster refuses the run', async () => {
