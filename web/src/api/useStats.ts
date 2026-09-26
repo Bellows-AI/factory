@@ -91,8 +91,22 @@ function settledOutcome(stale: boolean): StatsPollOutcome {
     return stale ? 'stale' : 'fresh';
 }
 
+/**
+ * Whether a tab coming back to the front should ask now instead of waiting out its armed tick. A
+ * tick armed while hidden waits the hidden pace, so an open dashboard would otherwise show its old
+ * snapshot for up to a minute. `armed` is false while a request is in flight — that one re-arms
+ * itself at the visible pace, and asking again would overlap it.
+ */
+export function refetchOnVisible(live: boolean, hidden: boolean, armed: boolean): boolean {
+    return live && !hidden && armed;
+}
+
 function armNext(timer: { current: number | null }, delay: number | null, tick: () => void): void {
-    if (delay !== null) timer.current = window.setTimeout(tick, delay);
+    if (delay === null) return;
+    timer.current = window.setTimeout(() => {
+        timer.current = null;
+        tick();
+    }, delay);
 }
 
 /**
@@ -165,11 +179,19 @@ export function useStats(query: string, live: boolean): UseStats {
         const controller = new AbortController();
         setPending(true);
         void poll(controller.signal);
+        const onVisibilityChange = () => {
+            if (!refetchOnVisible(live, document.hidden, timer.current !== null)) return;
+            window.clearTimeout(timer.current!);
+            timer.current = null;
+            void poll(controller.signal);
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
         return () => {
             controller.abort();
+            document.removeEventListener('visibilitychange', onVisibilityChange);
             if (timer.current !== null) window.clearTimeout(timer.current);
         };
-    }, [poll]);
+    }, [poll, live]);
 
     return {
         data,
