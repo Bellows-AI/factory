@@ -63,7 +63,10 @@ export function AppShell() {
     // query string, so changing either re-polls with both values and nothing is reconciled.
     const [scope, setScope] = useState<ScopeSelection>(DEFAULT_SCOPE);
     const query = useMemo(() => statsQuery(range, scope), [range, scope]);
-    const { data, progress, error } = useStats(query);
+    const { pathname } = useLocation();
+    // Live on the dashboard: arriving there refetches, and the figures keep refreshing while it
+    // stays open. Elsewhere the chain stops after a completed read.
+    const { data, progress, error } = useStats(query, pathname === '/');
 
     // The task overview is the same decision as the stats poll above — one instance, above the
     // Outlet — with one difference: it is gated to the tasks area. The sidenav's own comment
@@ -72,7 +75,6 @@ export function AppShell() {
     // on `/tasks` or under it, and the sidenav renders no preview anywhere else. The hook reads
     // the URL itself: the inbox's filters come from the query string exactly on `/tasks`, the
     // composer and detail views ask the default attention question.
-    const { pathname } = useLocation();
     const onTasks = pathname === '/tasks' || pathname.startsWith('/tasks/');
     const tasks = useTasks(onTasks);
 
