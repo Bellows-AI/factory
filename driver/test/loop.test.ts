@@ -43,7 +43,7 @@ interface BoardStub extends Board {
             baseBranch: string;
         } | null;
     }[];
-    sessions: { id: string; sessionId: string }[];
+    sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     beats: number;
@@ -2441,6 +2441,38 @@ describe('verification gates', () => {
         const complete = board.board.completed[0]!;
         expect(complete.status).toBe('failed');
         expect(complete.output).toBe(refusal);
+    });
+
+    // The minted session was reported before the runner spawned, but a refused start never ran
+    // the agent, so no transcript exists under that id. Left on the row, a follow-up would inherit
+    // it and `--resume` into "No conversation found".
+    it('clears the session it minted when the start is refused', async () => {
+        const board = stubBoard([gatedJob(4)]);
+        let minted = '';
+        await drive({
+            ...board,
+            runner: stubRunner(async (_job, session) => {
+                minted = session!.id;
+                return ok({ exitCode: null, output: '.bellows.yaml: unknown key "ports"', refused: true });
+            }),
+            gates: stubGateStack().gates,
+        });
+        expect(board.board.sessions).toEqual([
+            { id: gatedJob(4).id, sessionId: minted },
+            { id: gatedJob(4).id, sessionId: null },
+        ]);
+    });
+
+    // A refused follow-up still owns its parent's conversation: the transcript exists, and the
+    // next follow-up must be able to resume it.
+    it('keeps a resumed session when the start is refused', async () => {
+        const board = stubBoard([{ ...gatedJob(4), followUp: true, resumeSessionId: 'ses_parent' }]);
+        await drive({
+            ...board,
+            runner: stubRunner(async () => ok({ exitCode: null, output: 'refused', refused: true })),
+            gates: stubGateStack().gates,
+        });
+        expect(board.board.sessions).toEqual([]);
     });
 
     // An ordinary job must not pay for the feature: no container, no registration, no reports.

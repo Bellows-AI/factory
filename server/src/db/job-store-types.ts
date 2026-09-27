@@ -549,8 +549,9 @@ export interface JobStore {
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded
      * like every other worker write: a superseded worker must not relabel the run that replaced it.
+     * Null clears it — a refused start whose minted session never ran.
      */
-    session(id: string, leaseToken: string, sessionId: string): Promise<LeaseResult>;
+    session(id: string, leaseToken: string, sessionId: string | null): Promise<LeaseResult>;
     /**
      * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
      * while it happens instead of a silent spinner — with the attempt's last sampled vitals riding

@@ -291,6 +291,14 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     }
 
     await reportScrapedSession(rt, job, executorType, outcome);
+    // The session minted and reported before the spawn never ran — no transcript exists under it,
+    // so a follow-up resuming it would find no conversation. A resumed session is the parent's
+    // and stays.
+    if (outcome.refused && session && !session.resume) {
+        await rt.board
+            .session(job, null)
+            .catch((e: Error) => log(`job ${job.id}: could not clear the unused session: ${e.message}`));
+    }
 
     /*
      * The gates run HERE: after the agent has finished talking and before the verdict, with the

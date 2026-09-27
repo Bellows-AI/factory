@@ -152,7 +152,8 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
         return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
-    if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
+    // An explicit null clears the session: a refused start's minted id never ran.
+    if (sessionId !== null && (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId))) {
         return bad(reply, ERROR_CODES.BAD_SESSION_ID, 'sessionId must be a short opaque token');
     }
 

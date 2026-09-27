@@ -249,6 +249,18 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(await store.createFollowUp(id, 'again', null)).toBe('no_session');
     });
 
+    // A refused start reported its minted session before the spawn, then took it back: the agent
+    // never ran, so resuming that id would find no conversation.
+    it('refuses a follow-up on a run whose reported session was cleared', async () => {
+        const { id } = await queue('echo hi');
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        await store.session(id, claim!.leaseToken, SESSION);
+        await store.session(id, claim!.leaseToken, null);
+        await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: null, output: 'refused' });
+
+        expect(await store.createFollowUp(id, 'again', null)).toBe('no_session');
+    });
+
     // The child inherits the parent's session, and a session resumes only in the checkout tree it
     // ran in — the author's. A member's command may only ever run in their own tree, so a
     // follow-up by anyone else would either run their command in the author's tree or resume the

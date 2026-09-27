@@ -59,7 +59,7 @@ export async function sessionReport(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    sessionId: string
+    sessionId: string | null
 ): ReturnType<JobStore['session']> {
     const { sql, orgId } = ctx;
     const rows = await sql<{ id: string }[]>`

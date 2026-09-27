@@ -220,8 +220,8 @@ export interface Board {
             output: string | null;
         }[]
     ): Promise<LeaseState>;
-    /** Tells the board which agent session this attempt runs as. */
-    session(job: BoardJob, sessionId: string): Promise<LeaseState>;
+    /** Tells the board which agent session this attempt runs as; null clears one that never ran. */
+    session(job: BoardJob, sessionId: string | null): Promise<LeaseState>;
     /**
      * Re-reads the gates the job's checkout declares NOW. The claim read the file before the
      * driver's startup sync freshened the checkout, so a repository whose gates file just arrived

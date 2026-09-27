@@ -56,7 +56,7 @@ interface StoreStub extends JobStore {
         agentTurns: number | null;
         summary: string | null;
     }[];
-    sessions: { id: string; sessionId: string }[];
+    sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
@@ -837,6 +837,18 @@ describe('POST /api/jobs/:id/session', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.sessions[0]?.sessionId).toBe(ses);
+    });
+
+    // A refused start reported its minted session before the spawn and never ran it; an explicit
+    // null takes it back off the row, so a follow-up is not offered a conversation that is not there.
+    it('clears the session on an explicit null', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/session`, { leaseToken: TOKEN, sessionId: null });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.sessions).toEqual([{ id: ID, sessionId: null }]);
     });
 
     // Same rule as every other worker write: a superseded worker must not relabel the run that

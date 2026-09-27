@@ -741,6 +741,14 @@ completion, so it is on the row while the job is still running. The report is de
 non-fatal — a board that is briefly unreachable costs the link, not the run — and a `409` on it is
 not acted on, because the heartbeat is the one place that decides a superseded run must die.
 
+**A refused start takes its minted session back.** The id is on the row before the runner knows
+whether it will start the agent, and a refused start (`RunOutcome.refused` — a `.bellows.yaml` the
+parser rejects, a service name another job holds) never does: no transcript exists under that id.
+Left on the row, a follow-up would inherit it and `--resume` straight into `No conversation found
+with session ID`. So the loop reports `sessionId: null` for a refused run whose session it minted;
+the row settles sessionless and the follow-up is refused `NO_SESSION` up front. A refused
+follow-up keeps its session — that one is the parent's, and its transcript is real.
+
 The id is cleared on every claim, for the same reason `started_at` resets — except on a
 follow-up's claim, where the session genuinely is the same one. The attempt that died ran a
 different session, and showing its link next to this attempt's output points a reader at work that
