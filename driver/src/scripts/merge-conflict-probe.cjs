@@ -149,17 +149,21 @@ function fetchBase(publication) {
 }
 
 /**
- * A rebase re-commits, and the runner image carries no committer identity. The same fallback
- * publish.ts's commitDirtyTree applies, and only when none is configured, so a member-configured
- * identity is never overridden.
+ * A rebase re-commits, and the runner image carries no committer identity. When git cannot form
+ * one, the same fallback publish.ts's commitDirtyTree applies is written into the checkout's own
+ * config rather than passed as `-c`: a conflicted rebase is finished by the repair agent's bare
+ * `git rebase --continue` (the opencode policy allows no `-c` form), which needs it too. An
+ * identity git can already form — env or any config level — is never overridden.
  */
-function fallbackIdentity() {
+function ensureIdentity() {
     try {
-        if (git('config', 'user.email').length > 0) return [];
+        execFileSync('git', ['var', 'GIT_COMMITTER_IDENT'], { stdio: 'ignore' });
+        return;
     } catch {
-        // `git config` exits 1 for an unset key.
+        // No identity: `git var` refuses exactly where the rebase would.
     }
-    return ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
+    git('config', '--local', 'user.name', 'factory-ai');
+    git('config', '--local', 'user.email', 'factory-ai@users.noreply.github.com');
 }
 
 const unmergedPaths = () =>
@@ -177,7 +181,7 @@ const unmergedPaths = () =>
  */
 function attemptRebase(base) {
     try {
-        git(...fallbackIdentity(), 'rebase', '--autostash', base);
+        git('rebase', '--autostash', base);
     } catch (e) {
         const paths = unmergedPaths();
         if (paths.length > 0) return { conflicted: true, paths };
@@ -223,6 +227,12 @@ function reconcile(base) {
         return;
     }
 
+    try {
+        ensureIdentity();
+    } catch (e) {
+        fail('runner_error', 'could not configure a fallback committer identity: ' + errText(e));
+        return;
+    }
     const attempt = attemptRebase(base);
     if (attempt.error !== undefined) {
         fail('runner_error', 'the rebase did not complete: ' + attempt.error);

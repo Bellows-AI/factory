@@ -88,36 +88,79 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         expect(existsSync(join(gitDir, 'rebase-apply'))).toBe(false);
     });
 
+    // The runner image's shape: no GIT_* identity, no global or system config — a rebase
+    // re-commits, so git would refuse with "Committer identity unknown". useConfigOnly stops a dev
+    // host's git from guessing one out of the hostname, which a container's cannot.
+    const identitylessEnv = (): Record<string, string> => {
+        const env = { ...process.env } as Record<string, string>;
+        for (const key of Object.keys(SCRIPT_IDENTITY)) delete env[key];
+        return {
+            ...env,
+            GIT_CONFIG_GLOBAL: '/dev/null',
+            GIT_CONFIG_NOSYSTEM: '1',
+            GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: 'user.useConfigOnly',
+            GIT_CONFIG_VALUE_0: 'true',
+            GITHUB_TOKEN: '',
+        };
+    };
+
+    const probeWithoutIdentity = (input: unknown): ProbeVerdict => {
+        const out = execFileSync('node', [SCRIPT_PATH], {
+            cwd: fx.worktree(),
+            env: { ...identitylessEnv(), HELPER_INPUT: JSON.stringify(input) },
+            encoding: 'utf8',
+        });
+        return JSON.parse(out.trim().split('\n').filter(Boolean).pop()!);
+    };
+
+    const FALLBACK_IDENTITY = 'factory-ai <factory-ai@users.noreply.github.com>';
+
     it('rebases with a fallback committer identity when the runner has none configured', () => {
         expect(fx.sync()).toEqual({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
-        // The runner image's shape: no GIT_* identity, no global or system config — a rebase
-        // re-commits, so git would refuse with "Committer identity unknown". useConfigOnly stops
-        // a dev host's git from guessing one out of the hostname, which a container's cannot.
-        const env: Record<string, string> = { ...process.env } as Record<string, string>;
-        for (const key of Object.keys(SCRIPT_IDENTITY)) delete env[key];
-        const out = execFileSync('node', [SCRIPT_PATH], {
-            cwd: fx.worktree(),
-            env: {
-                ...env,
-                GIT_CONFIG_GLOBAL: '/dev/null',
-                GIT_CONFIG_NOSYSTEM: '1',
-                GIT_CONFIG_COUNT: '1',
-                GIT_CONFIG_KEY_0: 'user.useConfigOnly',
-                GIT_CONFIG_VALUE_0: 'true',
-                HELPER_INPUT: JSON.stringify({ publication: publication() }),
-                GITHUB_TOKEN: '',
-            },
-            encoding: 'utf8',
-        });
-        const result = JSON.parse(out.trim().split('\n').filter(Boolean).pop()!) as ProbeVerdict;
+        const result = probeWithoutIdentity({ publication: publication() });
 
         expect(result).toMatchObject({ ok: true, output: { verdict: 'rebased' } });
-        expect(git(fx.worktree(), 'log', '-1', '--format=%cn <%ce>')).toBe(
-            'factory-ai <factory-ai@users.noreply.github.com>'
+        expect(git(fx.worktree(), 'log', '-1', '--format=%cn <%ce>')).toBe(FALLBACK_IDENTITY);
+    });
+
+    it('leaves the fallback identity behind so the repair agent’s bare `git rebase --continue` commits', () => {
+        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
+        fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
+
+        const result = probeWithoutIdentity({ publication: publication() });
+        expect(result.output?.verdict).toBe('conflicted');
+
+        // What the repair prompt asks of the agent, which carries no identity either — and the
+        // opencode policy allows only the bare `git rebase --continue`, never a `-c` form.
+        writeFileSync(join(fx.worktree(), 'README.md'), 'resolved readme\n');
+        const agentGit = (...args: string[]) =>
+            execFileSync('git', args, {
+                cwd: fx.worktree(),
+                env: { ...identitylessEnv(), GIT_EDITOR: 'true' },
+                encoding: 'utf8',
+            });
+        agentGit('add', 'README.md');
+        agentGit('rebase', '--continue');
+
+        expect(git(fx.worktree(), 'log', '-1', '--format=%s|%cn <%ce>')).toBe(
+            `conflicting task commit|${FALLBACK_IDENTITY}`
         );
+    });
+
+    it('never writes the fallback over an identity the runner already has', () => {
+        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
+        fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+
+        expect(probe({ publication: publication() }).output?.verdict).toBe('rebased');
+
+        expect(git(fx.worktree(), 'log', '-1', '--format=%cn <%ce>')).toBe('Test <test@example.com>');
+        expect(() => git(fx.worktree(), 'config', '--local', 'user.email')).toThrow();
     });
 
     it('leaves a known conflicted rebase state and lists the bounded conflicting paths', () => {
