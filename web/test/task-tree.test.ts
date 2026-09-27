@@ -7,6 +7,7 @@ import {
     taskStatusLabel,
     taskSummary,
     taskTitleFromCommand,
+    taskTone,
     type TaskStatus,
 } from '../src/task-tree.js';
 
@@ -45,15 +46,17 @@ describe('taskTitleFromCommand', () => {
     });
 });
 
-describe('taskStatusLabel', () => {
-    const status = (over: Partial<TaskStatus>): TaskStatus => ({
-        status: over.status ?? null,
-        cancelRequestedAt: over.cancelRequestedAt ?? null,
-        doneAt: over.doneAt ?? null,
-        waitReason: over.waitReason ?? null,
-        waitTerminalReason: over.waitTerminalReason ?? null,
-    });
+const status = (over: Partial<TaskStatus>): TaskStatus => ({
+    status: over.status ?? null,
+    cancelRequestedAt: over.cancelRequestedAt ?? null,
+    doneAt: over.doneAt ?? null,
+    waitReason: over.waitReason ?? null,
+    waitTerminalReason: over.waitTerminalReason ?? null,
+});
 
+const DONE_AT = '2026-09-01T13:00:00.000Z';
+
+describe('taskStatusLabel', () => {
     it('names the moving states, a stop request louder than the run itself', () => {
         expect(taskStatusLabel(status({ status: 'running' }))).toBe('Running');
         expect(taskStatusLabel(status({ status: 'queued' }))).toBe('Queued');
@@ -82,6 +85,21 @@ describe('taskStatusLabel', () => {
 
     it('never overrides a live run with a waiting label — running stays the loudest state', () => {
         expect(taskStatusLabel(status({ status: 'running', waitReason: 'review' }))).toBe('Running');
+        expect(
+            taskStatusLabel(
+                status({ status: 'running', waitReason: 'review', cancelRequestedAt: '2026-09-01T12:00:00.000Z' })
+            )
+        ).toBe('Stopping');
+    });
+
+    it('reads a closed task as done even while a review wait is still open — closure outranks the wait', () => {
+        expect(taskStatusLabel(status({ status: 'succeeded', waitReason: 'review' }))).toBe('Waiting for review');
+        expect(taskStatusLabel(status({ status: 'succeeded', waitReason: 'review', doneAt: DONE_AT }))).toBe('Done');
+        expect(
+            taskStatusLabel(
+                status({ status: 'succeeded', waitReason: 'review', waitTerminalReason: 'exhausted', doneAt: DONE_AT })
+            )
+        ).toBe('Done');
     });
 
     it('appends the terminal wait reason to the ordinary needs-review copy once the wait has ended', () => {
@@ -95,14 +113,6 @@ describe('taskStatusLabel', () => {
 });
 
 describe('taskDotClass', () => {
-    const status = (over: Partial<TaskStatus>): TaskStatus => ({
-        status: over.status ?? null,
-        cancelRequestedAt: over.cancelRequestedAt ?? null,
-        doneAt: over.doneAt ?? null,
-        waitReason: over.waitReason ?? null,
-        waitTerminalReason: over.waitTerminalReason ?? null,
-    });
-
     it('breathes green for a live run, grey while a stop request travels', () => {
         expect(taskDotClass(status({ status: 'running' }))).toBe('sidenav-dot-running');
         expect(taskDotClass(status({ status: 'running', cancelRequestedAt: '2026-09-01T12:00:00.000Z' }))).toBe(
@@ -114,10 +124,20 @@ describe('taskDotClass', () => {
         expect(taskDotClass(status({ status: 'queued' }))).toBe('sidenav-dot-paused');
     });
 
-    it('paints failure red, finished and done green, and leaves stopped plain', () => {
+    it('paints an unclosed success blue, the member turn to review it', () => {
+        expect(taskDotClass(status({ status: 'succeeded' }))).toBe('sidenav-dot-review');
+        expect(taskDotClass(status({ status: 'succeeded', doneAt: DONE_AT }))).toBe('sidenav-dot-done');
+    });
+
+    it('paints a closed task green even while a review wait is still open', () => {
+        expect(taskDotClass(status({ status: 'succeeded', waitReason: 'review', doneAt: DONE_AT }))).toBe(
+            'sidenav-dot-done'
+        );
+    });
+
+    it('paints failure red, done green, and leaves stopped plain', () => {
         expect(taskDotClass(status({ status: 'failed' }))).toBe('sidenav-dot-failed');
         expect(taskDotClass(status({ status: 'dead' }))).toBe('sidenav-dot-failed');
-        expect(taskDotClass(status({ status: 'succeeded' }))).toBe('sidenav-dot-done');
         expect(taskDotClass(status({ status: 'failed', doneAt: '2026-09-01T13:00:00.000Z' }))).toBe('sidenav-dot-done');
         expect(taskDotClass(status({ status: 'stopped' }))).toBe('');
         expect(taskDotClass(status({}))).toBe('');
@@ -129,6 +149,30 @@ describe('taskDotClass', () => {
 
     it('leaves a live run breathing even with a stray wait — running stays the loudest state', () => {
         expect(taskDotClass(status({ status: 'running', waitReason: 'review' }))).toBe('sidenav-dot-running');
+    });
+});
+
+describe('taskTone', () => {
+    const cases: [Partial<TaskStatus>, ReturnType<typeof taskTone>][] = [
+        [{}, 'none'],
+        [{ status: 'running' }, 'running'],
+        [{ status: 'running', cancelRequestedAt: '2026-09-01T12:00:00.000Z' }, 'stopping'],
+        [{ status: 'running', waitReason: 'review' }, 'running'],
+        [{ status: 'running', doneAt: DONE_AT }, 'running'],
+        [{ status: 'succeeded', waitReason: 'review', doneAt: DONE_AT }, 'done'],
+        [{ status: 'failed', doneAt: DONE_AT }, 'done'],
+        [{ status: 'succeeded', waitReason: 'review' }, 'waiting'],
+        [{ status: 'queued', waitReason: 'review' }, 'waiting'],
+        [{ status: 'queued' }, 'queued'],
+        [{ status: 'succeeded' }, 'review'],
+        [{ status: 'succeeded', waitReason: 'review', waitTerminalReason: 'exhausted' }, 'review'],
+        [{ status: 'failed' }, 'failed'],
+        [{ status: 'dead' }, 'failed'],
+        [{ status: 'stopped' }, 'stopped'],
+    ];
+
+    it.each(cases)('answers the label precedence as a tone: %o → %s', (over, tone) => {
+        expect(taskTone(status(over))).toBe(tone);
     });
 });
 

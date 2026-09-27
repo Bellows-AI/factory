@@ -298,6 +298,20 @@ describe('SideNav status dots and live lines', () => {
         expect(html).toContain('sidenav-dot sidenav-dot-paused');
         expect(html).not.toContain('sidenav-dot-done');
     });
+
+    it('paints an unclosed success with the blue review dot', () => {
+        const html = render('/tasks', navigation([], [summary({ status: 'succeeded' })]));
+        expect(html).toContain('sidenav-dot sidenav-dot-review');
+    });
+
+    it('paints a closed task green even while its review wait is still open', () => {
+        const html = render(
+            '/tasks',
+            navigation([], [summary({ status: 'succeeded', waitReason: 'review', doneAt: '2026-09-02T13:00:00.000Z' })])
+        );
+        expect(html).toContain('sidenav-dot sidenav-dot-done');
+        expect(html).not.toContain('sidenav-dot-paused');
+    });
 });
 
 describe('SideNav task authorship', () => {

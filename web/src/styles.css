@@ -1880,7 +1880,8 @@
 
     /* The status dot before a task's name: the task's state in one painted pixel, the legend being the
        colours the rest of the app already speaks — a live run breathes (with its halo), a parked one
-       holds grey, a failed one is red, and a finished or done one is solid green. */
+       holds grey, a success awaiting the user's review is accent blue, a failed one is red, and a done
+       one is solid green. */
     .sidenav-dot {
         background: currentColor;
         border-radius: 50%;
@@ -1911,6 +1912,10 @@
 
     .sidenav-dot-done {
         color: var(--lamp-run);
+    }
+
+    .sidenav-dot-review {
+        color: var(--accent);
     }
 
     .sidenav-empty {
