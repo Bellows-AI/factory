@@ -11,6 +11,7 @@ import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
     envBodyToData,
+    fleetDnsField,
     gateEnvSecretName,
     gateJobSpec,
     jobsPath,
@@ -19,6 +20,7 @@ import {
     runnerJobName,
     runnerJobSpec,
     secretName,
+    serviceSubdomain,
 } from '../src/k8s-podspec.js';
 import {
     claimName,
@@ -5117,7 +5119,12 @@ describe('the service pod and DNS specs', () => {
             'factory.job': job.id,
             'factory.lease': job.leaseToken,
             'factory.service': 'cache',
+            'factory.fleet': serviceSubdomain(job),
         });
+        // The declared name is the pod's hostname under the attempt's subdomain — the DNS
+        // record `cache` resolves to through the runner's search domain.
+        expect(pod.spec.hostname).toBe('cache');
+        expect(pod.spec.subdomain).toBe(serviceSubdomain(job));
         expect(pod.spec.restartPolicy).toBe('Never');
         expect(pod.spec.automountServiceAccountToken).toBe(false);
         expect(pod.spec.containers[0].image).toBe('redis');
@@ -5130,12 +5137,52 @@ describe('the service pod and DNS specs', () => {
         ).toThrow(/not a valid environment variable name/);
     });
 
-    it('names the DNS object exactly the service name, headless, selecting only this attempt', () => {
-        const dns = serviceDnsSpec(job, cache);
+    it('names the DNS object for the attempt, never the declared name, headless, selecting only its fleet', () => {
+        const dns = serviceDnsSpec(job);
         expect(dns.kind).toBe('Service');
-        expect(dns.metadata.name).toBe('cache');
+        expect(dns.metadata.name).toBe(serviceSubdomain(job));
+        expect(dns.metadata.name).toMatch(/^factory-svc-[0-9a-f]{16}$/);
+        expect(dns.metadata.labels).toMatchObject({ 'factory.lease': job.leaseToken });
+        expect(dns.metadata.labels).toHaveProperty('factory.service');
         expect(dns.spec.clusterIP).toBe('None');
-        expect(dns.spec.selector).toEqual({ 'factory.job': job.id, 'factory.service': 'cache' });
+        expect(dns.spec.selector).toEqual({ 'factory.fleet': serviceSubdomain(job) });
+    });
+
+    it('gives two concurrent attempts disjoint DNS names, so both can declare the same service', () => {
+        const other = { ...job, id: '22222222-2222-4222-8222-222222222222' };
+        expect(serviceDnsSpec(other).metadata.name).not.toBe(serviceDnsSpec(job).metadata.name);
+        const retry = { ...job, leaseToken: '33333333-3333-4333-8333-333333333333' };
+        expect(serviceDnsSpec(retry).metadata.name).not.toBe(serviceDnsSpec(job).metadata.name);
+    });
+
+    it('puts the attempt search domain on the runner and gate pods, and only when services are on', () => {
+        const searches = [`${serviceSubdomain(job)}.${namespace}.svc.cluster.local`];
+        const on = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' });
+        expect(fleetDnsField(on, job)).toEqual({ dnsConfig: { searches } });
+        const session = { id: SESSION, resume: false };
+        expect(runnerJobSpec(on, job, session).spec.template.spec.dnsConfig).toEqual({ searches });
+        const gate = gateJobSpec(on, job, {
+            key: `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`,
+            image: 'node:22',
+            gateName: 'test',
+            command: 'npm test',
+            run: 1,
+            envSecretName: null,
+            gateTimeoutMs: 60_000,
+        });
+        expect(gate.spec.template.spec.dnsConfig).toEqual({ searches });
+
+        const domain = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            K8S_CLUSTER_DOMAIN: 'corp.internal',
+        });
+        expect(fleetDnsField(domain, job).dnsConfig?.searches).toEqual([
+            `${serviceSubdomain(job)}.${namespace}.svc.corp.internal`,
+        ]);
+
+        const off = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
+        expect(runnerJobSpec(off, job, session).spec.template.spec).not.toHaveProperty('dnsConfig');
     });
 });
 
@@ -5216,8 +5263,8 @@ describe('the kubernetes services flow', () => {
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
 
-        // The readout Job ran first, then the service pod and its DNS name, and only then the
-        // runner Job — docker's fleet-before-runner order.
+        // The readout Job ran first, then the attempt's DNS name and the service pod under it,
+        // and only then the runner Job — docker's fleet-before-runner order.
         const bellowsPost = calls.findIndex(
             (c) => c.body && (c.body as { metadata?: { name?: string } }).metadata?.name?.startsWith('factory-bellows-')
         );
@@ -5230,9 +5277,10 @@ describe('the kubernetes services flow', () => {
                 (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
         );
         expect(bellowsPost).toBeGreaterThanOrEqual(0);
-        expect(podPost).toBeGreaterThan(bellowsPost);
-        expect(dnsPost).toBeGreaterThan(podPost);
-        expect(jobPost).toBeGreaterThan(dnsPost);
+        expect(dnsPost).toBeGreaterThan(bellowsPost);
+        expect(podPost).toBeGreaterThan(dnsPost);
+        expect(jobPost).toBeGreaterThan(podPost);
+        expect((calls[dnsPost]!.body as { metadata: { name: string } }).metadata.name).toBe(serviceSubdomain(job));
 
         // The fleet OUTLIVES run(): the declared gates run after it and test against these
         // services, so run() ends with the claim's release (GET, DELETE) and the attempt
@@ -5250,13 +5298,13 @@ describe('the kubernetes services flow', () => {
         expect(calls.slice(releasedAt).filter(leaseList)).toHaveLength(2);
     });
 
-    it('refuses a DNS-name collision terminally, naming the conflict instead of ordering the race', async () => {
-        const { request, calls } = servicesFake({ dnsCreate: { status: 409, body: '{"reason":"AlreadyExists"}' } });
-        const outcome = await servicesRunner(request).run(job, { id: SESSION, resume: false });
+    it('fails a DNS-name create as infrastructure, tearing the partial fleet down', async () => {
+        const { request, calls } = servicesFake({ dnsCreate: { status: 500, body: '{"reason":"InternalError"}' } });
+        await expect(servicesRunner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not start the service DNS name/
+        );
 
-        expect(outcome).toMatchObject({ exitCode: null, started: true });
-        expect(outcome.output).toContain('already running for another job');
-        // The runner Job was never created — a refused job has no runner to orphan.
+        // The runner Job was never created — a failed start has no runner to orphan.
         expect(
             calls.some(
                 (c) =>
@@ -5266,8 +5314,7 @@ describe('the kubernetes services flow', () => {
             )
         ).toBe(false);
         // And the partial fleet was torn down on the way out: the lease lists ran (their empty
-        // answers mean the fake had nothing left to delete), plus the DNS 409'd object is
-        // this attempt's own to name.
+        // answers mean the fake had nothing left to delete).
         expect(
             calls.some(
                 (c) =>

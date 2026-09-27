@@ -25,6 +25,13 @@ export interface RunOutcome {
      */
     started: boolean;
     /**
+     * True when the runner refused the job before the agent ran — a `.bellows.yaml` the parser
+     * rejects. The verdict is final (`started: true`), but no work happened, so the loop runs no
+     * gates against it: a gate over an untouched checkout reports noise (a `vitest: not found`
+     * exit 127) under the refusal that actually explains the failure.
+     */
+    refused?: boolean;
+    /**
      * The session the run actually used, when the runner could only know it after the fact —
      * opencode mints its own (`ses_…`) and the runner scrapes it out of the session database the
      * run left behind. Null for claude-code, whose session is minted up front and reported

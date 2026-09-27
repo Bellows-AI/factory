@@ -99,6 +99,12 @@ export interface DriverConfig {
      */
     k8sRelease: string | null;
     /**
+     * The cluster's DNS domain (`cluster.local` unless the kubelet was told otherwise). The
+     * runner and gate pods resolve a declared service's bare name through a search domain under
+     * it — `<attempt subdomain>.<namespace>.svc.<domain>` — and a search domain is absolute.
+     */
+    k8sClusterDomain: string;
+    /**
      * The name of a Secret holding the runner credentials under the kubernetes executor — one key
      * per RUNNER_ENV name. The k8s form of `-e NAME`: the names travel, the values live in a Secret
      * the cluster already holds, and nothing readable lands in the pod spec. Null forwards nothing.
@@ -382,6 +388,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         // (`make stop`, `kubectl delete jobs -l ...instance=<name>`) cannot sweep another
         // release's runners sharing the namespace.
         k8sRelease: (env.K8S_RELEASE ?? '').trim() || null,
+        k8sClusterDomain: text(env.K8S_CLUSTER_DOMAIN, 'K8S_CLUSTER_DOMAIN', 'cluster.local'),
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw,
         imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),

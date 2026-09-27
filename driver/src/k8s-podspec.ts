@@ -58,6 +58,7 @@ export interface RunnerJobSpec {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
                 imagePullSecrets?: { name: string }[];
+                dnsConfig?: FleetDnsConfig;
                 containers: {
                     name: string;
                     image: string;
@@ -224,6 +225,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                     // socket riding along with the dashboard, refused here for the same reason.
                     automountServiceAccountToken: false,
                     ...pullSecretsField(config),
+                    ...fleetDnsField(config, job),
                     containers: [
                         {
                             // A constant: a container name is a DNS LABEL (63 bytes), which rules
@@ -314,6 +316,8 @@ export interface AuxJobSpec {
                 imagePullSecrets?: { name: string }[];
                 /** The uid:gid the gate writes the shared worktree as — GATE_UID/GATE_GID. */
                 securityContext?: { runAsUser: number; runAsGroup: number };
+                /** The attempt's service search domain — gate only. */
+                dnsConfig?: FleetDnsConfig;
                 containers: {
                     name: string;
                     image: string;
@@ -346,6 +350,8 @@ interface AuxJobSpecInput {
     container: AuxContainer;
     /** The uid:gid the gate writes the shared worktree as — GATE_UID/GATE_GID. Gate only. */
     securityContext?: { runAsUser: number; runAsGroup: number };
+    /** The attempt's service search domain. Gate only — the gates test against the fleet. */
+    dnsConfig?: FleetDnsConfig;
 }
 
 /**
@@ -396,6 +402,7 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     automountServiceAccountToken: false,
                     ...pullSecretsField(config),
                     ...(input.securityContext ? { securityContext: input.securityContext } : {}),
+                    ...(input.dnsConfig ? { dnsConfig: input.dnsConfig } : {}),
                     containers: [input.container],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
@@ -425,6 +432,31 @@ export function workspaceMount(
 const HASH_HEX_LENGTH = 16;
 export const hash16 = (input: string): string =>
     createHash('sha256').update(input).digest('hex').slice(0, HASH_HEX_LENGTH);
+
+/**
+ * The attempt's service subdomain: the name of its ONE headless Service, and the `subdomain` of
+ * every service pod it starts, each pod carrying the declared service name as its `hostname`.
+ * Kubernetes publishes `<hostname>.<subdomain>.<namespace>.svc.<domain>` for such a pod, so the
+ * declared name is scoped to the attempt rather than to the namespace — two concurrent jobs can
+ * both declare `db`, exactly as docker's per-job network lets them.
+ */
+export const serviceSubdomain = (job: BoardJob): string => `factory-svc-${hash16(`${job.id}|${job.leaseToken}`)}`;
+
+export interface FleetDnsConfig {
+    searches: string[];
+}
+
+/**
+ * The search domain that makes the bare declared name (`postgres://db:5432`) resolve to this
+ * attempt's service pod, on every pod that talks to the fleet — the runner and the gates. Merged
+ * after the ClusterFirst defaults, so the namespace's own Services are searched first: a
+ * non-factory Service named like a declared one shadows it. Absent when services are off.
+ */
+export function fleetDnsField(config: DriverConfig, job: BoardJob): { dnsConfig?: FleetDnsConfig } {
+    if (!config.servicesEnabled) return {};
+    const domain = `${serviceSubdomain(job)}.${config.k8sNamespace}.svc.${config.k8sClusterDomain}`;
+    return { dnsConfig: { searches: [domain] } };
+}
 
 /**
  * The raw gate name is repo content, so it never joins a k8s name directly: lowercased, every
@@ -509,6 +541,7 @@ export function gateJobSpec(config: DriverConfig, job: BoardJob, gate: GateJobSp
         // twin). HOME moves to /tmp with the uid: the image's own HOME (/root) is unwritable for
         // a non-root uid, and a gate that npm-installs needs a writable cache directory.
         securityContext: { runAsUser: GATE_UID, runAsGroup: GATE_GID },
+        ...fleetDnsField(config, job),
         container: {
             // A container name is a 63-char DNS label — the Job name's roomy subdomain bound
             // does not apply to it, so the short hash stands in.

@@ -1,4 +1,4 @@
-import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { FLEET_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession, workspacePath } from './claim.js';
@@ -10,6 +10,7 @@ import {
     jobsPath,
     pullSecretsField,
     releaseLabel,
+    serviceSubdomain,
     workspaceMount,
     type AuxJobSpec,
 } from './k8s-podspec.js';
@@ -280,6 +281,8 @@ export function servicePodSpec(
     spec: {
         restartPolicy: 'Never';
         automountServiceAccountToken: false;
+        hostname: string;
+        subdomain: string;
         imagePullSecrets?: { name: string }[];
         containers: {
             name: string;
@@ -293,6 +296,7 @@ export function servicePodSpec(
         [JOB_LABEL]: job.id,
         [LEASE_LABEL]: job.leaseToken,
         [SERVICE_LABEL]: spec.name,
+        [FLEET_LABEL]: serviceSubdomain(job),
         ...releaseLabel(config),
     };
     return {
@@ -302,6 +306,11 @@ export function servicePodSpec(
         spec: {
             restartPolicy: 'Never',
             automountServiceAccountToken: false,
+            // The declared name as the pod's hostname under the attempt's subdomain: the DNS
+            // record the runner's and gates' search domain resolves `db` to (serviceSubdomain).
+            // The bellows parser constrains names to lowercase DNS labels, so it is legal as-is.
+            hostname: spec.name,
+            subdomain: serviceSubdomain(job),
             ...pullSecretsField(config),
             containers: [
                 {
@@ -323,42 +332,41 @@ export function servicePodSpec(
 }
 
 /**
- * The service's DNS name, as a headless Service. THIS is the whole feature under kubernetes:
- * `postgres://db:5432` resolves because an object named `db` exists, so the name is exactly the
- * declared service name and is therefore NAMESPACE-global — two concurrent jobs declaring `db`
- * collide at the apiserver, and the collision is refused, never resolved by an ordering rule.
- * The bellows parser already constrains names to lowercase DNS labels, so the declared name is
- * a legal Service name unchanged.
+ * The attempt's service DNS, as ONE headless Service named `serviceSubdomain(job)`. THIS is the
+ * whole feature under kubernetes: each service pod sets `hostname: <declared name>` and
+ * `subdomain: <this Service>`, so `<name>.<subdomain>.<namespace>.svc` resolves to it, and the
+ * runner and gate pods carry that domain as a search domain (fleetDnsField) — `postgres://db:5432`
+ * resolves for exactly this attempt. The name is attempt-scoped, never the declared one, so two
+ * concurrent jobs both declaring `db` never meet at the apiserver.
  *
  * Headless (`clusterIP: None`) because the gate endpoint aside, the runner must reach the
  * service's EPHEMERAL container ports, and no port list was declared — `ports:` is an unknown
  * key in `.bellows.yaml` by design. A headless Service publishes A records straight to the
  * matching pods, which is exactly the "any port, direct to the container" semantics docker's
- * network alias had.
+ * network alias had. It selects by the fleet label, which only service pods carry.
  */
-export function serviceDnsSpec(
-    job: BoardJob,
-    spec: ServiceSpec
-): {
+export function serviceDnsSpec(job: BoardJob): {
     apiVersion: 'v1';
     kind: 'Service';
     metadata: { name: string; labels: Record<string, string> };
     spec: { clusterIP: 'None'; selector: Record<string, string> };
 } {
+    const subdomain = serviceSubdomain(job);
     return {
         apiVersion: 'v1',
         kind: 'Service',
         metadata: {
-            name: spec.name,
+            name: subdomain,
+            // factory.service is what the lease-scoped teardown selects on (byLease below).
             labels: {
                 [JOB_LABEL]: job.id,
                 [LEASE_LABEL]: job.leaseToken,
-                [SERVICE_LABEL]: spec.name,
+                [SERVICE_LABEL]: subdomain,
             },
         },
         spec: {
             clusterIP: 'None',
-            selector: { [JOB_LABEL]: job.id, [SERVICE_LABEL]: spec.name },
+            selector: { [FLEET_LABEL]: subdomain },
         },
     };
 }
