@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { TelemetryStats } from '@factory-ai/core';
+import { inputTokens, type TelemetryStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../api/useStats.js';
 import { BarChart } from '../charts/BarChart.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
@@ -54,7 +54,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                             onClick={() => toggle('input')}
                         >
                             <span className="swatch swatch-primary" aria-hidden="true" />
-                            Input
+                            Total input
                         </button>
                         <button
                             type="button"
@@ -84,10 +84,10 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                             series={[
                                 {
                                     id: 'input',
-                                    label: 'Input',
+                                    label: 'Total input',
                                     // Raw, uncoerced: an unmeasured bucket reads as a dash in the
                                     // exact readout, never as a fabricated zero. Geometry coerces.
-                                    values: points.map((p) => p.tokens.input),
+                                    values: points.map((p) => inputTokens(p.tokens).total),
                                     className: 'bar-primary',
                                 },
                                 {
@@ -113,11 +113,12 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                     <details className="chart-disclosure">
                         <summary>How this is calculated</summary>
                         <p>
-                            Bars stack Input over Output on the left Tokens axis; the Sessions line reads the right
-                            Sessions axis. Cache reads and writes are excluded from the bars — they would count the same
-                            context repeatedly. Quiet buckets are kept, never closed. A window through 92 days renders
-                            daily buckets; longer windows render ISO weeks. The hatched bucket is the current day or
-                            week, still partial.
+                            Bars stack Total input over Output on the left Tokens axis; the Sessions line reads the
+                            right Sessions axis. Total input counts uncached input plus cache reads and writes — every
+                            prompt token the model processed, so a long cached conversation counts its context on every
+                            request. Quiet buckets are kept, never closed. A window through 92 days renders daily
+                            buckets; longer windows render ISO weeks. The hatched bucket is the current day or week,
+                            still partial.
                         </p>
                     </details>
                 </>

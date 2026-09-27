@@ -1,10 +1,10 @@
-import type { TelemetryStats } from '@factory-ai/core';
+import { inputTokens, type TelemetryStats } from '@factory-ai/core';
 import type { StatsPayload } from '../api/useStats.js';
 import { duration, int, num, pct, tokens } from '../format.js';
 import { selectionText } from '../dashboardSummary.js';
 
 /**
- * The metric summary: five measures in four visual groups, hierarchy first — Sessions and
+ * The metric summary: six measures in four visual groups, hierarchy first — Sessions and
  * Token usage lead, Active time and Edit acceptance support. Every figure speaks for the
  * payload it rendered from: the Sessions line names the rendered selection, never the
  * requested one, and never repeats the repository names the page header already carries.
@@ -15,6 +15,7 @@ import { selectionText } from '../dashboardSummary.js';
 export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetryStats; meta: StatsPayload['meta'] }) {
     const t = telemetry.totals;
     const ea = t.editAcceptance;
+    const input = inputTokens(t.tokens);
     // The acceptance copy keeps the measured denominator visible and never invents one:
     // ratio present → "A of D measured..."; acceptances unmeasured with decisions measured →
     // name the decisions without a fabricated count; nothing measured → Not measured.
@@ -42,8 +43,13 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                     <span className="usage-label">Token usage</span>
                     <div className="usage-measures">
                         <div className="usage-measure">
-                            <strong>{tokens(t.tokens.input)}</strong>
-                            <span>Input</span>
+                            <strong>{tokens(input.total)}</strong>
+                            <span>Total input</span>
+                            <span className="muted">
+                                {t.tokens.input === null
+                                    ? 'Uncached not measured'
+                                    : `${tokens(t.tokens.input)} uncached`}
+                            </span>
                             <span className="muted">
                                 {t.tokens.cacheRead === null
                                     ? 'Cache read not measured'
@@ -53,6 +59,13 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                                 {t.tokens.cacheCreation === null
                                     ? 'Cache write not measured'
                                     : `${tokens(t.tokens.cacheCreation)} written to cache`}
+                            </span>
+                        </div>
+                        <div className="usage-measure">
+                            <strong>{pct(input.cacheHitRatio)}</strong>
+                            <span>Cache hit rate</span>
+                            <span className="muted">
+                                {input.cacheHitRatio === null ? 'Not measured' : 'Share of input read from cache'}
                             </span>
                         </div>
                         <div className="usage-measure">

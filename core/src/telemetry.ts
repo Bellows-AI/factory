@@ -37,6 +37,20 @@ function sumTokens(items: { tokens: TokenTotals }[]): TokenTotals {
 }
 
 /**
+ * The input side of usage as one figure: every prompt token the model processed — the uncached
+ * tail plus the context read from and written to the cache — and the share the cache served.
+ * Output never joins it. The ratio is null when cache reads were unmeasured or nothing was sent,
+ * so an unmeasured cache never reads as a 0% hit rate.
+ */
+export function inputTokens(tokens: TokenTotals): { total: number | null; cacheHitRatio: number | null } {
+    const total = sum([tokens.input, tokens.cacheRead, tokens.cacheCreation]);
+    return {
+        total,
+        cacheHitRatio: tokens.cacheRead === null || total === null ? null : ratio(tokens.cacheRead, total),
+    };
+}
+
+/**
  * Assembles the edit-acceptance figures from the measured sums. `decisions` is the null-aware
  * denominator; the ratio stays null unless the numerator was measured AND something was —
  * a rejected count alone proves nothing about acceptance, and zero measured decisions have

@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { telemetryStats } from '@factory-ai/core';
+import { inputTokens, telemetryStats } from '@factory-ai/core';
 import { readFileSync } from 'node:fs';
-import type { TelemetryInput, TelemetryStats } from '@factory-ai/core';
+import type { TelemetryInput, TelemetryPoint, TelemetryStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../src/api/useStats.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 import { UsageSummaryPanel } from '../src/panels/UsageSummaryPanel.js';
 import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
-import { tokens } from '../src/format.js';
+import { pct, tokens } from '../src/format.js';
 import { PAD } from '../src/charts/scale.js';
 import type { TaskUsageStats } from '@factory-ai/core';
 
@@ -192,9 +192,9 @@ describe('telemetry panels render', () => {
 });
 
 describe('telemetry panels render — usage summary panel', () => {
-    it('renders four groups and five measures, hierarchy first', () => {
+    it('renders four groups and six measures, hierarchy first', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
-        // Four visual groups, five measures: Sessions and Token usage lead, then the two
+        // Four visual groups, six measures: Sessions and Token usage lead, then the two
         // supporting effectiveness measures. DOM order IS the reading order at every width.
         for (const label of ['Sessions', 'Token usage', 'Active time', 'Edit acceptance']) {
             expect(html).toContain(label);
@@ -204,19 +204,25 @@ describe('telemetry panels render — usage summary panel', () => {
         expect(html.indexOf('Active time')).toBeLessThan(html.indexOf('Edit acceptance'));
     });
 
-    it('renders Input and Output as separate measures with their own values', () => {
+    it('renders total input, cache hit rate and output as separate measures with their own values', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
-        expect(html).toContain('>Input</');
+        const t = telemetry.totals.tokens;
+        const { total, cacheHitRatio } = inputTokens(t);
+        expect(html).toContain('>Total input</');
+        expect(html).toContain('>Cache hit rate</');
         expect(html).toContain('>Output</');
-        // Each carries its OWN figure from the payload, never input + output.
-        expect(html).toContain(`>${tokens(telemetry.totals.tokens.input)}<`);
-        expect(html).toContain(`>${tokens(telemetry.totals.tokens.output)}<`);
-        // Cache tokens are input-side (Anthropic's cache_creation_input_tokens), so both cache
-        // lines sit under Input, and Output carries neither.
-        const inputMeasure = html.slice(html.indexOf('>Input</'), html.indexOf('>Output</'));
+        // Total input is every prompt token — uncached + cache read + cache write — never output.
+        expect(total).toBe((t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheCreation ?? 0));
+        expect(html).toContain(`>${tokens(total)}<`);
+        expect(html).toContain(`>${pct(cacheHitRatio)}<`);
+        expect(html).toContain(`>${tokens(t.output)}<`);
+        // The three parts sit under Total input, and Output carries none of them.
+        const inputMeasure = html.slice(html.indexOf('>Total input</'), html.indexOf('>Cache hit rate</'));
+        expect(inputMeasure).toContain(`${tokens(t.input)} uncached`);
         expect(inputMeasure).toContain('read from cache');
         expect(inputMeasure).toContain('written to cache');
         const outputMeasure = html.slice(html.indexOf('>Output</'));
+        expect(outputMeasure).not.toContain('uncached');
         expect(outputMeasure).not.toContain('read from cache');
         expect(outputMeasure).not.toContain('written to cache');
     });
@@ -425,16 +431,24 @@ describe('token usage series granularity', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
         const PRESSED_LEGEND_COUNT = 3;
         expect(html.match(/aria-pressed="true"/g)).toHaveLength(PRESSED_LEGEND_COUNT);
-        for (const name of ['Input', 'Output', 'Sessions']) {
+        for (const name of ['Total input', 'Output', 'Sessions']) {
             expect(html).toContain(`>${name}</button>`);
         }
+    });
+
+    it('plots total input — uncached plus cache read and write — in each bucket', () => {
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
+        const point = telemetry.series.points.find((p) => p.tokens.cacheRead !== null) as TelemetryPoint;
+        const total = inputTokens(point.tokens).total as number;
+        expect(total).toBeGreaterThan(point.tokens.input ?? 0);
+        expect(html).toContain(`Total input ${total.toLocaleString('en-US')}`);
     });
 
     it('explains the calculation after the chart', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
         expect(html).toContain('<details');
         expect(html).toContain('<summary>How this is calculated</summary>');
-        expect(html).toContain('Cache reads and writes are excluded from the bars');
+        expect(html).toContain('Total input counts uncached input plus cache reads and writes');
         expect(html).toContain('92');
         expect(html).toContain('Quiet buckets are kept');
         expect(html.indexOf('<svg')).toBeLessThan(html.indexOf('How this is calculated'));
@@ -495,7 +509,7 @@ describe('token usage series granularity', () => {
         expect(widths.length).toBeGreaterThan(0);
         const QUARTER_PLOT_DIVISOR = 4;
         expect(Math.max(...widths)).toBeLessThanOrEqual((width - PAD.left - PAD.right) / QUARTER_PLOT_DIVISOR);
-        expect(html).toMatch(/aria-label="[^"]*Input 12,345/);
+        expect(html).toMatch(/aria-label="[^"]*Total input 12,345/);
         expect(html).toContain('The hatched bucket is a partial period.');
     });
 
