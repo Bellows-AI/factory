@@ -13,7 +13,7 @@ import {
 } from './k8s-auxspec.js';
 import { bellowsJobSpec, jobsPath } from './k8s-podspec.js';
 import { pollJobToTerminal, readVerdict } from './k8s-poll.js';
-import { expectOk, HTTP_CONFLICT, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
+import { expectOk, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import { collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
@@ -102,33 +102,28 @@ export async function teardownServices(deps: K8sDeps, job: BoardJob): Promise<vo
 }
 
 /**
- * Starts one declared service's Pod and DNS Service, answering the namespace-collision refusal
- * message on a 409 or `null` on success — every other failure throws, torn down on the way out
- * exactly as docker's partial fleet is.
+ * Starts the attempt's fleet: its one headless DNS Service, then each declared service's Pod
+ * under it. Every name is attempt-scoped (serviceSubdomain), so nothing here can collide with a
+ * concurrent job — any failure is infrastructure and throws, the partial fleet torn down on the
+ * way out exactly as docker's is.
  */
-async function startOneService(deps: K8sDeps, job: BoardJob, spec: ServiceSpec): Promise<string | null> {
+async function startFleet(deps: K8sDeps, job: BoardJob, specs: ServiceSpec[]): Promise<void> {
+    let current = 'the service DNS name';
     try {
-        const pod = await deps.request(
-            'POST',
-            podsPath(deps.config.k8sNamespace),
-            servicePodSpec(deps.config, job, spec)
-        );
-        expectOk(pod, 'creating the service pod');
-        const dns = await deps.request('POST', servicesPath(deps.config.k8sNamespace), serviceDnsSpec(job, spec));
-        if (dns.status === HTTP_CONFLICT) {
-            return (
-                `.bellows.yaml: service "${spec.name}" is already running for another job in ` +
-                'this namespace — a service name is shared across the namespace, and no ' +
-                'first-wins or last-wins rule reads as anything but "the wrong database came up". ' +
-                'Re-queue this job when the other one is done, or rename one of the services.'
-            );
-        }
+        const dns = await deps.request('POST', servicesPath(deps.config.k8sNamespace), serviceDnsSpec(job));
         expectOk(dns, 'creating the service DNS name');
-        return null;
+        for (const spec of specs) {
+            current = `service "${spec.name}"`;
+            const pod = await deps.request(
+                'POST',
+                podsPath(deps.config.k8sNamespace),
+                servicePodSpec(deps.config, job, spec)
+            );
+            expectOk(pod, 'creating the service pod');
+        }
     } catch (e) {
-        // A partial fleet is torn down on the way out, exactly as docker's is.
         await teardownServices(deps, job);
-        throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
+        throw new Error(`could not start ${current}: ${(e as Error).message}`);
     }
 }
 
@@ -153,25 +148,15 @@ async function readServiceSpecs(
 /**
  * The k8s form of docker.ts's setup: read the checkouts' `.bellows.yaml` through a throwaway
  * readout Job, then start each declared service as a Pod with a headless Service as its DNS name.
- * Answers a terminal `RunOutcome` for an author's refusal (a parse refusal, or a namespace-global
- * service-name collision), or `null` to continue toward the runner.
+ * Answers a terminal `RunOutcome` for an author's parse refusal, or `null` to continue toward
+ * the runner.
  */
 export async function startServiceFleet(deps: K8sDeps, job: BoardJob): Promise<RunOutcome | null> {
     if (!deps.config.servicesEnabled) return null;
-    const parsed = await readServiceSpecs(deps, job);
-    let refusal = parsed.refusal;
-    if (!refusal) {
-        for (const spec of parsed.specs) {
-            const conflict = await startOneService(deps, job, spec);
-            if (conflict) {
-                refusal = conflict;
-                break;
-            }
-        }
-    }
+    const { specs, refusal } = await readServiceSpecs(deps, job);
     if (refusal !== null) {
-        await teardownServices(deps, job);
-        return { exitCode: null, output: refusal, timedOut: false, started: true };
+        return { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
     }
+    if (specs.length > 0) await startFleet(deps, job, specs);
     return null;
 }

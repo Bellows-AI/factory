@@ -149,10 +149,14 @@ driver:
     # instead — which also covers an operator that ships its own and disables `collector.enabled`.
     runnerOtelEndpoint: ''
     # RUNNER_SERVICES: start the auxiliary services a checkout's .bellows.yaml declares — a pod
-    # per service with a headless Service as its DNS name, alive for exactly the run. On by
+    # per service under one per-attempt headless Service, alive for exactly the run. On by
     # default; '0' opts out for an operator who wants nothing started that no file asked for.
     # Read docs/jobs.md first.
     services: '1'
+    # K8S_CLUSTER_DOMAIN: the cluster's DNS domain. The runner and gate pods resolve a declared
+    # service's bare name through a search domain under it; change it only if the kubelet's
+    # clusterDomain is not cluster.local.
+    clusterDomain: cluster.local
     resources:
         requests:
             cpu: 50m

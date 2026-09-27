@@ -36,8 +36,8 @@ name, there is no barrel:
   pre/post-create claim verifies around the runner Job POST.
 - `k8s-poll.ts` — Job-status polling to a terminal state, the live-output tail, and the
   sync/reclaim aux Job runners built on it.
-- `k8s-services.ts` — the declared-service fleet: the `.bellows.yaml` readout, starting each
-  service as a Pod + headless Service, and the lease-scoped teardown.
+- `k8s-services.ts` — the declared-service fleet: the `.bellows.yaml` readout, starting the
+  attempt's headless Service and each service as a Pod under it, and the lease-scoped teardown.
 - `k8s-runner.ts` — `createKubernetesRunner` itself, composing the above into the `Runner`.
 - `k8s-gates.ts` — `createKubernetesGateManager`, the second `GateManager`.
 
@@ -326,6 +326,7 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT` in the pod spec. Always provided, so a pod never relies on an image-baked default that nothing in a cluster resolves; the default names the compose collector and the chart overrides it with the in-chart collector. |
 | `RUNNER_IMAGE_PULL_SECRETS` | unset | Comma-separated Secret names set as `imagePullSecrets` on every pod the driver specs (runner, aux Jobs, gates, services). The chart forwards its own `imagePullSecrets`. Docker has no twin: the daemon's login is what `docker run` pulls with. |
 | `K8S_RELEASE` | unset | The Helm release; labels every runner Job and every driver-specced pod `app.kubernetes.io/instance`, which scopes bulk cleanup and the runner NetworkPolicy to one release. |
+| `K8S_CLUSTER_DOMAIN` | `cluster.local` | The cluster's DNS domain. The runner and gate pods resolve a declared service's bare name through the search domain `<attempt subdomain>.<namespace>.svc.<domain>`, and a search domain is absolute. The chart forwards `driver.clusterDomain`. |
 | `DRIVER_HEARTBEAT_FILE` | unset | A file the driver rewrites every 10s from a timer, so a liveness probe can tell a turning event loop from a wedged one — the driver serves no HTTP. Timer-driven on purpose: a drain stops polling for as long as its jobs take. The chart sets `/tmp/heartbeat` and probes its age. Executor-neutral. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy. Kubernetes reads a missing or `:latest` tag as `Always`, which reaches past the node's local images for a registry copy of `claude-executor` — where the docker runner would have used what the daemon holds. The chart passes `driver.imagePullPolicy` through. |
 
@@ -374,19 +375,25 @@ per-checkout sleeper pod would buy back only that. `pods/exec` stays ungranted �
 container this process specs itself is the capability the design uses, and exec into an existing
 one is the escalation it never needed.
 
-**A declared service is a Pod with a headless Service as its DNS name.** The `.bellows.yaml`
+**A declared service is a Pod under the attempt's own headless Service.** The `.bellows.yaml`
 readout is a throwaway Job over a read-only PVC mount — the same script the docker readout
 container runs — and each service then starts as a `restartPolicy: Never` pod (docker's detached
 container never restarts either) with the environment as literal pod env, exactly as public as
-the author's file already was. The DNS half is the whole trick: the runner resolves
-`postgres://db:5432` through a headless Service named `db`, whose A records point at the
-attempt's pod — no port list needed, which the strict parser's refusal of `ports:` requires.
-The name is namespace-global, so a collision with a concurrent job's service answers 409 and
-fails the job terminally, naming the conflict — the "wrong database came up" rule, one platform
-later. The fleet is attempt-scoped by lease label, swept by the fence, and torn down by the
-loop's `releaseServices` once the declared gates are done — never inside `run()`, because the
-gate Jobs resolve the same headless Services and test against them (docs/jobs.md, "The fleet
-outlives `run()`") — the same three moments docker's is. Its states ride the vitals flush
+the author's file already was. The DNS half is the whole trick, and it is attempt-scoped the way
+docker's per-job network is: the attempt gets ONE headless Service named
+`factory-svc-<hash of job id + lease>`, each service pod sets `hostname: <declared name>` and
+`subdomain: <that Service>` (and carries `factory.fleet: <that Service>`, which is all the Service
+selects), so kubernetes publishes `db.factory-svc-….<namespace>.svc.<domain>` for it. The runner
+and gate pods carry that domain in `dnsConfig.searches`, so `postgres://db:5432` resolves to this
+attempt's pod — no port list needed, which the strict parser's refusal of `ports:` requires. Two
+concurrent jobs can both declare `db`: nothing ever creates an object named after the declared
+service. The search domain is merged after the ClusterFirst defaults, so a non-factory Service in
+the namespace spelled like a declared service shadows it — do not name your own Services after
+`.bellows.yaml` entries. The fleet is attempt-scoped by lease label, swept by the fence, and torn
+down by the loop's `releaseServices` once the declared gates are done — never inside `run()`,
+because the gate Jobs resolve the same names and test against them (docs/jobs.md, "The fleet
+outlives `run()`") — the same three moments docker's is. A refused start (the parser rejects the
+file) runs no gates: there was no agent work to check. Its states ride the vitals flush
 (`runtime.services`), read off the lease-scoped pod list — pod phases lowercased, `unknown`
 before the API has phased a pod. The CPU/mem numbers need the metrics API; the fleet does not,
 so a cluster with no metrics-server still reports its services — the sample carries null numbers

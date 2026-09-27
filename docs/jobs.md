@@ -170,7 +170,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `GATE_LISTEN_HOST` | `127.0.0.1` | Where the ad-hoc gate endpoint binds. Loopback by default — it runs shell commands, and the bind address is the access control. |
 | `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver — the compose stack points it at `http://driver`, the chart at the driver pod's own IP (`http://$(POD_IP)`, so a gate call never lands on another replica). A URL with no port of its own has the bound (ephemeral) port appended — the listener is `listen(0)`, so no fixed URL could name it; one with a port stays verbatim. |
 | `GATE_TIMEOUT_MS` | `600000` | The wall-clock cap on one gate run. A gate that outlives it is a failed gate, exit 124 — the runner's own timeout covers the agent, this covers a gate that hangs. The chart sets it from `driver.gateTimeoutMs` (thirty minutes in the local profile); compose passes it through from `.env`. |
-| `RUNNER_SERVICES` | on | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service on a per-job network (docker) or as a pod with a headless DNS Service (kubernetes), so `postgres://db:5432` resolves for exactly that job. `0` opts out. Read the section below for the security posture. |
+| `RUNNER_SERVICES` | on | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service on a per-job network (docker) or as a pod under a per-attempt headless DNS Service (kubernetes), so `postgres://db:5432` resolves for exactly that job. `0` opts out. Read the section below for the security posture. |
 
 **The workspace is passed as a volume name, not a path.** The driver's runners are *siblings*, not
 children: it talks to the host's daemon over a socket, so a path inside the driver container means
@@ -590,10 +590,10 @@ connection and retry, which is what agents are for.
   it joins the attempt's services network (`docker network connect`, once per attempt — the
   network is named after the lease); a job with no services has no network and the refused
   connect is ignored. Docker refuses to remove a network with an endpoint attached, so the
-  teardown detaches whatever is still on it first. Under kubernetes a gate pod resolves the
-  headless Services namespace-wide and needs nothing extra.
+  teardown detaches whatever is still on it first. Under kubernetes a gate pod carries the
+  attempt's service search domain in `dnsConfig`, the same one the runner pod does.
 - **Both executors run them.** Docker starts sibling containers on a per-job network; kubernetes
-  starts service pods with a headless Service as the DNS name ([kubernetes.md](kubernetes.md),
+  starts service pods under a per-attempt headless Service ([kubernetes.md](kubernetes.md),
   "Gates and services on this platform"). `RUNNER_SERVICES` decides whether they run at all, on
   either platform — nothing about the flag is executor-specific.
 - **The fleet is visible in the task view.** Each vitals flush carries the attempt's service
@@ -1443,12 +1443,11 @@ command is exactly what a hook intercepts.
 - **No service volumes, health checks, depends-on ordering or restart policies.** A service that
    needs a warmed database is the agent's problem — it can sleep and retry, which is the one
    superpower a headless run has. Add keys to the parser when a real job needs them, not before.
-- **Under kubernetes a service name is namespace-global.** Docker gives each attempt its own
-  network, so two concurrent jobs can both run a service called `db`. A k8s Service named `db`
-  is one object per namespace, so a second concurrent job that declares `db` is refused
-  terminally, naming the conflict — the same rule as a duplicate across checkouts, because no
-  ordering rule reads as anything but "the wrong database came up". Sequential jobs are fine:
-  the name goes free when the attempt's teardown deletes it.
+- **A service name is attempt-scoped on both executors.** Docker gives each attempt its own
+  network; kubernetes gives each attempt its own headless Service and resolves the declared name
+  as a pod hostname under it, through a search domain on the runner and gate pods. Two concurrent
+  jobs can both run a service called `db`. The kubernetes caveat: the search domain comes after
+  the namespace's own, so a non-factory Service literally named `db` in the namespace wins.
 
 ## Testing
 

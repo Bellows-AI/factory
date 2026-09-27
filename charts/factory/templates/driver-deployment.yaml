@@ -75,6 +75,9 @@ spec:
                       # neighbor release's runners, and the runner NetworkPolicy confines only these.
                       - name: K8S_RELEASE
                         value: {{ $.Release.Name | quote }}
+                      # The search domain a declared service's bare name resolves through.
+                      - name: K8S_CLUSTER_DOMAIN
+                        value: {{ $.Values.driver.clusterDomain | quote }}
                       # The claim's worker name. Defaulted it is `driver-<pid>` — pid 1 in every
                       # container, so every replica would claim as `driver-1`, and the board's
                       # claimed_by fences (the reclaim ack among them) could not tell them apart.

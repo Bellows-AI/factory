@@ -519,7 +519,7 @@ async function dockerRun(
         serviceTeardown: (j) => dockerServiceTeardown(deps, j),
     });
     if (refusal !== null) {
-        return { exitCode: null, output: refusal, timedOut: false, started: true };
+        return { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
     }
 
     // The runner container is the last resource this attempt creates, and the spawn is

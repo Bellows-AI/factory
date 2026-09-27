@@ -298,7 +298,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * suite can take minutes and it must not outrun the lease it runs under.
      */
     let failure: GateFailure | null = null;
-    if (gateSession) failure = await runDeclaredGates(rt, job, gateSession, state);
+    if (gateSession && !outcome.refused) failure = await runDeclaredGates(rt, job, gateSession, state);
 
     return { done: false, outcome, failure };
 }

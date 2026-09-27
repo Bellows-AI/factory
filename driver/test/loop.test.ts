@@ -2425,6 +2425,24 @@ describe('verification gates', () => {
         expect(lostStack.stack.ran.names).toEqual([]);
     });
 
+    // A refused start (a .bellows.yaml the parser rejects) is a final verdict with no agent
+    // work behind it: gates over the untouched checkout would only bury the refusal under a
+    // `vitest: not found` exit 127.
+    it('runs no gates for a refused start, and reports the refusal alone', async () => {
+        const board = stubBoard([gatedJob(4)]);
+        const stack = stubGateStack();
+        const refusal = '.bellows.yaml: unknown key "ports"';
+        await drive({
+            ...board,
+            runner: stubRunner(async () => ok({ exitCode: null, output: refusal, refused: true })),
+            gates: stack.gates,
+        });
+        expect(stack.stack.ran.names).toEqual([]);
+        const complete = board.board.completed[0]!;
+        expect(complete.status).toBe('failed');
+        expect(complete.output).toBe(refusal);
+    });
+
     // An ordinary job must not pay for the feature: no container, no registration, no reports.
     it('never touches the gate stack for a job without gates', async () => {
         const board = stubBoard([job(1)]);
