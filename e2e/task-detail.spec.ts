@@ -3,6 +3,17 @@ import type { Page } from '@playwright/test';
 import postgres from 'postgres';
 import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { withExecutor } from './executor.js';
+import {
+    doneThread,
+    followUpThread,
+    missingSummaryThread,
+    nullAuthorThread,
+    publishedThread,
+    routeThread,
+    runningThread,
+    sessionlessThread,
+    type ThreadJob,
+} from './fixtures/threads.js';
 
 const SHOTS = 'artifacts/ui';
 const WIDTHS = [360, 768, 1024, 1440];
@@ -321,72 +332,41 @@ test.afterAll(async () => {
     await sql.end();
 });
 
-interface SeedRun {
-    id: string;
-    command: string;
-    parentJobId?: string;
-    status?: 'succeeded' | 'failed' | 'running';
-    exitCode?: number | null;
-    output?: string | null;
-    summary?: string | null;
-    sessionId?: string | null;
-    repo?: string | null;
-    executor?: string | null;
-    workflowNode?: string | null;
-    gates?: unknown;
-    runtime?: unknown;
-    wallClockMs?: number | null;
-    doneAt?: string | null;
-}
-
-/** Insert one run of a thread, the seed's shape plus the finished-run columns the detail reads. */
-async function seedRun(orgIdLocal: string, run: SeedRun, at: string) {
-    await sql`
-        insert into job (org_id, id, root_job_id, parent_job_id, command, status, session_id,
-                         repo, executor, workflow_node, exit_code, output, summary, gates, runtime,
-                         wall_clock_ms, done_at, created_at, started_at, finished_at)
-        values (${orgIdLocal}, ${run.id}, ${run.parentJobId ? run.parentJobId : run.id},
-                ${run.parentJobId ?? null}, ${run.command}, ${run.status ?? 'succeeded'},
-                ${run.sessionId ?? null}, ${run.repo ?? null}, ${run.executor ?? null},
-                ${run.workflowNode ?? null}, ${run.exitCode ?? null}, ${run.output ?? null},
-                ${run.summary ?? null},
-                ${run.gates ? sql.json(run.gates as never) : null},
-                ${run.runtime ? sql.json(run.runtime as never) : null},
-                ${run.wallClockMs ?? null}, ${run.doneAt ?? null},
-                ${at}, ${at}, ${at})
-        on conflict (org_id, id) do nothing
-    `;
+/** Insert a fixture thread into the real board — every job column the thread read serves back,
+ *  except the actor ids (`created_by`, `stopped_by`, `done_by`): only an actor-free fixture
+ *  seeds verbatim. */
+async function seedThread(jobs: readonly ThreadJob[]) {
+    for (const job of jobs) {
+        await sql`
+            insert into job (org_id, id, root_job_id, parent_job_id, command, status, attempts, max_attempts,
+                             claimed_by, session_id, repo, executor, workflow_name, workflow_node, exit_code,
+                             output, summary, gates, runtime, wall_clock_ms, done_at, cancel_requested_at,
+                             created_at, started_at, finished_at)
+            values (${orgId}, ${job.id}, ${job.rootJobId}, ${job.followUpTo}, ${job.command}, ${job.status},
+                    ${job.attempts}, ${job.maxAttempts}, ${job.claimedBy}, ${job.sessionId}, ${job.repo},
+                    ${job.executor}, ${job.workflowName}, ${job.workflowNode}, ${job.exitCode}, ${job.output},
+                    ${job.summary}, ${job.gates ? sql.json(job.gates as never) : null},
+                    ${job.runtime ? sql.json(job.runtime as never) : null}, ${job.wallClockMs}, ${job.doneAt},
+                    ${job.cancelRequestedAt}, ${job.createdAt}, ${job.startedAt}, ${job.finishedAt})
+            on conflict (org_id, id) do nothing
+        `;
+    }
 }
 
 test.describe('the task detail page', () => {
+    // The rest of this describe renders the shared fixtures through a mocked thread route; this
+    // is what holds them to the board: seeded for real, the thread read answers the fixture back.
+    test('the shared thread fixtures are the board’s own payload', async ({ page }) => {
+        await seedThread(nullAuthorThread);
+        const response = await page.request.get(`/api/jobs/${nullAuthorThread[0]!.id}/thread`);
+        expect(response.status()).toBe(200);
+        expect(await response.json()).toEqual({ jobs: nullAuthorThread });
+    });
+
     test('a finished thread reads request, response, checks, published work, metadata', async ({ page }) => {
         const problems = watchConsole(page);
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000001',
-                command: 'fix #177 please',
-                repo: 'acme/widgets',
-                executor: 'main',
-                exitCode: 0,
-                summary: 'Rebuilt the task detail layout and outcome summary.',
-                output: 'hunk 1 applied\n[driver] published fix/177 — https://github.com/acme/widgets/pull/9',
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000001',
-                gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'all green' }],
-                runtime: {
-                    cpuPercent: null,
-                    memUsedMb: null,
-                    memPercent: null,
-                    activity: null,
-                    sampledAt: '2026-09-01T12:02:00.000Z',
-                    contextTokens: 30_433,
-                    costUsd: 0.01,
-                },
-                wallClockMs: 1_800_000,
-            },
-            '2026-09-01T12:00:00Z'
-        );
-        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000001');
+        await routeThread(page, publishedThread);
+        await page.goto(`/tasks/${publishedThread[0]!.id}`);
 
         // The reading order the page exists for: request, then response, then the run's work.
         const conversation = page.locator('.task-conversation');
@@ -419,32 +399,8 @@ test.describe('the task detail page', () => {
     });
 
     test('a follow-up thread labels its runs and attaches work to each', async ({ page }) => {
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000011',
-                command: 'root command',
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000011',
-                exitCode: 0,
-                summary: 'First pass done.',
-                output: '[driver] published fix/1 — https://github.com/acme/widgets/pull/1',
-            },
-            '2026-09-01T12:00:00Z'
-        );
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000012',
-                parentJobId: 'aaaaaaaa-0000-4000-8000-000000000011',
-                command: 'follow-up command',
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000012',
-                exitCode: 0,
-                summary: 'Adjustment applied.',
-                gates: [{ name: 'lint', status: 'failed', exitCode: 1, output: 'nope' }],
-            },
-            '2026-09-01T12:30:00Z'
-        );
-        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000012');
+        await routeThread(page, followUpThread);
+        await page.goto(`/tasks/${followUpThread[1]!.id}`);
 
         const conversation = page.locator('.task-conversation');
         await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
@@ -458,66 +414,29 @@ test.describe('the task detail page', () => {
     });
 
     test('a finished task without a captured response says so, and offers the composer', async ({ page }) => {
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000003',
-                command: 'seed task',
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000003',
-                exitCode: 0,
-            },
-            '2026-09-01T12:00:00Z'
-        );
-        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000003');
+        await routeThread(page, missingSummaryThread);
+        await page.goto(`/tasks/${missingSummaryThread[0]!.id}`);
         await expect(page.getByText('finished without a captured agent response')).toBeVisible();
         await expect(page.getByText('Ask for a follow-up')).toBeVisible();
     });
 
     test('a sessionless terminal run links to a new task, and a closed one renders no composer', async ({ page }) => {
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000004',
-                command: 'sessionless task',
-                sessionId: null,
-                exitCode: 0,
-            },
-            '2026-09-01T12:00:00Z'
-        );
-        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000004');
+        await routeThread(page, sessionlessThread);
+        await page.goto(`/tasks/${sessionlessThread[0]!.id}`);
         const link = page.getByRole('link', { name: 'Start a new task' });
         await expect(link).toBeVisible();
         await link.click();
         await expect(page).toHaveURL(/\/tasks\/new$/);
 
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000005',
-                command: 'closed task',
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000005',
-                exitCode: 0,
-                doneAt: '2026-09-01T13:00:00Z',
-            },
-            '2026-09-01T12:00:00Z'
-        );
-        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000005');
+        await routeThread(page, doneThread);
+        await page.goto(`/tasks/${doneThread[0]!.id}`);
         await expect(page.getByText('Ask for a follow-up')).not.toBeVisible();
     });
 
     test('a failed send preserves the draft', async ({ page }) => {
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000006',
-                command: 'draft task',
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000006',
-                exitCode: 0,
-            },
-            '2026-09-01T12:00:00Z'
-        );
+        await routeThread(page, missingSummaryThread);
         await page.route('**/api/jobs/*/follow-up', (route) => route.abort());
-        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000006');
+        await page.goto(`/tasks/${missingSummaryThread[0]!.id}`);
         const box = page.getByLabel('Ask for a follow-up');
         await box.fill('try again tomorrow');
         await page.getByRole('button', { name: 'Send follow-up' }).click();
@@ -526,46 +445,9 @@ test.describe('the task detail page', () => {
     });
 
     test('a running run shows its activity and a bounded live output', async ({ page }) => {
-        const runningJobs = [
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000007',
-                command: 'watch me run',
-                status: 'running',
-                attempts: 1,
-                author: null,
-                stoppedBy: null,
-                doneBy: null,
-                exitCode: null,
-                output: `${Array.from({ length: 80 }, (_, i) => `step ${i + 1} ok`).join('\n')}\nstep 81 running`,
-                summary: null,
-                repo: null,
-                executor: 'main',
-                workflowName: null,
-                workflowNode: null,
-                followUpTo: null,
-                rootJobId: 'aaaaaaaa-0000-4000-8000-000000000007',
-                doneAt: null,
-                cancelRequestedAt: null,
-                workspacePath: null,
-                createdAt: '2026-09-01T12:00:00Z',
-                startedAt: '2026-09-01T12:00:01Z',
-                finishedAt: null,
-                wallClockMs: null,
-                taskWallClockMs: null,
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000007',
-                gates: null,
-                runtime: {
-                    cpuPercent: 12,
-                    memUsedMb: 300,
-                    memPercent: 2,
-                    activity: '→ Bash npm test',
-                    sampledAt: '2026-09-01T12:02:00Z',
-                },
-            },
-        ];
-        await page.route('**/api/jobs/*/thread*', (route) => route.fulfill({ json: { jobs: runningJobs } }));
+        await routeThread(page, runningThread);
         const problems = watchConsole(page);
-        await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000007');
+        await page.goto(`/tasks/${runningThread[0]!.id}`);
         await expect(page.getByText('Agent activity', { exact: true })).toBeVisible();
         await expect(page.locator('.task-conversation').getByText('→ Bash npm test')).toBeVisible();
         await expect(page.locator('.task-conversation pre')).toContainText('step 81 running');
@@ -587,35 +469,11 @@ test.describe('the task detail page', () => {
 
     test('the detail renders at every target width without overflow', async ({ page }) => {
         test.setTimeout(60_000);
-        await seedRun(
-            orgId,
-            {
-                id: 'aaaaaaaa-0000-4000-8000-000000000008',
-                command: 'responsive task with a fairly long command line to exercise wrapping',
-                repo: 'acme/widgets',
-                executor: 'main',
-                exitCode: 0,
-                summary: 'Done, responsively.',
-                output: '[driver] published fix/9 — https://github.com/acme/widgets/pull/9',
-                sessionId: 'bbbbbbbb-0000-4000-8000-000000000008',
-                gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }],
-                runtime: {
-                    cpuPercent: null,
-                    memUsedMb: null,
-                    memPercent: null,
-                    activity: null,
-                    sampledAt: '2026-09-01T12:02:00.000Z',
-                    contextTokens: 30_433,
-                    costUsd: 0.01,
-                },
-                wallClockMs: 1_800_000,
-            },
-            '2026-09-01T12:00:00Z'
-        );
+        await routeThread(page, publishedThread);
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 1000 });
-            await page.goto('/tasks/aaaaaaaa-0000-4000-8000-000000000008');
+            await page.goto(`/tasks/${publishedThread[0]!.id}`);
             await expect(page.locator('.task-outcome')).toBeVisible();
             const overflow = await page.evaluate(
                 () => document.documentElement.scrollWidth - document.documentElement.clientWidth
