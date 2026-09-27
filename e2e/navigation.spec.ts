@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
 import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
@@ -121,16 +122,15 @@ test.describe('appearance', () => {
 
     test('the control carries the three options and switches immediately without a reload', async ({ page }) => {
         await page.goto('/');
-        const select = page.getByLabel('Appearance');
-        await select.waitFor({ state: 'attached' });
+        await appearance(page).waitFor({ state: 'attached' });
 
-        expect(await select.locator('option').allInnerTexts()).toEqual(['System', 'Light', 'Dark']);
+        await expectAppearanceOptions(page, ['System', 'Light', 'Dark']);
         // The factory state is System with no stored key, resolved to the live OS palette.
         expect(await stored(page)).toBeNull();
         expect(await page.locator('html').getAttribute('data-theme')).toBe(await systemTheme(page));
 
         await page.evaluate(() => ((window as { __probe?: number }).__probe = 1));
-        await select.selectOption('dark');
+        await chooseAppearance(page, 'Dark');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
         expect(await stored(page)).toBe('dark');
         // The probe surviving is the no-reload/no-refetch proof.
@@ -140,44 +140,42 @@ test.describe('appearance', () => {
         // The stored choice, not the OS, survives a reload.
         await page.reload();
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-        await expect(page.getByLabel('Appearance')).toHaveValue('dark');
+        await expect(appearance(page)).toHaveText('Dark');
     });
 
     test('System removes the stored key and resolves the live OS palette', async ({ page }) => {
         await page.goto('/');
-        const select = page.getByLabel('Appearance');
-        await select.waitFor({ state: 'attached' });
-        await select.selectOption('light');
+        await appearance(page).waitFor({ state: 'attached' });
+        await chooseAppearance(page, 'Light');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-        await select.selectOption('system');
+        await chooseAppearance(page, 'System');
         expect(await stored(page)).toBeNull();
         await expect(page.locator('html')).toHaveAttribute('data-theme', await systemTheme(page));
-        await expect(select).toHaveValue('system');
+        await expect(appearance(page)).toHaveText('System');
     });
 
     test('a second tab follows the first', async ({ page, context }) => {
         await page.goto('/');
-        const select = page.getByLabel('Appearance');
-        await select.waitFor({ state: 'attached' });
+        await appearance(page).waitFor({ state: 'attached' });
         const other = await context.newPage();
         await other.goto('/');
-        await other.getByLabel('Appearance').waitFor({ state: 'attached' });
+        await appearance(other).waitFor({ state: 'attached' });
 
-        await select.selectOption('light');
+        await chooseAppearance(page, 'Light');
         await expect(other.locator('html')).toHaveAttribute('data-theme', 'light');
-        await expect(other.getByLabel('Appearance')).toHaveValue('light');
+        await expect(appearance(other)).toHaveText('Light');
 
         // A removal from the other tab reads as System again here.
         await other.evaluate(() => localStorage.removeItem('factory.theme'));
-        await expect(page.getByLabel('Appearance')).toHaveValue('system');
+        await expect(appearance(page)).toHaveText('System');
         await other.close();
     });
 
     test('the selector clears its narrow-screen target and the bar holds', async ({ page }) => {
         await page.setViewportSize({ width: 360, height: 1000 });
         await page.goto('/');
-        await page.getByLabel('Appearance').waitFor({ state: 'attached' });
-        expect((await page.locator('.theme-select').boundingBox())?.height).toBeGreaterThanOrEqual(44);
+        await appearance(page).waitFor({ state: 'attached' });
+        expect((await appearance(page).boundingBox())?.height).toBeGreaterThanOrEqual(44);
         await expect
             .poll(() =>
                 page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
@@ -187,12 +185,11 @@ test.describe('appearance', () => {
 
     test('paired dark and light screenshots at 1440', async ({ page }) => {
         await page.goto('/');
-        const select = page.getByLabel('Appearance');
-        await select.waitFor({ state: 'attached' });
-        await select.selectOption('light');
+        await appearance(page).waitFor({ state: 'attached' });
+        await chooseAppearance(page, 'Light');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
         await page.screenshot({ path: `${SHOTS}/appearance-light-1440.png`, fullPage: true });
-        await select.selectOption('dark');
+        await chooseAppearance(page, 'Dark');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
         await page.screenshot({ path: `${SHOTS}/appearance-dark-1440.png`, fullPage: true });
     });

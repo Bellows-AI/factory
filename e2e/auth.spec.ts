@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
 import { finishSignIn, throughSignIn } from './signin.js';
 
 /**
@@ -74,9 +75,8 @@ test('an anonymous visitor gets the gate and no dashboard', async ({ page }) => 
     await expect(usageGroups(page)).toHaveCount(0);
 
     // The appearance preference (issue 188) is on the public surface too, before any session.
-    const appearance = page.getByLabel('Appearance');
-    await expect(appearance).toBeVisible();
-    await expect(appearance.locator('option')).toHaveText(['System', 'Light', 'Dark']);
+    await expect(appearance(page)).toBeVisible();
+    await expectAppearanceOptions(page, ['System', 'Light', 'Dark']);
 });
 
 test('the gate holds a narrow phone inside the viewport, in both palettes (issue 190)', async ({ page }) => {
@@ -215,8 +215,9 @@ test('a choice of nothing refuses Continue and says what is missing (issue 187)'
     const cont = page.getByRole('button', { name: 'Continue' });
     await expect(cont).toHaveAttribute('aria-disabled', 'true');
     await expect(page.getByText('Choose at least one organization to continue.')).toBeVisible();
-    // The attempted action is receivable — it cannot post, and the screen stands.
-    await cont.click();
+    // The attempted action is receivable — it cannot post, and the screen stands. Forced, because
+    // Playwright's actionability check reads aria-disabled as disabled and would wait forever.
+    await cont.click({ force: true });
     await expect(screen(page)).toBeVisible();
 
     // Choosing one organization re-enables the action and completes.
@@ -332,7 +333,7 @@ test('signing out returns to the gate', async ({ page }) => {
 
     // The appearance preference (issue 188) is local, not session state: the choice outlives the
     // sign-out, on the gate as anywhere.
-    await page.getByLabel('Appearance').selectOption('dark');
+    await chooseAppearance(page, 'Dark');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await page.reload();
     await expect(gate(page)).toBeVisible();
