@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import postgres from 'postgres';
+import { withExecutor } from './executor.js';
 
 const SHOTS = 'artifacts/ui';
 const WIDTHS = [360, 768, 1024, 1440];
@@ -67,6 +68,9 @@ async function threadLength(page: Page, taskId: string): Promise<number> {
 const header = (page: Page) => page.locator('.page-header-actions');
 
 test.describe('the task detail actions', () => {
+    // queueTask starts through the real composer, which needs an executor to offer Start.
+    test.beforeEach(({ page }) => withExecutor(page));
+
     /**
      * The state matrix, driven through the board's own routes: every not-terminal state offers
      * Stop run; the request in flight and the request landed both read Stopping…; a terminal

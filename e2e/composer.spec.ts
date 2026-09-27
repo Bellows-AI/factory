@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ConsoleMessage, Page } from '@playwright/test';
+import { withExecutor } from './executor.js';
 import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
@@ -18,6 +19,8 @@ function watchConsole(page: Page): string[] {
 }
 
 test.describe('the guided task composer', () => {
+    test.beforeEach(({ page }) => withExecutor(page));
+
     /**
      * The board owns the base workflow's row and refreshes it at boot — seedBase fires without
      * being awaited (orgs.ts), so the first list read can still serve a stale pre-parameter

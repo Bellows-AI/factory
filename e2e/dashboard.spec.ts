@@ -117,7 +117,9 @@ test.describe('date range selector', () => {
 
         const openCustom = async () => {
             await page.locator('#range-select').click();
-            await page.getByRole('option', { name: 'Custom', exact: true }).click();
+            // Anchored, not exact: once a custom window is committed the option is the selected
+            // one, and its accessible name carries the checkmark ("Custom ✓").
+            await page.getByRole('option', { name: /^Custom( ✓)?$/ }).click();
         };
 
         // Custom opens the dialog; opening it is not a selection and issues no request.
