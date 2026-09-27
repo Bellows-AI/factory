@@ -42,7 +42,13 @@ from the agent-turn distribution only, while its tokens and job turns still coun
   per session.
 - **The four token types are never summed into one figure.** A long cached conversation would count
   the same context repeatedly in `cacheRead`; where one number is needed it is input + output, and
-  `TokenTotals` keeps the four apart so no call site can add them by accident.
+  `TokenTotals` keeps the four apart so no call site can add them by accident. The one sanctioned
+  input-side sum is `inputTokens()`: **total input** = `input` + `cacheRead` + `cacheCreation`, every
+  prompt token the model processed (the telemetry's `input` is only the uncached tail — a handful of
+  tokens per request once the cache is warm), and the **cache hit rate** = `cacheRead` ÷ total input.
+  Output never joins it; the hit rate is null when cache reads were unmeasured or the total is zero.
+  The usage summary and the usage chart's input bars both show total input, so output reads small
+  beside it — that is the real ratio, not a scale bug.
 - **`weeklySeries()` seeds every week in the window, including empty ones. A series that closes
   its own gaps overstates activity; a quiet week must render as a quiet week.** The series is now
   one generalized `bucketSeries()` with a day granularity beside the ISO week: every day in the

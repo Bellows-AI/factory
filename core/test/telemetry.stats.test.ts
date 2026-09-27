@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { telemetryStats } from '../src/telemetry.js';
+import { inputTokens, telemetryStats } from '../src/telemetry.js';
 import type { DateRange } from '../src/range.js';
 import type { SessionRollup, TelemetryInput } from '../src/types.js';
 import { FIXTURE_NOW, FIXTURE_REPO, sampleTelemetry } from './fixtures/load.js';
@@ -141,6 +141,33 @@ describe('output invariants', () => {
             (stats.totals.tokens.input ?? 0) + (stats.totals.tokens.output ?? 0)
         );
         expect(Object.keys(stats.totals.tokens).sort()).toEqual(['cacheCreation', 'cacheRead', 'input', 'output']);
+    });
+});
+
+describe('inputTokens', () => {
+    it('totals every prompt token and never adds output', () => {
+        expect(inputTokens({ input: 10, output: 999, cacheRead: 70, cacheCreation: 20 })).toEqual({
+            total: 100,
+            cacheHitRatio: 0.7,
+        });
+    });
+
+    it('keeps a measured total when a cache figure is unmeasured, with no hit ratio', () => {
+        expect(inputTokens({ input: 10, output: 5, cacheRead: null, cacheCreation: null })).toEqual({
+            total: 10,
+            cacheHitRatio: null,
+        });
+    });
+
+    it('reports nothing measured as null, and zero input as no ratio rather than 0%', () => {
+        expect(inputTokens({ input: null, output: null, cacheRead: null, cacheCreation: null })).toEqual({
+            total: null,
+            cacheHitRatio: null,
+        });
+        expect(inputTokens({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 })).toEqual({
+            total: 0,
+            cacheHitRatio: null,
+        });
     });
 });
 

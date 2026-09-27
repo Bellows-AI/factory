@@ -17,6 +17,6 @@ export {
     resolveRange,
 } from './range.js';
 export type { DateRange, RangePreset } from './range.js';
-export { telemetryStats } from './telemetry.js';
+export { inputTokens, telemetryStats } from './telemetry.js';
 export { taskUsageStats } from './task-usage.js';
 export type * from './types.js';
