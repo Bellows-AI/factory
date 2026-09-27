@@ -57,6 +57,7 @@ function ShellStub({ withSession }: { withSession: Session | null }) {
                 scope: 'org',
                 setScope: () => {},
                 session: withSession,
+                sessionLoading: false,
                 progress: null,
                 error: null,
                 tasks: { jobs: null, error: null },

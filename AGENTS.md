@@ -96,6 +96,12 @@ npm run lint:fix       # biome check --write — fixes what lint flags
 # Two projects, two servers. `chromium` is the open board on 8123 and is the visual check; `auth`
 # is a second board on 8124 with AUTH_MODE=github pointed at e2e/stub-idp.mjs, which drives a real
 # sign-in round trip offline. Needs factory_e2e AND factory_auth_e2e to exist.
+#
+# Parallel runs: E2E_PORT_BASE (default 8123) puts the open board, auth board, stub IdP and
+# specimen page at +0/+1/+2/+3; E2E_DB_PREFIX (default `factory`) names the databases
+# `${prefix}_e2e` and `${prefix}_auth_e2e`, which must exist. Two worktrees with different values
+# run concurrently — one checkout cannot, since both runs write web/dist and artifacts/. E2E_DB_HOST
+# still picks the host. Example: E2E_PORT_BASE=8143 E2E_DB_PREFIX=factory_l2 npm run verify:ui
 npm run verify:ui      # needs: a running timescale, and `npx playwright install chromium` once
 
 # Fill a disposable database with synthetic agent sessions. Refuses

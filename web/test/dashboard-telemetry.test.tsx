@@ -123,6 +123,7 @@ function ShellStub({ data, opts = {} }: { data: StatsPayload | null; opts?: Rend
                 scope: opts.scope ?? DEFAULT_SCOPE,
                 setScope: () => {},
                 session: opts.session ?? null,
+                sessionLoading: false,
                 progress: opts.progress ?? null,
                 error: opts.error ?? null,
                 tasks: fakeTasks,

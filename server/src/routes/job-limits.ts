@@ -11,12 +11,6 @@ import { bad, badSegment } from './helpers.js';
 
 export const BYTES_PER_KIB = 1024;
 
-/**
- * A command is a shell line, not a payload. 16 KiB is far past anything a human writes, and past
- * anything a generated one should be; the body limit is a little above it so an oversized command
- * is refused with a reason rather than a bare connection error.
- */
-export const COMMAND_LIMIT = 16_384;
 const BODY_LIMIT_KIB = 128;
 export const BODY_LIMIT = BODY_LIMIT_KIB * BYTES_PER_KIB;
 

@@ -2,7 +2,21 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
-const PORT = 8123;
+
+/**
+ * Every port this run binds derives from one base, and every database from one prefix, so two
+ * worktrees can run verify:ui at the same time: `E2E_PORT_BASE=8143 E2E_DB_PREFIX=factory_l2`.
+ * The open board, the auth board, the stub IdP and the specimen page sit at +0 / +1 / +2 / +3.
+ */
+const DEFAULT_PORT_BASE = 8123;
+const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? DEFAULT_PORT_BASE);
+if (!Number.isInteger(PORT_BASE) || PORT_BASE <= 0) {
+    throw new Error(`E2E_PORT_BASE must be a positive integer, got ${process.env.E2E_PORT_BASE}`);
+}
+const AUTH_PORT_OFFSET = 1;
+const IDP_PORT_OFFSET = 2;
+const SPECIMEN_PORT_OFFSET = 3;
+const PORT = PORT_BASE;
 
 /**
  * The auth check runs on its own server, on its own port, against its own database.
@@ -13,8 +27,10 @@ const PORT = 8123;
  * also keeps a boot with AUTH_MODE=none under test, which is the mode `npm run seed`, the route
  * harness and scripts/test-jobs.sh all depend on.
  */
-export const AUTH_PORT = 8124;
-const IDP_PORT = 8125;
+export const AUTH_PORT = PORT_BASE + AUTH_PORT_OFFSET;
+const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
+/** Reserved for the design-system specimen page; nothing listens on it yet. */
+export const SPECIMEN_PORT = PORT_BASE + SPECIMEN_PORT_OFFSET;
 const E2E_LOGIN = 'e2e-user';
 /**
  * A fresh GitHub identity every run. The seed leaves auth tables alone, so a fixed id would keep
@@ -38,6 +54,14 @@ const shared = {
  * (`E2E_DB_HOST=timescale`) — localhost carries nothing there.
  */
 const DB_HOST = process.env.E2E_DB_HOST ?? '127.0.0.1';
+/** The `_e2e` suffix is what e2e/reset-db.mjs and the seed's disposable-name guard accept. */
+const DB_PREFIX = process.env.E2E_DB_PREFIX ?? 'factory';
+const databaseUrl = (name: string) => `postgres://factory:factory@${DB_HOST}:5432/${name}`;
+export const E2E_DATABASE_URL = databaseUrl(`${DB_PREFIX}_e2e`);
+const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
+
+/** The specs that need a signed-in member; follow-up-auth.spec.ts is the slot #281 fills. */
+const AUTH_SPECS = /\/(auth|workspace|follow-up-auth)\.spec\.ts$/;
 
 /**
  * The built SPA is served by the API rather than by Vite, so the suite exercises the same
@@ -71,15 +95,15 @@ export default defineConfig({
     projects: [
         {
             name: 'chromium',
-            testIgnore: /(auth|workspace)\.spec\.ts/,
+            testIgnore: AUTH_SPECS,
             use: { ...devices['Desktop Chrome'] },
         },
         {
-            // Both specs need a signed-in member, and workspace.spec.ts also needs a server with a
+            // These specs need a signed-in member, and workspace.spec.ts also needs a server with a
             // real ORG_WORKSPACE_ROOT — which the open board deliberately does not have, so that a
-            // picker never appears in the visual check.
+            // picker never appears in the visual check. follow-up-auth.spec.ts lands with #281.
             name: 'auth',
-            testMatch: /(auth|workspace)\.spec\.ts/,
+            testMatch: AUTH_SPECS,
             use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${AUTH_PORT}` },
         },
     ],
@@ -97,7 +121,7 @@ export default defineConfig({
             env: {
                 ...shared,
                 PORT: String(PORT),
-                DATABASE_URL: `postgres://factory:factory@${DB_HOST}:5432/factory_e2e`,
+                DATABASE_URL: E2E_DATABASE_URL,
             },
             timeout: 180_000,
             // Never reuse: a server left over from a previous edit would verify stale code, which
@@ -132,7 +156,7 @@ export default defineConfig({
             env: {
                 ...shared,
                 PORT: String(AUTH_PORT),
-                DATABASE_URL: `postgres://factory:factory@${DB_HOST}:5432/factory_auth_e2e`,
+                DATABASE_URL: AUTH_DATABASE_URL,
                 AUTH_MODE: 'github',
                 GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
                 GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',

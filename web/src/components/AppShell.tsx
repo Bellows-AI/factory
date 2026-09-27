@@ -11,6 +11,7 @@ import type { RangeSelection, ScopeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
 import { AppBar } from './AppBar.js';
 import { MobileNavDialog } from './MobileNavDialog.js';
+import { ComposerDraftProvider } from '../composer-draft.js';
 
 /**
  * Everything both pages share: the range, the scope, the one `/api/stats` poll, and the chrome
@@ -28,6 +29,8 @@ export interface ShellContext {
     setScope: (scope: ScopeSelection) => void;
     /** The signed-in member, when there is one — what makes the org/my toggle exist at all. */
     session: Session | null;
+    /** True until the session check first answers — a null session then means "not yet known". */
+    sessionLoading: boolean;
     progress: FetchState | null;
     error: string | null;
     /** The one task-overview poll, shared by the tasks pages the way the stats poll is. */
@@ -81,7 +84,7 @@ export function AppShell() {
     // The session for the app bar's user menu. A second `useSession` instance next to the gate's —
     // the account page already does the same; the module-level listener they
     // register is a Set for exactly this reason.
-    const { session } = useSession();
+    const { session, loading: sessionLoading } = useSession();
 
     // The mobile navigation drawer's open state (issue 160). It lives HERE — above both the app
     // bar, whose trigger mirrors it as aria-expanded, and the dialog itself — so neither chrome
@@ -95,6 +98,7 @@ export function AppShell() {
         scope,
         setScope,
         session,
+        sessionLoading,
         progress,
         error,
         tasks,
@@ -122,7 +126,11 @@ export function AppShell() {
                     selector — carries the padding and width cap, so a dialog or a nested main can
                     never inherit page chrome by accident. Pages render fragments into it. */}
                 <main id="main-content" className="page" tabIndex={-1}>
-                    <Outlet context={context} />
+                    {/* The composer's draft outlives a trip to Settings and back; the composer reads
+                        it once issue 280 wires it in. */}
+                    <ComposerDraftProvider session={session}>
+                        <Outlet context={context} />
+                    </ComposerDraftProvider>
                 </main>
             </div>
             {/* The drawer renders from the shell's own state; the same close closes it whether the

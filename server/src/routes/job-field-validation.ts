@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { COMMAND_LIMIT, ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 import type { GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
@@ -12,7 +12,6 @@ import { bad, body } from './helpers.js';
 import {
     AGENT_TURNS_MAX,
     BRANCH_LIMIT,
-    COMMAND_LIMIT,
     CONTEXT_COST_MAX,
     CONTEXT_TOKENS_MAX,
     GATE_NAME_LIMIT,

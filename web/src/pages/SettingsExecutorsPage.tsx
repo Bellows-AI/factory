@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { WorkspaceExecutorFull } from '../api/useWorkspace.js';
+import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
@@ -82,6 +83,7 @@ export function SettingsExecutorsPage() {
                     title="Executors"
                     description="Name the personal runner configuration offered when you start a task."
                 />
+                <DraftReturnBanner />
                 <p className="status">Loading your workspace…</p>
             </>
         );
@@ -101,6 +103,7 @@ export function SettingsExecutorsPage() {
                     ) : undefined
                 }
             />
+            <DraftReturnBanner />
             {error ? <p className="status">{error}</p> : null}
 
             {/* Requiring `data` keeps the failed-poll state honest: with no response there is no

@@ -11,7 +11,8 @@
  */
 import { createServer } from 'node:http';
 
-const port = Number(process.env.STUB_IDP_PORT ?? 8125);
+// playwright.config.ts passes STUB_IDP_PORT; the fallback is the same E2E_PORT_BASE + 2 it derives.
+const port = Number(process.env.STUB_IDP_PORT ?? Number(process.env.E2E_PORT_BASE ?? 8123) + 2);
 const login = process.env.STUB_IDP_LOGIN ?? 'e2e-user';
 const userId = Number(process.env.STUB_IDP_USER_ID ?? 424242);
 // The installations the account can see (#99) — the membership decision. Comma-separated ids;

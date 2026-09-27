@@ -86,6 +86,7 @@ const render = (
             <Outlet
                 context={{
                     session: overrides.session ?? session,
+                    sessionLoading: false,
                     workspace: { ...idleWorkspace, ...overrides.workspace },
                     env: { ...idleEnv, ...overrides.env },
                     unsaved: idleUnsaved,
@@ -499,5 +500,21 @@ describe('settings page headers', () => {
         });
         expect(html).toContain('page-header-actions');
         expect(html).toContain('Add executor');
+    });
+});
+
+describe('draft return banner', () => {
+    it('offers the way back to the composer on both pages the composer links to', () => {
+        for (const page of ['executors', 'repos']) {
+            const html = render(`/settings/${page}?return=/tasks/new`);
+            expect(html, page).toContain('You have a task draft in progress.');
+            expect(html, page).toContain('href="/tasks/new"');
+        }
+    });
+
+    it('stays out of the way without the return parameter', () => {
+        for (const page of ['executors', 'repos']) {
+            expect(render(`/settings/${page}`), page).not.toContain('task draft in progress');
+        }
     });
 });

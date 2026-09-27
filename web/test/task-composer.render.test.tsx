@@ -124,7 +124,7 @@ describe('TaskComposer', () => {
         const empty = renderComposer({ repos: [], executors: [] });
         expect(trigger(empty)).toContain('>No executor configured</span></button>');
         expect(empty).toContain('Add an executor in');
-        expect(empty).toContain('href="/settings/executors"');
+        expect(empty).toContain('href="/settings/executors?return=/tasks/new"');
         expect(empty).toContain('Configure an executor in Settings to continue.');
         expect(empty).toContain('disabled');
     });
@@ -150,7 +150,8 @@ describe('TaskComposer', () => {
         expect(html).toContain('<textarea');
         expect(html).toContain('>Start task<');
         expect(html).toContain('Select repositories in');
-        expect(html).toContain('href="/settings/repositories"');
+        expect(html).toContain('href="/settings/repos?return=/tasks/new"');
+        expect(html).not.toContain('/settings/repositories');
         expect(html).toContain('to run against a codebase');
         // aria-label, not aria-labelledby: the ListboxButton's label context overrides a
         // labelledby that points outside it, so each select carries its name directly (issue 190).

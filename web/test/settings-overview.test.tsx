@@ -416,6 +416,7 @@ const renderOverview = (
                         <Outlet
                             context={{
                                 session: overrides.session === undefined ? fullSession : overrides.session,
+                                sessionLoading: false,
                                 workspace: { ...idleWorkspace, ...overrides.workspace },
                                 env: { ...idleEnv, ...overrides.env },
                             }}

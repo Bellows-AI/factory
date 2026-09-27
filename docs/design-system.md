@@ -327,6 +327,7 @@ Components:
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `Card.tsx` | card |
 | `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
+| `DraftReturnBanner.tsx` | banner-info (the primitive's rule lands with the banner work, G4) |
 | `ExecutorDialog.tsx` | picker, status, muted |
 | `KeyValues.tsx` | kv |
 | `LoginGate.tsx` | login, appearance, public-header |

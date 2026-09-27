@@ -1,7 +1,7 @@
+import { COMMAND_LIMIT } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { nextTransition, primarySessionId } from '../src/db/workflow-engine.js';
 import {
-    COMMAND_LIMIT,
     INTERP_TAIL_LIMIT,
     TRUNCATION_MARKER,
     boundedTail,
