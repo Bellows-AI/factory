@@ -1328,6 +1328,17 @@ status the wait-entry mechanism (issue #231, `workflow-blocks/runtime.ts` — do
 "Durable block waits") parks it under, which today is no `job` row at all — and `thread()` carries
 the same triple on every member of the conversation, since the wait belongs to the root, not the run.
 
+**Display precedence.** The web reads a task's state through ONE function, `taskTone`
+(`web/src/task-tree.ts`); `taskStatusLabel` and `taskDotClass` are lookups on it, and first match
+wins: no run → `—`; `running` → `Stopping` / `Running`; `doneAt` set → `Done`; an open wait →
+`Waiting for review`; `queued` → `Queued`; then the verdict with `· Needs review` (plus the
+terminal wait reason, once there is one). A live run outranks a stray wait, and **closure outranks
+an open wait**: Mark done ends the human's turn even before the board settles the wait row, so a
+done task never keeps reading as blocked on review. `isWaitingForReview` (`web/src/task-outcome.ts`)
+applies the same rule — it requires `doneAt === null` — so the outcome panel drops its wait
+explanation on a done task. The dot for a success the user has not closed is `sidenav-dot-review`
+(accent blue: the member's turn); a done task's is `sidenav-dot-done` (green).
+
 ## Decisions
 
 **`workflow_name` is frozen audit data, not a live reference (033).** The route stamps the

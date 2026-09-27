@@ -53,6 +53,23 @@ describe('TaskOutcome', () => {
         expect(html).not.toContain('Factory');
     });
 
+    it('shows no wait explanation once the task is done, even while its review wait is still open', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    status: 'succeeded',
+                    waitReason: 'review',
+                    waitingSince: '2026-09-01T11:00:00.000Z',
+                    doneAt: '2026-09-01T13:00:00.000Z',
+                    doneBy: { id: 'u', login: 'kim', name: null, avatarUrl: null },
+                }),
+            ],
+        });
+        expect(html).not.toContain('Waiting for review');
+        expect(html).not.toContain('no executor is occupied');
+        expect(html).toContain('done by kim');
+    });
+
     it('shows the terminal wait reason once the review wait has ended, beside the ordinary result', () => {
         const html = renderDetail({
             jobs: [
