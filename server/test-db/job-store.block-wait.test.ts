@@ -96,6 +96,24 @@ async function roundRows(root: string): Promise<{ round: number; woken_at: Date 
     return sql`select round, woken_at, job_id from workflow_round where org_id = ${ORG} and root_job_id = ${root}`;
 }
 
+/** Delivers one review event to a parked thread and sweeps; returns the continuation rows it inserted. */
+async function deliverAndSweep(root: string, deliveryId: string, prNumber: number): Promise<{ id: string }[]> {
+    await prs.recordDelivery({
+        deliveryId,
+        event: 'pull_request_review',
+        action: 'submitted',
+        repo: REPO,
+        prNumber,
+    });
+    // The sweep skips a wait with nothing pending, so without this a caller's no-wake assertion
+    // would pass for the wrong reason.
+    expect((await prs.waitOf(root))?.pending).toBeGreaterThan(0);
+    await sweepRuntimeWakes({ sql, orgId: ORG, prs });
+    return sql<{ id: string }[]>`
+        select id from job where org_id = ${ORG} and root_job_id = ${root} and workflow_node = 'review'
+    `;
+}
+
 describe.skipIf(!enabled)('durable block waits — parking the transition (issue #231)', () => {
     it('parks instead of inserting a runnable row: no claim, an open wait, one parked round', async () => {
         const root = await publishAndTransition('park-basic', 1);
@@ -237,6 +255,22 @@ describe.skipIf(!enabled)('durable block waits — the wake sweep', () => {
 
         const rounds = await roundRows(root);
         expect(rounds[0]!.woken_at).toBeNull();
+    });
+
+    it('mark done on a terminal parked wait stops wakes', async () => {
+        const root = await publishAndTransition('wake-marked-done', 17);
+        expect(await store.markDone(root, null)).toMatchObject({ status: 'succeeded' });
+
+        expect(await deliverAndSweep(root, 'd-marked-done', 17)).toEqual([]);
+        expect((await roundRows(root))[0]!.woken_at).toBeNull();
+    });
+
+    it('control: the same parked wait without mark done wakes one continuation', async () => {
+        const root = await publishAndTransition('wake-not-marked-done', 18);
+
+        const continuations = await deliverAndSweep(root, 'd-not-marked-done', 18);
+        expect(continuations).toHaveLength(1);
+        expect((await roundRows(root))[0]!.woken_at).not.toBeNull();
     });
 });
 
