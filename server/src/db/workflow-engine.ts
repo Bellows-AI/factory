@@ -9,13 +9,13 @@
  * carried node — and a loop count is a count of the thread's rows for the target node, dead rows
  * included (attempts are retries, rounds are rows). No instance-state table exists to drift.
  */
+import { COMMAND_LIMIT } from '@factory-ai/core';
 import type { GateReport } from './job-store-types.js';
 import {
     type EdgeRule,
     type ParamValues,
     type WorkflowDefinition,
     type WorkflowNode,
-    COMMAND_LIMIT,
     interpolate,
     nodeOf,
     tailMatches,

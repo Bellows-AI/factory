@@ -5,6 +5,7 @@ export { ERROR_CODES } from './error-codes.js';
 export type { ExecutorType } from './executors.js';
 export { CLAUDE_CODE, EXECUTOR_TYPES, OPENCODE } from './executors.js';
 export { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, JSON_HEADERS } from './http.js';
+export { COMMAND_LIMIT } from './limits.js';
 export type { Role } from './roles.js';
 export { ADMIN_ROLE, MEMBER_ROLE } from './roles.js';
 export { dayKey, dayStart, isoWeekKey, ratio, weekStart } from './metrics.js';

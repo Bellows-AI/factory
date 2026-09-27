@@ -3,6 +3,7 @@ import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headless
 import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
+import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     clampedWorkflow,
@@ -370,12 +371,14 @@ function ComposerContextRow({
             </div>
             {executors.length === 0 ? (
                 <p className="muted">
-                    Add an executor in <Link to="/settings/executors">Settings</Link> before starting a task.
+                    Add an executor in <Link to={withDraftReturn('/settings/executors')}>Settings</Link> before starting
+                    a task.
                 </p>
             ) : null}
             {repos.length === 0 ? (
                 <p className="muted">
-                    Select repositories in <Link to="/settings/repositories">Settings</Link> to run against a codebase
+                    Select repositories in <Link to={withDraftReturn('/settings/repos')}>Settings</Link> to run against
+                    a codebase
                 </p>
             ) : null}
         </>

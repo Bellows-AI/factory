@@ -3,6 +3,7 @@ import { useRepos } from '../api/useRepos.js';
 import type { UseRepos } from '../api/useRepos.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import type { EnvVarView, UseEnv } from '../api/useEnv.js';
+import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useGuardedDraft, useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
 import type { GuardApi } from '../components/UnsavedChangesDialog.js';
@@ -289,6 +290,7 @@ export function SettingsRepositoriesPage() {
                 title="Repositories"
                 description="Choose which repositories are checked out for your workspace and configure repository-wide environment."
             />
+            <DraftReturnBanner />
             {/* A failed poll with no data has no last-good facts to mark stale — the named error is
                 the whole story. With data, the summary carries the stale marker instead. */}
             {!workspace.data && workspace.error ? <p className="status">{workspace.error}</p> : null}

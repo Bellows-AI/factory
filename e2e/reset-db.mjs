@@ -10,6 +10,9 @@
  *
  * The same disposable-name rule as the seed's guard, one step earlier — this script deletes, so
  * it refuses louder.
+ *
+ * DATABASE_URL comes from playwright.config.ts, which names the databases `${E2E_DB_PREFIX}_e2e`
+ * and `${E2E_DB_PREFIX}_auth_e2e` — the `_e2e` suffix is what satisfies DISPOSABLE below.
  */
 import postgres from 'postgres';
 

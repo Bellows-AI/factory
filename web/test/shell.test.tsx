@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { AppShell } from '../src/components/AppShell.js';
+import { AppShell, type ShellContext, useShell } from '../src/components/AppShell.js';
+import { type ComposerDraftStore, useComposerDraftStore } from '../src/composer-draft.js';
 import { ThemeProvider } from '../src/theme.js';
 
 /**
@@ -66,5 +67,31 @@ describe('AppShell', () => {
         expect(html).toContain('Open navigation');
         // Trigger first in DOM order: on mobile it is the bar's first control.
         expect(html.indexOf('appbar-trigger')).toBeLessThan(html.indexOf('appbar-actions'));
+    });
+
+    it('publishes the session check as loading, and mounts the draft store above the page', () => {
+        let shell: ShellContext | null = null;
+        let store: ComposerDraftStore | null = null;
+        function Probe() {
+            shell = useShell();
+            store = useComposerDraftStore();
+            return null;
+        }
+        renderToStaticMarkup(
+            <MemoryRouter initialEntries={['/']}>
+                <ThemeProvider>
+                    <Routes>
+                        <Route element={<AppShell />}>
+                            <Route path="*" element={<Probe />} />
+                        </Route>
+                    </Routes>
+                </ThemeProvider>
+            </MemoryRouter>
+        );
+        // Effects never run here, so the session check is still in flight: a null session is
+        // "not yet known", which is exactly what sessionLoading tells a reader apart.
+        expect((shell as unknown as ShellContext).sessionLoading).toBe(true);
+        expect((shell as unknown as ShellContext).session).toBeNull();
+        expect((store as unknown as ComposerDraftStore).state).toBeNull();
     });
 });

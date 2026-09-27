@@ -26,13 +26,6 @@ export const DEFINITION_LIMIT = 16_384;
 export const EXPANDED_DEFINITION_LIMIT = 65_536;
 
 /**
- * The command a substituted prompt may reach: the board refuses an insert past the cap rather than
- * handing the driver a command it cannot report against (routes/jobs.ts enforces the same number
- * on every create).
- */
-export const COMMAND_LIMIT = 16_384;
-
-/**
  * Each substituted output tail's share of the command cap. Interpolation bounds every tail
  * independently and hard-truncates with a visible marker — a workflow that chains five outputs
  * stays a command, not a transcript.

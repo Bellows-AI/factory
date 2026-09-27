@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import postgres from 'postgres';
+import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { withExecutor } from './executor.js';
 
 const SHOTS = 'artifacts/ui';
@@ -304,9 +305,7 @@ test.describe('the task detail actions', () => {
     });
 });
 
-const DB_HOST = process.env.E2E_DB_HOST ?? '127.0.0.1';
-
-const sql = postgres(`postgres://factory:factory@${DB_HOST}:5432/factory_e2e`, { max: 1 });
+const sql = postgres(E2E_DATABASE_URL, { max: 1 });
 
 /** The seeded org the board's own rows carry — the spec inserts beside them, never into core tables. */
 let orgId: string;
