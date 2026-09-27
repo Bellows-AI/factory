@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { BoardJob } from '../src/board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from '../src/config.js';
+import { fleetDnsField, serviceSubdomain } from '../src/k8s-podspec.js';
 
 describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
@@ -193,5 +195,37 @@ describe('the driver config: policy and gates', () => {
         );
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: '500' })).toThrow(/GATE_TIMEOUT_MS/);
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: 'whenever' })).toThrow(/GATE_TIMEOUT_MS/);
+    });
+});
+
+describe('the driver config: the service search domain', () => {
+    const job = { id: '11111111-1111-4111-8111-111111111111', leaseToken: '22222222-2222-4222-8222-222222222222' };
+    const k8s = (env: NodeJS.ProcessEnv) => loadDriverConfig({ EXECUTOR: 'kubernetes', ...env });
+
+    // The domain lands in dnsConfig.searches, which kubernetes validates as a lowercase DNS
+    // subdomain: a bad one must fail the driver's boot, not every runner and gate Job it creates.
+    it('refuses a cluster domain that is not a lowercase DNS subdomain when services are on', () => {
+        expect(() => k8s({ K8S_CLUSTER_DOMAIN: 'Corp.Internal' })).toThrow(/K8S_CLUSTER_DOMAIN/);
+        expect(() => k8s({ K8S_CLUSTER_DOMAIN: 'corp_internal' })).toThrow(/K8S_CLUSTER_DOMAIN/);
+        expect(() => k8s({ K8S_CLUSTER_DOMAIN: '-corp.internal' })).toThrow(/K8S_CLUSTER_DOMAIN/);
+        expect(k8s({ K8S_CLUSTER_DOMAIN: 'corp.internal' }).k8sClusterDomain).toBe('corp.internal');
+        // Off, nothing reads the domain into a pod, so nothing is refused.
+        expect(k8s({ K8S_CLUSTER_DOMAIN: 'Corp.Internal', RUNNER_SERVICES: '0' }).k8sClusterDomain).toBe(
+            'Corp.Internal'
+        );
+    });
+
+    // The raw domain can be fine and the generated entry still overflow once the attempt prefix
+    // and the namespace are joined to it — so the whole entry is what is measured.
+    it('measures the complete generated search entry against the 253-byte ceiling', () => {
+        const SUBDOMAIN_MAX_LENGTH = 253;
+        const namespace = 'factory';
+        const fixed = `${serviceSubdomain(job as BoardJob)}.${namespace}.svc.`.length;
+        const domainOf = (length: number) => `${'a'.repeat(length - 2)}.b`;
+        const fits = k8s({ K8S_NAMESPACE: namespace, K8S_CLUSTER_DOMAIN: domainOf(SUBDOMAIN_MAX_LENGTH - fixed) });
+        expect(fleetDnsField(fits, job as BoardJob).dnsConfig?.searches[0]).toHaveLength(SUBDOMAIN_MAX_LENGTH);
+        expect(() =>
+            k8s({ K8S_NAMESPACE: namespace, K8S_CLUSTER_DOMAIN: domainOf(SUBDOMAIN_MAX_LENGTH - fixed + 1) })
+        ).toThrow(/K8S_CLUSTER_DOMAIN/);
     });
 });
