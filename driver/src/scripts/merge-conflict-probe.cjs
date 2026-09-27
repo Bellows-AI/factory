@@ -148,6 +148,20 @@ function fetchBase(publication) {
     return { ok: true };
 }
 
+/**
+ * A rebase re-commits, and the runner image carries no committer identity. The same fallback
+ * publish.ts's commitDirtyTree applies, and only when none is configured, so a member-configured
+ * identity is never overridden.
+ */
+function fallbackIdentity() {
+    try {
+        if (git('config', 'user.email').length > 0) return [];
+    } catch {
+        // `git config` exits 1 for an unset key.
+    }
+    return ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
+}
+
 const unmergedPaths = () =>
     git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean).slice(0, CONFLICTING_PATHS_MAX);
 
@@ -163,7 +177,7 @@ const unmergedPaths = () =>
  */
 function attemptRebase(base) {
     try {
-        git('rebase', '--autostash', base);
+        git(...fallbackIdentity(), 'rebase', '--autostash', base);
     } catch (e) {
         const paths = unmergedPaths();
         if (paths.length > 0) return { conflicted: true, paths };

@@ -88,6 +88,38 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         expect(existsSync(join(gitDir, 'rebase-apply'))).toBe(false);
     });
 
+    it('rebases with a fallback committer identity when the runner has none configured', () => {
+        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
+        fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+
+        // The runner image's shape: no GIT_* identity, no global or system config — a rebase
+        // re-commits, so git would refuse with "Committer identity unknown". useConfigOnly stops
+        // a dev host's git from guessing one out of the hostname, which a container's cannot.
+        const env: Record<string, string> = { ...process.env } as Record<string, string>;
+        for (const key of Object.keys(SCRIPT_IDENTITY)) delete env[key];
+        const out = execFileSync('node', [SCRIPT_PATH], {
+            cwd: fx.worktree(),
+            env: {
+                ...env,
+                GIT_CONFIG_GLOBAL: '/dev/null',
+                GIT_CONFIG_NOSYSTEM: '1',
+                GIT_CONFIG_COUNT: '1',
+                GIT_CONFIG_KEY_0: 'user.useConfigOnly',
+                GIT_CONFIG_VALUE_0: 'true',
+                HELPER_INPUT: JSON.stringify({ publication: publication() }),
+                GITHUB_TOKEN: '',
+            },
+            encoding: 'utf8',
+        });
+        const result = JSON.parse(out.trim().split('\n').filter(Boolean).pop()!) as ProbeVerdict;
+
+        expect(result).toMatchObject({ ok: true, output: { verdict: 'rebased' } });
+        expect(git(fx.worktree(), 'log', '-1', '--format=%cn <%ce>')).toBe(
+            'factory-ai <factory-ai@users.noreply.github.com>'
+        );
+    });
+
     it('leaves a known conflicted rebase state and lists the bounded conflicting paths', () => {
         expect(fx.sync()).toEqual({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
