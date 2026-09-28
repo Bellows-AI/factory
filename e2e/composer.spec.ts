@@ -55,7 +55,7 @@ async function openSelector(page: Page, label: string) {
  */
 async function stopOpenedTask(page: Page) {
     await page.locator('.page-header-actions').getByRole('button', { name: 'Stop run' }).click();
-    await expect(page.locator('.page-header-meta')).toContainText('stopped', { timeout: 10_000 });
+    await expect(page.locator('.page-header-meta')).toContainText(/stopped/i, { timeout: 10_000 });
 }
 
 test.describe('the guided task composer', () => {

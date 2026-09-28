@@ -209,34 +209,38 @@ describe('TaskDetail — checks', () => {
         { name: 'lint', status: 'failed' as const, exitCode: 1, output: '2 problems' },
     ];
 
-    it('renders the checks list with a name and status per gate', () => {
+    it("renders the newest run's verification with a name and status per gate", () => {
         const html = renderDetail({ jobs: [job({ gates })] });
-        expect(html).toContain('Checks');
+        expect(html).toContain('<h2>Verification</h2>');
+        expect(html).toContain('id="task-verification"');
         expect(html).toContain('test');
         expect(html).toContain('lint');
-        expect(html).toContain('passed');
-        expect(html).toContain('failed');
         expect(html).toContain('<details');
     });
 
-    it('never tints a zero count — "0 failed" is good news, not a red pill', () => {
+    it('draws only the counts that happened — "0 failed" is no news, and never a pill', () => {
         const html = renderDetail({ jobs: [job({ gates: [gates[0]!] })] });
-        // Both count rows: the run's Checks summary and the outcome's Verification section.
-        expect(html.match(/<span class="pill">0(<!-- -->)? failed<\/span>/g)?.length).toBe(2);
-        expect(html.match(/<span class="pill">0(<!-- -->)? running<\/span>/g)?.length).toBe(2);
-        expect(html.match(/<span class="pill pill-ok">1(<!-- -->)? passed<\/span>/g)?.length).toBe(2);
+        // Both count rows: the main column's Verification and the outcome rail's.
+        expect(html.match(/<span class="pill pill-ok">1(<!-- -->)? (<!-- -->)?passed<\/span>/g)?.length).toBe(2);
+        expect(html).not.toMatch(/>0(<!-- -->)? (<!-- -->)?(failed|running)</);
         expect(html).not.toContain('pill-bad');
     });
 
-    it('expands to the gate output, rendered as text', () => {
+    it('opens failed gates and leaves passed ones collapsed', () => {
         const html = renderDetail({ jobs: [job({ gates })] });
-        expect(html).toContain('2 problems');
-        expect(html).toContain('<pre');
+        const at = (name: string) => html.lastIndexOf('<details', html.indexOf(`<span>${name}</span>`));
+        expect(html.slice(at('lint'), at('lint') + 20)).toContain('<details open=""');
+        expect(html.slice(at('test'), at('test') + 20)).not.toContain('open');
     });
 
-    it('labels each summary count with its meaning and status color', () => {
-        // "Checks 1 1 0" tells nobody which number is which; each count is labelled and wears
-        // the same status class the per-gate pill does.
+    it('gives each gate output its own labelled, focusable, copyable mono well', () => {
+        const html = renderDetail({ jobs: [job({ gates })] });
+        expect(html).toContain('aria-label="Output of lint"');
+        expect(html).toContain('<pre class="chat-output gate-output" tabindex="0">2 problems</pre>');
+        expect(html).toContain('aria-label="Copy output of lint"');
+    });
+
+    it('labels each count with its meaning and status color, failed first', () => {
         const html = renderDetail({
             jobs: [
                 job({
@@ -244,21 +248,18 @@ describe('TaskDetail — checks', () => {
                 }),
             ],
         });
-        // The gates summary is the first summary AFTER the outcome's own — anchor the slice
-        // on the gates disclosure itself, not on the first summary in the page.
-        const start = html.indexOf('chat-gates');
-        const summary = html.slice(start, html.indexOf('</summary>', start));
-        expect(summary).toContain('pill pill-ok');
-        expect(summary).toContain('pill pill-bad');
-        expect(summary).toContain('pill pill-done');
-        expect(summary).toMatch(/1(<!-- -->)? passed/);
-        expect(summary).toMatch(/1(<!-- -->)? failed/);
-        expect(summary).toMatch(/1(<!-- -->)? running/);
+        const start = html.indexOf('task-verification-counts');
+        const counts = html.slice(start, html.indexOf('</p>', start));
+        expect(counts).toContain('pill pill-ok');
+        expect(counts).toContain('pill pill-bad');
+        expect(counts).toContain('pill pill-done');
+        expect(counts.indexOf('failed')).toBeLessThan(counts.indexOf('passed'));
+        expect(counts.indexOf('passed')).toBeLessThan(counts.indexOf('running'));
     });
 
-    it('renders no checks section for a run without gates', () => {
-        expect(renderDetail({ jobs: [job()] })).not.toContain('Checks');
-        expect(renderDetail({ jobs: [job({ gates: [] })] })).not.toContain('Checks');
+    it('renders no verification for a run without gates', () => {
+        expect(renderDetail({ jobs: [job()] })).not.toContain('Verification');
+        expect(renderDetail({ jobs: [job({ gates: [] })] })).not.toContain('Verification');
     });
 
     it('never emits a placeholder value for a gate that has not exited', () => {
@@ -451,5 +452,164 @@ describe('TaskDetail — turn stats', () => {
             ],
         });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+/**
+ * Who may continue a task (F3): the board refuses a follow-up from anyone but the account that
+ * queued the row it is posted to, so the composer is offered to that account alone — and the
+ * page says who can, rather than offering a control that can only fail.
+ */
+describe('TaskDetail — who may follow up', () => {
+    const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
+    const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'octo-reviewer', name: null, avatarUrl: null };
+    const viewer = { loading: false, id: me.id };
+
+    it('offers the composer on your own task', () => {
+        const html = renderDetail({ jobs: [job({ author: me })], viewer });
+        expect(html).toContain('<h2>Follow up</h2>');
+        expect(html).toContain('<textarea');
+    });
+
+    it("names the author on another member's task, and offers no composer", () => {
+        const html = renderDetail({ jobs: [job({ author: other })], viewer });
+        expect(html).toContain('Only octo-reviewer can continue this session. You can still mark it done.');
+        expect(html).not.toContain('<textarea');
+    });
+
+    it('says "the task author" when the row has none', () => {
+        const html = renderDetail({ jobs: [job({ author: null })], viewer });
+        expect(html).toContain('Only the task author can continue this session.');
+        expect(html).not.toContain('<textarea');
+        // A null author and a null viewer are the same nobody — the board's null-safe match.
+        expect(renderDetail({ jobs: [job({ author: null })], viewer: { loading: false, id: null } })).toContain(
+            '<textarea'
+        );
+    });
+
+    it('refuses an authored task to a viewer with no session', () => {
+        const html = renderDetail({ jobs: [job({ author: me })], viewer: { loading: false, id: null } });
+        expect(html).toContain('Only me can continue this session.');
+        expect(html).not.toContain('<textarea');
+    });
+
+    it('renders nothing while the session loads, so your own task never flashes a refusal', () => {
+        for (const author of [me, other]) {
+            const html = renderDetail({ jobs: [job({ author })], viewer: { loading: true, id: null } });
+            expect(html, author.login).not.toContain('<textarea');
+            expect(html, author.login).not.toContain('can continue this session');
+            expect(html, author.login).not.toContain('Follow up');
+        }
+    });
+
+    it('renders nothing on a closed task, even for another member', () => {
+        const html = renderDetail({ jobs: [job({ author: other, doneAt: '2026-09-01T13:00:00.000Z' })], viewer });
+        expect(html).not.toContain('can continue this session');
+        expect(html).not.toContain('<textarea');
+    });
+
+    it("renders the server's 403 inside the composer, beside the draft", () => {
+        const refusal = 'Only the account that queued the task can follow it up';
+        const html = renderDetail({ jobs: [job({ author: me })], viewer, followUpError: refusal });
+        const composer = html.slice(html.indexOf('class="composer"'));
+        expect(composer).toContain(refusal);
+        expect(composer.indexOf(refusal)).toBeLessThan(composer.indexOf('<textarea'));
+    });
+
+    it('keeps a stop or Mark done refusal above both columns, not in the composer', () => {
+        const html = renderDetail({ jobs: [job({ author: me })], viewer, actionError: 'Task is running' });
+        expect(html.indexOf('Task is running')).toBeLessThan(html.indexOf('task-layout'));
+    });
+});
+
+describe('TaskDetail — main column', () => {
+    const kim = { id: 'k', login: 'kim', name: null, avatarUrl: null };
+    const lee = { id: 'l', login: 'lee', name: null, avatarUrl: null };
+    const titlesOf = (html: string) =>
+        [...html.matchAll(/<li class="task-history-item"><span>([^<]+)<\/span>/g)].map((m) => m[1]);
+
+    it('lists recorded facts only, oldest first', () => {
+        const wait = { waitReason: 'review', waitingSince: '2026-09-01T12:05:00.000Z' };
+        const root = job(wait);
+        const child = job({
+            ...wait,
+            id: '44444444-4444-4444-8444-444444444444',
+            command: 'tighten it',
+            createdAt: '2026-09-01T12:10:00.000Z',
+            startedAt: '2026-09-01T12:10:01.000Z',
+            finishedAt: '2026-09-01T12:20:00.000Z',
+            doneAt: '2026-09-01T12:30:00.000Z',
+            doneBy: kim,
+        });
+        const html = renderDetail({ jobs: [root, child] });
+        expect(titlesOf(html)).toEqual([
+            'Task created',
+            'Run 1 started',
+            'Run 1 succeeded',
+            'Waiting for review',
+            'Follow-up queued',
+            'Run 2 started',
+            'Run 2 succeeded',
+            'Marked done by kim',
+        ]);
+        const history = html.slice(html.indexOf('task-history'), html.indexOf('</ol>'));
+        const stamps = [...history.matchAll(/dateTime="([^"]+)"/g)].map((m) => Date.parse(m[1]!));
+        expect(stamps).toEqual([...stamps].sort((a, b) => a - b));
+        expect(html).not.toMatch(/Implemented|Published PR|Published pull request/);
+    });
+
+    it('a queued run has only its queued fact; a stop names who asked', () => {
+        const queued = renderDetail({
+            jobs: [job({ status: 'queued', startedAt: null, finishedAt: null, exitCode: null })],
+        });
+        expect(titlesOf(queued)).toEqual(['Task created']);
+
+        const stopped = renderDetail({
+            jobs: [job({ status: 'stopped', cancelRequestedAt: '2026-09-01T12:02:00.000Z', stoppedBy: lee })],
+        });
+        expect(titlesOf(stopped)).toEqual(['Task created', 'Run 1 started', 'Stop requested by lee', 'Run 1 stopped']);
+        expect(titlesOf(renderDetail({ jobs: [job({ status: 'dead' })] }))).toContain('Run 1 lost its worker');
+    });
+
+    it('reads conversation → history → verification → services → published work → follow-up', () => {
+        const runtime = {
+            cpuPercent: null,
+            memUsedMb: null,
+            memPercent: null,
+            activity: null,
+            sampledAt: '2026-09-01T12:02:00.000Z',
+            services: [{ name: 'db', image: 'postgres:16', state: 'exited' }],
+        };
+        const html = renderDetail({
+            jobs: [
+                job({
+                    output: '[driver] published fix/2 — https://github.com/acme/web/pull/2',
+                    gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }],
+                    runtime,
+                }),
+            ],
+        });
+        const main = html.slice(html.indexOf('task-main'));
+        const headings = ['Conversation', 'Run history', 'Verification', 'Services', 'Published work', 'Follow up'];
+        const order = headings.map((h) => main.indexOf(`<h2>${h}</h2>`));
+        expect(order.every((at) => at >= 0)).toBe(true);
+        expect(order).toEqual([...order].sort((a, b) => a - b));
+        // The rail leads the DOM, so a narrow screen reads the summary first.
+        expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-main'));
+    });
+
+    it('publishes the branch as a copyable chip and links only a safe PR url', () => {
+        const html = renderDetail({
+            jobs: [job({ output: '[driver] published fix/2 — https://github.com/acme/web/pull/2' })],
+        });
+        const published = html.slice(html.indexOf('task-published'));
+        expect(published).toContain('fix/2</code>');
+        expect(published).toContain('aria-label="Copy branch name"');
+        expect(published).toContain('href="https://github.com/acme/web/pull/2"');
+        expect(published).toContain('Pull request #2');
+
+        const unsafe = renderDetail({ jobs: [job({ output: '[driver] published fix/odd — javascript:alert(1)' })] });
+        expect(unsafe).toContain('fix/odd</code>');
+        expect(unsafe).not.toContain('href="javascript:');
     });
 });

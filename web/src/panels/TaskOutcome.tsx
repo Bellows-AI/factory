@@ -3,11 +3,11 @@ import { wallClock } from '../format.js';
 import { PRODUCT_NAME } from '../brand.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
-import type { AuthorRef, Job } from '../api/useJobs.js';
+import type { AuthorRef, GateCheck, Job } from '../api/useJobs.js';
 import {
     closureOf,
-    gateCountPill,
-    gateCounts,
+    type FollowUpViewer,
+    followUpEligibility,
     isHttpUrl,
     isWaitingForReview,
     issueUrl,
@@ -20,6 +20,37 @@ import {
     type Closure,
     type ThreadPublish,
 } from '../task-outcome.js';
+import { focusFollowUp, needsAnotherPass, notAuthorMessage, TaskStatePill } from './TaskHeader.js';
+import { GateCountPills, VERIFICATION_ID } from './TaskRun.js';
+
+/**
+ * A failure's next step, in the rail a narrow screen reads first: Ask for another pass when the
+ * viewer may send one, else why not — in the follow-up slot's own words. Nothing while the
+ * session loads, and nothing on a task that is not a failure the member can answer.
+ */
+function NextActionSection({ latest, viewer }: { latest: Job; viewer: FollowUpViewer }) {
+    if (!needsAnotherPass(latest)) return null;
+    const eligibility = followUpEligibility(latest, viewer);
+    let body: ReactNode = null;
+    if (eligibility === 'eligible') {
+        body = (
+            <button type="button" className="primary" onClick={focusFollowUp}>
+                Ask for another pass
+            </button>
+        );
+    } else if (eligibility === 'not-author') {
+        body = <p className="muted">{notAuthorMessage(latest)}</p>;
+    } else if (eligibility === 'no-session') {
+        body = <p className="muted">This run has no agent session to continue. You can still mark it done.</p>;
+    }
+    if (body === null) return null;
+    return (
+        <section>
+            <h3 className="task-outcome-label">Next action</h3>
+            {body}
+        </section>
+    );
+}
 
 /** The Result section: status pills, who started it, and how it closed. Split out of
  * `TaskOutcome` so its own ternary chain does not add to the parent's cognitive complexity. */
@@ -34,15 +65,14 @@ function ResultSection({
     closure: Closure | null;
     exit: number | null;
     resultPairs: [string, ReactNode][];
-    /** An open PR-review wait (206) relabels the pill; a terminal one leaves it be. */
+    /** An open PR-review wait (206) says what it waits for; a terminal one says why it ended. */
     waiting: boolean;
 }) {
     return (
         <section>
             <h3 className="task-outcome-label">Result</h3>
             <p className="msg-meta">
-                <span className="pill">{waiting ? 'Waiting for review' : latest.status}</span>
-                {latest.doneAt !== null ? <span className="pill chat-done">done</span> : null}
+                <TaskStatePill job={latest} />
                 {closure !== null && closure.kind !== 'done' ? (
                     <span className="pill chat-stop">
                         {closure.kind === 'stopped' ? 'stopped by' : 'stop requested by'} {closure.login}
@@ -67,33 +97,20 @@ function ResultSection({
     );
 }
 
-/** The Verification section: the gate pill counts and a link to the newest run's own checks.
- * Split out of `TaskOutcome` for the same reason as `ResultSection`. */
-function VerificationSection({
-    counts,
-    runIndex,
-}: {
-    counts: { passed: number; failed: number; running: number };
-    /** The newest run's 1-based position — the anchor `TaskRun` renders its checks under. */
-    runIndex: number;
-}) {
+/** The Verification section: the newest run's gate counts — only what happened — and a link to
+ * the verification panel in the main column, which carries each gate's output. Split out of
+ * `TaskOutcome` for the same reason as `ResultSection`. */
+function VerificationSection({ gates }: { gates: GateCheck[] }) {
     return (
         <section>
             <h3 className="task-outcome-label">Verification</h3>
-            {/* Words carry the meaning — the pills' tint is never the only signal. The output
-                stays on the run that produced it; this is the count. */}
             <p className="msg-meta">
-                <span className={gateCountPill('passed', counts.passed)}>{counts.passed} passed</span>
-                <span className={gateCountPill('failed', counts.failed)}>{counts.failed} failed</span>
-                <span className={gateCountPill('running', counts.running)}>{counts.running} running</span>
+                <GateCountPills gates={gates} />
             </p>
-            {/* Straight to the newest run's checks — the anchor is a focus target on the run's
-                own region, so keyboard and pointer land in the same place. */}
-            <a
-                href={`#run-${runIndex}-checks`}
-                onClick={() => document.getElementById(`run-${runIndex}-checks`)?.focus()}
-            >
-                View checks in run {runIndex}
+            {/* The anchor is a focus target on the panel itself, so keyboard and pointer land in
+                the same place. */}
+            <a href={`#${VERIFICATION_ID}`} onClick={() => document.getElementById(VERIFICATION_ID)?.focus()}>
+                View checks
             </a>
         </section>
     );
@@ -164,28 +181,6 @@ function startedByNode(author: AuthorRef | null): ReactNode {
 /** `90433` reads as one number, not four; the locale is pinned so the suite can pin the markup. */
 const tokenCount = new Intl.NumberFormat('en-US');
 const COST_DECIMAL_PLACES = 4;
-/** The Services section shows only the first few rows; the rest collapse into a count. */
-const MAX_VISIBLE_SERVICES = 3;
-
-/** The Services section: the newest attempt's last observed states, capped and counted. Split
- * out of `TaskOutcome` for the same reason as `ResultSection`. */
-function ServicesSection({ services }: { services: readonly { name: string; image: string; state: string }[] }) {
-    const overflow = services.length - MAX_VISIBLE_SERVICES;
-    return (
-        <section>
-            <h3 className="task-outcome-label">Services</h3>
-            {/* The newest attempt's last observed states — the fleet is torn down when the
-                attempt ends, so these are its record of it, not a claim about now. */}
-            <KeyValues
-                pairs={services
-                    .slice(0, MAX_VISIBLE_SERVICES)
-                    .map((service) => [service.name, service.state] as [string, ReactNode])}
-            />
-            {overflow > 0 ? <p className="muted">and {overflow} more</p> : null}
-        </section>
-    );
-}
-
 /**
  * The task page's outcome summary: one compact answer to "what happened, and where" — the
  * result, the execution's facts, the verification's count, the published work and the declared
@@ -198,7 +193,7 @@ function ServicesSection({ services }: { services: readonly { name: string; imag
  * publish line the driver appends carries a branch and maybe a url, and no source records a
  * PR's state, so no row claims one.
  */
-export function TaskOutcome({ jobs }: { jobs: Job[] }) {
+export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpViewer }) {
     const root = jobs[0] as Job;
     const latest = jobs[jobs.length - 1] as Job;
     // A run that is not going must not show a ticking clock: only a live attempt gets one.
@@ -209,8 +204,6 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
     const context = threadContextTokens(jobs);
     const cost = threadCostUsd(jobs);
     const exit = newestTerminalExit(jobs);
-    const counts = gateCounts(latest.gates);
-    const services = latest.runtime?.services ?? null;
     const issueLink = issueUrl(latest.repo, issue);
     const waiting = isWaitingForReview(latest);
     // A row's link is a reference, not a command: the row's label already says what it is, so
@@ -250,15 +243,14 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                     resultPairs={resultPairs}
                     waiting={waiting}
                 />
+                <NextActionSection latest={latest} viewer={viewer} />
                 {executionPairs.length > 0 ? (
                     <section>
                         <h3 className="task-outcome-label">Execution</h3>
                         <KeyValues pairs={executionPairs} />
                     </section>
                 ) : null}
-                {latest.gates != null && latest.gates.length > 0 ? (
-                    <VerificationSection counts={counts} runIndex={jobs.length} />
-                ) : null}
+                {latest.gates != null && latest.gates.length > 0 ? <VerificationSection gates={latest.gates} /> : null}
                 {publish !== null || issue !== null ? (
                     <PublishedWorkSection
                         publish={publish}
@@ -268,7 +260,6 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                         prNr={prNr}
                     />
                 ) : null}
-                {services !== null && services.length > 0 ? <ServicesSection services={services} /> : null}
             </div>
         </details>
     );

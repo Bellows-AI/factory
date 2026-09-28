@@ -6,6 +6,7 @@ import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 import { TaskHeader } from '../src/panels/TaskHeader.js';
 import type { WorkflowParamChoice } from '../src/task-composer.js';
+import type { FollowUpViewer } from '../src/task-outcome.js';
 
 /**
  * The same contract the other panel suites pin: props in, markup out, and no DOM — `useEffect`
@@ -108,18 +109,33 @@ export interface DetailArgs {
     jobs?: Job[] | null;
     error?: string | null;
     actionError?: string | null;
+    followUpError?: string | null;
     sending?: boolean;
+    /** Who is looking. The default — no account, and the fixture's null author — is the author. */
+    viewer?: FollowUpViewer;
 }
 
-export const renderDetail = ({ jobs = [job()], error = null, actionError = null, sending = false }: DetailArgs = {}) =>
+/** The AUTH_MODE-agnostic default: a null viewer on a null-author row may follow up. */
+const ANONYMOUS_VIEWER: FollowUpViewer = { loading: false, id: null };
+
+export const renderDetail = ({
+    jobs = [job()],
+    error = null,
+    actionError = null,
+    followUpError = null,
+    sending = false,
+    viewer = ANONYMOUS_VIEWER,
+}: DetailArgs = {}) =>
     renderToStaticMarkup(
         // The sessionless branch carries a router Link (Start a new task), so the panel renders
         // under a router the same way the page mounts it.
         <MemoryRouter>
             <TaskDetail
                 jobs={jobs}
+                viewer={viewer}
                 error={error}
                 actionError={actionError}
+                followUpError={followUpError}
                 sending={sending}
                 onFollowUp={async () => null}
             />
@@ -130,12 +146,19 @@ export interface HeaderArgs {
     jobs?: Job[] | null;
     stoppingId?: string | null;
     doneId?: string | null;
+    viewer?: FollowUpViewer;
 }
 
-export const renderHeader = ({ jobs = [job()], stoppingId = null, doneId = null }: HeaderArgs = {}) =>
+export const renderHeader = ({
+    jobs = [job()],
+    stoppingId = null,
+    doneId = null,
+    viewer = ANONYMOUS_VIEWER,
+}: HeaderArgs = {}) =>
     renderToStaticMarkup(
         <TaskHeader
             jobs={jobs}
+            viewer={viewer}
             stoppingId={stoppingId}
             doneId={doneId}
             onStop={async () => {}}
