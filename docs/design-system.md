@@ -114,7 +114,7 @@ static suites; `e2e/polish.spec.ts` measures the rendered values in both themes.
   prose navigation, and inline prose links are exempt everywhere. At ≤900px the compact shell's
   control list (navigation, filters, task actions, dialog actions, editor tabs, composer
   controls) clears 44px — the smallest reliable finger target; new mobile-visible controls join
-  that one rule.
+  that one rule, which lives in the shared touch-target block at the end of the layer.
 - **Focus.** The shared ring is a two-pixel accent outline with a two-pixel gap, applied to
   every focusable control through a zero-specificity `:where(...):focus-visible` rule so
   self-skinned primitives never have to fight it. The chart's `.bucket-hit` paints its own
@@ -133,13 +133,24 @@ static suites; `e2e/polish.spec.ts` measures the rendered values in both themes.
   purpose: gridlines carry no data, and a hairline never carries meaning alone — grouping comes
   from the sunken fill, the label, or the text beside it. Status meaning rides on text plus
   tint, never tint alone.
-
 ## Primitives
 
-What exists, and when to reach for which. Families first; one-offs at the end. The names are the
-pre-theme names (#148 re-tokenized them, it did not rename them), so the inventory rows stand.
+What exists, and when to reach for which. Families first. The names are the pre-theme names (#148
+re-tokenized them, it did not rename them), so the inventory rows stand.
 
-### Layout
+`@layer components` is laid out in the order of this section: the shared primitives first, then
+one `/* ── region: <name> ── */` banner per lane — `inbox`, `composer`, `task-detail`,
+`settings`, `dashboard`, `entry` — and last, outside every region, the
+`/* ── shared: touch targets ── */` block that holds the one ≤900px 44px rule. A lane edits only
+its own region and its own rows below, plus append-only lines (its own selectors, one per line) in
+the touch-target list; a shared primitive changes in its shared section. The touch-target block
+sits last so it outranks each region's own control rules at equal specificity; the two members
+whose region rule used to follow it — `settings-toggle`'s `display: flex` and
+`repo-search input`'s `min-width` — restate that value right after the list.
+
+### Shared
+
+#### Layout
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
@@ -148,11 +159,9 @@ pre-theme names (#148 re-tokenized them, it did not rename them), so the invento
 | Skip link | `skip-link` | The off-screen "Skip to main content" anchor that slides in on `:focus-visible`, the first focusable element on every page |
 | Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
 | Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
-| Task inbox | `inbox`, `inbox-head`, `inbox-meta`, `inbox-new`, `inbox-filters`, `inbox-tabs`, `inbox-tab`, `inbox-search`, `inbox-sort`, `inbox-rows`, `inbox-row`, `inbox-status`, `inbox-title`, `inbox-activity`, `inbox-repo`, `inbox-author`, `inbox-when`, `inbox-empty`, `inbox-error`, `inbox-note` | The `/tasks` inbox: one responsive grid per row (status label, title link, repo, author, relative age in a `<time>`), URL-state filters, Load more |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done`, `sidenav-dot-review` | Task state as one painted pixel, a lookup on `taskTone`; running/stopping breathe (halo via `lamp-glow`); review (a success the user has not closed) is `--accent` |
 | App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: sticky, raised, no `h1`; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
 | Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The routed page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail (issue 159) |
-| Grids | `two-up`, `task-layout` | Two-panel dashboards; the task page's outcome + conversation grid (`task-outcome`/`task-conversation` are its areas) |
 
 `PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer (issue 159): every
 routed page renders exactly one of them, and the `h1` it wraps is the page's only `h1` — panel
@@ -163,20 +172,19 @@ line, `meta` the state beside the title (pills, clocks, timestamps) and `actions
 buttons — siblings of the heading, never children of it. An empty slot renders no wrapper, and
 `flex-wrap` drops meta and actions below the title at narrow widths without changing DOM order.
 
-### Surfaces and feedback
+#### Surfaces and feedback
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Panel | `panel`, `panel-head`, `panel-actions` | The card a page section lives in; `+ warn` / `bad` tints the edge |
-| Cards | `cards`, `card` | Numeric figure tiles inside a panel |
 | Status line | `status`, `alert`, `error`, `muted` | One-line state text; `muted` for secondary prose anywhere |
 | Badge | `badge`, `badge-warn` | Loud inline marker — reserved for synthetic data |
 | Limits | `limits` | The bulleted limitations list |
 | Halo | `lamp-glow` | The soft box-shadow halo in the lamp's own color (`currentColor`); worn by the breathing status dots |
 
-### Controls
+#### Controls
 
-#### Selector (issue 224)
+##### Selector (issue 224)
 
 The shared trigger and option-row language behind every dropdown: the app-bar account and
 organization menus, the appearance control, and the composer's workflow, repository and executor
@@ -206,7 +214,7 @@ moved off one.
   `popover-separator` is the one restrained divider, used between the user menu's Account link and
   Sign out.
 
-#### Appearance (issue 188)
+##### Appearance (issue 188)
 
 The System/Light/Dark preference is a client-only display setting, never a server one: it lives
 in `localStorage['factory.theme']`, which stores only `light` or `dark` and is removed entirely
@@ -226,37 +234,85 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Button | `button` (element), `primary` | The default control; `primary` for the page's one main action |
-| Toggle | `settings-toggle` | A labelled checkbox row — the design system's one boolean-control primitive (no dedicated switch family exists): the default-workflow settings panel's two switches and the composer's matching pair of optional-step checkboxes (issue 208), the latter now inside the composer's `composer-steps` disclosure (issue 228) |
 | Popover | `select-trigger`, `popover`, `popover-option`, `popover-separator` | The shared quiet-selector language above — user menu, org, composer and dashboard listboxes (Range, Scope); `data-focus`/`data-selected` state the options; dialogs sit at z-index 40, popovers at 30 |
-| Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166, refined by #246): each a real `fieldset`/`legend` — the caption groups the trigger without stealing its own accessible name — read-only values sunken like the inputs they echo |
-| Range | `range-dialog`, `range-dialog-title`, `range-draft`, `range-draft-fields`, `range-draft-actions` | The Range group's one dropdown (issue 246): a `select-trigger`/`popover`/`popover-option` Listbox over the presets plus Custom; picking a preset commits it, picking Custom opens the `range-dialog` — a Headless UI Dialog in the shared `dialog-*` shell — holding the draft form (`range-draft`, `range-draft-fields` for the two labeled date fields); Apply, Cancel and Clear are the only ways to commit or discard it |
-| Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar groups — mono, muted, a polite live region |
-| Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
 | Org | `org-selector`, `org-select`, `select-trigger` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
-| Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
-| Public header | `public-header`, `public-brand`, `public-context`, `public-header-actions` | The compact chrome both public pages (gate, onboarding) carry: the product brand (`PRODUCT_NAME`), one context word, and the actions cell, which holds the theme control (issue 187; the appearance control arrived in issue 188). No navigation, no session, no `h1` — each page owns its one heading |
-| Onboarding | `onboarding`, `onboarding-purpose`, `onboarding-identity`, `onboarding-orgs`, `onboarding-org`, `onboarding-org-head`, `onboarding-org-name`, `onboarding-org-mark`, `onboarding-requested`, `onboarding-org-details`, `onboarding-org-summary`, `onboarding-mode`, `onboarding-mode-option`, `onboarding-mode-help`, `onboarding-repos`, `onboarding-repo`, `onboarding-repo-count`, `onboarding-note`, `onboarding-summary`, `onboarding-summary-total`, `onboarding-summary-rows`, `onboarding-summary-row`, `onboarding-actions`, `onboarding-loading`, `onboarding-loading-line` | The setup screen (issue 125, recomposed by issue 187): the centered column, the org checkbox list with each org's initial identity mark and its `Requested for this sign-in` mark, one org's bordered row — a focus target for a blocked attempt, never a click target — whose disclosure summary names the org's repository mode while collapsed, the explicit mode radios with their helpers, the specific-mode checklist with its `N of M` count, the access note, the final selection summary, and the action region (global error, disabled reason, Continue). `onboarding-loading` shapes the pending-load placeholders: static rows and a status line, no shimmer |
 | User menu | `select-trigger`, `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover`, `popover-separator` | The app bar's identity disclosure (Headless UI Menu): Account, a separator, then Sign out |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | Identity images; `-fallback` is the initial stand-in |
-| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI Dialog/Combobox executor picker; options carry `data-focus`/`data-selected`; the backdrop div uses `--overlay`. The `dialog-*` shell is shared with the dialogs below |
-| Repository setup | `repo-search`, `repo-columns`, `repo-summary`, `repo-table`, `repo-save` | The repositories page (issue 181, compacted by issue 223): a visibly labeled search row carrying the selection-ceiling sentence, a `repo-summary` one-liner folding the enabled counts and installation context, and the summary/list/detail stack that becomes master/detail (`repo-columns.has-detail`) at ≥1100px only once a repository is actually configured — below that width, or with nothing configured, the DOM order (summary, list, detail) is the reading order. The Save action (`repo-save`) sits in the list panel's `panel-head` beside the table it saves, `primary` only while a dirty, unblocked selection is worth prompting for. `repo-table` is a fixed-layout `data` table with sized secondary columns and a sticky Configure column that stays reachable while scrolled; at ≤640px it stacks into `data-label` cards like `env-vars` |
 | State marks | `active`, `is-active` | The active member of a toggle row or nav list |
 | Keyboard mark | `kbd` (element) | The shortcut text beside the composer's launch button — documentation of the button, never an affordance |
 
-### Data display
+#### Data display
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Table | `table-wrap`, `data`, `sortable`, `align-end`, `th.asc`, `th.desc` | Every tabular readout; the wrap scrolls, never shrinks — a named, keyboard-focusable `<section>` (the region role, implicitly), so a scrolled-off column stays reachable. Sort controls are real buttons inside the `th`; the active column carries `aria-sort` (and the `th.asc`/`th.desc` arrow), sorting reads raw values with nulls last in both directions, and rows are keyed by caller-chosen stable keys. `align-end` right-aligns a numeric column's header and cells. |
 | Key-values | `kv` | The dt/dd definition grid |
-| Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's six measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order. Each `usage-measure` stacks its figure, label and cache detail in its own column (#246) so nothing collides; Token usage holds Total input (with its uncached, cache-read and cache-write parts beneath it), Cache hit rate and Output, and Output carries none of the input parts |
-| Analytics empty state | `usage-empty` | The one "nothing measured in this selection" state that replaces the dash-card chorus, naming the selection and one next action |
 | Per-user | `by-user-user` | The avatar+name cell the attribution and board tables share |
-| Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
-| Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
 | Pills | `pill` | State/type chips — task statuses, executor types, the private repo mark; a pill's text is the whole message, never a color |
 
-### Charts
+#### Dialogs and mobile navigation
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Dialog shell | `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI dialog shell every dialog renders into: the layer carries the z-index policy (dialogs 40, popovers 30), the backdrop div uses `--overlay`, the positioner centers the panel |
+| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `mobile-nav-org` | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the picker's `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link`/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
+
+### Region: inbox
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Task inbox | `inbox`, `inbox-head`, `inbox-meta`, `inbox-new`, `inbox-filters`, `inbox-tabs`, `inbox-tab`, `inbox-search`, `inbox-sort`, `inbox-rows`, `inbox-row`, `inbox-status`, `inbox-title`, `inbox-activity`, `inbox-repo`, `inbox-author`, `inbox-when`, `inbox-empty`, `inbox-error`, `inbox-note` | The `/tasks` inbox: one responsive grid per row (status label, title link, repo, author, relative age in a `<time>`), URL-state filters, Load more |
+
+### Region: composer
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `select-trigger`, `composer-param-input`, `task-compose`, `composer-field`, `composer-fields`, `composer-context`, `composer-context-item`, `composer-context-value`, `composer-steps`, `composer-helper`, `composer-preflight`, `composer-start`, `composer-blocker`, `composer-param-error`, `composer-param-details` | The message input and its row; `task-compose` is the full-page variant. The guided composer (#176, compacted by #228) keeps the prompt dominant: a `composer-field` for the prompt, immediately followed by `composer-context` — a wrapping row of small `composer-context-item` groups (a visible `composer-label` plus a `select-trigger`, issue 224's shared quiet-selector skin) for Repository, Executor and Workflow, each sized to content instead of a full-width column. A trigger's selected value renders in a `composer-context-value` span that ellipsis-truncates on narrow screens; the full value stays reachable through the trigger's `title`, the opened `popover` listbox, and the `composer-preflight` sentence. The two default-workflow steps (#208) sit inside a closed-by-default `composer-steps` disclosure beside the unchosen workflow value, its `<summary>` naming how many of the two are on, instead of two persistent rows. A chosen workflow's declared parameters still render as the `composer-fields` list below the row, each with `composer-helper` guidance, a `composer-preflight` sentence before the `composer-start` action row (button, `kbd` shortcut, `composer-blocker` reason), per-field `composer-param-error` lines, and the raw rule only inside `composer-param-details`. A failed field tints its `.composer-param-input` edge via `aria-invalid`. The trigger and menu skin itself (`select-trigger`, `popover`, `popover-option`) is shared with every other selector and owned by #224, not this pattern |
+
+### Region: task-detail
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Grid | `task-layout` | The task page's outcome + conversation grid (`task-outcome`/`task-conversation` are its areas) |
+| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
+| Run article | `run-label`, `run-summary`, `run-output`, `run-well`, `run-work`, `run-publish` | One run's sections in reading order: labels (Request / Follow-up / Agent response / activity), the stored summary as flowing prose, the raw-output disclosure (collapsed behind a summary, expanded when it is all there is), the checks-and-publication focus anchor, the publish line |
+| Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
+| Gates | `chat-gates`, `chat-gate-list`, `gate-passed`, `gate-failed`, `gate-running` | The verification-gate tree |
+| Output | `chat-output` | The scrolled raw-run well (`--surface`) |
+| Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
+| Outcome | `task-outcome`, `task-outcome-summary`, `task-outcome-body`, `task-outcome-label` | The task page's summary disclosure: result, execution, verification, published work, services — one `<details>`, expanded by default, whose grid area flips from above the conversation (narrow) to a bounded right column (≥1024px) without a second component |
+| Task head | `task-actions`, `task-layout`, `task-avatar` | The task's action row (now inside the page header), the outcome/conversation grid frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
+| Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
+
+### Region: settings
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Toggle | `settings-toggle` | A labelled checkbox row — the design system's one boolean-control primitive (no dedicated switch family exists): the default-workflow settings panel's two switches and the composer's matching pair of optional-step checkboxes (issue 208), the latter now inside the composer's `composer-steps` disclosure (issue 228) |
+| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions` | The Headless UI Dialog/Combobox executor picker, rendered into the shared `dialog-*` shell; options carry `data-focus`/`data-selected` |
+| Repository setup | `repo-search`, `repo-columns`, `repo-summary`, `repo-table`, `repo-save` | The repositories page (issue 181, compacted by issue 223): a visibly labeled search row carrying the selection-ceiling sentence, a `repo-summary` one-liner folding the enabled counts and installation context, and the summary/list/detail stack that becomes master/detail (`repo-columns.has-detail`) at ≥1100px only once a repository is actually configured — below that width, or with nothing configured, the DOM order (summary, list, detail) is the reading order. The Save action (`repo-save`) sits in the list panel's `panel-head` beside the table it saves, `primary` only while a dirty, unblocked selection is worth prompting for. `repo-table` is a fixed-layout `data` table with sized secondary columns and a sticky Configure column that stays reachable while scrolled; at ≤640px it stacks into `data-label` cards like `env-vars` |
+| Unsaved-changes dialog | `unsaved`, `unsaved-title`, `unsaved-actions` | The settings area's discard confirmation (issue 182), one instance raised by the dirty-draft coordinator before a blocked navigation or a repository switch: the remove dialog's floating shape, Continue editing safe-focused, Discard changes destructive |
+| Env | `env-tab`, `env-tabs`, `env-vars`, `env-pending`, `env-advanced-note`, `env-raw`, `env-errors`, `env-row-actions`, `env-add`, `env-advanced-toggle`, `env-row-remove` | The compact draft editor (issue 182, restyled by issue 222): a real `tablist` of Variables/Secrets tabs whose selected tab is the `aria-selected` one; the scope's editable table with aligned, bounded Name/Value/Actions columns (`table-layout: fixed`, the Value column absorbing the width the fixed Name/Actions columns leave, so a long value wraps instead of clipping); a pending-removal row that waits with its Undo until the whole-list save; a compact `env-row-actions` row beneath the table holding the quiet `env-add` control and, for Variables only, the de-emphasized text-style `env-advanced-toggle` disclosure trigger — neither styled `.primary`, so Save stays the panel's one prominent action; `env-row-remove` sizes the row's own remove button as a small square icon control; the advanced `.env` disclosure's warning line, the textarea editor, and the row/scope validation lines (`env-errors`, paired with `.error` for its red tint and attached per-field via `aria-describedby` so a name problem renders under the name input, not the value one). At ≤640px an `env-vars` row becomes a bordered card that reflows into labeled groups via each cell's `data-label` |
+| Readiness | `readiness`, `readiness-item`, `readiness-item.is-ok`, `readiness-item.is-attention`, `readiness-item.is-pending`, `readiness-status`, `readiness-fact`, `readiness-action` | The configuration overview's five ordered items (#180): raised cards in a grid — two columns above 700px, one at and below it; the tone modifiers tint the item's edge through the status-border tokens while the status text carries the meaning (never color alone), and `overflow-wrap` keeps long paths from widening the page |
+| Scope context | `scope-context`, `scope-context-label` | The readable scope/impact/editability block every environment editor renders before its controls (#180); the label is a small uppercase caption, the precedence sentence `muted` |
+
+### Region: dashboard
+
+| Primitive | Classes | Use for |
+| --- | --- | --- |
+| Grid | `two-up` | Two-panel dashboards |
+| Controls row | `dashboard-controls` | The dashboard's control row under the page header: the analytics toolbar, which moved here from the old global topbar (issues 160 and 159) |
+| Cards | `cards`, `card` | Numeric figure tiles inside a panel |
+| Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166, refined by #246): each a real `fieldset`/`legend` — the caption groups the trigger without stealing its own accessible name — read-only values sunken like the inputs they echo |
+| Range | `range-dialog`, `range-dialog-title`, `range-draft`, `range-draft-fields`, `range-draft-actions` | The Range group's one dropdown (issue 246): a `select-trigger`/`popover`/`popover-option` Listbox over the presets plus Custom; picking a preset commits it, picking Custom opens the `range-dialog` — a Headless UI Dialog in the shared `dialog-*` shell — holding the draft form (`range-draft`, `range-draft-fields` for the two labeled date fields); Apply, Cancel and Clear are the only ways to commit or discard it |
+| Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar groups — mono, muted, a polite live region |
+| Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
+| Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's six measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order. Each `usage-measure` stacks its figure, label and cache detail in its own column (#246) so nothing collides; Token usage holds Total input (with its uncached, cache-read and cache-write parts beneath it), Cache hit rate and Output, and Output carries none of the input parts |
+| Analytics empty state | `usage-empty` | The one "nothing measured in this selection" state that replaces the dash-card chorus, naming the selection and one next action |
+| Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
+| Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
+
+Charts:
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
@@ -270,142 +326,133 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Caption | `chart-caption`, `chart-disclosure` | The one-line caption (keying the hatched partial bucket when one exists) and the calculation `<details>` after the chart |
 | Empty | `chart-empty` | The all-hidden readout — **All series hidden** instead of a broken plot |
 
-### Task conversation
+### Region: entry
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
-| Run article | `run-label`, `run-summary`, `run-output`, `run-well`, `run-work`, `run-publish` | One run's sections in reading order: labels (Request / Follow-up / Agent response / activity), the stored summary as flowing prose, the raw-output disclosure (collapsed behind a summary, expanded when it is all there is), the checks-and-publication focus anchor, the publish line |
-| Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
-| Gates | `chat-gates`, `chat-gate-list`, `gate-passed`, `gate-failed`, `gate-running` | The verification-gate tree |
-| Output | `chat-output` | The scrolled raw-run well (`--surface`) |
-| Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted |
-| Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `select-trigger`, `composer-param-input`, `task-compose`, `composer-field`, `composer-fields`, `composer-context`, `composer-context-item`, `composer-context-value`, `composer-steps`, `composer-helper`, `composer-preflight`, `composer-start`, `composer-blocker`, `composer-param-error`, `composer-param-details` | The message input and its row; `task-compose` is the full-page variant. The guided composer (#176, compacted by #228) keeps the prompt dominant: a `composer-field` for the prompt, immediately followed by `composer-context` — a wrapping row of small `composer-context-item` groups (a visible `composer-label` plus a `select-trigger`, issue 224's shared quiet-selector skin) for Repository, Executor and Workflow, each sized to content instead of a full-width column. A trigger's selected value renders in a `composer-context-value` span that ellipsis-truncates on narrow screens; the full value stays reachable through the trigger's `title`, the opened `popover` listbox, and the `composer-preflight` sentence. The two default-workflow steps (#208) sit inside a closed-by-default `composer-steps` disclosure beside the unchosen workflow value, its `<summary>` naming how many of the two are on, instead of two persistent rows. A chosen workflow's declared parameters still render as the `composer-fields` list below the row, each with `composer-helper` guidance, a `composer-preflight` sentence before the `composer-start` action row (button, `kbd` shortcut, `composer-blocker` reason), per-field `composer-param-error` lines, and the raw rule only inside `composer-param-details`. A failed field tints its `.composer-param-input` edge via `aria-invalid`. The trigger and menu skin itself (`select-trigger`, `popover`, `popover-option`) is shared with every other selector and owned by #224, not this pattern |
-| Outcome | `task-outcome`, `task-outcome-summary`, `task-outcome-body`, `task-outcome-label` | The task page's summary disclosure: result, execution, verification, published work, services — one `<details>`, expanded by default, whose grid area flips from above the conversation (narrow) to a bounded right column (≥1024px) without a second component |
-| Task head | `task-actions`, `task-layout`, `task-avatar` | The task's action row (now inside the page header), the outcome/conversation grid frame, attribution; the row wraps, so narrow screens drop its second line rather than clip it |
-| Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): raised with the `--line-strong` floating edge, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
-| Unsaved-changes dialog | `unsaved`, `unsaved-title`, `unsaved-actions` | The settings area's discard confirmation (issue 182), one instance raised by the dirty-draft coordinator before a blocked navigation or a repository switch: the remove dialog's floating shape, Continue editing safe-focused, Discard changes destructive |
-
-### Environment panel
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Env | `env-tab`, `env-tabs`, `env-vars`, `env-pending`, `env-advanced-note`, `env-raw`, `env-errors`, `env-row-actions`, `env-add`, `env-advanced-toggle`, `env-row-remove` | The compact draft editor (issue 182, restyled by issue 222): a real `tablist` of Variables/Secrets tabs whose selected tab is the `aria-selected` one; the scope's editable table with aligned, bounded Name/Value/Actions columns (`table-layout: fixed`, the Value column absorbing the width the fixed Name/Actions columns leave, so a long value wraps instead of clipping); a pending-removal row that waits with its Undo until the whole-list save; a compact `env-row-actions` row beneath the table holding the quiet `env-add` control and, for Variables only, the de-emphasized text-style `env-advanced-toggle` disclosure trigger — neither styled `.primary`, so Save stays the panel's one prominent action; `env-row-remove` sizes the row's own remove button as a small square icon control; the advanced `.env` disclosure's warning line, the textarea editor, and the row/scope validation lines (`env-errors`, paired with `.error` for its red tint and attached per-field via `aria-describedby` so a name problem renders under the name input, not the value one). At ≤640px an `env-vars` row becomes a bordered card that reflows into labeled groups via each cell's `data-label` |
-
-### Configuration readiness
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Readiness | `readiness`, `readiness-item`, `readiness-item.is-ok`, `readiness-item.is-attention`, `readiness-item.is-pending`, `readiness-status`, `readiness-fact`, `readiness-action` | The configuration overview's five ordered items (#180): raised cards in a grid — two columns above 700px, one at and below it; the tone modifiers tint the item's edge through the status-border tokens while the status text carries the meaning (never color alone), and `overflow-wrap` keeps long paths from widening the page |
-| Scope context | `scope-context`, `scope-context-label` | The readable scope/impact/editability block every environment editor renders before its controls (#180); the label is a small uppercase caption, the precedence sentence `muted` |
-
-### Mobile navigation
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `mobile-nav-org` | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the picker's `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link`/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
+| Login | `login-gate`, `login-button`, `login-error` | The signed-out screen |
+| Public header | `public-header`, `public-brand`, `public-context`, `public-header-actions` | The compact chrome both public pages (gate, onboarding) carry: the product brand (`PRODUCT_NAME`), one context word, and the actions cell, which holds the theme control (issue 187; the appearance control arrived in issue 188). No navigation, no session, no `h1` — each page owns its one heading |
+| Onboarding | `onboarding`, `onboarding-purpose`, `onboarding-identity`, `onboarding-orgs`, `onboarding-org`, `onboarding-org-head`, `onboarding-org-name`, `onboarding-org-mark`, `onboarding-requested`, `onboarding-org-details`, `onboarding-org-summary`, `onboarding-mode`, `onboarding-mode-option`, `onboarding-mode-help`, `onboarding-repos`, `onboarding-repo`, `onboarding-repo-count`, `onboarding-note`, `onboarding-summary`, `onboarding-summary-total`, `onboarding-summary-rows`, `onboarding-summary-row`, `onboarding-actions`, `onboarding-loading`, `onboarding-loading-line` | The setup screen (issue 125, recomposed by issue 187): the centered column, the org checkbox list with each org's initial identity mark and its `Requested for this sign-in` mark, one org's bordered row — a focus target for a blocked attempt, never a click target — whose disclosure summary names the org's repository mode while collapsed, the explicit mode radios with their helpers, the specific-mode checklist with its `N of M` count, the access note, the final selection summary, and the action region (global error, disabled reason, Continue). `onboarding-loading` shapes the pending-load placeholders: static rows and a status line, no shimmer |
+| Identity | `identity-head`, `identity-name` | The account page's identity section |
 
 ### One-offs
 
-`identity-head`, `identity-name` — the account page's identity section; `dashboard-controls` —
-the dashboard's control row under the page header: the analytics toolbar, which moved here from
-the old global topbar (issues 160 and 159). Everything else above is a family; these exist because
-no family fits, and a new one-off needs a sentence here saying the same.
+None left: every class above has a family and a home. A new one-off needs a sentence here saying
+why no family fits.
 
 ## Inventory
 
-Every UI unit under `web/src`, mapped to the primitives it uses. Kept honest by
+Every UI unit under `web/src`, mapped to the primitives it uses and grouped by the region that owns
+it — the same six regions as the stylesheet, plus the shared shell. Kept honest by
 `web/test/styles.test.ts`: a new file under `components/`, `panels/`, `pages/` or `charts/` fails
 the suite until it has a row, and a new class in `styles.css` fails until this document names it.
+Helpers with no markup: `env-raw.ts` is the `.env` raw-editor parser the env panel imports, and
+`scale.ts` is the charts' band/linear scale helper.
 
-Components:
+### Shared
 
 | File | Primitives |
 | --- | --- |
-| `AnalyticsToolbar.tsx` | analytics toolbar, rendered-data summary, range |
 | `AppBar.tsx` | appbar, appearance, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
-| `Card.tsx` | card |
-| `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
 | `DraftReturnBanner.tsx` | banner-info (the primitive's rule lands with the banner work, G4) |
-| `ExecutorDialog.tsx` | picker, status, muted |
 | `KeyValues.tsx` | kv |
-| `LoginGate.tsx` | login, appearance, public-header |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
 | `NavItems.tsx` | sidenav — the nav links both `SideNav.tsx` and `MobileNavDialog.tsx` render |
-| `OnboardingOrganization.tsx` | onboarding |
 | `OrgSelector.tsx` | org, selector |
 | `PageHeader.tsx` | page-header |
-| `PublicPageHeader.tsx` | public-header |
-| `RangeSelector.tsx` | analytics toolbar, selector, range, picker (dialog shell), primary, status |
-| `ConfigurationScope.tsx` | scope-context |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |
-| `RepositorySetup.tsx` | panel, panel-head, panel-actions, table-wrap, data, pill, repo-search, repo-summary, repo-table, repo-save, scope-context, status, muted, primary |
-| `repository-setup.ts` | helper — no markup |
-| `ScopeToggle.tsx` | analytics toolbar, selector |
 | `SideNav.tsx` | sidenav |
 | `StatusBanner.tsx` | status |
 | `ThemeSelector.tsx` | appearance, selector |
-| `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
-| `UnsavedChangesDialog.tsx` | picker (dialog shell), unsaved, chat-resume, chat-remove |
 | `UserMenu.tsx` | selector, user-menu-button, popover, popover-separator, user-menu-panel, avatar |
+| `SettingsLayout.tsx` | none — renders the outlet |
+| `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
+
+### Region: inbox
+
+| File | Primitives |
+| --- | --- |
+| `TaskInboxPage.tsx` | page-header, inbox, inbox-filters, inbox-tabs, inbox-tab, inbox-search, inbox-sort, inbox-rows, inbox-row, inbox-status, inbox-title, inbox-activity, inbox-repo, inbox-author, inbox-when, inbox-empty, inbox-error, inbox-note, sidenav-dot, muted |
+
+### Region: composer
+
+| File | Primitives |
+| --- | --- |
+| `TaskComposer.tsx` | panel, composer, selector, composer-field, composer-context, composer-context-item, composer-context-value, composer-steps, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, settings-toggle, kbd, chat-resume, task-compose |
+| `TaskComposerPage.tsx` | page-header, status |
 | `WorkflowParameterFields.tsx` | composer-field, composer-fields, composer-label, composer-param-input, composer-helper, composer-param-error, composer-param-details |
 
-Panels (`env-raw.ts` is the `.env` raw-editor parser the env panel imports — a helper, not a panel):
+### Region: task-detail
 
 | File | Primitives |
 | --- | --- |
-| `AccessTokensPanel.tsx` | panel, status |
-| `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
-| `DefaultWorkflowPanel.tsx` | panel, panel-head, panel-actions, muted, status, settings-toggle |
-| `EnvVarsPanel.tsx` | panel, env |
-| `IdentityPanel.tsx` | identity, avatar |
-| `TrackedOrgsPanel.tsx` | panel, login-button |
-| `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
-| `TaskComposer.tsx` | panel, composer, selector, composer-field, composer-context, composer-context-item, composer-context-value, composer-steps, composer-helper, composer-preflight, composer-start, composer-blocker, composer-param-details, settings-toggle, kbd, chat-resume, task-compose |
-| `TaskDetail.tsx` | task-layout, task-conversation, panel-head, panel, composer, status, muted |
+| `TaskDetailPage.tsx` | page-header, status |
 | `TaskHeader.tsx` | page-header, pill, task head, popover, primary, chat-resume, chat-stop, chat-remove, chat-done, muted |
-| `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
+| `TaskDetail.tsx` | task-layout, task-conversation, panel-head, panel, composer, status, muted |
 | `TaskRun.tsx` | chat-exchange, run-label, run-summary, run-output, run-well, run-work, run-publish, msg-user, msg-meta, chat-runtime, chat-activity, chat-exit, chat-done, chat-stop, chat-gates, chat-gate-list, gate-passed, gate-failed, gate-running, chat-output, pill, muted, code |
-| `TaskUsagePanel.tsx` | data, align-end, muted |
-| `TelemetryFrame.tsx` | alert, badge |
-| `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
-| `UsageSummaryPanel.tsx` | metric summary, badge |
-| `WorkflowsPanel.tsx` | panel, panel-head, table-wrap, data, pill, muted, status, primary, env-raw |
-| `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
-| `env-draft.ts` | helper — no markup |
-| `env-raw.ts` | helper — no markup |
-| `env-vars-panel-parts.tsx` | presentational helper `EnvVarsPanel.tsx` imports (tablist, table, banner, tab panels) — no primitives beyond `env` |
-| `default-workflow-draft.ts` | helper — no markup |
+| `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
+| `TaskRemoveDialog.tsx` | picker (dialog shell), task-remove, status, chat-resume, chat-remove |
 
-Pages:
+### Region: settings
 
 | File | Primitives |
 | --- | --- |
-| `AccountPage.tsx` | page-header, panel |
-| `DashboardPage.tsx` | page-header, dashboard-controls |
-| `OnboardingPage.tsx` | onboarding, appearance, public-header, status, muted, avatar, login-button, primary |
 | `SettingsExecutorsPage.tsx` | page-header, panel, status, muted |
-| `SettingsLayout.tsx` | none — renders the outlet |
 | `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
 | `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness |
 | `SettingsRepositoriesPage.tsx` | page-header, repo-columns, repo-columns.has-detail, scope-context, status, muted |
 | `SettingsWorkflowsPage.tsx` | page-header, status |
 | `SettingsWorkspacePage.tsx` | page-header, scope-context, panel, status, muted |
-| `TaskComposerPage.tsx` | page-header, status |
-| `TaskDetailPage.tsx` | page-header, status |
-| `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
-| `TaskInboxPage.tsx` | page-header, inbox, inbox-filters, inbox-tabs, inbox-tab, inbox-search, inbox-sort, inbox-rows, inbox-row, inbox-status, inbox-title, inbox-activity, inbox-repo, inbox-author, inbox-when, inbox-empty, inbox-error, inbox-note, sidenav-dot, muted |
+| `RepositorySetup.tsx` | panel, panel-head, panel-actions, table-wrap, data, pill, repo-search, repo-summary, repo-table, repo-save, scope-context, status, muted, primary |
+| `repository-setup.ts` | helper — no markup |
+| `ConfigurationScope.tsx` | scope-context |
+| `ExecutorDialog.tsx` | picker, status, muted |
+| `UnsavedChangesDialog.tsx` | picker (dialog shell), unsaved, chat-resume, chat-remove |
+| `EnvVarsPanel.tsx` | panel, env |
+| `env-vars-panel-parts.tsx` | presentational helper `EnvVarsPanel.tsx` imports (tablist, table, banner, tab panels) — no primitives beyond `env` |
+| `env-draft.ts` | helper — no markup |
+| `env-raw.ts` | helper — no markup |
+| `DefaultWorkflowPanel.tsx` | panel, panel-head, panel-actions, muted, status, settings-toggle |
+| `default-workflow-draft.ts` | helper — no markup |
+| `WorkflowsPanel.tsx` | panel, panel-head, table-wrap, data, pill, muted, status, primary, env-raw |
+| `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 
-Charts (`scale.ts` is the band/linear scale helper — no markup):
+### Region: dashboard
 
 | File | Primitives |
 | --- | --- |
+| `DashboardPage.tsx` | page-header, dashboard-controls |
+| `AnalyticsToolbar.tsx` | analytics toolbar, rendered-data summary, range |
+| `RangeSelector.tsx` | analytics toolbar, selector, range, picker (dialog shell), primary, status |
+| `ScopeToggle.tsx` | analytics toolbar, selector |
+| `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
+| `Card.tsx` | card |
+| `TaskUsagePanel.tsx` | data, align-end, muted |
+| `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
+| `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
+| `UsageSummaryPanel.tsx` | metric summary, badge |
+| `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
+| `TelemetryFrame.tsx` | alert, badge |
 | `Axes.tsx` | grid, tick, axis-label |
 | `BarChart.tsx` | bar, line, bucket-hit, bar-partial, bar-partial-hatch, chart-tooltip, chart-tooltip-box, chart-empty |
 | `HBarChart.tsx` | bar |
 | `Scatter.tsx` | dot, axis-label |
 | `scale.ts` | helper — no markup |
 
+### Region: entry
+
+| File | Primitives |
+| --- | --- |
+| `AccountPage.tsx` | page-header, panel |
+| `OnboardingPage.tsx` | onboarding, appearance, public-header, status, muted, avatar, login-button, primary |
+| `LoginGate.tsx` | login, appearance, public-header |
+| `PublicPageHeader.tsx` | public-header |
+| `OnboardingOrganization.tsx` | onboarding |
+| `IdentityPanel.tsx` | identity, avatar |
+| `AccessTokensPanel.tsx` | panel, status |
+| `TrackedOrgsPanel.tsx` | panel, login-button |
+
 A class used but not defined here (`visually-hidden`, `token-once`) is a hook with no styles or a
 leftover — do not style it by inventing a rule without a row above.
+
