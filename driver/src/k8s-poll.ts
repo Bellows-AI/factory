@@ -15,6 +15,7 @@ import {
 } from './k8s-auxspec.js';
 import { envBodyToData, jobsPath, runnerName, secretBody } from './k8s-podspec.js';
 import {
+    answerPreview,
     containerFailure,
     ERROR_PREVIEW_CHARS,
     expectOk,
@@ -22,10 +23,12 @@ import {
     HTTP_NOT_FOUND,
     HTTP_SERVER_ERROR_STATUS,
     HTTP_TOO_MANY_REQUESTS,
+    isMalformedRequest400,
     livePod,
     parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
+    postRefusal,
     refusal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sResponse } from './k8s-transport.js';
@@ -51,7 +54,10 @@ function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pending' {
  * One GET with the same bounded patience the status poll has. Used for the reads that carry the
  * run's verdict once it has finished: the pod list (exit code) and the log (output). An apiserver
  * answering 503 for a moment is not this run's verdict — reporting a failure here would blame the
- * command for the API server's problem and re-run finished work.
+ * command for the API server's problem and re-run finished work. The same patience covers the
+ * API server's own pre-handler `400 Bad Request` (issue #308): a malformed-request answer from
+ * Go's `net/http`, transient by nature, retried like a 5xx — a genuine JSON `Status` 400 is an
+ * API refusal and returns immediately.
  */
 export async function readVerdict(deps: K8sDeps, path: string, what: string, failures = 0): Promise<K8sResponse> {
     let response: K8sResponse;
@@ -62,11 +68,18 @@ export async function readVerdict(deps: K8sDeps, path: string, what: string, fai
         await deps.sleep(POLL_MS);
         return readVerdict(deps, path, what, failures + 1);
     }
-    if (response.status !== HTTP_TOO_MANY_REQUESTS && response.status < HTTP_SERVER_ERROR_STATUS) {
+    if (
+        response.status !== HTTP_TOO_MANY_REQUESTS &&
+        response.status < HTTP_SERVER_ERROR_STATUS &&
+        !isMalformedRequest400(response.status, response.body)
+    ) {
         return response;
     }
     if (failures + 1 > POLL_MAX_CONSECUTIVE_FAILURES) {
-        throw new Error(`${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row`);
+        throw new Error(
+            `${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row: ` +
+                `${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
+        );
     }
     await deps.sleep(POLL_MS);
     return readVerdict(deps, path, what, failures + 1);
@@ -127,10 +140,9 @@ export async function readImagePullStatus(
 /**
  * One verdict-carrying read of a Job's status, translated to the four shapes every caller below
  * branches on: gone, an unexpected status, still running, or a terminal outcome. `readVerdict`
- * owns the transport/429/5xx retry bound and can still throw once it is exhausted — a caller that
- * must never throw (`pollJobToTerminal`) catches that itself; one that must (`auxVerdict`,
- * `pollRunnerJobUntilTerminal`, the gate poll) lets it propagate, wrapping it in its own shape
- * when it needs to.
+ * owns the transport/429/5xx/malformed-400 retry bound and THROWS once it is exhausted — every
+ * caller propagates that (`pollJobToTerminal` re-throws it, `auxVerdict`,
+ * `pollRunnerJobUntilTerminal`, the gate poll), wrapping it in its own shape when it needs to.
  */
 export type JobStatusResult =
     | { kind: 'notFound' }
@@ -155,7 +167,7 @@ export async function readJobStatus(deps: K8sDeps, jobName: string, what: string
 export interface PollToTerminalMessages {
     what: string;
     notFound: (jobName: string) => string;
-    errorStatus: (status: number) => string;
+    errorStatus: (status: number, body: string) => string;
     failed: string | null;
 }
 
@@ -180,11 +192,14 @@ async function executorImageWatch(
 
 /**
  * Poll one Job to a terminal status, the shape every aux Job readout shares: `readVerdict` owns
- * the transport/429/5xx retry bound, a 404 means the Job is gone, any other non-2xx is
- * unexpected, and a terminal status answers `failed` on the Job's own failure (when the caller
+ * the transport/429/5xx/malformed-400 retry bound, a 404 means the Job is gone, any other non-2xx
+ * is unexpected, and a terminal status answers `failed` on the Job's own failure (when the caller
  * names one) or null once there is a verdict to read — a Job failure with no `failed` message is
- * itself such a verdict, exactly like success. NEVER throws — a caller that must throw wraps the
- * non-null answer itself. Callers whose Job runs the executor image pass its name as `image`:
+ * itself such a verdict, exactly like success. A read whose patience ran out — transport failures,
+ * 429s, 5xx or the malformed-request 400 (issue #308), all infrastructure — RE-THROWS: it is not
+ * this Job's verdict, and a caller that must never see a throw wraps the poll itself (the
+ * opencode scrape does; the sync and reclaim callers let it propagate so the loop leaves the job
+ * to its lease). Callers whose Job runs the executor image pass its name as `image`:
  * while the pod is still pending, the poll then watches for an image the node cannot pull and
  * answers `unpullableImage` the moment the pod says so (issue #302), instead of letting the Job
  * sit in ImagePullBackOff until its deadline makes the verdict unreadable.
@@ -205,14 +220,9 @@ export async function pollJobToTerminal(
         return poll();
     };
     const poll = async (): Promise<string | null> => {
-        let result: JobStatusResult;
-        try {
-            result = await readJobStatus(deps, jobName, messages.what);
-        } catch (e) {
-            return (e as Error).message;
-        }
+        const result = await readJobStatus(deps, jobName, messages.what);
         if (result.kind === 'notFound') return messages.notFound(jobName);
-        if (result.kind === 'error') return messages.errorStatus(result.status);
+        if (result.kind === 'error') return messages.errorStatus(result.status, result.body);
         if (result.kind === 'pending') return pollPending();
         if (result.outcome === 'failed') return messages.failed;
         return null;
@@ -435,7 +445,7 @@ export async function runSyncJob(
             secretsPath(deps.config.k8sNamespace),
             secretBody(job, syncEnvSecretName(job), env)
         );
-        const refused = refusal(response, 'creating the sync secret');
+        const refused = postRefusal(response, 'creating the sync secret');
         if (refused) return { ok: false, reason: refused };
         secretRef.current = syncEnvSecretName(job);
     }
@@ -444,7 +454,7 @@ export async function runSyncJob(
         jobsPath(deps.config.k8sNamespace),
         syncJobSpec(deps.config, job, secretRef.current)
     );
-    const refusedCreate = refusal(create, 'creating the worktree sync job');
+    const refusedCreate = postRefusal(create, 'creating the worktree sync job');
     if (refusedCreate) return { ok: false, reason: refusedCreate };
     const jobName = syncJobName(job);
     const pollFailure = await pollJobToTerminal(
@@ -453,7 +463,7 @@ export async function runSyncJob(
         {
             what: 'reading the worktree sync job',
             notFound: (n) => `the worktree sync job ${n} no longer exists`,
-            errorStatus: (s) => `reading the worktree sync job answered ${s}`,
+            errorStatus: (s, b) => `reading the worktree sync job ${answerPreview(s, b)}`,
             failed: null,
         },
         executorImage(deps.config, job.executorType)
@@ -472,7 +482,7 @@ export async function runSyncJob(
  */
 export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult> {
     const create = await deps.request('POST', jobsPath(deps.config.k8sNamespace), reclaimJobSpec(deps.config, job));
-    const refused = refusal(create, 'creating the worktree reclaim job');
+    const refused = postRefusal(create, 'creating the worktree reclaim job');
     if (refused) return { ok: false, removed: false, reason: refused };
     const jobName = reclaimJobName(job);
     const pollFailure = await pollJobToTerminal(
@@ -481,7 +491,7 @@ export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<Recla
         {
             what: 'reading the worktree reclaim job',
             notFound: (n) => `the worktree reclaim job ${n} no longer exists`,
-            errorStatus: (s) => `reading the worktree reclaim job answered ${s}`,
+            errorStatus: (s, b) => `reading the worktree reclaim job ${answerPreview(s, b)}`,
             failed: null,
         },
         executorImage(deps.config, job.executorType)

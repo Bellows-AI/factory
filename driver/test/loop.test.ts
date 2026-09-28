@@ -170,6 +170,7 @@ function stubRunner(
         sample?: Omit<RuntimeSample, 'sampledAt'> | null;
         publish?: PublishResult | null;
         sync?: SyncResult | null;
+        syncError?: Error;
         reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null;
     } = {}
 ): Runner & {
@@ -181,7 +182,7 @@ function stubRunner(
     reclaimed: BoardJob[];
     servicesReleased: string[];
 } {
-    const { sample = null, publish = null, sync = null, reclaim = null } = options;
+    const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const runner = {
         servicesReleased: [] as string[],
         async releaseServices(releasedJob: BoardJob) {
@@ -219,6 +220,7 @@ function stubRunner(
         },
         async syncCheckout(syncedJob: BoardJob) {
             runner.synced.push(syncedJob);
+            if (syncError) throw syncError;
             return sync ?? { ok: true, reason: null };
         },
         async reclaimWorktree(reclaimedJob: BoardJob) {
@@ -761,6 +763,23 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.status).toBe('failed');
         expect(board.board.completed[0]?.output).toContain('could not be synced with the remote');
         expect(board.board.completed[0]?.output).toContain('conflict in driver/src/loop.ts');
+    });
+
+    // A poll that exhausted its patience is infrastructure, not a verdict (issue #308): the
+    // exhaustion arrives as a THROW from syncCheckout, and the loop's catch leaves the job to its
+    // lease — the same arm a stand-down takes — never a terminal `failed` with attempts left.
+    it('leaves the job to its lease when the checkout sync poll exhausts — never reports failed', async () => {
+        const board = stubBoard([job(1)]);
+        const logs: string[] = [];
+        const runner = stubRunner(async () => ok(), {
+            syncError: new Error('reading the worktree sync job answered 400 15 times in a row: 400 Bad Request'),
+        });
+
+        await drive({ ...board, runner, log: (message) => logs.push(message) });
+
+        expect(runner.synced).toHaveLength(1);
+        expect(board.board.completed).toEqual([]);
+        expect(logs.some((message) => message.includes('checkout sync threw, leaving it to the lease'))).toBe(true);
     });
 
     // The claim read the gates file before the sync freshened the checkout — the re-read is what

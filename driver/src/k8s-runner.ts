@@ -48,6 +48,7 @@ import {
 } from './k8s-poll.js';
 import { startServiceFleet, teardownServices } from './k8s-services.js';
 import {
+    answerPreview,
     expectOk,
     HTTP_ERROR_STATUS,
     livePod,
@@ -94,36 +95,37 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
         const refused = refusal(created, 'creating the session readout');
         if (refused) return fail(refused);
+        // pollJobToTerminal re-throws a read whose patience ran out (issue #308) — infrastructure,
+        // never the run's verdict. EVERY failure this block can raise — a transport rejection on
+        // the Job POST included — lands in the catch below: the scrape is the run's
+        // follow-up-ability, and a completed run's verdict must never burn over its close-time
+        // read.
         const pollFailure = await pollJobToTerminal(deps, jobName, {
             what: 'the session readout',
             notFound: (n) => `the session readout ${n} no longer exists`,
-            errorStatus: (s) => `reading the session readout answered ${s}`,
+            errorStatus: (s, b) => `reading the session readout ${answerPreview(s, b)}`,
             failed: 'the session readout job failed — its own deadline is its bound',
         });
         if (pollFailure !== null) return fail(pollFailure);
-        let pods: K8sResponse;
-        let log: K8sResponse;
-        try {
-            pods = await readVerdict(
-                deps,
-                jobPodsPath(deps.config.k8sNamespace, jobName),
-                'listing the session readout pods'
-            );
-            if (pods.status >= HTTP_ERROR_STATUS)
-                return fail(`listing the session readout pods answered ${pods.status}`);
-            const pod = livePod(pods.body);
-            if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
-            log = await readVerdict(
-                deps,
-                podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
-                'reading the session readout log'
-            );
-            if (log.status >= HTTP_ERROR_STATUS)
-                return fail(`reading the session readout's log answered ${log.status}`);
-        } catch (e) {
-            return fail((e as Error).message);
-        }
+        const pods = await readVerdict(
+            deps,
+            jobPodsPath(deps.config.k8sNamespace, jobName),
+            'listing the session readout pods'
+        );
+        if (pods.status >= HTTP_ERROR_STATUS)
+            return fail(`listing the session readout pods ${answerPreview(pods.status, pods.body)}`);
+        const pod = livePod(pods.body);
+        if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
+        const log = await readVerdict(
+            deps,
+            podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
+            'reading the session readout log'
+        );
+        if (log.status >= HTTP_ERROR_STATUS)
+            return fail(`reading the session readout's log ${answerPreview(log.status, log.body)}`);
         return parseOpencodeRunOutcome(log.body);
+    } catch (e) {
+        return fail((e as Error).message);
     } finally {
         void deleteJob(deps, jobName);
     }

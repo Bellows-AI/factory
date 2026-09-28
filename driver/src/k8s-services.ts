@@ -13,7 +13,7 @@ import {
 } from './k8s-auxspec.js';
 import { bellowsJobSpec, jobsPath } from './k8s-podspec.js';
 import { pollJobToTerminal, readVerdict } from './k8s-poll.js';
-import { expectOk, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
+import { answerPreview, expectOk, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import { collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
@@ -40,7 +40,7 @@ async function readBellows(deps: K8sDeps, job: BoardJob): Promise<string> {
         const pollFailure = await pollJobToTerminal(deps, jobName, {
             what: 'the .bellows.yaml readout',
             notFound: (n) => `the .bellows.yaml readout ${n} no longer exists`,
-            errorStatus: (s) => `reading the .bellows.yaml readout answered ${s}`,
+            errorStatus: (s, b) => `reading the .bellows.yaml readout ${answerPreview(s, b)}`,
             failed: 'the .bellows.yaml readout failed — its own deadline is its bound',
         });
         if (pollFailure !== null) throw new Error(pollFailure);
@@ -59,7 +59,7 @@ async function readBellows(deps: K8sDeps, job: BoardJob): Promise<string> {
             'reading the readout log'
         );
         if (log.status >= HTTP_ERROR_STATUS) {
-            throw new Error(`reading the .bellows.yaml readout's log answered ${log.status}`);
+            throw new Error(`reading the .bellows.yaml readout's log ${answerPreview(log.status, log.body)}`);
         }
         return log.body;
     } finally {

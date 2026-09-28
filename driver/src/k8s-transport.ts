@@ -1,6 +1,6 @@
 import { SERVICE_LABEL } from './labels.js';
 import { readFileSync } from 'node:fs';
-import { request as httpsRequest } from 'node:https';
+import { Agent, request as httpsRequest } from 'node:https';
 import type { DriverConfig } from './config.js';
 import { OUTPUT_LIMIT } from './runner.js';
 import type { ServiceStatus } from './board.js';
@@ -65,6 +65,7 @@ export const LOG_TAIL_LINES = 1_000;
  */
 export const HTTP_OK_STATUS = 200;
 export const HTTP_ERROR_STATUS = 300;
+export const HTTP_BAD_REQUEST = 400;
 export const HTTP_NOT_FOUND = 404;
 export const HTTP_CONFLICT = 409;
 export const HTTP_TOO_MANY_REQUESTS = 429;
@@ -72,6 +73,26 @@ export const HTTP_SERVER_ERROR_STATUS = 500;
 
 /** How much of a failed response body rides an error message — a preview, not the whole payload. */
 export const ERROR_PREVIEW_CHARS = 200;
+
+/** How much of a failed response body rides the diagnosis log line — the cause needs more than a preview. */
+export const DIAGNOSIS_BODY_CHARS = 500;
+
+/**
+ * Whether a 400 is the API server's own pre-handler malformed-request answer — Go's `net/http`
+ * writes a bare `400 Bad Request` (optionally `: <explanation>`) before any kubernetes handler
+ * runs, so it names the request bytes or the connection, never the API (issue #308: observed on
+ * both GETs and POSTs, with nothing in the apiserver logs). A genuine API refusal is a JSON
+ * `Status` object — `reason: BadRequest`/`Invalid` — and never matches. Deliberately narrow:
+ * widening it to "any non-JSON 400" would retry permanent kubelet refusals (the log endpoint's
+ * `container has not started`) for the poll's full patience; widen only with a logged body as
+ * evidence.
+ */
+export const isMalformedRequest400 = (status: number, body: string): boolean =>
+    status === HTTP_BAD_REQUEST && body.trim().startsWith('400 Bad Request');
+
+/** The one spelling of "<status> with the API's own reason" every `answered` message composes. */
+export const answerPreview = (status: number, body: string): string =>
+    `answered ${status}: ${body.slice(0, ERROR_PREVIEW_CHARS)}`;
 
 /** The shell convention for a killed process — the docker manager's timeout shape, matched here. */
 export const TIMEOUT_EXIT_CODE = 124;
@@ -116,12 +137,24 @@ export interface K8sResponse {
 export const refusal = (res: K8sResponse, what: string, ...tolerate: number[]): string | null =>
     res.status < HTTP_ERROR_STATUS || tolerate.includes(res.status)
         ? null
-        : `${what} answered ${res.status}: ${res.body.slice(0, ERROR_PREVIEW_CHARS)}`;
+        : `${what} ${answerPreview(res.status, res.body)}`;
 
 /** `refusal` for the majority of call sites, whose channel is a thrown Error. */
 export function expectOk(res: K8sResponse, what: string): void {
     const message = refusal(res, what);
     if (message) throw new Error(message);
+}
+
+/**
+ * A POST's refusal, under the same transient-400 rule `readVerdict` applies to a GET (issue #308):
+ * the API server's pre-handler plain-text `400 Bad Request` is connection damage, never this
+ * Job's verdict — it THROWS, and the caller's catch arm leaves the job to its lease. A genuine
+ * JSON `Status` refusal answers the message, as before. `null` is success.
+ */
+export function postRefusal(res: K8sResponse, what: string, ...tolerate: number[]): string | null {
+    const message = refusal(res, what, ...tolerate);
+    if (message && isMalformedRequest400(res.status, res.body)) throw new Error(message);
+    return message;
 }
 
 export type K8sMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -154,6 +187,9 @@ interface InClusterRequestDeps {
     readFile?: typeof readFileSync;
     request?: typeof httpsRequest;
     serviceAccountDir?: string;
+    /** Injected by the tests; the real transport owns one dedicated agent, never the global one. */
+    agent?: Agent;
+    log?: (message: string) => void;
 }
 
 /**
@@ -167,6 +203,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
     const readFile = deps.readFile ?? readFileSync;
     const request = deps.request ?? httpsRequest;
     const serviceAccountDir = deps.serviceAccountDir ?? SERVICE_ACCOUNT_DIR;
+    const log = deps.log ?? ((message: string) => console.log(`[driver] ${message}`));
     const host = env.KUBERNETES_SERVICE_HOST;
     const port = env.KUBERNETES_SERVICE_PORT ?? '443';
     if (!host) {
@@ -178,6 +215,12 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
     // Read once: the CA does not rotate, and reading it here is what makes a pod without its
     // projected ServiceAccount volume fail at startup instead of on every claim.
     const ca = readFile(`${serviceAccountDir}/ca.crt`, 'utf8');
+    // One dedicated agent with keep-alive OFF (issue #308): Node's global agent keeps sockets
+    // alive, and a request written onto a connection the apiserver has just idle-closed is
+    // answered — before any kubernetes handler runs — with the plain-text `400 Bad Request` the
+    // driver saw seven times in twelve hours. A fresh connection per request costs a TLS
+    // handshake per poll tick and buys the elimination of the reuse race by construction.
+    const agent = deps.agent ?? new Agent({ keepAlive: false });
 
     return (method, path, body) =>
         new Promise<K8sResponse>((resolve, reject) => {
@@ -188,6 +231,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                     method,
                     path,
                     ca,
+                    agent,
                     timeout: REQUEST_TIMEOUT_MS,
                     headers: {
                         // Read per call: a rotated ServiceAccount token must not be remembered.
@@ -205,7 +249,22 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                         // string the docker runner's cap exists to avoid. Keep a sliding tail.
                         if (text.length > STREAM_BUFFER_LIMIT) text = text.slice(-STREAM_BUFFER_TAIL);
                     });
-                    res.on('end', () => resolve({ status: res.statusCode ?? 0, body: text }));
+                    res.on('end', () => {
+                        if ((res.statusCode ?? 0) >= HTTP_ERROR_STATUS) {
+                            // The diagnosis line (issue #308): a refused answer carries everything
+                            // the cause needs — method, path, status, headers and the first chunk
+                            // of body — because the body IS the diagnosis: Go's pre-handler
+                            // `400 Bad Request`, a proxy's answer, or the API's own Status JSON.
+                            // Fired at the transport's own ≥300 refusal threshold, so a 3xx is
+                            // diagnosed too.
+                            log(
+                                `${method} ${path} answered ${res.statusCode} ` +
+                                    `headers=${JSON.stringify(res.headers ?? {})} ` +
+                                    `body=${text.slice(0, DIAGNOSIS_BODY_CHARS)}`
+                            );
+                        }
+                        resolve({ status: res.statusCode ?? 0, body: text });
+                    });
                 }
             );
             // A half-open connection would otherwise hold the run forever — and the loop would
