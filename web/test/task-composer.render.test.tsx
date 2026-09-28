@@ -3,6 +3,7 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { UseJobs } from '../src/api/useJobs.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
+import { type ComposerDraftInput, ComposerDraftProvider } from '../src/composer-draft.js';
 import { WorkflowParameterFields } from '../src/components/WorkflowParameterFields.js';
 import { TaskComposerPage } from '../src/pages/TaskComposerPage.js';
 import { TaskDetailPage } from '../src/pages/TaskDetailPage.js';
@@ -35,23 +36,35 @@ describe('the tasks pages', () => {
         listExecutorConfigs: async () => null,
     } as unknown as UseWorkspace;
 
-    function TasksArea() {
-        return <Outlet context={{ tasks: fakeTasks, workspace: idleWorkspace }} />;
-    }
-
-    const renderPage = (path: string) =>
+    const renderPage = (path: string, sessionLoading = false) =>
         renderToStaticMarkup(
             <MemoryRouter initialEntries={[path]}>
-                <Routes>
-                    <Route element={<TasksArea />}>
-                        <Route path="tasks">
-                            <Route index element={<TaskComposerPage />} />
-                            <Route path=":id" element={<TaskDetailPage />} />
+                {/* The shell's draft store, as AppShell mounts it around the routed page. */}
+                <ComposerDraftProvider session={null}>
+                    <Routes>
+                        <Route
+                            element={
+                                <Outlet context={{ tasks: fakeTasks, workspace: idleWorkspace, sessionLoading }} />
+                            }
+                        >
+                            <Route path="tasks">
+                                <Route index element={<TaskComposerPage />} />
+                                <Route path=":id" element={<TaskDetailPage />} />
+                            </Route>
                         </Route>
-                    </Route>
-                </Routes>
+                    </Routes>
+                </ComposerDraftProvider>
             </MemoryRouter>
         );
+
+    it('holds the composer behind a skeleton until the session is known, so nothing restores early', () => {
+        const html = renderPage('/tasks', true);
+        expect(html).toContain('<h1>New task</h1>');
+        expect(html).toContain('composer-skeleton');
+        expect(html).toContain('aria-busy="true"');
+        expect(html).not.toContain('<textarea');
+        expect(html).not.toContain('Loading your workspace');
+    });
 
     it('the composer page names itself "New task" under the Tasks eyebrow, once', () => {
         const html = renderPage('/tasks');
@@ -123,9 +136,9 @@ describe('TaskComposer', () => {
 
         const empty = renderComposer({ repos: [], executors: [] });
         expect(trigger(empty)).toContain('>No executor configured</span></button>');
-        expect(empty).toContain('Add an executor in');
+        expect(empty).toContain('Add an executor in Settings');
         expect(empty).toContain('href="/settings/executors?return=/tasks/new"');
-        expect(empty).toContain('Configure an executor in Settings to continue.');
+        expect(empty).toContain('No executor configured</p>');
         expect(empty).toContain('disabled');
     });
 
@@ -228,9 +241,16 @@ describe('TaskComposer — the prompt and the launch', () => {
     });
 
     it('hides the workflow select on a board that serves no workflows', () => {
-        // The no-workflow byte-identity, rendered: the composer is exactly what it was.
-        const html = renderComposer({ workflows: null });
-        expect(html).not.toContain('Workflow');
+        // No list, no process to pick: the selector and the optional steps are absent, and the
+        // workflow details section says only what every task runs anyway.
+        const html = renderComposer({
+            workflows: null,
+            defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
+        });
+        expect(html).not.toContain('Reusable workflow');
+        expect(html).not.toContain('composer-steps');
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(2);
+        expect(html).toContain('Every task runs: prompt → gates → publish.');
     });
 
     it('runs the raw prompt when no workflow is chosen: no params, no gate', () => {
@@ -268,16 +288,16 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).toContain('>Default workflow</span></button>');
     });
 
-    it('arranges repository, executor and workflow as a compact row under the prompt, not a full-width grid', () => {
+    it('gathers repository, executor and workflow as the three columns of the execution context', () => {
         const html = renderComposer({
             repos: [{ owner: 'acme', name: 'web' }],
             executors: [{ name: 'main', type: 'claude' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
+        expect(html).toContain('<h2>Execution context</h2>');
         expect(html).toContain('class="composer-context"');
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
         expect(html).not.toContain('composer-grid');
-        expect(html).not.toContain('<h2>Execution context</h2>');
         expect(html).not.toContain('Run without a repository checkout.');
         expect(html).not.toContain('The selected executor type chooses');
         // The full value stays reachable off the truncated trigger through the title attribute,
@@ -541,3 +561,166 @@ describe('the workflow parameter fields', () => {
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 });
+
+describe('the redesigned composer (#280)', () => {
+    const START = /<button type="button" class="primary"[^>]*>Start task<\/button>/;
+    const startButton = (html: string) => html.match(START)?.[0] ?? '';
+
+    it('lays the page out as four numbered sections, the step discs hidden from assistive tech', () => {
+        const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
+        const discs = html.match(/<span class="composer-step" aria-hidden="true">\d<\/span>/g) ?? [];
+        expect(discs).toEqual([1, 2, 3, 4].map((n) => `<span class="composer-step" aria-hidden="true">${n}</span>`));
+        for (const title of ['What should the agent do?', 'Execution context', 'Workflow details', 'Readiness']) {
+            expect(html).toContain(title);
+        }
+        // No attachment, mention or template affordances — none of them exist behind the UI.
+        expect(html).not.toMatch(/attach|mention|template/i);
+    });
+
+    it('offers an example only while the request is empty', () => {
+        const empty = renderComposer({});
+        expect(empty).toMatch(/<button type="button" class="composer-example">.*Try an example<\/button>/);
+        const typed = renderComposer({ restored: restoredDraft({ draft: 'fix it' }) });
+        expect(typed).toMatch(/<button type="button" class="composer-example" disabled="">.*Try an example<\/button>/);
+    });
+
+    it('counts the request against the board limit, and blocks it red past the limit', () => {
+        const fresh = renderComposer({});
+        expect(fresh).toContain('0 / 16,384');
+        expect(fresh).not.toContain('composer-counter is-over');
+
+        const over = renderComposer({ restored: restoredDraft({ draft: 'x'.repeat(16_385) }) });
+        expect(over).toContain('16,385 / 16,384');
+        expect(over).toContain('composer-counter is-over');
+        expect(over).toContain('class="banner-bad"');
+        expect(over).toContain('Request too long');
+        expect(startButton(over)).toContain('disabled=""');
+    });
+
+    it('opens a fresh composer with no red banner: the empty prompt is quiet status text', () => {
+        const html = renderComposer({});
+        expect(html).not.toContain('banner-bad');
+        expect(html).not.toContain('banner-info');
+        expect(html).toContain('Describe the task to continue.');
+        expect(startButton(html)).toContain('aria-describedby="composer-blocker"');
+    });
+
+    it('raises the missing executor as a red banner with the way to fix it, and points Start at it', () => {
+        const html = renderComposer({ executors: [] });
+        const banner = html.slice(html.indexOf('class="banner-bad"'));
+        expect(banner).toContain('No executor configured');
+        expect(banner).toContain('href="/settings/executors?return=/tasks/new"');
+        expect(banner).toContain('Add an executor in Settings');
+        expect(html).toContain('id="composer-readiness"');
+        expect(startButton(html)).toContain('aria-describedby="composer-readiness"');
+        expect(startButton(html)).toContain('disabled=""');
+    });
+
+    it('says delayed preferences in a blue banner, never red', () => {
+        const html = renderComposer({
+            restored: restoredDraft({ draft: 'fix it' }),
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
+            defaultWorkflowSettings: null,
+        });
+        expect(html).toContain('class="banner-info" id="composer-readiness"');
+        expect(html).toContain('Loading your saved workflow defaults…');
+        expect(html).not.toContain('banner-bad');
+    });
+
+    it('raises incomplete workflow details as a red banner', () => {
+        const html = renderComposer({
+            restored: restoredDraft({ draft: 'fix it', workflow: 'fix-issue' }),
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] }],
+        });
+        expect(html).toContain('class="banner-bad" id="composer-readiness"');
+        expect(html).toContain('Complete the required workflow details to continue.');
+    });
+
+    it('explains the default workflow in words, beside the real optional steps', () => {
+        const html = renderComposer({
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
+            defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
+        });
+        expect(html).toContain('Every task runs: prompt → gates → publish.');
+        expect(html).toContain('Optional steps (2 of 2 on)');
+        expect(html).toContain('Iterate on PR review comments');
+        expect(html).toContain('Repair merge conflicts');
+    });
+
+    it('holds Start while a restored workflow waits for its list — its parameters are not known yet', () => {
+        // Before the list answers, the chosen name declares nothing, so the empty-params gate
+        // would pass vacuously and launch `fix-issue` without the `#12` the member typed.
+        const html = renderComposer({
+            workflows: null,
+            restored: restoredDraft({
+                draft: 'fix it',
+                workflow: 'fix-issue',
+                storedParams: { workflowId: 'w1', values: { issue: '#12' } },
+            }),
+        });
+        expect(startButton(html)).toContain('disabled=""');
+        expect(html).toContain('class="banner-info" id="composer-readiness"');
+        expect(html).toContain('Loading the fix-issue workflow…');
+        expect(html).not.toContain('needs no launch details');
+        expect(html).not.toContain('banner-bad');
+    });
+
+    it('restores a held draft exactly: request, workflow, params and step overrides', () => {
+        const html = renderComposer({
+            repos: [
+                { owner: 'acme', name: 'web' },
+                { owner: 'acme', name: 'api' },
+            ],
+            executors: [
+                { name: 'main', type: 'claude-code' },
+                { name: 'heavy', type: 'claude-code' },
+            ],
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] }],
+            restored: restoredDraft({
+                draft: 'fix the login crash',
+                executor: 'heavy',
+                repo: 'acme/api',
+                repoTouched: true,
+                workflowRepo: 'acme/api',
+                workflow: 'fix-issue',
+                storedParams: { workflowId: 'w1', values: { issue: '#12' } },
+            }),
+        });
+        expect(html).toContain('>fix the login crash</textarea>');
+        expect(html).toContain('title="heavy"');
+        expect(html).toContain('title="acme/api"');
+        expect(html).toContain('>fix-issue</span></button>');
+        expect(html).toContain('value="#12"');
+        expect(startButton(html)).not.toContain('disabled=""');
+    });
+
+    it('restores the step overrides beside Default workflow', () => {
+        const html = renderComposer({
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
+            defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
+            restored: restoredDraft({ draft: 'fix it', defaultStepOverrides: { mergeConflictAutofix: false } }),
+        });
+        expect(html).toContain('Optional steps (1 of 2 on)');
+    });
+
+    it('offers Discard draft only once the composer holds something a fresh one would not', () => {
+        expect(renderComposer({})).not.toContain('Discard draft');
+        expect(renderComposer({ restored: restoredDraft({ draft: 'fix it' }) })).toContain('>Discard draft</button>');
+    });
+});
+
+/** A held draft for the default fixture lists (acme/web, main), with any field overridden. */
+function restoredDraft(overrides: Partial<ComposerDraftInput>): ComposerDraftInput {
+    return {
+        draft: '',
+        executor: 'main',
+        repo: 'acme/web',
+        repoTouched: false,
+        workflowRepo: 'acme/web',
+        workflow: '',
+        storedParams: { workflowId: null, values: {} },
+        paramTouched: {},
+        defaultStepOverrides: {},
+        ...overrides,
+    };
+}

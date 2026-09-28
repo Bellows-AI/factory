@@ -2003,9 +2003,14 @@
         margin-top: 8px;
     }
 
+    /* A field's visible label — with its glyph in the execution context. */
     .composer-label {
+        align-items: center;
         color: var(--ink-muted);
-        font-size: 12px;
+        display: inline-flex;
+        font-size: 13px;
+        font-weight: 500;
+        gap: 8px;
     }
 
     /* A declared parameter's text value — a real field, so unlike the composer's listbox
@@ -2025,18 +2030,135 @@
         margin-left: auto;
     }
 
-    /* On the composer page the textarea IS the pane — the issue asks for a big input, open by default —
-       so it gets the room a chat footer's one-liner does not need, and a bound so a wide window does
-       not stretch it into a banner. The detail view keeps the footer shape. */
-    .task-compose .composer {
+    /* The new-task page (issue 280): four numbered panels, stacked. `.composer` above is the detail
+       view's chat footer; the page variant drops its rule and spacing. */
+    .composer.task-compose {
         border-top: none;
-        margin-top: 12px;
-        max-width: 760px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        margin-top: 0;
         padding-top: 0;
     }
 
+    /* On the composer page the request IS the pane — a big input, open by default — so it gets
+       the room and the reading size a chat footer's one-liner does not need. */
     .task-compose .composer-input {
+        font-size: 15px;
+        line-height: 22px;
         min-height: 160px;
+    }
+
+    /* Wraps: on a phone the head's action drops below the title rather than squeezing it. */
+    .composer-section-head {
+        align-items: flex-start;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .composer-section-title {
+        display: flex;
+        flex: 1 1 200px;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    .composer-section-title h2 {
+        font-size: 15px;
+        line-height: 28px;
+        margin: 0;
+    }
+
+    /* The step disc: decoration beside the heading that carries the words. */
+    .composer-step {
+        align-items: center;
+        background: var(--accent);
+        border-radius: 50%;
+        color: var(--ink-inverse);
+        display: inline-flex;
+        flex: none;
+        font-size: 13px;
+        font-weight: 600;
+        height: 28px;
+        justify-content: center;
+        width: 28px;
+    }
+
+    .composer-example {
+        align-items: center;
+        display: inline-flex;
+        flex: none;
+        gap: 8px;
+    }
+
+    /* The request against the board's limit; the stop lamp once it is over. */
+    .composer-counter {
+        color: var(--ink-muted);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        margin: 4px 0 0;
+        text-align: right;
+    }
+
+    .composer-counter.is-over {
+        color: var(--lamp-stop);
+    }
+
+    /* `.panel p` spaces and caps prose; the page's small print and banner lines set their own —
+       the counter spans the textarea so it can sit at its right edge. */
+    .task-compose .composer-helper,
+    .task-compose .composer-counter,
+    .task-compose .banner-bad p,
+    .task-compose .banner-info p {
+        margin-bottom: 0;
+    }
+
+    .task-compose .composer-counter {
+        max-width: none;
+    }
+
+    .task-compose p.banner-title {
+        margin-bottom: 4px;
+    }
+
+    .composer-notices-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    .composer-notices-dismiss {
+        background: transparent;
+        border-color: transparent;
+        flex: none;
+        padding: 8px;
+    }
+
+    /* The composer's stand-in while the session is checked: static blocks, no shimmer. */
+    .composer-skeleton {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .composer-skeleton-block,
+    .composer-skeleton-line {
+        background: var(--surface-sunken);
+        border-radius: var(--radius-lg);
+    }
+
+    .composer-skeleton-block {
+        height: 160px;
+    }
+
+    .composer-skeleton-line {
+        height: 40px;
+        width: 50%;
     }
 
     /* The guided composer (issue 176, compacted by 228): label-above-control fields, the
@@ -2055,33 +2177,46 @@
         gap: 12px;
     }
 
-    /* The prompt stays the dominant element (issue 228): Repository, Executor and Workflow sit
-       directly beneath it as one wrapping row of small, content-sized controls instead of a
-       full-width grid — each item's own trigger already shows its selected value, so no separate
-       "Execution context" heading is needed. */
+    /* Section 2: Repository, Executor and Workflow — three columns on a wide screen, stacked
+       below it. Each column is a label over a full-width, framed selector. */
     .composer-context {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 16px;
-        margin-top: 8px;
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    @media (min-width: 1024px) {
+        .composer-context {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
     }
 
     .composer-context-item {
-        align-items: center;
-        display: inline-flex;
-        gap: 6px;
-        max-width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
         min-width: 0;
     }
 
+    .composer-context .select-trigger {
+        border-color: var(--line-strong);
+        width: 100%;
+    }
+
+    /* No executor, no launch: the trigger wears the stop lamp's edge beside the `banner-bad`. */
+    .composer-context .composer-trigger-missing {
+        border-color: var(--lamp-stop);
+    }
+
     /* Truncates inside the flex trigger, where plain text-overflow does not apply — the full
-       value stays reachable through this span's title, the opened listbox, and the preflight
+       value stays reachable through the trigger's title, the opened listbox, and the preflight
        sentence. */
     .composer-context-value {
         display: block;
-        max-width: min(24ch, 60vw);
+        flex: 1;
+        min-width: 0;
         overflow: hidden;
+        text-align: left;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
@@ -2089,8 +2224,8 @@
     /* The two default-workflow steps (issue 208), tucked behind a closed-by-default disclosure
        (issue 228) instead of two persistent rows — the summary alone carries the enabled count. */
     .composer-steps {
-        font-size: 12px;
-        margin-top: 8px;
+        font-size: 13px;
+        margin-top: 12px;
         max-width: 100%;
         width: fit-content;
     }
@@ -2102,13 +2237,13 @@
 
     .composer-helper {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: 13px;
         margin: 0;
     }
 
     .composer-preflight {
         color: var(--ink-muted);
-        margin: 12px 0 0;
+        margin: 0 0 12px;
     }
 
     .composer-start {
@@ -3975,7 +4110,9 @@
         .inbox-clear,
         .inbox-footer button,
         .inbox-error button,
-        .inbox-banner-body button {
+        .inbox-banner-body button,
+        .composer-example,
+        .composer-notices-dismiss {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
