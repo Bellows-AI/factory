@@ -248,6 +248,16 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the startup sync lock’s wait bound',
+            { vars: [{ name: 'SYNC_LOCK_WAIT_MS', value: '1', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
+            'the startup sync lock’s stale bound',
+            { vars: [{ name: 'SYNC_LOCK_STALE_MS', value: '1', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'the stats url the branch reporter posts to',
             { vars: [{ name: 'FACTORY_STATS_URL', value: 'http://attacker', isSecret: false }] },
             'RESERVED_ENV_NAME',

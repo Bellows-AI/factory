@@ -14,7 +14,9 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * two different paths to one runner's working directory; CRED_HELPER is the credential-helper CODE the sync
  * fetch runs — a member value there would be member-controlled code executed by the sync
  * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
- * starting claims into restore mode, silently skipping the fetch and rebase (issue #58). The
+ * starting claims into restore mode, silently skipping the fetch and rebase (issue #58); and the
+ * two SYNC_LOCK_* names are the startup sync lock's bounds (issue #307) — a member value there
+ * would shrink the wait to nothing or make every sync steal its neighbour's live lock. The
  * three reporter names steer the branch reporter — where it posts, which
  * attempt it speaks for, and which session it claims — and a member value in any of them is a
  * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the
@@ -33,6 +35,8 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',
     'RESTORE',
+    'SYNC_LOCK_WAIT_MS',
+    'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',

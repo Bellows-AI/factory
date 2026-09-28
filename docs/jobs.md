@@ -1216,6 +1216,34 @@ session. The clone's own working tree is never touched — under the worktree mo
 finally literally true, where the old sync hard-reset the clone's default branch and destroyed
 whatever stray edits sat there.
 
+**The sync serializes on the checkout's own lock, and lock contention is not a verdict (#307).**
+Every task worktree of one member's repository hangs off ONE clone, whose `refs/` every STARTING
+claim's fetch moves — and git's ref transaction moves a remote-tracking ref only from the value
+it read, so two overlapping fetches race and the loser dies with `cannot lock ref … is at X but
+expected Y`. Until #307 that was a terminal `failed` before the agent ever started, one burned
+attempt of three on a race the board would have won on retry. The script now takes an exclusive
+`factory-sync.lock` (an `O_EXCL` create) in the clone's git dir — a file on the shared workspaces
+volume, so the docker sync containers AND the kubernetes sync Jobs of one checkout contend on one
+file, across containers and pods alike. A second sync waits up to `SYNC_LOCK_WAIT_MS`
+(120 s — inside the kubernetes sync Job's 600 s deadline, and covered by the still-beating setup
+heartbeat) and steals a lock older than `SYNC_LOCK_STALE_MS` (600 s — on kubernetes that is the
+sync Job's own deadline, so no holder can still be alive past it and an older file is an orphan a
+killed holder left behind; docker bounds nothing, so a wedged live holder can be stolen from
+there, and the release is ownership-checked — the file must still be the holder's own — so a
+theft never cascades into deleting a successor's lock); both bounds are
+env seams the driver never sets, reserved from member configuration beside `RESTORE` and
+`CRED_HELPER`. The fetch itself attempts three times on a ref-lock stderr (`cannot lock ref`,
+`unable to update local ref`, `index.lock`, `shallow.lock`) — after the winner's fetch the refs
+are already current, so a retry is cheap and correct. A wait-out or an exhausted retry answers
+with the `transient worktree sync:` marker (`TRANSIENT_SYNC_REASON` in `publish.ts`), and the
+loop reads that as infrastructure: no verdict, the claim goes back to the board, an attempt is
+spent at the next claim, and `maxAttempts` governs — exactly like a sync that threw. Every other
+sync refusal still completes `failed` as before. The price is stated: a lock leaked younger than
+the stale bound (a pod OOM-killed mid-fetch, say) costs every re-claim its 120 s wait and one
+attempt — clearing such a file by hand stops the burn. And the lock serializes syncs against
+syncs only: a publish's push from another thread's worktree updates the same shared refs and can
+still lose a ref-lock race to a concurrent fetch — the same failure family, left for a follow-up.
+
 **A claim that continues a session RESTORES, and never touches the remote.** A follow-up
 is a task MID-FLIGHT: rebasing its tree onto a freshly fetched main would
 move the conversation's base underneath it, the "sync with main on task follow up commands"

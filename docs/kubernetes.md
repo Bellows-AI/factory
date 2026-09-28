@@ -480,7 +480,10 @@ a pod that references a missing Secret sits in `CreateContainerConfigError`), th
 `activeDeadlineSeconds` as its wall
 clock, the verdict scraped off the pod log — and it is attempt-scoped (`factory.job` /
 `factory.lease`) like everything else, so the re-claim fence sweeps a dead attempt's sync Job
-like anything else. When the claim env carries `GITHUB_TOKEN`, the pod's env grows one more
+like anything else. The script's per-checkout sync lock (docs/jobs.md, issue #307) is a
+lockfile in the clone's git dir ON the workspaces PVC, so concurrent sync Jobs of one checkout
+serialize across pods exactly as docker's sibling sync containers do — and its `SYNC_LOCK_WAIT_MS`
+wait bound (120 s) sits well inside this Job's 600 s deadline. When the claim env carries `GITHUB_TOKEN`, the pod's env grows one more
 literal: `CRED_HELPER`, the push's credential-helper CODE (a value that is a program, not a
 credential — the token itself travels the Secret, which git's spawned helper reads from the
 environment; git reads no token from the environment itself). Without the token the env stays

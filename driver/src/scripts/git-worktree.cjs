@@ -33,6 +33,9 @@
 //                 toward a cleartext or local transport), and the fetch carries `-c
 //                 http.followRedirects=initial`, which permits same-host redirects only,
 //                 never a hop to another host or scheme.
+//   SYNC_LOCK_WAIT_MS / SYNC_LOCK_STALE_MS — test seams for the checkout lock's bounds (below);
+//                 the driver never sets them, and both names are reserved from member
+//                 configuration on the board and in the driver's own claim-env filter.
 //
 // STARTING claims (no RESTORE), WORKTREE present: rebased onto the new default with
 // --autostash, so a follow-up — which lands in this same tree by design — works whether or
@@ -59,6 +62,50 @@ const restore = process.env.RESTORE === '1';
 const GIT_ERROR_MAX_LENGTH = 200;
 const SYNC_ERROR_MAX_LENGTH = 300;
 
+const positiveIntEnv = (name, fallback) => {
+    const parsed = Number.parseInt(process.env[name], 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+// One Int32 word — the smallest buffer Atomics.wait can sleep on.
+const SLEEP_WORD_BYTES = 4;
+
+const sleep = (ms) => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(SLEEP_WORD_BYTES)), 0, 0, ms);
+};
+
+// The sync runs under an exclusive per-checkout lockfile (issue #307): two STARTING claims on
+// one repo fetch the SAME clone's refs, and git's ref transaction moves a remote-tracking ref
+// only from the value it read, so overlapping fetches lose with `cannot lock ref … is at X but
+// expected Y`. The file lives in the clone's git dir — on the shared workspaces volume, so the
+// sync containers (docker) and sync Jobs (kubernetes) of one checkout contend on ONE file.
+const SYNC_LOCK_NAME = 'factory-sync.lock';
+// The defaults for the two bounds above: 120s is inside the kubernetes sync Job's 600s deadline
+// and covered by the still-beating setup heartbeat; 600s IS that deadline — a lock older than it
+// can have no living holder.
+const DEFAULT_SYNC_LOCK_WAIT_MS = 120000;
+const DEFAULT_SYNC_LOCK_STALE_MS = 600000;
+// How long a second sync waits for the holder before giving up with a transient verdict: well
+// inside the kubernetes sync Job's 600s deadline, and covered by the still-beating setup
+// heartbeat. Test seam only — the driver never sets it, and the name is reserved from member
+// configuration on both the board and the driver.
+const SYNC_LOCK_WAIT_MS = positiveIntEnv('SYNC_LOCK_WAIT_MS', DEFAULT_SYNC_LOCK_WAIT_MS);
+// A lock older than this is an orphan: on kubernetes the sync Job's own deadline is exactly
+// this bound, so no holder can still be alive past it and an older file is one a killed holder
+// left behind — also the recovery for a holder killed outright mid-sync. Docker bounds nothing,
+// so a live-but-wedged holder CAN be stolen from there; the release below is ownership-checked,
+// which is what keeps such a theft from cascading into deleting a successor's live lock.
+const SYNC_LOCK_STALE_MS = positiveIntEnv('SYNC_LOCK_STALE_MS', DEFAULT_SYNC_LOCK_STALE_MS);
+const SYNC_LOCK_POLL_MS = 250;
+// The fetch itself retries when it lost a ref lock anyway — a lock that slipped past the sync
+// lock, or a concurrent git outside this script. After the winner's fetch the refs are already
+// current, so a retry is cheap and correct.
+const SYNC_FETCH_ATTEMPTS = 3;
+const SYNC_FETCH_BACKOFF_MS = 500;
+// The stderr spellings of a ref-lock loss: issue #307's observed fetch race, plus the lockfile
+// shapes of an interrupted git.
+const TRANSIENT_REF_LOCK = /cannot lock ref|unable to update local ref|index\.lock|shallow\.lock/;
+
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
 const inw = (...a) => execFileSync('git', a, { cwd: wt, encoding: 'utf8' }).trim();
 const fail = (r) => {
@@ -70,7 +117,120 @@ const fail = (r) => {
     console.log(JSON.stringify({ ok: false, reason: r }));
 };
 
+/**
+ * Steals the lock when it is an orphan past the stale bound — no legal holder lives this long.
+ * The steal is a RENAME: atomic, so of several waiters polling one stale file exactly one wins
+ * (the losers' renames fail on a path that no longer holds it) and the renamed file is the
+ * winner's own to unlink. A failed rename is a live holder's exit or another waiter having
+ * moved the file first; either way the create is retried. Residual, stated: a waiter stalled
+ * between its staleness stat and its rename can displace a freshly recreated lock — two
+ * adjacent syscalls wide — and the ownership-checked release below is what keeps that from
+ * cascading.
+ */
+const stealIfStale = (lock) => {
+    try {
+        if (Date.now() - fs.statSync(lock).mtimeMs <= SYNC_LOCK_STALE_MS) return false;
+    } catch {
+        return false;
+    }
+    const stolen = lock + '.' + process.pid + '.stolen';
+    try {
+        fs.renameSync(lock, stolen);
+    } catch {
+        return false;
+    }
+    fs.rmSync(stolen, { force: true });
+    return true;
+    // A SIGKILL between the rename and that unlink leaks the `.stolen` litter — inert to git,
+    // and swept by nothing; the price of the atomic steal, and cheaper than a non-atomic one.
+};
+
+const lockHeldRefusal = (lock) =>
+    'transient worktree sync: the checkout lock ' +
+    lock +
+    ' is still held after ' +
+    SYNC_LOCK_WAIT_MS +
+    'ms — a concurrent sync of this clone is running; the claim should be retried';
+
+/**
+ * Takes the checkout's sync lock, waiting out a live holder and stealing an orphaned one.
+ * Released by an `exit` handler — the failure paths below answer with `fail(...)` and
+ * `process.exit(0)`, and `exit` handlers run synchronously on that path — and the handler
+ * removes the file only while it is still OURS (the inode we opened): a holder stolen from
+ * while alive, or outlived by a successor's recreate, must never delete the winner's lock.
+ * A holder killed outright leaks the file; the stale bound recovers it.
+ */
+const acquireSyncLock = () => {
+    let common = git('rev-parse', '--git-common-dir');
+    if (!path.isAbsolute(common)) common = path.resolve(repo, common);
+    const lock = path.join(common, SYNC_LOCK_NAME);
+    const deadline = Date.now() + SYNC_LOCK_WAIT_MS;
+    while (true) {
+        let fd;
+        try {
+            fd = fs.openSync(lock, 'wx');
+        } catch (e) {
+            if (e.code !== 'EEXIST') throw e;
+            if (Date.now() >= deadline) {
+                fail(lockHeldRefusal(lock));
+                process.exit(0);
+            }
+            // A steal retries the create immediately; a live holder costs one poll interval.
+            if (!stealIfStale(lock)) sleep(SYNC_LOCK_POLL_MS);
+            continue;
+        }
+        const ino = fs.fstatSync(fd).ino;
+        process.on('exit', () => {
+            try {
+                if (fs.statSync(lock).ino === ino) fs.rmSync(lock, { force: true });
+            } catch {}
+        });
+        fs.writeSync(fd, `${process.pid}\n`);
+        fs.closeSync(fd);
+        return lock;
+    }
+};
+
+/** The one fetch of the remote, under the claim's credential helper when it carries a token. */
+const fetchOrigin = () => {
+    if (process.env.CRED_HELPER) {
+        git(
+            '-c',
+            'credential.helper=' + process.env.CRED_HELPER,
+            '-c',
+            'http.followRedirects=initial',
+            'fetch',
+            'origin',
+            '--prune'
+        );
+    } else git('fetch', 'origin', '--prune');
+};
+
+/** The fetch, retried while it loses ref locks to a concurrent git; exhausted, a transient verdict. */
+const fetchOriginWithRetries = () => {
+    for (let attempt = 1; attempt <= SYNC_FETCH_ATTEMPTS; attempt += 1) {
+        try {
+            fetchOrigin();
+            return;
+        } catch (e) {
+            const detail = String((e && e.stderr) || (e && e.message) || e);
+            if (!TRANSIENT_REF_LOCK.test(detail)) throw e;
+            if (attempt === SYNC_FETCH_ATTEMPTS) {
+                fail(
+                    "transient worktree sync: the fetch kept losing the refs' locks to a concurrent git on " +
+                        SYNC_FETCH_ATTEMPTS +
+                        ' attempts: ' +
+                        detail.slice(0, GIT_ERROR_MAX_LENGTH)
+                );
+                process.exit(0);
+            }
+            sleep(SYNC_FETCH_BACKOFF_MS);
+        }
+    }
+};
+
 try {
+    acquireSyncLock();
     if (restore) {
         // Mid-task: the tree is what the conversation continues from, kept exactly as the run
         // before it left it — or recreated from the branch that outlived the tree's reclaim.
@@ -150,16 +310,8 @@ try {
             );
             process.exit(0);
         }
-        git(
-            '-c',
-            'credential.helper=' + process.env.CRED_HELPER,
-            '-c',
-            'http.followRedirects=initial',
-            'fetch',
-            'origin',
-            '--prune'
-        );
-    } else git('fetch', 'origin', '--prune');
+    }
+    fetchOriginWithRetries();
     let def = 'main';
     try {
         def = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
