@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import type { Job } from '../src/api/useJobs.js';
+import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 import { TaskHeader } from '../src/panels/TaskHeader.js';
@@ -67,6 +68,8 @@ export interface ComposerArgs {
     sending?: boolean;
     /** The saved default-workflow step settings; null while they have not answered yet. */
     defaultWorkflowSettings?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean } | null;
+    /** The draft the store holds for this member — what a return from Settings restores. */
+    restored?: ComposerDraftInput | null;
 }
 
 export const renderComposer = ({
@@ -77,6 +80,7 @@ export const renderComposer = ({
     actionError = null,
     sending = false,
     defaultWorkflowSettings = null,
+    restored = null,
 }: ComposerArgs = {}) =>
     // The Settings remediation is an SPA Link, so the panel needs a routing context to render.
     renderToStaticMarkup(
@@ -91,6 +95,11 @@ export const renderComposer = ({
                 actionError={actionError}
                 sending={sending}
                 onSend={async () => null}
+                draftStore={{
+                    state: restored === null ? null : { ...restored, owner: 'org-1:user-1' },
+                    save: () => {},
+                    clear: () => {},
+                }}
             />
         </MemoryRouter>
     );

@@ -1,6 +1,14 @@
+import { COMMAND_LIMIT } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
+import type { ComposerDraftInput } from '../src/composer-draft.js';
 import {
     type WorkflowParamChoice,
+    blockerTone,
+    commandCount,
+    commandTooLong,
+    draftIsFresh,
+    initialComposerState,
+    restoredDraftNotices,
     defaultWorkflowPayload,
     defaultWorkflowStepSummary,
     effectiveDefaultSteps,
@@ -409,5 +417,163 @@ describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
             workflowParams: null,
             defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: false },
         });
+    });
+});
+
+describe('startBlocker — the over-limit request (#280)', () => {
+    const base = { sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: false };
+
+    it('blocks a request over the command limit, after the prompt and before the workflow checks', () => {
+        expect(startBlocker({ ...base, promptTooLong: true })).toBe('too-long');
+        expect(startBlocker({ ...base, promptTooLong: true, defaultsUnresolved: true, paramsInvalid: true })).toBe(
+            'too-long'
+        );
+        expect(startBlocker({ ...base, promptTooLong: true, executorMissing: true })).toBe('missing-executor');
+    });
+
+    it('waits for a chosen workflow whose list has not answered, after the length and before its params', () => {
+        expect(startBlocker({ ...base, workflowUnresolved: true })).toBe('workflow-loading');
+        expect(startBlocker({ ...base, workflowUnresolved: true, paramsInvalid: true })).toBe('workflow-loading');
+        expect(startBlocker({ ...base, workflowUnresolved: true, promptTooLong: true })).toBe('too-long');
+        expect(blockerTone('workflow-loading')).toBe('info');
+    });
+
+    it('turns red only for the blockers a member must act on — a fresh composer never opens red', () => {
+        expect(blockerTone('missing-executor')).toBe('bad');
+        expect(blockerTone('invalid-params')).toBe('bad');
+        expect(blockerTone('too-long')).toBe('bad');
+        expect(blockerTone('defaults-unresolved')).toBe('info');
+        expect(blockerTone('empty-prompt')).toBe('quiet');
+        expect(blockerTone('in-flight')).toBe('quiet');
+        expect(blockerTone(null)).toBeNull();
+    });
+});
+
+describe('the request counter (#280)', () => {
+    it('counts UTF-16 units against the board limit, grouped for reading', () => {
+        expect(COMMAND_LIMIT).toBe(16_384);
+        expect(commandCount('')).toBe('0 / 16,384');
+        expect(commandCount('x'.repeat(1234))).toBe('1,234 / 16,384');
+        expect(commandTooLong('x'.repeat(COMMAND_LIMIT))).toBe(false);
+        expect(commandTooLong('x'.repeat(COMMAND_LIMIT + 1))).toBe(true);
+    });
+});
+
+describe('the composer draft — its fresh shape, a restore, and the dirty check (#280)', () => {
+    const repos = [
+        { owner: 'acme', name: 'web' },
+        { owner: 'acme', name: 'api' },
+    ];
+    const executors = [
+        { name: 'main', type: 'claude-code' },
+        { name: 'heavy', type: 'claude-code', isDefault: true },
+    ];
+    const restored: ComposerDraftInput = {
+        draft: 'fix the login crash',
+        executor: 'main',
+        repo: 'acme/api',
+        repoTouched: true,
+        workflowRepo: 'acme/api',
+        workflow: 'fix-issue',
+        storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
+        paramTouched: { issue: true },
+        defaultStepOverrides: { reviewReconciliation: false },
+    };
+
+    it('starts fresh from the lists: default executor, first repository, no workflow', () => {
+        expect(initialComposerState(null, { repos, executors })).toEqual({
+            draft: '',
+            executor: 'heavy',
+            repo: 'acme/web',
+            repoTouched: false,
+            workflowRepo: 'acme/web',
+            ...freshWorkflowDraft(),
+        });
+        // The workflow was chosen under the repository the composer mounts with, so the
+        // repo-reset has nothing to reset on mount.
+        expect(initialComposerState(null, { repos: null, executors: [] }).workflowRepo).toBe('');
+    });
+
+    it('restores every field exactly as it was saved, whatever the lists say now', () => {
+        expect(initialComposerState(restored, { repos, executors })).toEqual(restored);
+    });
+
+    it('reads a fresh composer as clean, and any member input as a draft worth keeping', () => {
+        const lists = { repos, executors };
+        const fresh = initialComposerState(null, lists);
+        expect(draftIsFresh(fresh, lists)).toBe(true);
+        expect(draftIsFresh({ ...fresh, draft: 'x' }, lists)).toBe(false);
+        expect(draftIsFresh({ ...fresh, executor: 'main' }, lists)).toBe(false);
+        expect(draftIsFresh({ ...fresh, repo: '', repoTouched: true, workflowRepo: '' }, lists)).toBe(false);
+        expect(draftIsFresh({ ...fresh, workflow: 'fix-issue' }, lists)).toBe(false);
+        expect(draftIsFresh({ ...fresh, defaultStepOverrides: { mergeConflictAutofix: false } }, lists)).toBe(false);
+        expect(draftIsFresh(restored, lists)).toBe(false);
+    });
+});
+
+describe('restoredDraftNotices — what changed while the member was away (#280)', () => {
+    const restored: ComposerDraftInput = {
+        draft: 'fix the login crash',
+        executor: 'main',
+        repo: 'acme/web',
+        repoTouched: false,
+        workflowRepo: 'acme/web',
+        workflow: 'fix-issue',
+        storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
+        paramTouched: {},
+        defaultStepOverrides: {},
+    };
+    const repos = [{ owner: 'acme', name: 'web' }];
+    const executors = [{ name: 'main', type: 'claude-code' }];
+    const workflows = [{ name: 'fix-issue' }];
+
+    it('says nothing when everything the draft chose still exists', () => {
+        expect(restoredDraftNotices(restored, { repos, executors, workflows })).toEqual([]);
+    });
+
+    it('says nothing for a choice the draft never made', () => {
+        const bare = { ...restored, executor: '', repo: '', workflowRepo: '', workflow: '' };
+        expect(restoredDraftNotices(bare, { repos: [], executors: [], workflows: [] })).toEqual([]);
+    });
+
+    it('names a deleted executor and the one selected instead', () => {
+        const others = [
+            { name: 'heavy', type: 'claude-code' },
+            { name: 'light', type: 'claude-code', isDefault: true },
+        ];
+        expect(restoredDraftNotices(restored, { repos, executors: others, workflows })).toEqual([
+            'Executor ‘main’ is no longer available — light selected.',
+        ]);
+    });
+
+    it('asks for a new executor when the deleted one was the last', () => {
+        expect(restoredDraftNotices(restored, { repos, executors: [], workflows })).toEqual([
+            'Executor ‘main’ is no longer available — add one to continue.',
+        ]);
+    });
+
+    it('names a deselected repository, and leaves the workflow to the reset it causes', () => {
+        const others = [{ owner: 'acme', name: 'api' }];
+        expect(restoredDraftNotices(restored, { repos: others, executors, workflows: [] })).toEqual([
+            'Repository ‘acme/web’ is no longer selected — acme/api selected.',
+        ]);
+        expect(restoredDraftNotices(restored, { repos: [], executors, workflows: [] })).toEqual([
+            'Repository ‘acme/web’ is no longer selected — the task will run without a repository.',
+        ]);
+    });
+
+    it('names a workflow the repository no longer offers', () => {
+        expect(restoredDraftNotices(restored, { repos, executors, workflows: [{ name: 'triage' }] })).toEqual([
+            'Workflow ‘fix-issue’ is no longer offered — Default workflow selected.',
+        ]);
+    });
+
+    it('holds every verdict (null) while the workflow it must judge has no answered list', () => {
+        expect(restoredDraftNotices(restored, { repos, executors, workflows: null })).toBeNull();
+        // Nothing to judge — no workflow was chosen, or its repository is gone — so no wait.
+        expect(restoredDraftNotices({ ...restored, workflow: '' }, { repos, executors, workflows: null })).toEqual([]);
+        expect(restoredDraftNotices(restored, { repos: [], executors, workflows: null })).toEqual([
+            'Repository ‘acme/web’ is no longer selected — the task will run without a repository.',
+        ]);
     });
 });
