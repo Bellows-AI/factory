@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { Dispatch, ReactNode, RefObject, SetStateAction } from 'react';
 import {
     buildCompletionPayload,
@@ -18,6 +18,7 @@ import {
     type RepoMode,
     type SummaryRow,
 } from '../onboarding.js';
+import { Icon } from '../components/Icon.js';
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
 import { ThemeSelector } from '../components/ThemeSelector.js';
@@ -37,13 +38,30 @@ const HTTP_STATUS_UNAUTHORIZED = 401;
  */
 export function StartAgainPanel({ returnTo }: { returnTo?: string | undefined }) {
     return (
-        <p className="status">
-            That sign-in expired. Nothing was saved.{' '}
-            <a href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo ?? '/')}`}>Start again</a> to choose the
-            organizations this dashboard tracks.
-        </p>
+        <div className="banner-warn">
+            <Icon name="alert-triangle" size={24} />
+            <p>
+                That sign-in expired. Nothing was saved.{' '}
+                <a href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo ?? '/')}`}>Start again</a> to choose
+                the organizations this dashboard tracks.
+            </p>
+        </div>
     );
 }
+
+/**
+ * Why Continue is disabled, or null when it is not (issue 284): nothing chosen, or a chosen
+ * organization whose specific list stands empty. Only a missing choice is a reason — a listing
+ * that is loading or cannot be read never blocks (`firstInvalidOrg`), and a refused submission is
+ * the alert above the button, not a reason on it.
+ */
+const continueBlocker = (selectedCount: number, invalidAccount: string | null): string | null => {
+    if (selectedCount === 0) return 'Choose at least one organization to continue.';
+    if (invalidAccount !== null) {
+        return `Choose at least one repository for ${invalidAccount}, or switch it to all repositories.`;
+    }
+    return null;
+};
 
 /** The mount-time pending-sign-in read, pulled out of the effect so its try/catch/status
  * handling does not add to `OnboardingPage`'s cognitive complexity. */
@@ -163,6 +181,7 @@ function OnboardingMainContent({
     rows,
     total,
     error,
+    blocker,
     submitting,
     ready,
     actionsRef,
@@ -180,6 +199,7 @@ function OnboardingMainContent({
     rows: readonly SummaryRow[];
     total: string;
     error: string | null;
+    blocker: string | null;
     submitting: boolean;
     ready: boolean;
     actionsRef: RefObject<HTMLDivElement | null>;
@@ -192,6 +212,7 @@ function OnboardingMainContent({
     onAttempt: () => void;
 }) {
     const identity = identityView(payload.identity);
+    const blockerId = useId();
     return (
         <>
             <div className="onboarding-identity">
@@ -249,15 +270,29 @@ function OnboardingMainContent({
             </section>
             <div className="onboarding-actions" ref={actionsRef} tabIndex={-1} aria-busy={submitting}>
                 {error ? (
-                    <p className="status" role="alert">
-                        {error}
+                    <div className="banner-bad" role="alert">
+                        <Icon name="alert-circle" size={24} />
+                        <p>{error}</p>
+                    </div>
+                ) : null}
+                {/* The disabled reason is visible AND the button's description (issue 284), so a
+                    screen reader landing on a dead Continue hears why. A failure is not a reason:
+                    it is the alert above, and it never disables anything. */}
+                {blocker ? (
+                    <p className="onboarding-blocker" id={blockerId}>
+                        {blocker}
                     </p>
                 ) : null}
-                {selected.size === 0 ? <p className="muted">Choose at least one organization to continue.</p> : null}
                 {/* aria-disabled rather than disabled: an attempted action against an unready
                     draft is receivable, and the attempt is what moves focus to the first invalid
                     group. The handler no-ops the network while a draft stands unready. */}
-                <button type="button" className="primary" aria-disabled={!ready || submitting} onClick={onAttempt}>
+                <button
+                    type="button"
+                    className="primary"
+                    aria-disabled={!ready || submitting}
+                    aria-describedby={blocker ? blockerId : undefined}
+                    onClick={onAttempt}
+                >
                     {submitting ? `Setting up ${PRODUCT_NAME}…` : 'Continue'}
                 </button>
             </div>
@@ -481,7 +516,7 @@ function useOnboardingSubmit(state: {
         void submit();
     };
 
-    return { error, submitting, ready, actionsRef, attempt };
+    return { error, submitting, ready, invalidId, actionsRef, attempt };
 }
 
 /** The `!payload` branch: a hard failure with a local Retry, or the loading placeholders while
@@ -490,14 +525,15 @@ function useOnboardingSubmit(state: {
 function OnboardingLoadState({ loadFailed, onRetry }: { loadFailed: boolean; onRetry: () => void }) {
     if (loadFailed) {
         return (
-            <>
-                <p className="status" role="alert">
-                    Could not load setup. Try again.
-                </p>
-                <button type="button" onClick={onRetry}>
-                    Retry
-                </button>
-            </>
+            <div className="banner-bad" role="alert">
+                <Icon name="alert-circle" size={24} />
+                <div className="onboarding-banner-body">
+                    <p>Could not load setup. Try again.</p>
+                    <button type="button" onClick={onRetry}>
+                        Retry
+                    </button>
+                </div>
+            </div>
         );
     }
     return (
@@ -517,15 +553,18 @@ function OnboardingLoadState({ loadFailed, onRetry }: { loadFailed: boolean; onR
  */
 function NoInstallationsPanel({ returnTo }: { returnTo: string }) {
     return (
-        <>
-            <p className="status">
-                No GitHub App installation is available for your account, so there is nothing to choose yet. Install the
-                App for an organization, then start again.
-            </p>
-            <a className="login-button" href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo)}`}>
-                Start again
-            </a>
-        </>
+        <div className="banner-info">
+            <Icon name="info" size={24} />
+            <div className="onboarding-banner-body">
+                <p>
+                    No GitHub App installation is available for your account, so there is nothing to choose yet. Install
+                    the App for an organization, then start again.
+                </p>
+                <a className="login-button" href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo)}`}>
+                    Start again
+                </a>
+            </div>
+        </div>
     );
 }
 
@@ -566,7 +605,7 @@ export function OnboardingPage({
         setExpired,
     });
     const { focusOrg, registerOrgRef } = useOrgFocus(payload);
-    const { error, submitting, ready, actionsRef, attempt } = useOnboardingSubmit({
+    const { error, submitting, ready, invalidId, actionsRef, attempt } = useOnboardingSubmit({
         payload,
         selected,
         drafts,
@@ -600,6 +639,10 @@ export function OnboardingPage({
             rows={rows}
             total={total}
             error={error}
+            blocker={continueBlocker(
+                selected.size,
+                payload.installations.find((installation) => installation.id === invalidId)?.account ?? null
+            )}
             submitting={submitting}
             ready={ready}
             actionsRef={actionsRef}

@@ -5,6 +5,7 @@ import type { AccessTokenView } from '../src/api/useAccessTokens.js';
 import { AccessTokensPanel } from '../src/panels/AccessTokensPanel.js';
 import { IdentityPanel } from '../src/panels/IdentityPanel.js';
 import { TrackedOrgsPanel } from '../src/panels/TrackedOrgsPanel.js';
+import { AccountSections } from '../src/pages/AccountPage.js';
 
 /** The same contract panels.render.test.tsx pins: a null metric never leaks as a value. */
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
@@ -168,5 +169,33 @@ describe('TrackedOrgsPanel', () => {
         const html = renderToStaticMarkup(<TrackedOrgsPanel session={{ ...session, organizations: [] }} />);
         expect(html).toContain('No organizations are tracked yet.');
         for (const forbidden of FORBIDDEN) expect(html, forbidden).not.toContain(forbidden);
+    });
+});
+
+describe('AccountSections (issue 284)', () => {
+    const render = (s: Session) => renderToStaticMarkup(<AccountSections session={s} />);
+
+    it('open mode says which account features are unavailable and why, and mints nothing', () => {
+        const html = render(local);
+        expect(html).toContain('Not available with authentication off');
+        expect(html).toContain('Access tokens and tracked organizations need GitHub sign-in');
+        expect(html).not.toContain('Create token');
+        expect(html).not.toContain('Tracked organizations</h2>');
+        for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+
+    it('github mode renders identity, tracked organizations and both token sections for an admin', () => {
+        const html = render(session);
+        expect(html).not.toContain('Not available with authentication off');
+        expect(html).toContain('Tracked organizations');
+        expect(html).toContain('Personal access tokens');
+        expect(html).toContain('Organization access tokens');
+        expect(html.match(/Create token/g)?.length).toBe(2);
+    });
+
+    it('a member sees who mints organization tokens instead of an editor', () => {
+        const html = render({ ...session, role: 'member' });
+        expect(html).toContain('Organization tokens are minted by an administrator.');
+        expect(html.match(/Create token/g)?.length).toBe(1);
     });
 });
