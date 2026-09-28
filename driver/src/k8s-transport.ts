@@ -234,6 +234,7 @@ export interface K8sPod {
         containerStatuses?: {
             state?: {
                 terminated?: { exitCode?: number; reason?: string; message?: string };
+                running?: { startedAt?: string };
                 waiting?: { reason?: string; message?: string };
             };
         }[];

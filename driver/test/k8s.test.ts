@@ -949,6 +949,183 @@ describe('the worktree sync', () => {
     });
 
     /*
+     * Issue #302: an executor image the node cannot pull holds the sync pod in ImagePullBackOff
+     * until the Job's own deadline ends it — the kind incident of 2026-09-27 answered "the
+     * worktree sync answered nothing readable" over what is really "no such image". The poll
+     * names the image the moment the pod does, not after the deadline.
+     */
+    it('names an unpullable executor image instead of reporting the sync unreadable', async () => {
+        const { request: base } = fakeRequest({
+            log: { status: 404, body: 'gone' },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: 'sync-pod' },
+                            status: {
+                                containerStatuses: [
+                                    {
+                                        state: {
+                                            waiting: {
+                                                reason: 'ErrImagePull',
+                                                message: 'pull access denied, repository does not exist',
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+        let polls = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path === jobPath(namespace, syncJobName(repoJob))) {
+                polls += 1;
+                return polls === 1
+                    ? { status: 200, body: '{"status":{}}' }
+                    : {
+                          status: 200,
+                          body: JSON.stringify({
+                              status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
+                          }),
+                      };
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toMatch(
+            /the executor image "claude-executor" cannot be pulled: ErrImagePull — pull access denied/
+        );
+        // Named on the first poll — the image question never waits out the deadline.
+        expect(polls).toBe(1);
+    });
+
+    /*
+     * The watch must not settle while the container is merely WAITING: ContainerCreating covers
+     * the whole first pull, and a pull that fails after that tick would otherwise go unnamed for
+     * the rest of the deadline (review of issue #302). A container that is running or terminated
+     * is what settles the image question.
+     */
+    it('keeps watching through ContainerCreating and names the image when the later pull fails', async () => {
+        const { request: base } = fakeRequest({ log: { status: 404, body: 'gone' } });
+        const waitingPod = (reason: string, message?: string): string =>
+            JSON.stringify({
+                items: [
+                    {
+                        metadata: { name: podName },
+                        status: {
+                            containerStatuses: [{ state: { waiting: message ? { reason, message } : { reason } } }],
+                        },
+                    },
+                ],
+            });
+        let polls = 0;
+        let podReads = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path === jobPath(namespace, syncJobName(repoJob))) {
+                polls += 1;
+                return polls <= 2
+                    ? { status: 200, body: '{"status":{}}' }
+                    : {
+                          status: 200,
+                          body: JSON.stringify({
+                              status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
+                          }),
+                      };
+            }
+            if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                podReads += 1;
+                return {
+                    status: 200,
+                    body: waitingPod(
+                        podReads === 1 ? 'ContainerCreating' : 'ErrImagePull',
+                        podReads === 1 ? undefined : 'pull access denied, repository does not exist'
+                    ),
+                };
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toMatch(
+            /the executor image "claude-executor" cannot be pulled: ErrImagePull — pull access denied/
+        );
+        // Named on the SECOND round: the first round's ContainerCreating did not settle the watch.
+        expect(polls).toBe(2);
+        expect(podReads).toBe(2);
+    });
+
+    /*
+     * The other side of the latch: a container that is running HAS answered the image question,
+     * so the watch stops reading the pod list instead of asking on every round.
+     */
+    it('stops reading the pod list for the image question once the container is running', async () => {
+        const { request: base } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const runningPod = JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName },
+                    status: { containerStatuses: [{ state: { running: { startedAt: '2026-09-27T00:00:00Z' } } }] },
+                },
+            ],
+        });
+        let polls = 0;
+        let podReads = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path === jobPath(namespace, syncJobName(repoJob))) {
+                polls += 1;
+                return polls <= 3
+                    ? { status: 200, body: '{"status":{}}' }
+                    : { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) };
+            }
+            if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                podReads += 1;
+                return { status: 200, body: runningPod };
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({ ok: true, reason: null });
+        // One watch read settles it; the only later pod read is the verdict's own.
+        expect(podReads).toBe(2);
+    });
+
+    /* The terminated arm settles the watch the same way a running one does. */
+    it('stops reading the pod list for the image question once the container has terminated', async () => {
+        const { request: base } = fakeRequest({ log: { status: 200, body: '{"ok":true,"reason":null}\n' } });
+        const terminatedPod = JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName },
+                    status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                },
+            ],
+        });
+        let polls = 0;
+        let podReads = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path === jobPath(namespace, syncJobName(repoJob))) {
+                polls += 1;
+                return polls <= 3
+                    ? { status: 200, body: '{"status":{}}' }
+                    : { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) };
+            }
+            if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                podReads += 1;
+                return { status: 200, body: terminatedPod };
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({ ok: true, reason: null });
+        expect(podReads).toBe(2);
+    });
+
+    /*
      * The fence before the sync (PR #46 review): the loop calls syncCheckout before run(), so
      * the sync is the FIRST writer on the task worktree — and the only mutual exclusion it can
      * get is the checkout claim, taken here under the same acquireClaim protocol prepare()
@@ -1264,6 +1441,62 @@ describe('the worktree reclaim', () => {
         );
         expect(foregroundDelete).toBeGreaterThanOrEqual(0);
         expect(claimDelete).toBeGreaterThan(foregroundDelete);
+    });
+
+    /*
+     * Issue #302's reclaim twin: the same unpullable image held the reclaim pod in
+     * ImagePullBackOff until the deadline, and the verdict read answered "nothing readable".
+     * The poll names the image the moment the pod does.
+     */
+    it('names an unpullable executor image instead of reporting the reclaim unreadable', async () => {
+        const { request: base } = fakeRequest({
+            log: { status: 404, body: 'gone' },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: 'reclaim-pod' },
+                            status: {
+                                containerStatuses: [
+                                    {
+                                        state: {
+                                            waiting: {
+                                                reason: 'ImagePullBackOff',
+                                                message: 'pull access denied, repository does not exist',
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+        let polls = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path === jobPath(namespace, reclaimJobName(repoJob))) {
+                polls += 1;
+                return polls === 1
+                    ? { status: 200, body: '{"status":{}}' }
+                    : {
+                          status: 200,
+                          body: JSON.stringify({
+                              status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
+                          }),
+                      };
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.removed).toBe(false);
+        expect(result.reason).toMatch(
+            /the executor image "claude-executor" cannot be pulled: ImagePullBackOff — pull access denied/
+        );
+        // Named on the first poll — the image question never waits out the deadline.
+        expect(polls).toBe(1);
     });
 
     it('answers the script verdict when the reclaim script refuses', async () => {
@@ -2414,6 +2647,58 @@ describe('the kubernetes runner', () => {
         expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
         // And the claim it does not hold is not deleted by the loser either.
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
+    });
+
+    /*
+     * Issue #302's runner twin: an unpullable executor image used to hold the runner Job past
+     * its whole deadline — the run reporting a timeout while the pod's own words went unread.
+     * The poll names the image the moment the pod does.
+     */
+    it('names an unpullable executor image instead of burning the runner deadline', async () => {
+        const { request: base } = fakeRequest({
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                containerStatuses: [
+                                    {
+                                        state: {
+                                            waiting: {
+                                                reason: 'ImagePullBackOff',
+                                                message: 'Failed to pull image "claude-executor": pull access denied',
+                                            },
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+        let polls = 0;
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'GET' && path === jobPath(namespace, runnerJobName(job))) {
+                polls += 1;
+                return polls === 1
+                    ? { status: 200, body: '{"status":{}}' }
+                    : {
+                          status: 200,
+                          body: JSON.stringify({
+                              status: { failed: 1, conditions: [{ type: 'Failed', reason: 'DeadlineExceeded' }] },
+                          }),
+                      };
+            }
+            return base(method, path, body);
+        };
+        await expect(runner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /the executor image "claude-executor" cannot be pulled: ImagePullBackOff/
+        );
+        // Named on the first poll — the image question never waits out the deadline.
+        expect(polls).toBe(1);
     });
 
     /*
@@ -5022,7 +5307,15 @@ describe('the kubernetes gate manager', () => {
         });
         const m = manager(request);
         await m.acquire(KEY, 'node:24', '', job);
-        await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toThrow(/ImagePullBackOff/);
+        const error = await m.runGate(KEY, 'test', 'npm test').then(
+            () => null,
+            (e: Error) => e
+        );
+        expect((error as Error | null)?.message).toBe(
+            'the gate image "node:24" cannot be pulled: ImagePullBackOff — no such image'
+        );
+        // The harness code, not a bare error: gates.ts maps CONTAINER_GONE to the endpoint's 409.
+        expect((error as { code?: number } | null)?.code).toBe(125);
     });
 
     it('refuses a run whose attempt context was never acquired, like docker refuses a missing container', async () => {

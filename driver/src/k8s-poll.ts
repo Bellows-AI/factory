@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
 import { claimContinuesSession, envFileBody } from './claim.js';
+import { executorImage } from './config.js';
 import { reportTail } from './runner.js';
 import {
     jobPath,
@@ -15,6 +16,7 @@ import {
 import { envBodyToData, jobsPath, runnerName, secretBody } from './k8s-podspec.js';
 import {
     containerFailure,
+    ERROR_PREVIEW_CHARS,
     expectOk,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
@@ -86,6 +88,43 @@ export function timedOutOf(status: K8sJobStatus): boolean {
 }
 
 /**
+ * The one unpullable-image message shape every poll shares; the role word is the only variation —
+ * the gate names its own declared image ("gate"), the runner and aux Jobs name the executor's.
+ */
+export function unpullableImage(role: 'gate' | 'executor', image: string, blocked: string): string {
+    return `the ${role} image "${image}" cannot be pulled: ${blocked}`;
+}
+
+/**
+ * The one reading of "can this Job's image be pulled at all?", shared by every Job poll (issue
+ * #302; the gate's `checkGateImagePullable`, generalized): a container blocked on its image names
+ * the kubelet's reason and message, so the poll can fail right away instead of burning the
+ * deadline and reporting a timeout or an unreadable verdict over what is really "no such image".
+ * A container that is running or terminated has answered the image question. One that is still
+ * waiting — `ContainerCreating` covers the whole first pull — has not: the pull can still fail
+ * after this tick, so the watch keeps reading the pod list. A pod-list blink or a pod with no
+ * container status yet answers "nothing seen" — the caller keeps polling.
+ */
+export async function readImagePullStatus(
+    deps: K8sDeps,
+    jobName: string
+): Promise<{ blocked: string | null; containerSeen: boolean }> {
+    const pods = await deps
+        .request('GET', jobPodsPath(deps.config.k8sNamespace, jobName))
+        .catch(() => ({ status: 0, body: '' }));
+    const container = livePod(pods.body)?.status?.containerStatuses?.[0];
+    const waiting = container?.state?.waiting;
+    if (waiting?.reason === 'ImagePullBackOff' || waiting?.reason === 'ErrImagePull') {
+        return {
+            blocked: waiting.reason + (waiting.message ? ` — ${waiting.message.slice(0, ERROR_PREVIEW_CHARS)}` : ''),
+            containerSeen: true,
+        };
+    }
+    const containerSeen = container?.state?.terminated !== undefined || container?.state?.running !== undefined;
+    return { blocked: null, containerSeen };
+}
+
+/**
  * One verdict-carrying read of a Job's status, translated to the four shapes every caller below
  * branches on: gone, an unexpected status, still running, or a terminal outcome. `readVerdict`
  * owns the transport/429/5xx retry bound and can still throw once it is exhausted — a caller that
@@ -121,32 +160,64 @@ export interface PollToTerminalMessages {
 }
 
 /**
+ * The pending arm's image watch for the polls whose Job runs the executor image (issue #302):
+ * asks the pod whether the image is blocked — `readImagePullStatus` — and answers the failure
+ * message when it is. Flips `seen.container` once any container status exists, so the pod list
+ * is not re-read on later rounds after the image has pulled. Pulled out of the polls purely to
+ * keep their complexity readable, the same move the gate poll makes.
+ */
+async function executorImageWatch(
+    deps: K8sDeps,
+    jobName: string,
+    image: string,
+    seen: { container: boolean }
+): Promise<string | null> {
+    const pull = await readImagePullStatus(deps, jobName);
+    if (pull.blocked) return unpullableImage('executor', image, pull.blocked);
+    seen.container = pull.containerSeen;
+    return null;
+}
+
+/**
  * Poll one Job to a terminal status, the shape every aux Job readout shares: `readVerdict` owns
  * the transport/429/5xx retry bound, a 404 means the Job is gone, any other non-2xx is
  * unexpected, and a terminal status answers `failed` on the Job's own failure (when the caller
  * names one) or null once there is a verdict to read — a Job failure with no `failed` message is
  * itself such a verdict, exactly like success. NEVER throws — a caller that must throw wraps the
- * non-null answer itself.
+ * non-null answer itself. Callers whose Job runs the executor image pass its name as `image`:
+ * while the pod is still pending, the poll then watches for an image the node cannot pull and
+ * answers `unpullableImage` the moment the pod says so (issue #302), instead of letting the Job
+ * sit in ImagePullBackOff until its deadline makes the verdict unreadable.
  */
 export async function pollJobToTerminal(
     deps: K8sDeps,
     jobName: string,
-    messages: PollToTerminalMessages
+    messages: PollToTerminalMessages,
+    image: string | null = null
 ): Promise<string | null> {
-    let result: JobStatusResult;
-    try {
-        result = await readJobStatus(deps, jobName, messages.what);
-    } catch (e) {
-        return (e as Error).message;
-    }
-    if (result.kind === 'notFound') return messages.notFound(jobName);
-    if (result.kind === 'error') return messages.errorStatus(result.status);
-    if (result.kind === 'pending') {
+    const seen = { container: false };
+    const pollPending = async (): Promise<string | null> => {
+        if (!seen.container && image !== null) {
+            const failure = await executorImageWatch(deps, jobName, image, seen);
+            if (failure) return failure;
+        }
         await deps.sleep(POLL_MS);
-        return pollJobToTerminal(deps, jobName, messages);
-    }
-    if (result.outcome === 'failed' && messages.failed !== null) return messages.failed;
-    return null;
+        return poll();
+    };
+    const poll = async (): Promise<string | null> => {
+        let result: JobStatusResult;
+        try {
+            result = await readJobStatus(deps, jobName, messages.what);
+        } catch (e) {
+            return (e as Error).message;
+        }
+        if (result.kind === 'notFound') return messages.notFound(jobName);
+        if (result.kind === 'error') return messages.errorStatus(result.status);
+        if (result.kind === 'pending') return pollPending();
+        if (result.outcome === 'failed') return messages.failed;
+        return null;
+    };
+    return poll();
 }
 
 /**
@@ -269,7 +340,9 @@ async function tailRunnerOutput(
  * is what guarantees the JOB eventually reaches one — the same bound that kills the docker
  * runner's container guarantees this an exit. It does not guarantee this driver can keep READING
  * it, so 429s, 5xx and transport failures are retried a bounded number of times rather than
- * treated as the run's verdict.
+ * treated as the run's verdict. While the Job is still pending, the poll also watches for an
+ * executor image the node cannot pull (issue #302) and fails the run naming it, instead of
+ * burning the deadline and reporting a timeout over what is really "no such image".
  */
 export async function pollRunnerJobUntilTerminal(
     deps: K8sDeps,
@@ -277,19 +350,28 @@ export async function pollRunnerJobUntilTerminal(
     onOutput: ((tail: string) => void) | undefined,
     podName: string | null = null
 ): Promise<{ timedOut: boolean; jobSucceeded: boolean }> {
-    const result = await readJobStatus(deps, runnerName(job), 'reading the runner job');
-    if (result.kind === 'notFound') {
-        // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
-        // never arrive, so waiting longer is holding a slot for nothing.
-        throw new Error(`the runner job ${runnerName(job)} no longer exists`);
-    }
-    if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
-    if (result.kind === 'terminal') {
-        return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
-    }
-    const nextPodName = onOutput ? await tailRunnerOutput(deps, job, podName, onOutput) : podName;
-    await deps.sleep(POLL_MS);
-    return pollRunnerJobUntilTerminal(deps, job, onOutput, nextPodName);
+    const image = executorImage(deps.config, job.executorType);
+    const seen = { container: false };
+    const poll = async (pod: string | null): Promise<{ timedOut: boolean; jobSucceeded: boolean }> => {
+        const result = await readJobStatus(deps, runnerName(job), 'reading the runner job');
+        if (result.kind === 'notFound') {
+            // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
+            // never arrive, so waiting longer is holding a slot for nothing.
+            throw new Error(`the runner job ${runnerName(job)} no longer exists`);
+        }
+        if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
+        if (result.kind === 'terminal') {
+            return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
+        }
+        if (!seen.container) {
+            const failure = await executorImageWatch(deps, runnerName(job), image, seen);
+            if (failure) throw new Error(failure);
+        }
+        const nextPodName = onOutput ? await tailRunnerOutput(deps, job, pod, onOutput) : pod;
+        await deps.sleep(POLL_MS);
+        return poll(nextPodName);
+    };
+    return poll(podName);
 }
 
 /**
@@ -365,12 +447,17 @@ export async function runSyncJob(
     const refusedCreate = refusal(create, 'creating the worktree sync job');
     if (refusedCreate) return { ok: false, reason: refusedCreate };
     const jobName = syncJobName(job);
-    const pollFailure = await pollJobToTerminal(deps, jobName, {
-        what: 'reading the worktree sync job',
-        notFound: (n) => `the worktree sync job ${n} no longer exists`,
-        errorStatus: (s) => `reading the worktree sync job answered ${s}`,
-        failed: null,
-    });
+    const pollFailure = await pollJobToTerminal(
+        deps,
+        jobName,
+        {
+            what: 'reading the worktree sync job',
+            notFound: (n) => `the worktree sync job ${n} no longer exists`,
+            errorStatus: (s) => `reading the worktree sync job answered ${s}`,
+            failed: null,
+        },
+        executorImage(deps.config, job.executorType)
+    );
     if (pollFailure) return { ok: false, reason: pollFailure };
     const { log, failure } = await readJobLog(deps, jobName);
     return parseLastJsonLine<SyncResult>(log, () =>
@@ -388,12 +475,17 @@ export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<Recla
     const refused = refusal(create, 'creating the worktree reclaim job');
     if (refused) return { ok: false, removed: false, reason: refused };
     const jobName = reclaimJobName(job);
-    const pollFailure = await pollJobToTerminal(deps, jobName, {
-        what: 'reading the worktree reclaim job',
-        notFound: (n) => `the worktree reclaim job ${n} no longer exists`,
-        errorStatus: (s) => `reading the worktree reclaim job answered ${s}`,
-        failed: null,
-    });
+    const pollFailure = await pollJobToTerminal(
+        deps,
+        jobName,
+        {
+            what: 'reading the worktree reclaim job',
+            notFound: (n) => `the worktree reclaim job ${n} no longer exists`,
+            errorStatus: (s) => `reading the worktree reclaim job answered ${s}`,
+            failed: null,
+        },
+        executorImage(deps.config, job.executorType)
+    );
     if (pollFailure) return { ok: false, removed: false, reason: pollFailure };
     const { log, failure } = await readJobLog(deps, jobName);
     return parseLastJsonLine<ReclaimResult>(log, () =>
