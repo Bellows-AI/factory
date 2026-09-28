@@ -121,6 +121,17 @@ export function threadCostUsd(jobs: Job[]): number | null {
     return sum > 0 ? sum : null;
 }
 
+/** A gate status's pill tone: passed is the ok lamp, failed the bad one, a running gate grey. */
+export const GATE_PILL: Record<GateCheck['status'], string> = {
+    passed: 'pill pill-ok',
+    failed: 'pill pill-bad',
+    running: 'pill pill-done',
+};
+
+/** A gate count's pill: toned only when something is counted — "0 failed" is good news, never red. */
+export const gateCountPill = (status: GateCheck['status'], count: number): string =>
+    count > 0 ? GATE_PILL[status] : 'pill';
+
 /** The one glance at a run's verification: how many gates passed, failed, are still running. */
 export function gateCounts(gates: GateCheck[] | null | undefined): { passed: number; failed: number; running: number } {
     const list = gates ?? [];

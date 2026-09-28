@@ -244,7 +244,7 @@ export function RangeSelector({
             <Dialog open={customOpen} onClose={() => setCustomOpen(false)} className="dialog-layer">
                 <DialogBackdrop className="dialog-backdrop" />
                 <div className="dialog-position">
-                    <DialogPanel className="range-dialog">
+                    <DialogPanel className="dialog range-dialog">
                         <DialogTitle as="h2" className="range-dialog-title">
                             Custom range
                         </DialogTitle>

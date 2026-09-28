@@ -98,7 +98,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
         <Dialog open={open} onClose={onClose} className="dialog-layer" aria-labelledby={`${ids}-title`}>
             <div className="dialog-backdrop" aria-hidden="true" />
             <div className="dialog-position">
-                <DialogPanel className="picker">
+                <DialogPanel className="dialog picker">
                     <DialogTitle as="h2" id={`${ids}-title`}>
                         {editing ? 'Edit executor' : 'Add executor'}
                     </DialogTitle>
@@ -109,6 +109,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                     <label className="picker-search">
                         <span className="muted">type</span>
                         <select
+                            className="field"
                             value={type}
                             aria-describedby={`${ids}-type-help`}
                             onChange={(event) => setType(event.target.value as ExecutorType)}
@@ -128,6 +129,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                     <label className="picker-search">
                         <span className="muted">name</span>
                         <input
+                            className="field"
                             type="text"
                             value={name}
                             placeholder="main"
@@ -138,6 +140,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, savin
                     <label className="picker-search">
                         <span className="muted">config (JSON)</span>
                         <textarea
+                            className="field"
                             rows={8}
                             value={config}
                             placeholder={EXECUTOR_TYPE_META[type].example}

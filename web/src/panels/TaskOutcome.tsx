@@ -6,6 +6,7 @@ import { RelativeTime } from '../components/RelativeTime.js';
 import type { AuthorRef, Job } from '../api/useJobs.js';
 import {
     closureOf,
+    gateCountPill,
     gateCounts,
     isHttpUrl,
     isWaitingForReview,
@@ -82,9 +83,9 @@ function VerificationSection({
             {/* Words carry the meaning — the pills' tint is never the only signal. The output
                 stays on the run that produced it; this is the count. */}
             <p className="msg-meta">
-                <span className="pill gate-passed">{counts.passed} passed</span>
-                <span className="pill gate-failed">{counts.failed} failed</span>
-                <span className="pill gate-running">{counts.running} running</span>
+                <span className={gateCountPill('passed', counts.passed)}>{counts.passed} passed</span>
+                <span className={gateCountPill('failed', counts.failed)}>{counts.failed} failed</span>
+                <span className={gateCountPill('running', counts.running)}>{counts.running} running</span>
             </p>
             {/* Straight to the newest run's checks — the anchor is a focus target on the run's
                 own region, so keyboard and pointer land in the same place. */}

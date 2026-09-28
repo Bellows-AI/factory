@@ -219,6 +219,15 @@ describe('TaskDetail — checks', () => {
         expect(html).toContain('<details');
     });
 
+    it('never tints a zero count — "0 failed" is good news, not a red pill', () => {
+        const html = renderDetail({ jobs: [job({ gates: [gates[0]!] })] });
+        // Both count rows: the run's Checks summary and the outcome's Verification section.
+        expect(html.match(/<span class="pill">0(<!-- -->)? failed<\/span>/g)?.length).toBe(2);
+        expect(html.match(/<span class="pill">0(<!-- -->)? running<\/span>/g)?.length).toBe(2);
+        expect(html.match(/<span class="pill pill-ok">1(<!-- -->)? passed<\/span>/g)?.length).toBe(2);
+        expect(html).not.toContain('pill-bad');
+    });
+
     it('expands to the gate output, rendered as text', () => {
         const html = renderDetail({ jobs: [job({ gates })] });
         expect(html).toContain('2 problems');
@@ -239,9 +248,9 @@ describe('TaskDetail — checks', () => {
         // on the gates disclosure itself, not on the first summary in the page.
         const start = html.indexOf('chat-gates');
         const summary = html.slice(start, html.indexOf('</summary>', start));
-        expect(summary).toContain('pill gate-passed');
-        expect(summary).toContain('pill gate-failed');
-        expect(summary).toContain('pill gate-running');
+        expect(summary).toContain('pill pill-ok');
+        expect(summary).toContain('pill pill-bad');
+        expect(summary).toContain('pill pill-done');
         expect(summary).toMatch(/1(<!-- -->)? passed/);
         expect(summary).toMatch(/1(<!-- -->)? failed/);
         expect(summary).toMatch(/1(<!-- -->)? running/);

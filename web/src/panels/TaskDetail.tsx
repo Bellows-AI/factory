@@ -115,7 +115,7 @@ export function TaskDetail({
                             </p>
                             <textarea
                                 id="follow-up-command"
-                                className="composer-input"
+                                className="field composer-input"
                                 placeholder="Describe the adjustment…"
                                 value={draft}
                                 onChange={(e) => setDraft(e.target.value)}

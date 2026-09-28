@@ -504,6 +504,31 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         expect(html).toContain('No custom environment values');
     });
 
+    it('wears each item tone as a status pill from the shared tone set', () => {
+        // ok → the green pill, attention → the red one, pending → the warning pill, a neutral
+        // fact → the untoned pill. The words stay the message; the card edge stays neutral.
+        const answered = render({
+            workspace: {
+                loading: false,
+                data: { root: '/workspaces/octocat', repos: [repo({ name: 'web' })], orphaned: [], executors: [] },
+            },
+            env: { loading: false, data: emptyEnv },
+        });
+        expect(answered).toContain('<p class="readiness-status pill pill-ok">Workspace available</p>');
+        expect(answered).toContain('<p class="readiness-status pill">No custom environment values</p>');
+        expect(answered).toContain('<li class="readiness-item">');
+        const rootless = render({
+            workspace: { loading: false, data: { root: null, repos: [], orphaned: [], executors: [] } },
+            env: { loading: false, data: emptyEnv },
+        });
+        expect(rootless).toContain(
+            '<p class="readiness-status pill pill-bad">Workspace is not configured; tasks cannot run</p>'
+        );
+        expect(render({ session: null })).toContain(
+            '<p class="readiness-status pill pill-warn">Checking workspace…</p>'
+        );
+    });
+
     it('sends a missing root to the workspace setup page, never a generic fix', () => {
         const html = render({
             workspace: {

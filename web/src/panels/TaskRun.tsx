@@ -1,7 +1,7 @@
 import type { Ref } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { runDuration, timestamp } from '../format.js';
-import { isHttpUrl, prNumber, publicationForRun } from '../task-outcome.js';
+import { GATE_PILL, gateCountPill, gateCounts, isHttpUrl, prNumber, publicationForRun } from '../task-outcome.js';
 
 /**
  * One output well: a clipped log a keyboard user can actually reach. The wrapping section names
@@ -39,13 +39,13 @@ const tokenCount = new Intl.NumberFormat('en-US');
  * current/last state only, so the list is exactly what this run last reported.
  */
 function Checks({ gates }: { gates: GateCheck[] }) {
+    const counts = gateCounts(gates);
     return (
         <details className="chat-gates">
             <summary>
-                Checks{' '}
-                <span className="pill gate-passed">{gates.filter((g) => g.status === 'passed').length} passed</span>
-                <span className="pill gate-failed">{gates.filter((g) => g.status === 'failed').length} failed</span>
-                <span className="pill gate-running">{gates.filter((g) => g.status === 'running').length} running</span>
+                Checks <span className={gateCountPill('passed', counts.passed)}>{counts.passed} passed</span>
+                <span className={gateCountPill('failed', counts.failed)}>{counts.failed} failed</span>
+                <span className={gateCountPill('running', counts.running)}>{counts.running} running</span>
             </summary>
             <ul className="chat-gate-list">
                 {gates.map((gate) => (
@@ -53,7 +53,7 @@ function Checks({ gates }: { gates: GateCheck[] }) {
                         <details>
                             <summary>
                                 <span>{gate.name}</span>
-                                <span className={`pill gate-${gate.status}`}>{gate.status}</span>
+                                <span className={GATE_PILL[gate.status]}>{gate.status}</span>
                                 {gate.exitCode !== null ? (
                                     <span className="chat-exit">exit {gate.exitCode}</span>
                                 ) : null}

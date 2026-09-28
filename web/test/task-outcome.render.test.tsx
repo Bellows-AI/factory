@@ -177,7 +177,7 @@ describe('TaskOutcome', () => {
 describe('TaskOutcome — gates, publication and services', () => {
     it('summarizes the NEWEST run gates only, with words carrying the meaning', () => {
         const gates = [
-            { name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' },
+            { name: 'test', status: 'passed' as const, exitCode: 0, output: 'test gate output' },
             { name: 'lint', status: 'failed' as const, exitCode: 1, output: 'bad' },
             { name: 'build', status: 'running' as const, exitCode: null, output: null },
         ];
@@ -191,7 +191,7 @@ describe('TaskOutcome — gates, publication and services', () => {
         expect(counted).toContain('1 running');
         // Gate output stays on the run — the outcome's own slice never duplicates it.
         const outcome = counted.slice(counted.indexOf('task-outcome'), counted.indexOf('task-conversation'));
-        expect(outcome).not.toContain('ok');
+        expect(outcome).not.toContain('test gate output');
     });
 
     it('renders the published branch code-styled, linking only a safe url', () => {

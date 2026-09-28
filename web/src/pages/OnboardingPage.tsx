@@ -196,7 +196,7 @@ function OnboardingMainContent({
         <>
             <div className="onboarding-identity">
                 {identity.avatarUrl ? (
-                    <img className="avatar" src={identity.avatarUrl} alt="" width={24} height={24} />
+                    <img className="avatar" src={identity.avatarUrl} alt="" width={28} height={28} />
                 ) : (
                     <span className="avatar avatar-fallback" aria-hidden="true">
                         {identity.initial}

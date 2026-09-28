@@ -44,6 +44,37 @@ const BOUNDARY_PAIRS: readonly Pair[] = [
     ['--accent', '--surface-sunken'],
 ] as const;
 
+/** A text token over a stack of fills, bottom first: the opaque surface the primitive sits on,
+ * then any translucent wash painted over it. */
+type Composite = readonly [label: string, text: string, layers: readonly string[]];
+
+/** The surfaces a status pill, chip or banner actually sits on: panels (raised), the page (a
+ * header's status pill), and a hovered table row (sunken). */
+const SITTING_ON = ['--surface-raised', '--surface', '--surface-sunken'] as const;
+
+/** Every wash-backed text pair the primitives render (redesign plan §1.1). The opaque matrix
+ * above cannot measure these: its canvas paints each token opaque, so a 16% wash would read as
+ * the full lamp color. The button rows are opaque fills, measured here beside their variants. */
+const COMPOSITE_PAIRS: readonly Composite[] = [
+    ...SITTING_ON.flatMap((surface): Composite[] => [
+        [`pill-ok on ${surface}`, '--lamp-run', [surface, '--ok-wash']],
+        [`pill-warn on ${surface}`, '--lamp-wait', [surface, '--warn-wash']],
+        [`pill-bad on ${surface}`, '--lamp-stop', [surface, '--bad-wash']],
+        [`pill-done on ${surface}`, '--lamp-done', [surface, '--done-wash']],
+        [`pill-accent on ${surface}`, '--accent', [surface, '--accent-wash']],
+        [`inbox-chip on ${surface}`, '--ink', [surface, '--accent-wash']],
+        [`banner-warn on ${surface}`, '--ink', [surface, '--warn-wash']],
+        [`banner-bad on ${surface}`, '--ink', [surface, '--bad-wash']],
+        [`banner-info on ${surface}`, '--ink', [surface, '--accent-wash']],
+    ]),
+    ['primary button', '--ink-inverse', ['--accent']],
+    ['primary button hover', '--ink-inverse', ['--accent-hover']],
+    ['primary button disabled', '--ink-muted', ['--surface-strong']],
+    ['secondary button hover', '--ink', ['--surface-strong']],
+    ['danger button hover', '--lamp-stop', ['--surface', '--bad-wash']],
+    ['avatar initials', '--ink', ['--surface-strong']],
+];
+
 /** Flips the palette by attribute — the light theme rides `data-theme="light"` on <html>, so
  * both themes render from the same server without touching persistence. */
 const setTheme = (page: Page, theme: 'dark' | 'light') =>
@@ -84,6 +115,68 @@ async function measure(page: Page, pair: Pair): Promise<{ pair: Pair; ratio: num
         return (hi + 0.05) / (lo + 0.05);
     }, pair);
     return { pair, ratio };
+}
+
+/** WCAG 2.2 contrast for a text token over a stack of possibly translucent fills, computed in the
+ * page. Each token's computed color is split into its alpha (the serialized `/ a` component) and
+ * its opaque color, which the one-pixel canvas converts to sRGB bytes; the stack is then
+ * alpha-composited in JS channel by channel in gamma-encoded sRGB — c = a·fg + (1−a)·bg, the way
+ * the browser blends a translucent background — and the text is composited over the result. */
+async function measureComposite(page: Page, [label, text, layers]: Composite): Promise<number> {
+    const ratio = await page.evaluate(
+        ({ textToken, layerTokens }) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1;
+            canvas.height = 1;
+            const context = canvas.getContext('2d', { willReadFrequently: true })!;
+            const probe = document.createElement('div');
+            document.body.appendChild(probe);
+            const resolve = (token: string) => {
+                probe.style.backgroundColor = `var(${token})`;
+                const css = getComputedStyle(probe).backgroundColor;
+                // `oklab(… / 0.16)` and `color(srgb … / 0.16)` carry alpha after a slash; the legacy
+                // `rgba(r, g, b, a)` form as a fourth argument. Everything else is opaque.
+                const slash = /^(.*?)\s*\/\s*([\d.]+)(%?)\s*\)$/.exec(css);
+                const legacy = /^rgba\(([^,]+),([^,]+),([^,]+),([^)]+)\)$/.exec(css);
+                let alpha = 1;
+                let opaque = css;
+                if (slash) {
+                    alpha = Number(slash[2]) / (slash[3] ? 100 : 1);
+                    opaque = `${slash[1]})`;
+                } else if (legacy) {
+                    alpha = Number(legacy[4]);
+                    opaque = `rgb(${legacy[1]},${legacy[2]},${legacy[3]})`;
+                }
+                context.clearRect(0, 0, 1, 1);
+                context.fillStyle = opaque;
+                context.fillRect(0, 0, 1, 1);
+                const bytes = context.getImageData(0, 0, 1, 1).data;
+                return { rgb: [bytes[0]!, bytes[1]!, bytes[2]!], alpha };
+            };
+            const over = (bottom: number[], top: { rgb: number[]; alpha: number }) =>
+                top.rgb.map((channel, i) => top.alpha * channel + (1 - top.alpha) * bottom[i]!);
+            const [base, ...washes] = layerTokens.map(resolve);
+            let background = base!.rgb;
+            for (const wash of washes) background = over(background, wash);
+            const foreground = over(background, resolve(textToken));
+            probe.remove();
+            const luminance = (rgb: number[]) => {
+                const [r, g, b] = rgb.map((channel) => {
+                    const s = channel / 255;
+                    // The WCAG sRGB linearization cutoff.
+                    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+                });
+                return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+            };
+            const fg = luminance(foreground);
+            const bg = luminance(background);
+            const [hi, lo] = fg > bg ? [fg, bg] : [bg, fg];
+            return (hi + 0.05) / (lo + 0.05);
+        },
+        { textToken: text, layerTokens: [...layers] }
+    );
+    test.info().annotations.push({ type: 'contrast', description: `${label}: ${ratio.toFixed(2)}:1` });
+    return ratio;
 }
 
 /** A running dot to observe: a real one when the seed has a live run, otherwise one injected
@@ -140,6 +233,29 @@ test.describe('polish (issue 189)', () => {
                 }
             }
             expect(failures, `${theme} theme contrast failures`).toEqual([]);
+        });
+
+        test(`every wash-backed text pair clears AA once composited in the ${theme} theme`, async ({ page }) => {
+            await page.goto('/');
+            await setTheme(page, theme);
+            const failures: string[] = [];
+            for (const pair of COMPOSITE_PAIRS) {
+                const ratio = await measureComposite(page, pair);
+                if (ratio < TEXT_THRESHOLD)
+                    failures.push(`${pair[0]} = ${ratio.toFixed(2)}:1, needs ${TEXT_THRESHOLD}:1`);
+            }
+            expect(failures, `${theme} theme composite contrast failures`).toEqual([]);
+        });
+
+        test(`the composite probe keeps a wash's alpha in the ${theme} theme`, async ({ page }) => {
+            // Negative control: the dark washes are translucent, and were their alpha dropped the
+            // probe would read a lamp on its own wash as the lamp on itself — 1:1 — so a pass
+            // above would mean nothing. The light washes are opaque tints and must read the same.
+            await page.goto('/');
+            await setTheme(page, theme);
+            expect(
+                await measureComposite(page, ['lamp vs its own wash', '--lamp-run', ['--surface-raised', '--ok-wash']])
+            ).toBeGreaterThan(TEXT_THRESHOLD);
         });
 
         test(`focus rings stay visible on every control kind in the ${theme} theme`, async ({ page }) => {

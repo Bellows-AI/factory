@@ -41,30 +41,6 @@
 }
 
 @font-face {
-    font-family: 'Barlow Semi Condensed';
-    font-style: normal;
-    font-weight: 500;
-    font-display: swap;
-    src: url('/fonts/barlow-semi-condensed-latin-500.woff2') format('woff2');
-}
-
-@font-face {
-    font-family: 'Barlow Semi Condensed';
-    font-style: normal;
-    font-weight: 600;
-    font-display: swap;
-    src: url('/fonts/barlow-semi-condensed-latin-600.woff2') format('woff2');
-}
-
-@font-face {
-    font-family: 'Barlow Semi Condensed';
-    font-style: normal;
-    font-weight: 700;
-    font-display: swap;
-    src: url('/fonts/barlow-semi-condensed-latin-700.woff2') format('woff2');
-}
-
-@font-face {
     font-family: 'IBM Plex Mono';
     font-style: normal;
     font-weight: 400;
@@ -84,28 +60,37 @@
 :root {
     color-scheme: dark; /* native controls + scrollbars follow the theme */
 
-    --surface: oklch(0.19 0.012 250); /* page */
-    --surface-raised: oklch(0.235 0.014 250); /* panels, menus */
-    --surface-sunken: oklch(0.16 0.012 250); /* inputs, log wells, hover */
-    --line: oklch(0.32 0.014 250);
-    --line-strong: oklch(0.43 0.016 250);
+    --surface-sunken: oklch(0.170 0.016 249); /* inputs, textareas, code and log wells, kbd */
+    --surface: oklch(0.189 0.017 253); /* page canvas, sidebar, top bar */
+    --surface-raised: oklch(0.227 0.021 252); /* cards, panels, menus, dialogs */
+    --surface-strong: oklch(0.281 0.026 253); /* hover fills, disabled primary — never under status text */
+    --line: oklch(0.273 0.024 254);
+    --line-strong: oklch(0.347 0.028 251);
 
-    --ink: oklch(0.93 0.008 250);
-    --ink-muted: oklch(0.73 0.014 250);
-    --ink-inverse: oklch(0.19 0.012 250); /* text on accent fills */
+    --ink: oklch(0.938 0.010 253);
+    --ink-muted: oklch(0.717 0.028 254);
+    --ink-inverse: oklch(0.174 0.030 251); /* text on accent fills */
 
-    --accent: oklch(0.74 0.12 240); /* "needs a human", focus rings */
+    --accent: oklch(0.720 0.142 251); /* Bellows blue: "your turn", links, focus rings */
 
-    --lamp-run: oklch(0.80 0.17 150);
-    --lamp-wait: oklch(0.84 0.15 85);
-    --lamp-stop: oklch(0.69 0.20 25);
-    --lamp-done: oklch(0.66 0.03 250);
+    --lamp-run: oklch(0.775 0.162 154);
+    --lamp-wait: oklch(0.774 0.143 80);
+    --lamp-stop: oklch(0.688 0.172 17);
+    --lamp-done: oklch(0.657 0.029 252);
 
     /* Derived — tokens the palette above does not carry, mixed per theme with color-mix, the
        idiom the theme's own lamp-glow uses. --accent and --chart-primary are deliberately two
        blues: the accent says "a human is needed", so the chart fill leans on its hue but sits
        deeper. */
     --overlay: color-mix(in oklab, var(--ink) 60%, transparent);
+    /* The status washes: a lamp's own hue behind its text. Bad and done sit under 16% because
+       their text pairs measured below AA at 16%. */
+    --ok-wash: color-mix(in oklab, var(--lamp-run) 16%, transparent);
+    --warn-wash: color-mix(in oklab, var(--lamp-wait) 16%, transparent);
+    --bad-wash: color-mix(in oklab, var(--lamp-stop) 14%, transparent);
+    --done-wash: color-mix(in oklab, var(--lamp-done) 10%, transparent);
+    --accent-hover: color-mix(in oklab, var(--accent) 88%, var(--ink));
+    --accent-border: color-mix(in oklab, var(--accent) 30%, var(--surface-raised));
     --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
     --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
     --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
@@ -126,28 +111,39 @@
 :root[data-theme="light"] {
     color-scheme: light;
 
-    --surface: oklch(0.975 0.004 250);
+    --surface-sunken: oklch(0.960 0.008 254);
+    --surface: oklch(0.978 0.005 258);
     --surface-raised: oklch(1 0 0);
-    --surface-sunken: oklch(0.945 0.006 250);
-    --line: oklch(0.89 0.008 250);
-    --line-strong: oklch(0.78 0.012 250);
+    --surface-strong: oklch(0.935 0.013 256);
+    --line: oklch(0.926 0.013 256);
+    --line-strong: oklch(0.853 0.021 250);
 
-    --ink: oklch(0.24 0.02 250);
-    --ink-muted: oklch(0.45 0.02 250);
-    --ink-inverse: oklch(0.975 0.004 250);
+    --ink: oklch(0.216 0.036 258);
+    --ink-muted: oklch(0.477 0.037 256);
+    --ink-inverse: oklch(1 0 0);
 
-    --accent: oklch(0.52 0.16 250);
+    --accent: oklch(0.540 0.179 258);
 
-    /* Issue 189: the run and wait lamps carry status text on raised and canvas, so the light
-       palette darkens both until those text pairs clear AA; the status borders derive in step. */
-    --lamp-run: oklch(0.52 0.15 150);
-    --lamp-wait: oklch(0.54 0.14 75);
-    --lamp-stop: oklch(0.56 0.21 27);
-    --lamp-done: oklch(0.58 0.03 250);
+    /* Issue 189: every lamp carries status text on raised, canvas and sunken, so the light
+       palette darkens them until those text pairs clear AA; the status borders derive in step. */
+    --lamp-run: oklch(0.512 0.120 155);
+    --lamp-wait: oklch(0.531 0.119 65);
+    --lamp-stop: oklch(0.553 0.188 21);
+    --lamp-done: oklch(0.520 0.031 257);
 
     /* Derived — the dark block's recipes over this theme's tokens, except where a pair demands
        this theme's own mix; the --on-* notes below say which. */
     --overlay: color-mix(in oklab, var(--ink) 60%, transparent);
+    /* Every wash sits at 8% here (at 10% the lamps' text drops to the AA line), and mixes into
+       raised rather than transparent: an 8% veil over the canvas or a sunken row darkens the
+       ground enough to sink the stop and accent text below AA, so this theme's washes are
+       opaque tints that read the same on every surface. The dark washes stay translucent. */
+    --ok-wash: color-mix(in oklab, var(--lamp-run) 8%, var(--surface-raised));
+    --warn-wash: color-mix(in oklab, var(--lamp-wait) 8%, var(--surface-raised));
+    --bad-wash: color-mix(in oklab, var(--lamp-stop) 8%, var(--surface-raised));
+    --done-wash: color-mix(in oklab, var(--lamp-done) 8%, var(--surface-raised));
+    --accent-hover: color-mix(in oklab, var(--accent) 88%, var(--ink));
+    --accent-border: color-mix(in oklab, var(--accent) 30%, var(--surface-raised));
     --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
     --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
     --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
@@ -158,7 +154,7 @@
     --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
     --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
-    --accent-wash: color-mix(in oklab, var(--accent) 12%, transparent);
+    --accent-wash: color-mix(in oklab, var(--accent) 8%, var(--surface-raised));
     --shadow-float: color-mix(in oklab, var(--ink) 14%, transparent);
 }
 
@@ -185,15 +181,16 @@
  * `static` keeps every token emitted even where only var() points at it (the components below
  * consume --font-mono and the radii that way; plain @theme prunes what no utility spells). */
 @theme static {
-    /* Barlow was drawn after highway signage: sturdy, legible, industrial.
-     * Plex Mono is only for things that are literally identifiers or logs. */
+    /* Barlow was drawn after highway signage: sturdy, legible, industrial — body and headings
+     * alike. Plex Mono is only for things that are literally identifiers or logs. */
     --font-sans: 'Barlow', ui-sans-serif, system-ui, sans-serif;
-    --font-display: 'Barlow Semi Condensed', 'Barlow', ui-sans-serif, sans-serif;
     --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-    /* Hardware, not bubbles: tight radii. */
+    /* Hardware, not bubbles: tight radii. md for pills, kbd and checkboxes; lg for controls; xl
+     * for panels, cards, dialogs and banners. */
     --radius-md: 0.25rem;
     --radius-lg: 0.375rem;
+    --radius-xl: 0.5rem;
 
     /* The single ambient motion: a running lamp breathes. */
     --animate-lamp: lamp 2.4s ease-in-out infinite;
@@ -219,26 +216,37 @@
     body {
         @apply bg-surface font-sans text-ink antialiased;
         font-size: 14px;
-        line-height: 1.5;
+        line-height: 21px;
     }
 
     h1,
     h2,
     h3 {
-        @apply font-display font-semibold tracking-tight;
+        @apply font-sans font-semibold;
     }
 
     h1 {
-        font-size: 20px;
+        font-size: 28px;
+        letter-spacing: -0.01em;
+        line-height: 36px;
     }
 
     h2 {
-        font-size: 15px;
+        font-size: 18px;
+        line-height: 26px;
         margin: 0 0 4px;
     }
 
     h3 {
-        font-size: 13px;
+        font-size: 15px;
+        line-height: 22px;
+    }
+
+    @media (max-width: 640px) {
+        h1 {
+            font-size: 24px;
+            line-height: 32px;
+        }
     }
 
     /* Preflight makes anchors inherit, and the primitives that skin links (sidenav-link,
@@ -348,8 +356,10 @@
 
     .page-header-description {
         color: var(--ink-muted);
+        font-size: 15px;
+        line-height: 22px;
         margin: 4px 0 0;
-        max-width: 68ch;
+        max-width: 72ch;
     }
 
     /* The state beside the title: pills, the wall clock, the live activity line. */
@@ -370,27 +380,112 @@
         gap: 8px;
     }
 
+    /* Header actions are primary-sized controls on desktop (the 36px floor below stays the
+       floor); the compact shell's touch list raises them to 44. */
+    .page-header-actions button {
+        min-height: 40px;
+    }
+
+    /* The secondary button — every button's default: an outline on the page, filled only on
+       hover. `primary` and `danger` below are the two variants. */
     button {
-        background: var(--surface-sunken);
+        background: transparent;
         color: var(--ink);
-        border: 1px solid var(--line);
+        border: 1px solid var(--line-strong);
         border-radius: var(--radius-lg);
-        /* Desktop control floor (issue 189): padding alone lands a 35px control; every button,
+        /* Desktop control floor (issue 189): padding alone lands a 31px control; every button,
            tab and verdict clears 36. The compact shell restates 44 for touch below. */
         min-height: 36px;
-        padding: 6px 12px;
+        padding: 4px 12px;
         font: inherit;
         cursor: pointer;
     }
 
+    /* Outranked by the class skins' own `:hover` rules (select-trigger, popover-option, env-tab,
+       the tinted verdicts), which keep their wash; it beats a class skin's plain `background`, so
+       a skin with status text or no frame restates its own hover. Disabled comes after, so a dead
+       button never lights up. */
     button:hover {
-        border-color: var(--accent);
+        background: var(--surface-strong);
     }
 
     button:disabled {
+        background: transparent;
         color: var(--ink-muted);
         cursor: default;
         border-color: var(--line);
+    }
+
+    /* The page's one main action. Disabled trades the accent for the strong surface, so a
+       blocked Start reads as unavailable rather than as a paler invitation. */
+    button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--ink-inverse);
+        font-weight: 600;
+        min-height: 40px;
+        padding: 0 16px;
+    }
+
+    button.primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+    }
+
+    button.primary:disabled {
+        background: var(--surface-strong);
+        border-color: var(--surface-strong);
+        color: var(--ink-muted);
+        cursor: not-allowed;
+    }
+
+    /* The destructive variant: the stop lamp's text and edge, its wash on hover. */
+    button.danger {
+        border-color: var(--bad-border);
+        color: var(--lamp-stop);
+    }
+
+    button.danger:hover:not(:disabled) {
+        background: var(--bad-wash);
+    }
+
+    button.danger:disabled {
+        border-color: var(--line);
+        color: var(--ink-muted);
+    }
+
+    /* The one text-field skin (inputs, selects and textareas alike): sunken, framed by the
+       strong hairline, the accent edge while focused — the global ring still draws on top. */
+    .field {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        min-height: 40px;
+        padding: 8px 12px;
+    }
+
+    .field::placeholder {
+        color: var(--ink-muted);
+    }
+
+    .field:hover {
+        border-color: var(--ink-muted);
+    }
+
+    .field:focus {
+        border-color: var(--accent);
+    }
+
+    .field:disabled {
+        background: var(--surface);
+        border-color: var(--line-strong);
+        color: var(--ink-muted);
+    }
+
+    .field[aria-invalid='true'] {
+        border-color: var(--lamp-stop);
     }
 
     /* Keyboard focus is visible everywhere (issue 160): a two-pixel accent ring with a two-pixel
@@ -417,12 +512,13 @@
         color: var(--ink);
         display: inline-flex;
         font: inherit;
-        gap: 6px;
+        gap: 8px;
         /* A long organization, workflow, repository or executor name wraps inside the trigger,
            never the page. */
         max-width: 100%;
+        min-height: 40px;
         overflow-wrap: anywhere;
-        padding: 6px 10px;
+        padding: 8px 12px;
     }
 
     .select-trigger:hover,
@@ -479,8 +575,14 @@
     .panel {
         background: var(--surface-raised);
         border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        padding: 16px;
+        border-radius: var(--radius-xl);
+        padding: 24px;
+    }
+
+    @media (max-width: 640px) {
+        .panel {
+            padding: 16px;
+        }
     }
 
     .panel p {
@@ -989,13 +1091,131 @@
         margin-bottom: 8px;
     }
 
+    /* A status or type chip: the text is the whole message, the tone only reinforces it. An
+       untoned pill (an executor type, a sampled vital) keeps the neutral hairline. */
     .pill {
+        align-items: center;
         border: 1px solid var(--line);
-        border-radius: 999px;
-        display: inline-block;
+        border-radius: var(--radius-md);
+        display: inline-flex;
         font-size: 12px;
-        padding: 1px 9px;
+        font-weight: 600;
+        gap: 4px;
+        line-height: 16px;
+        min-height: 24px;
+        padding: 0 8px;
         white-space: nowrap;
+    }
+
+    /* The tones: a lamp's text on that lamp's own wash. `pill-done` is grey — parked, queued,
+       waiting on someone else — and `pill-accent` is "your turn". */
+    .pill-ok {
+        background: var(--ok-wash);
+        border-color: var(--ok-border);
+        color: var(--lamp-run);
+    }
+
+    .pill-warn {
+        background: var(--warn-wash);
+        border-color: var(--warn-border);
+        color: var(--lamp-wait);
+    }
+
+    .pill-bad {
+        background: var(--bad-wash);
+        border-color: var(--bad-border);
+        color: var(--lamp-stop);
+    }
+
+    .pill-done {
+        background: var(--done-wash);
+        border-color: transparent;
+        color: var(--lamp-done);
+    }
+
+    .pill-accent {
+        background: var(--accent-wash);
+        border-color: transparent;
+        color: var(--accent);
+    }
+
+    /* An applied filter, "Label: value" plus its remove button: a capsule on the accent wash. */
+    .inbox-chip {
+        align-items: center;
+        background: var(--accent-wash);
+        border: 1px solid var(--accent-border);
+        border-radius: 999px;
+        color: var(--ink);
+        display: inline-flex;
+        font-size: 13px;
+        gap: 4px;
+        min-height: 28px;
+        padding: 0 12px;
+    }
+
+    .inbox-chip button {
+        align-items: center;
+        background: none;
+        border: 0;
+        color: inherit;
+        display: inline-flex;
+        min-height: 0;
+        padding: 0;
+    }
+
+    /* A page-level notice: a lamp's wash and edge (the accent's for info), ink text, and the
+       lamp's color on the leading icon. */
+    .banner-warn,
+    .banner-bad,
+    .banner-info {
+        align-items: flex-start;
+        border: 1px solid;
+        border-radius: var(--radius-xl);
+        color: var(--ink);
+        display: flex;
+        gap: 16px;
+        margin: 0;
+        padding: 16px 24px;
+    }
+
+    .banner-warn {
+        background: var(--warn-wash);
+        border-color: var(--warn-border);
+    }
+
+    .banner-bad {
+        background: var(--bad-wash);
+        border-color: var(--bad-border);
+    }
+
+    .banner-info {
+        background: var(--accent-wash);
+        border-color: var(--accent-border);
+    }
+
+    .banner-warn > .icon {
+        color: var(--lamp-wait);
+    }
+
+    .banner-bad > .icon {
+        color: var(--lamp-stop);
+    }
+
+    .banner-info > .icon {
+        color: var(--accent);
+    }
+
+    .banner-title {
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 22px;
+        margin: 0;
+    }
+
+    /* The Icon component's svg: never squeezed by a flex row, centered on the text beside it. */
+    .icon {
+        flex: none;
+        vertical-align: middle;
     }
 
     /* --- The repository picker ---------------------------------------------------------------- */
@@ -1022,6 +1242,29 @@
         justify-content: center;
         padding: 16px;
         position: fixed;
+    }
+
+    /* The panel every dialog floats: raised, the harder hairline over the dimmed page, the one
+       shadow the popovers share, and its own scroll so a long body never outgrows the viewport.
+       A dialog's own class (picker, task-remove, unsaved, range-dialog) only narrows it. */
+    .dialog {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-xl);
+        box-shadow: 0 8px 24px var(--shadow-float);
+        color: var(--ink);
+        max-height: calc(100dvh - 32px);
+        max-width: 560px;
+        overflow-y: auto;
+        padding: 24px;
+        width: 90vw;
+    }
+
+    @media (max-width: 640px) {
+        .dialog {
+            padding: 16px;
+            width: 100%;
+        }
     }
 
     /* The navigation drawer (issue 160): the compact shell's nav, rendered into the same dialog
@@ -1122,22 +1365,19 @@
         margin: 4px 2px;
     }
 
-    button.primary {
-        background: var(--accent);
-        border-color: var(--accent);
-        color: var(--ink-inverse);
-    }
-
     /* The keyboard path beside the launch button — a documentation mark, not an affordance. */
     kbd {
+        align-items: center;
         background: var(--surface-sunken);
         border: 1px solid var(--line);
         border-radius: var(--radius-md);
         color: var(--ink-muted);
+        display: inline-flex;
         font-family: var(--font-mono);
         /* Helper-text floor (issue 189) — documentation of the button is still read. */
         font-size: 12px;
-        padding: 1px 5px;
+        min-height: 24px;
+        padding: 0 8px;
         white-space: nowrap;
     }
 
@@ -1159,28 +1399,34 @@
         white-space: nowrap;
     }
 
+    /* A 28px identity circle; the strong surface shows behind a loading picture and under the
+       initials when there is none. */
     .avatar {
+        background: var(--surface-strong);
         border-radius: 50%;
         display: block;
-        background: var(--surface-sunken);
-        border: 1px solid var(--line);
+        flex: none;
+        height: 28px;
+        width: 28px;
+    }
+
+    .avatar-lg {
+        height: 40px;
+        width: 40px;
     }
 
     .avatar-fallback {
         /* No picture from GitHub — the login's initial, sized to the avatar it stands in for. */
-        color: var(--ink-muted);
-        text-align: center;
-        line-height: 22px;
+        color: var(--ink);
         font-size: 12px;
-        width: 24px;
-        height: 24px;
+        font-weight: 600;
+        line-height: 28px;
+        text-align: center;
     }
 
     .avatar-lg.avatar-fallback {
-        line-height: 38px;
         font-size: 18px;
-        width: 40px;
-        height: 40px;
+        line-height: 40px;
     }
 
     /* The library's anchor engine positions the panel with inline styles, so this only keeps the
@@ -1288,16 +1534,6 @@
     .inbox-sort .muted {
         color: var(--ink-muted);
         font-size: 12px;
-    }
-
-    .inbox-search input,
-    .inbox-search select {
-        background: var(--surface-sunken);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
-        font: inherit;
-        padding: 4px 8px;
     }
 
     .inbox-rows {
@@ -1430,14 +1666,9 @@
         padding-top: 12px;
     }
 
+    /* The message textarea: the shared `field` skin carries the look; this only sizes it. */
     .composer-input {
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
-        font: inherit;
         min-height: 64px;
-        padding: 8px 10px;
         resize: vertical;
         width: 100%;
     }
@@ -1659,8 +1890,10 @@
     .task-outcome-label {
         color: var(--ink-muted);
         font-size: 12px;
-        letter-spacing: 0.04em;
-        margin: 0 0 6px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        line-height: 16px;
+        margin: 0 0 8px;
         text-transform: uppercase;
     }
 
@@ -1805,21 +2038,6 @@
         max-height: 200px;
     }
 
-    .gate-passed {
-        background: none;
-        color: var(--lamp-run);
-    }
-
-    .gate-failed {
-        background: none;
-        color: var(--lamp-stop);
-    }
-
-    .gate-running {
-        background: none;
-        color: var(--ink-muted);
-    }
-
     .chat-output {
         background: var(--surface);
         border: 1px solid var(--line);
@@ -1865,6 +2083,20 @@
         color: var(--lamp-stop);
     }
 
+    /* The tinted verdicts hover on their own lamp's wash: their status text is measured on the
+       washes, never on the strong surface every other button's hover fills with. */
+    button.chat-done:hover:not(:disabled) {
+        background: var(--ok-wash);
+    }
+
+    button.chat-stop:hover:not(:disabled) {
+        background: var(--warn-wash);
+    }
+
+    button.chat-remove:hover:not(:disabled) {
+        background: var(--bad-wash);
+    }
+
     /* The task head's row of controls and its overall wall clock — every button the task can take,
         at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
         title from squeezing the buttons; the title wraps instead. The row itself wraps too, so a
@@ -1886,17 +2118,11 @@
         white-space: nowrap;
     }
 
-    /* The remove confirmation (issue 178): the one dialog the task's own actions can raise. It
-        floats over the dimmed page, so it wears the picker's harder hairline; small, because the
-        copy it carries is three sentences and two answers. */
+    /* The remove confirmation (issue 178): the one dialog the task's own actions can raise. The
+        shared `dialog` panel carries the skin; this keeps it small, because the copy it carries
+        is three sentences and two answers. */
     .task-remove {
-        background: var(--surface-raised);
-        border: 1px solid var(--line-strong);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
         max-width: 440px;
-        padding: 16px;
-        width: 90vw;
     }
 
     .task-remove-title {
@@ -1913,19 +2139,7 @@
 
     /* ── region: settings ── */
 
-    /* The one --line-strong edge: a dialog floats over the dimmed page, so its outline reads
-       harder than any in-page hairline. */
-    .picker {
-        background: var(--surface-raised);
-        border: 1px solid var(--line-strong);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
-        max-height: 80vh;
-        max-width: 560px;
-        padding: 20px;
-        width: 90vw;
-    }
-
+    /* The executor picker wears the shared `dialog` panel at its full width. */
     .picker h2 {
         margin-bottom: 8px;
     }
@@ -1938,13 +2152,7 @@
     }
 
     .picker-search input {
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
         flex: 1;
-        font: inherit;
-        padding: 6px 10px;
     }
 
     .picker-list {
@@ -1996,14 +2204,8 @@
     }
 
     .repo-search input {
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
         flex: 1;
-        font: inherit;
         min-width: 12ch;
-        padding: 6px 10px;
     }
 
     /* The availability summary's one line of counts plus installation context (issue 223):
@@ -2161,17 +2363,11 @@
     }
 
     /* The unsaved-changes confirmation (issue 182): the one dialog the settings area raises before
-        a navigation or a repository switch can drop a dirty draft. It wears the remove dialog's
-        floating shape — raised, the picker's harder hairline — because it answers the same kind of
-        question: three sentences, two answers, one of them destructive. */
+        a navigation or a repository switch can drop a dirty draft. It wears the shared `dialog`
+        panel at the remove dialog's width, because it answers the same kind of question: three
+        sentences, two answers, one of them destructive. */
     .unsaved {
-        background: var(--surface-raised);
-        border: 1px solid var(--line-strong);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
         max-width: 440px;
-        padding: 16px;
-        width: 90vw;
     }
 
     .unsaved-title {
@@ -2277,6 +2473,15 @@
         color: var(--accent);
         font-size: 13px;
         padding: 4px 10px;
+    }
+
+    /* Accent text hovers on the accent's wash; the text-style toggle stays unfilled. */
+    .env-add:hover:not(:disabled) {
+        background: var(--accent-wash);
+    }
+
+    .env-advanced-toggle:hover {
+        background: transparent;
     }
 
     .env-advanced-toggle {
@@ -2412,21 +2617,12 @@
         padding: 14px 16px;
     }
 
-    .readiness-item.is-ok {
-        border-color: var(--ok-border);
-    }
-
-    .readiness-item.is-attention {
-        border-color: var(--bad-border);
-    }
-
-    .readiness-item.is-pending {
-        border-color: var(--warn-border);
-    }
-
+    /* The item's status is a toned pill — ok, bad or warn from the tone set — so the card's own
+       edge stays the neutral hairline. Its own row, so the action never rides beside it. */
     .readiness-status {
-        font-weight: 600;
-        margin: 0 0 6px;
+        display: flex;
+        margin: 0 0 8px;
+        width: fit-content;
     }
 
     .readiness-fact {
@@ -2518,16 +2714,10 @@
     }
 
     /* Custom opens this dialog (issue 246) rather than an inline expansion: the Range trigger
-       stays a single control, and the draft form floats over the dimmed page on the picker's
-       harder hairline, like the task-remove and unsaved-changes confirmations. */
+       stays a single control, and the draft form floats over the dimmed page in the shared
+       `dialog` panel, at the task-remove and unsaved-changes confirmations' width. */
     .range-dialog {
-        background: var(--surface-raised);
-        border: 1px solid var(--line-strong);
-        border-radius: var(--radius-lg);
-        color: var(--ink);
         max-width: 440px;
-        padding: 16px;
-        width: 90vw;
     }
 
     .range-dialog-title {
@@ -2645,9 +2835,10 @@
     }
 
     .usage-group strong {
-        font-size: 26px;
+        font-size: 28px;
         font-weight: 600;
         font-variant-numeric: tabular-nums;
+        line-height: 34px;
     }
 
     .usage-group span {
@@ -2728,9 +2919,10 @@
     }
 
     .card strong {
-        font-size: 26px;
+        font-size: 28px;
         font-weight: 600;
         font-variant-numeric: tabular-nums;
+        line-height: 34px;
     }
 
     .card span {
@@ -2833,6 +3025,11 @@
     /* The swatches' old inter-item spacing, now between the buttons that carry them. */
     .legend-button:not(:first-child) {
         margin-left: 10px;
+    }
+
+    /* A frameless toggle: the swatch's opacity is its state, so hover paints no fill. */
+    .legend-button:hover {
+        background: none;
     }
 
     /* The chart's one-line caption and the calculation disclosure that follows it. */
