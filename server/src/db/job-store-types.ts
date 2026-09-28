@@ -426,6 +426,18 @@ export interface ReclaimClaim {
     leaseExpiresAt: string;
 }
 
+/**
+ * One row of the batched lease lookup the orphan reaper sweeps with (issue #301): the job's
+ * status and its CURRENT lease token — null when the row holds none, which is what marks every
+ * labelled object of the job as a dead attempt's. An id the board does not know is absent from
+ * the answer, never a row with a made-up status: absence IS the verdict the reaper acts on.
+ */
+export interface JobLeaseInfo {
+    id: string;
+    status: JobStatus;
+    leaseToken: string | null;
+}
+
 export interface JobStore {
     /**
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
@@ -539,6 +551,13 @@ export interface JobStore {
     claimReclaim(worker: string, leaseSeconds: number): Promise<ReclaimClaim | null>;
     /** Removes the reclaim row once the driver has actually taken the tree. The claim's worker only. */
     ackReclaim(id: string, worker: string): Promise<'ok' | 'lost' | 'missing'>;
+    /**
+     * The batched lease lookup behind `POST /api/jobs/leases` (issue #301): every named id's
+     * status and current lease, in no particular order. Ids this org's board does not know are
+     * simply not answered — the driver reads an absent id as "no such job here". Read-only, and
+     * deliberately NOT lease-guarded: the reaper holding no lease is the whole point.
+     */
+    leases(ids: readonly string[]): Promise<JobLeaseInfo[]>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
     heartbeat(

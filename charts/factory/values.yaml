@@ -136,6 +136,12 @@ driver:
     # outlives it fails with exit 124. A declared gate that installs dependencies into a fresh
     # worktree before running a whole suite needs more than the ten-minute default.
     gateTimeoutMs: '600000'
+    # The orphan reaper (issue #301): how often the driver sweeps service objects whose owning
+    # job can no longer use them (DRIVER_REAP_INTERVAL_MS), and how old an object must be before
+    # the sweep may act on it (DRIVER_REAP_GRACE_MS). '0' on the interval disables the reaper —
+    # the grace cannot be usefully zero below the default teardown span, but the knob exists.
+    reapIntervalMs: '300000'
+    reapGraceMs: '600000'
     # On SIGTERM the driver stops claiming and drains: in-flight jobs finish, then it exits. This is
     # how long the kubelet waits before SIGKILL. A killed drain loses nothing durable — each runner
     # Job keeps running under its own deadline and the job's lease expires and is re-offered — but

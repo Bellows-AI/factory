@@ -95,4 +95,16 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toContain('--filter label=factory.job ');
         expect(SCRIPT).not.toContain('--filter name=factory-job- ');
     });
+
+    it('the orphan runner is removed one id at a time, not as one newline-joined argument', () => {
+        // `docker rm -f "$(docker ps -aq …)"` hands every match to docker as ONE argument: with
+        // more than one container left under the job label (the fence's runner plus anything the
+        // reaper window missed), docker refuses the newline-joined list, the suppressed error
+        // changes nothing, and the fleet stays on the daemon. The read loop removes each id on
+        // its own and skips the empty match of a clean daemon.
+        expect(SCRIPT).not.toContain('docker rm -f "$(docker ps -aq --filter "label=factory.job=$orphan")"');
+        expect(SCRIPT).toContain('docker ps -aq --filter "label=factory.job=$orphan" |');
+        expect(SCRIPT).toContain('while IFS= read -r container_id; do');
+        expect(SCRIPT).toContain('[ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1');
+    });
 });

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
+import { LOCAL_ORG_ID } from '../src/config.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
@@ -68,6 +69,8 @@ interface StoreStub extends JobStore {
     removed: { id: string; removedBy: string | null }[];
     reclaimClaims: { worker: string; leaseSeconds: number }[];
     reclaimAcks: { id: string; worker: string }[];
+    /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
+    leased: { ids: string[] }[];
 }
 
 /**
@@ -96,6 +99,8 @@ function stubStore(
         reclaimClaim?: ReclaimClaim | null;
         ackReclaim?: 'ok' | 'lost' | 'missing';
         heartbeatCancelRequested?: boolean;
+        /** The lease rows the store answers a batched lookup with; absent means none. */
+        leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
     } = {}
 ): StoreStub {
     const boom = () => {
@@ -119,6 +124,7 @@ function stubStore(
         removed: [],
         reclaimClaims: [],
         reclaimAcks: [],
+        leased: [],
         async suspend(id) {
             boom();
             stub.suspended.push(id);
@@ -179,6 +185,11 @@ function stubStore(
             boom();
             stub.reclaimAcks.push({ id, worker });
             return options.ackReclaim ?? 'ok';
+        },
+        async leases(ids) {
+            boom();
+            stub.leased.push({ ids: [...ids] });
+            return options.leaseRows ?? [];
         },
         async session(id, _token, sessionId) {
             boom();
@@ -804,6 +815,184 @@ describe('POST /api/jobs/:id/heartbeat', () => {
         const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: 'nope' });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_TOKEN');
+    });
+});
+
+describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue #301)', () => {
+    const JOB_B = '44444444-4444-4444-8444-444444444444';
+
+    it('answers each known job’s status and current lease, and omits ids it does not know', async () => {
+        const store = stubStore({
+            leaseRows: [
+                { id: ID, status: 'running', leaseToken: TOKEN },
+                { id: JOB_B, status: 'dead', leaseToken: null },
+            ],
+        });
+        const instance = await harnessWith(store);
+
+        const UNKNOWN = '99999999-9999-4999-8999-999999999999';
+        const response = await postAsWorker(instance, '/api/jobs/leases', { ids: [ID, JOB_B, UNKNOWN] });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+            jobs: [
+                { id: ID, status: 'running', leaseToken: TOKEN },
+                { id: JOB_B, status: 'dead', leaseToken: null },
+            ],
+        });
+        // The unknown id reached the store — its absence from the ANSWER is the board's verdict.
+        expect(store.leased).toEqual([{ ids: [ID, JOB_B, UNKNOWN] }]);
+    });
+
+    // The shared secret authenticates the driver, not an org, so this route — like the claim —
+    // is offered every org's board, and one answer per org is merged by id.
+    it('consults every org board under a worker token and merges the answers', async () => {
+        const a = stubStore({ leaseRows: [{ id: ID, status: 'failed', leaseToken: null }] });
+        const b = stubStore({ leaseRows: [{ id: JOB_B, status: 'running', leaseToken: TOKEN }] });
+        const instance = await harnessOfBoards([
+            ['org-a', a],
+            ['org-b', b],
+        ]);
+
+        const response = await postAsWorker(instance, '/api/jobs/leases', { ids: [ID, JOB_B] });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().jobs).toEqual([
+            { id: ID, status: 'failed', leaseToken: null },
+            { id: JOB_B, status: 'running', leaseToken: TOKEN },
+        ]);
+    });
+
+    it('requires the worker token under AUTH_MODE=github', async () => {
+        const instance = await harnessOfBoards([['org-a', stubStore()]]);
+        const response = await instance.inject({ method: 'POST', url: '/api/jobs/leases', payload: { ids: [ID] } });
+        expect(response.statusCode).toBe(401);
+        expect(response.json().code).toBe('UNAUTHENTICATED');
+    });
+
+    it.each([
+        ['a body without ids', {}],
+        ['a non-array ids', { ids: ID }],
+        ['a non-uuid entry', { ids: [ID, 'nope'] }],
+        ['an empty list', { ids: [] }],
+    ])('refuses %s with BAD_ID', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await postAsWorker(instance, '/api/jobs/leases', payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+
+    it('refuses more ids than one request may carry with BAD_ID', async () => {
+        const LEASE_BATCH_MAX = 100;
+        const ids = Array.from({ length: LEASE_BATCH_MAX + 1 }, (_, i) => {
+            const head = String(i).padStart(8, '0');
+            return `${head}-1111-4111-8111-111111111111`;
+        });
+        const instance = await harnessWith(stubStore());
+
+        const response = await postAsWorker(instance, '/api/jobs/leases', { ids });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+
+    // "Absent means unknown" is only safe if every board actually answered: one org board down
+    // must 503 the whole lookup, so the driver reaps nothing rather than guessing.
+    it('answers 503 when any board throws', async () => {
+        const failing = stubStore();
+        failing.leases = async () => {
+            throw new Error('database is down');
+        };
+        const instance = await harnessOfBoards([
+            ['org-a', failing],
+            ['org-b', stubStore({ leaseRows: [{ id: ID, status: 'dead', leaseToken: null }] })],
+        ]);
+
+        const response = await postAsWorker(instance, '/api/jobs/leases', { ids: [ID] });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    // The registry DROPS an org whose runtime failed to build — which would turn that org's
+    // every id into "unknown to the board", a reap verdict. A registry that cannot fully answer
+    // is a 503, exactly like a board that throws.
+    it('answers 503 when an organization has no runtime at all', async () => {
+        const config = testConfig({ auth: githubAuth() });
+        const repos = staticRepoSource([]);
+        const telemetry = stubTelemetryClient();
+        const jobs = stubStore();
+        const instance = await buildApp({
+            config,
+            auth: memoryAuthStore(),
+            orgs: {
+                for: async (orgId) =>
+                    orgId === 'org-alive'
+                        ? {
+                              orgId,
+                              repos,
+                              telemetry,
+                              service: createStatsService({ config, repos, telemetry }),
+                              jobs,
+                          }
+                        : null,
+                list: async () => [
+                    { id: 'org-alive', name: 'org-alive', installationId: null },
+                    { id: 'org-dead', name: 'org-dead', installationId: null },
+                ],
+                warmAll: async () => {},
+            },
+        });
+        app = instance;
+
+        const response = await postAsWorker(instance, '/api/jobs/leases', { ids: [ID] });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('answers 503 when no board exists', async () => {
+        const instance = await harnessOfBoards([]);
+        const response = await postAsWorker(instance, '/api/jobs/leases', { ids: [ID] });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('JOBS_UNAVAILABLE');
+    });
+
+    // None mode resolves the caller to the LOCAL org — one board, whatever foreign org rows a
+    // shared database also holds. The every-org count check above must not apply there, or the
+    // default dev workflow would 503 the reaper forever.
+    it('answers the local org board under AUTH_MODE=none even when foreign org rows exist', async () => {
+        const config = testConfig();
+        const instance = await buildApp({
+            config,
+            orgs: {
+                for: async (orgId) =>
+                    orgId === LOCAL_ORG_ID
+                        ? {
+                              orgId,
+                              repos: staticRepoSource([]),
+                              telemetry: stubTelemetryClient(),
+                              service: createStatsService({
+                                  config,
+                                  repos: staticRepoSource([]),
+                                  telemetry: stubTelemetryClient(),
+                              }),
+                              jobs: stubStore({ leaseRows: [{ id: ID, status: 'dead', leaseToken: null }] }),
+                          }
+                        : null,
+                list: async () => [
+                    { id: LOCAL_ORG_ID, name: LOCAL_ORG_ID, installationId: null },
+                    { id: 'org-foreign', name: 'org-foreign', installationId: null },
+                ],
+                warmAll: async () => {},
+            },
+        });
+        app = instance;
+
+        const response = await post(instance, '/api/jobs/leases', { ids: [ID] });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ jobs: [{ id: ID, status: 'dead', leaseToken: null }] });
     });
 });
 

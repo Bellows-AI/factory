@@ -42,6 +42,9 @@ declare module 'fastify' {
 /** Routes the driver reaches, and no browser ever does. */
 const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/claim$/,
+    // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, since the
+    // shared secret names no org and the id list spans them.
+    /^\/api\/jobs\/leases$/,
     /^\/api\/reclaims\/claim$/,
     /^\/api\/reclaims\/[^/]+\/ack$/,
     // `stop`, `follow-up`, `done` and `remove` are person actions: the driver is told to stop
@@ -319,9 +322,10 @@ async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, repl
         return;
     }
 
-    // The two claim routes name no row — they ASK for work — so their principal carries null and
-    // the route offers every org's queue. Every other worker route carries the job (or reclaim) id
-    // in its URL, and the org comes from that row; an id that resolves to nothing is the route's
+    // The claim routes and the reaper's lease lookup name no row — they ASK about the board as a
+    // whole — so their principal carries null and the route answers across every org's board.
+    // Every other worker route carries the job (or reclaim) id in its URL, and the org comes from
+    // that row; an id that resolves to nothing is the route's
     // own 404, answered here to keep the store lookup from inventing a runtime for a row that does
     // not exist. The segment is captured before any shape check, so a MALFORMED id is refused on
     // the same terms instead of slipping through with a null org — which the route's storeOf()
@@ -417,8 +421,9 @@ export const orgOf = (request: FastifyRequest): string => {
     if (!auth) return LOCAL_ORG_ID;
     if (auth.kind === 'user') return auth.caller.org.id;
     if (auth.kind === 'worker') {
-        // Null only on the two claim routes, which never consult orgOf: they offer every org's
-        // queue in the route layer instead. Every other worker route arrives with the org the
+        // Null only on the org-less worker routes — the two claims and the reaper's lease lookup
+        // — which never consult orgOf: they answer across every org's board in the route layer
+        // instead. Every other worker route arrives with the org the
         // auth hook resolved from the row its URL names.
         return auth.orgId!;
     }

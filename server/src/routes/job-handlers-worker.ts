@@ -2,7 +2,7 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { type BoardScanner, storeFor, workflowDefaultsFor, workflowsFor } from './job-context.js';
+import { type BoardScanner, boardsFor, storeFor, workflowDefaultsFor, workflowsFor } from './job-context.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import {
     type ResolvedWorkflow,
@@ -18,6 +18,8 @@ import {
     HTTP_CREATED,
     HTTP_NO_CONTENT,
     HTTP_OK,
+    HTTP_UNAVAILABLE,
+    LEASE_BATCH_MAX,
     LEASE_SECONDS_MAX,
     OUTPUT_LIMIT,
     SESSION_ID,
@@ -311,4 +313,53 @@ export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, 
     if (result.value.result === 'missing') return notFoundJob(reply);
     if (result.value.result === 'lost') return leaseLost(reply);
     return reply.code(HTTP_OK).send({ id, status: result.value.status });
+}
+
+/*
+ * The orphan reaper's one board route (issue #301): a batched "what does the board think of these
+ * job ids" — each known id's status and CURRENT lease, absent for the ids it does not know. The
+ * shared secret authenticates the driver, not an org, so like the claim this is offered every
+ * org's board and the answers merge by id; uuids cannot collide across orgs. Unlike every other
+ * worker route there is NO lease guard — the reaper holds no lease, and that is the whole point —
+ * and it is read-only: it answers facts a terminal row's reader could already see.
+ *
+ * The strictness is the driver's safety: ANY board failing ⇒ 503, so a sweep is never decided by
+ * a partial answer — "absent means unknown" is only true when every board that could know the id
+ * actually answered.
+ */
+export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const boards = await boardsFor(orgs, request);
+    if (!boards.length) return noBoard(reply);
+    // Fail closed on the every-org worker path: boardsFor DROPS an org whose runtime failed to
+    // build, and every id of a dropped board would read as "unknown to the board" — a reap
+    // verdict. Answering from a partial registry is the one thing this route must never do, so a
+    // registry that cannot fully answer is a 503, exactly like a board that throws. The org-less
+    // shape is the worker-token path only; `none` mode falls through to the caller's own org —
+    // one board IS the whole registry there, whatever foreign org rows a shared database holds.
+    if (
+        request.auth?.kind === 'worker' &&
+        request.auth.orgId === null &&
+        (await orgs.list()).length !== boards.length
+    ) {
+        return bad(reply, ERROR_CODES.UNAVAILABLE, 'Not every organization board answered', HTTP_UNAVAILABLE);
+    }
+
+    const { ids } = body(request.body);
+    if (
+        !Array.isArray(ids) ||
+        ids.length < 1 ||
+        ids.length > LEASE_BATCH_MAX ||
+        ids.some((id) => typeof id !== 'string' || !UUID.test(id))
+    ) {
+        return bad(reply, ERROR_CODES.BAD_ID, `ids must be 1..${LEASE_BATCH_MAX} uuids`);
+    }
+
+    const answered = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job lease lookup failed'),
+        () => Promise.all(boards.map((board) => board.leases(ids as string[])))
+    );
+    if (!answered.ok) return reply;
+    const jobs = [...new Map(answered.value.flat().map((row) => [row.id, row])).values()];
+    return reply.code(HTTP_OK).send({ jobs });
 }

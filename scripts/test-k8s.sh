@@ -586,6 +586,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "driver.image.repository=$DRIVER_IMAGE" \
     --set "driver.executorImages.claudeCode=$STUB_IMAGE" \
     --set "driver.executorImages.opencode=$STUB_IMAGE" \
+    --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1
@@ -790,6 +791,58 @@ expect_contains 'the prompt reached the pod' "$result" 'hello from the cluster'
 # factory.job label the spec stamps on it (the release labels belong to the chart's objects).
 job_object="$(kubectl get jobs -l factory.job -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 [ "${job_object:-0}" -ge 1 ] && ok 'a runner Job object exists' || bad 'a runner Job object exists' "none found"
+
+# --- The orphan reaper (issue #301), against the real apiserver ---------------------------------
+#
+# A service fleet the way a crashed attempt would have left it: a pod and its headless Service,
+# labelled with the job id of the job that just succeeded — the board answers `succeeded`, the
+# reaper's table says gone. The driver was installed with a 3s cadence, so one round must do it.
+# The release label rides both objects, because that is the selector the arm scans by; the pod's
+# image is the stub already loaded onto the node, and whether the container ever runs is beside
+# the point — the OBJECT is what the reaper deletes.
+
+echo
+echo '# orphan reaper'
+
+orphan_lease='33333333-3333-4333-8333-333333333333'
+cat <<EOF | kubectl apply -n "$NAMESPACE" -f - >/dev/null 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+    name: factory-orphan-reaper-probe
+    labels:
+        factory.job: $id
+        factory.lease: $orphan_lease
+        factory.service: probe
+        app.kubernetes.io/instance: $RELEASE
+spec:
+    restartPolicy: Never
+    automountServiceAccountToken: false
+    containers: [{name: probe, image: $STUB_IMAGE}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: factory-orphan-reaper-svc
+    labels:
+        factory.job: $id
+        factory.lease: $orphan_lease
+        factory.service: factory-orphan-reaper-svc
+        app.kubernetes.io/instance: $RELEASE
+spec:
+    clusterIP: None
+    selector: {factory.fleet: factory-orphan-reaper-svc}
+EOF
+kubectl get pod/factory-orphan-reaper-probe service/factory-orphan-reaper-svc -n "$NAMESPACE" >/dev/null 2>&1 &&
+    ok 'the synthetic orphan fleet is up' ||
+    bad 'the synthetic orphan fleet is up' 'the seed objects were not created'
+
+kubectl wait --for=delete pod/factory-orphan-reaper-probe -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
+    ok 'the reaper removes the orphan pod' ||
+    bad 'the reaper removes the orphan pod' 'the pod survived the reaper'
+kubectl wait --for=delete service/factory-orphan-reaper-svc -n "$NAMESPACE" --timeout=60s >/dev/null 2>&1 &&
+    ok 'the reaper removes the orphan Service' ||
+    bad 'the reaper removes the orphan Service' 'the Service survived the reaper'
 
 # The admission policy, against the real apiserver. The job above proves it admits what the driver
 # specs; these prove it refuses what the Role alone would allow. Server-side dry runs as the

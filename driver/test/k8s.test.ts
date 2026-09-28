@@ -5138,7 +5138,7 @@ describe('the service pod and DNS specs', () => {
     });
 
     it('names the DNS object for the attempt, never the declared name, headless, selecting only its fleet', () => {
-        const dns = serviceDnsSpec(job);
+        const dns = serviceDnsSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job);
         expect(dns.kind).toBe('Service');
         expect(dns.metadata.name).toBe(serviceSubdomain(job));
         expect(dns.metadata.name).toMatch(/^factory-svc-[0-9a-f]{16}$/);
@@ -5146,13 +5146,23 @@ describe('the service pod and DNS specs', () => {
         expect(dns.metadata.labels).toHaveProperty('factory.service');
         expect(dns.spec.clusterIP).toBe('None');
         expect(dns.spec.selector).toEqual({ 'factory.fleet': serviceSubdomain(job) });
+
+        // Issue #301: the orphan reaper's scan pairs factory.job + factory.service with the
+        // release label, so the Service must carry it exactly as the service pods do — without
+        // it, a chart-deployed reaper could never see the fleets it exists to reap.
+        const released = serviceDnsSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, K8S_RELEASE: 'factory' }),
+            job
+        );
+        expect(released.metadata.labels['app.kubernetes.io/instance']).toBe('factory');
     });
 
     it('gives two concurrent attempts disjoint DNS names, so both can declare the same service', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
         const other = { ...job, id: '22222222-2222-4222-8222-222222222222' };
-        expect(serviceDnsSpec(other).metadata.name).not.toBe(serviceDnsSpec(job).metadata.name);
+        expect(serviceDnsSpec(config, other).metadata.name).not.toBe(serviceDnsSpec(config, job).metadata.name);
         const retry = { ...job, leaseToken: '33333333-3333-4333-8333-333333333333' };
-        expect(serviceDnsSpec(retry).metadata.name).not.toBe(serviceDnsSpec(job).metadata.name);
+        expect(serviceDnsSpec(config, retry).metadata.name).not.toBe(serviceDnsSpec(config, job).metadata.name);
     });
 
     it('puts the attempt search domain on the runner and gate pods, and only when services are on', () => {

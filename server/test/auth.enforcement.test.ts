@@ -159,6 +159,9 @@ describe('the route table', () => {
         [`/api/jobs/${JOB_ID}/stop`, 'user'],
         [`/api/jobs/${JOB_ID}/remove`, 'user'],
         ['/api/jobs/claim', 'worker'],
+        // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, and
+        // read-only — a worker token answers facts, it never moves rows.
+        ['/api/jobs/leases', 'worker'],
         // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
         // reclaim, so both ends are as worker-only as claim and complete.
         ['/api/reclaims/claim', 'worker'],

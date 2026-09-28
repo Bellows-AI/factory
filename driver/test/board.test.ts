@@ -362,6 +362,74 @@ describe('asking for a publish-fresh credential', () => {
     });
 });
 
+describe('asking the board for the orphan reaper lease lookups', () => {
+    // Issue #301: one batched worker route, so a reaper sweep is one request per 100 job ids,
+    // not one per object. The driver's whole posture here is the rereadGates contract: null —
+    // a refused, lost, or failed answer — means "board cannot answer", and the reaper reaps
+    // NOTHING on it.
+    const ID_A = '11111111-1111-4111-8111-111111111111';
+    const ID_B = '44444444-4444-4444-8444-444444444444';
+
+    it('posts the ids to the leases route and carries the answered rows', async () => {
+        const jobs = [
+            { id: ID_A, status: 'dead', leaseToken: null },
+            { id: ID_B, status: 'running', leaseToken: '22222222-2222-4222-8222-222222222222' },
+        ];
+        const { calls, fetch } = recorder(() => Response.json({ jobs }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, token: 'fwt_abc', fetch });
+
+        expect(await board.leases([ID_A, ID_B])).toEqual(jobs);
+        expect(calls[0]!.url).toBe('http://board/api/jobs/leases');
+        expect(calls[0]!.body).toEqual({ ids: [ID_A, ID_B] });
+        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+    });
+
+    it('omits the bearer header against an open board, like every other call', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        await board.leases([ID_A]);
+
+        expect(calls[0]!.headers).not.toHaveProperty('authorization');
+    });
+
+    it('answers null — reap nothing — when the board refuses or fails', async () => {
+        const refused = recorder(() => Response.json({ error: 'boom' }, { status: 500 }));
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: refused.fetch }).leases([ID_A])
+        ).toBeNull();
+
+        const broken = recorder(() => {
+            throw new Error('board unreachable');
+        });
+        expect(
+            await createBoard({ url: 'http://board', leaseSeconds: 300, fetch: broken.fetch }).leases([ID_A])
+        ).toBeNull();
+    });
+
+    it('answers null when ANY row is unreadable — a partial answer is a reap verdict, never trusted', async () => {
+        const { fetch } = recorder(() =>
+            Response.json(
+                {
+                    jobs: [
+                        { id: ID_A, status: 'dead', leaseToken: null },
+                        { id: ID_B, status: 'ZOMBIE', leaseToken: null },
+                        { id: 'not-a-uuid', status: 'dead', leaseToken: null },
+                        { status: 'dead', leaseToken: null },
+                        'junk',
+                    ],
+                },
+                { status: 200 }
+            )
+        );
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        // The one readable row is NOT passed through: "absent means unknown" is a reap verdict,
+        // and a malformed row must not be silently converted into it.
+        expect(await board.leases([ID_A])).toBeNull();
+    });
+});
+
 describe('the heartbeat verdict', () => {
     const job = {
         id: 'job-1',

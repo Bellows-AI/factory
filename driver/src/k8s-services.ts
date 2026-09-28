@@ -110,7 +110,11 @@ export async function teardownServices(deps: K8sDeps, job: BoardJob): Promise<vo
 async function startFleet(deps: K8sDeps, job: BoardJob, specs: ServiceSpec[]): Promise<void> {
     let current = 'the service DNS name';
     try {
-        const dns = await deps.request('POST', servicesPath(deps.config.k8sNamespace), serviceDnsSpec(job));
+        const dns = await deps.request(
+            'POST',
+            servicesPath(deps.config.k8sNamespace),
+            serviceDnsSpec(deps.config, job)
+        );
         expectOk(dns, 'creating the service DNS name');
         for (const spec of specs) {
             current = `service "${spec.name}"`;

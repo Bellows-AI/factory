@@ -6,6 +6,7 @@ import {
     handleGates,
     handleGatesReread,
     handleHeartbeat,
+    handleLeases,
     handleOutput,
     handlePublishToken,
     handleSession,
@@ -50,6 +51,11 @@ export const jobRoutes =
         // says which container is holding a job when one has to be found and killed.
         app.post('/api/jobs/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleClaimJob(orgs, firstJobClaim, request, reply)
+        );
+        // The orphan reaper's batched lease lookup (issue #301). Static segment, registered
+        // beside /claim — it wins over /api/jobs/:id the same way the claim route already does.
+        app.post('/api/jobs/leases', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleLeases(orgs, request, reply)
         );
         app.post('/api/jobs/:id/heartbeat', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleHeartbeat(orgs, request, reply)

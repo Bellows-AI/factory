@@ -198,6 +198,29 @@ describe('the driver config: policy and gates', () => {
     });
 });
 
+describe('the driver config: the orphan reaper', () => {
+    // Issue #301: the periodic watcher that reaps service objects whose owning job can no longer
+    // use them. Default-on: every delete is board-gated and attempt-scoped, so an idle reaper is
+    // five minutes of nothing. 0 is the off switch — the GATE_COOLDOWN_MS convention, not a
+    // refusal.
+    it('sweeps every five minutes with a ten-minute grace, both overridable, interval zero off', () => {
+        expect(loadDriverConfig({}).reapIntervalMs).toBe(300_000);
+        expect(loadDriverConfig({}).reapGraceMs).toBe(600_000);
+        expect(loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: '2000' }).reapIntervalMs).toBe(2000);
+        expect(loadDriverConfig({ DRIVER_REAP_GRACE_MS: '1000' }).reapGraceMs).toBe(1000);
+        expect(loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: '0' }).reapIntervalMs).toBe(0);
+        expect(loadDriverConfig({ DRIVER_REAP_GRACE_MS: '0' }).reapGraceMs).toBe(0);
+    });
+
+    it('refuses a bad cadence or grace rather than falling back to the default', () => {
+        expect(() => loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: '-1' })).toThrow(/DRIVER_REAP_INTERVAL_MS/);
+        expect(() => loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: 'soon' })).toThrow(/DRIVER_REAP_INTERVAL_MS/);
+        expect(() => loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: '2.5' })).toThrow(/DRIVER_REAP_INTERVAL_MS/);
+        expect(() => loadDriverConfig({ DRIVER_REAP_GRACE_MS: '-1' })).toThrow(/DRIVER_REAP_GRACE_MS/);
+        expect(() => loadDriverConfig({ DRIVER_REAP_GRACE_MS: 'whenever' })).toThrow(/DRIVER_REAP_GRACE_MS/);
+    });
+});
+
 describe('the driver config: the service search domain', () => {
     const job = { id: '11111111-1111-4111-8111-111111111111', leaseToken: '22222222-2222-4222-8222-222222222222' };
     const k8s = (env: NodeJS.ProcessEnv) => loadDriverConfig({ EXECUTOR: 'kubernetes', ...env });
