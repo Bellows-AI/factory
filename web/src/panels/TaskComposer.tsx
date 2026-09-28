@@ -1,257 +1,44 @@
-import { useEffect, useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
+import type { DefaultWorkflowSteps } from '../api/useDefaultWorkflowSettings.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
+import type { ComposerDraftInput, ComposerDraftStore } from '../composer-draft.js';
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
+import { Icon } from '../components/Icon.js';
+import { UnsavedChangesDialog } from '../components/UnsavedChangesDialog.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
-    clampedWorkflow,
-    defaultWorkflowPayload,
-    effectiveDefaultSteps,
+    COMMAND_LIMIT_TEXT,
+    type StartBlocker,
+    blockerTone,
+    commandCount,
+    commandTooLong,
     effectiveWorkflows,
-    firstRepo,
-    freshWorkflowDraft,
     markTouched,
     paramValueMatches,
-    paramsComplete,
     preflightSentence,
-    queueBody,
-    resolveWorkflowChoice,
     startBlocker,
-    toggleDefaultStep,
     touchAll,
-    valuesForWorkflow,
-    type StartBlocker,
-    type WorkflowParamChoice,
 } from '../task-composer.js';
-import { defaultExecutorName } from '../workspace/executors.js';
-import type { DefaultWorkflowSteps } from '../api/useDefaultWorkflowSettings.js';
-import type { DefaultStepOverrides } from '../task-composer.js';
+import { type ComposerDraft, type ComposerWorkflowOption, useComposerDraft } from '../use-composer-draft.js';
 
 /**
- * The prompt's example placeholder. The issue number travels as string parts because
- * `123` directly behind a hash scans as a hex color literal, and the stylesheet's color gate
- * reads every `.tsx` in the tree — the rendered copy stays exact.
+ * The example request — the prompt's placeholder, and what Try an example types in. The issue
+ * number travels as string parts because `123` directly behind a hash scans as a hex color
+ * literal, and the stylesheet's color gate reads every `.tsx` in the tree — the rendered copy
+ * stays exact.
  */
-const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected tests, and run the relevant checks.';
+const EXAMPLE_PROMPT = 'Fix issue #' + '123, update the affected tests, and run the relevant checks.';
+const PROMPT_PLACEHOLDER = `Example: ${EXAMPLE_PROMPT}`;
 
-/** One workflow choice as the composer's props hand it in — the same shape `TaskComposer`'s
- * `workflows` prop carries, named so `useComposerDraft` can declare it without repeating it. */
-interface ComposerWorkflowOption {
-    id: string;
-    name: string;
-    scope: 'org' | 'user' | 'repo';
-    params?: WorkflowParamChoice[];
-}
+/** The ids Start's `aria-describedby` points at: the readiness banner, or the quiet status text. */
+const READINESS_ID = 'composer-readiness';
+const BLOCKER_ID = 'composer-blocker';
+const PROMPT_ID = 'composer-prompt';
 
-/**
- * Everything the composer's draft owns: the state, the effects that keep it consistent with the
- * workspace and workflow lists as they arrive, and the values Start needs — pulled out of
- * `TaskComposer` so the component itself stays a render layer over this.
- */
-interface ComposerDraft {
-    draft: string;
-    setDraft: (value: string) => void;
-    executor: string;
-    setExecutor: (value: string) => void;
-    repo: string;
-    setRepo: (value: string) => void;
-    setRepoTouched: (value: boolean) => void;
-    workflow: string;
-    setWorkflow: (value: string) => void;
-    setStoredParams: (value: { workflowId: string | null; values: Record<string, string> }) => void;
-    paramTouched: Record<string, boolean>;
-    setParamTouched: (value: Record<string, boolean>) => void;
-    declaredParams: WorkflowParamChoice[];
-    chosenWorkflowId: string | null;
-    paramValues: Record<string, string>;
-    paramsReady: boolean;
-    /** The default workflow's effective step set for THIS task — null until the saved settings
-     * have answered. Only meaningful beside the unchosen ('') workflow value. */
-    effectiveDefaultSteps: DefaultWorkflowSteps | null;
-    /** One checkbox click: flips its effective value into an explicit override for this task. */
-    onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) => void;
-    send: () => Promise<void>;
-}
-
-function useComposerDraft(input: {
-    repos: readonly { owner: string; name: string }[] | null;
-    executors: readonly { name: string; type: string; isDefault?: boolean }[];
-    workflows: readonly ComposerWorkflowOption[] | null;
-    /**
-     * The member's saved default-workflow step settings (issues 203/208), or null while they have
-     * not answered yet — the two optional-step checkboxes stay hidden for exactly that duration,
-     * the same "not known yet" posture the workspace poll gets.
-     */
-    defaultWorkflowSettings: DefaultWorkflowSteps | null;
-    onRepoChange: ((repo: string | null) => void) | undefined;
-    sending: boolean;
-    onSend: (queued: QueueTaskInput) => Promise<string | null>;
-}): ComposerDraft {
-    const { repos, executors, workflows, defaultWorkflowSettings, onRepoChange, sending, onSend } = input;
-    const [draft, setDraft] = useState('');
-    const [executor, setExecutor] = useState(() => defaultExecutorName(executors));
-    const [repo, setRepo] = useState(() => firstRepo(repos));
-    const [repoTouched, setRepoTouched] = useState(false);
-    // The workflow starts UNCHOSEN — '', meaning no process: the raw prompt runs. And, unlike
-    // repo and executor, nothing autoselects one: a process is the member's call, not the first
-    // row's. A repository change returns the whole draft to exactly this shape (the repo effect
-    // below).
-    const [workflow, setWorkflow] = useState(freshWorkflowDraft().workflow);
-    // The declared params of the chosen workflow, filled in the explicit inputs below. Stored
-    // against the identity of the workflow they were typed for — values typed for one process
-    // must never stamp another.
-    const [storedParams, setStoredParams] = useState(freshWorkflowDraft().storedParams);
-    // Which parameter fields the member has left (or an invalid keyboard submission has marked).
-    // An untouched empty field is a hint — "Required" — not a painted failure.
-    const [paramTouched, setParamTouched] = useState(freshWorkflowDraft().paramTouched);
-    // The member's explicit inversions of the saved default-workflow steps for THIS task — empty
-    // until a checkbox is touched, so an untouched field keeps tracking a settings poll refresh
-    // live while a touched one is locked to the member's choice.
-    const [defaultStepOverrides, setDefaultStepOverrides] = useState<DefaultStepOverrides>(
-        freshWorkflowDraft().defaultStepOverrides
-    );
-
-    // The workflow whose inputs the composer shows: exactly the member's explicit choice, at the
-    // scope the board would resolve. Nothing autoselects one — an unnamed task runs the raw
-    // prompt, so a process is the member's call, never a silent resolution.
-    const chosenWorkflow = workflows ? resolveWorkflowChoice(workflows, workflow) : null;
-    const declaredParams = chosenWorkflow?.params ?? [];
-    const chosenWorkflowId = chosenWorkflow?.id ?? null;
-    const paramValues = valuesForWorkflow(storedParams, chosenWorkflowId);
-    const paramsReady = paramsComplete(declaredParams, paramValues);
-    const effectiveSteps = effectiveDefaultSteps(defaultWorkflowSettings, defaultStepOverrides);
-
-    // The FIRST selected repository is the default — the executor precedent: a member who picked
-    // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
-    // wins the moment they pick it — `repoTouched` is what stops this autoselect from stomping
-    // their choice back on the next workspace poll. The initializer above covers the mount that
-    // already knows the list (and the offline suite, which runs no effects); this covers the poll
-    // that fills the list in afterwards.
-    useEffect(() => {
-        if (!repoTouched && repo === '' && repos !== null && repos.length > 0) {
-            setRepo(firstRepo(repos));
-        }
-    }, [repos, repo, repoTouched]);
-
-    // The persisted default executor (issue 215), or the FIRST configured one when none is
-    // flagged, is selected when the async workspace poll lands. There is no deployment fallback:
-    // the selected profile type is the task's runner choice.
-    useEffect(() => {
-        if (executor === '' && executors.length > 0) {
-            setExecutor(defaultExecutorName(executors));
-        }
-    }, [executors, executor]);
-
-    // A configured executor can be deleted on the Workspace page while a draft sits here; the
-    // select would go blank while `send` still submitted the stale name. Clamp to what exists —
-    // back to the default (or first) executor, or an explicit blocked state when the list is
-    // empty.
-    useEffect(() => {
-        if (executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
-            setExecutor(defaultExecutorName(executors));
-        }
-    }, [executors, executor]);
-
-    // Same for the repository: a deselection must not survive invisibly in the draft and stamp a
-    // task with a repository the member no longer works in. Clamp to what exists — the first
-    // repository, or none when the list is empty.
-    useEffect(() => {
-        if (repos !== null && repo !== '' && !repos.some(({ owner, name }) => `${owner}/${name}` === repo)) {
-            setRepo(firstRepo(repos));
-        }
-    }, [repos, repo]);
-
-    // A repository change re-fetches the workflow list, and the hook answers null for the whole
-    // duration of the new request — the page hands that null straight through, so the previous
-    // context's list cannot sit interactive under it and offer its workflows back. The draft
-    // resets the moment the repository state changes — the member's select, the autoselect, the
-    // clamp: every path a change arrives by is this one state — and the member picks again from
-    // the list that answers. After the context changed, a process is the member's explicit call
-    // again. The reset targets are the mount values, so the effect's mount-time run is a no-op.
-    useEffect(() => {
-        const reset = freshWorkflowDraft();
-        setWorkflow(reset.workflow);
-        setStoredParams(reset.storedParams);
-        setParamTouched(reset.paramTouched);
-        setDefaultStepOverrides(reset.defaultStepOverrides);
-    }, [repo]);
-
-    // And the workflow: a repository switch refetches the list for the new context, and a chosen
-    // name the answered list does not offer must go the way of a deleted executor — clamped to
-    // what exists. Unchosen is the only reset target: nothing autoselects a process, so the
-    // member's words run verbatim until one is picked again. Its touched marks go with it.
-    useEffect(() => {
-        const clamped = clampedWorkflow(workflow, workflows);
-        if (clamped !== workflow) {
-            setWorkflow(clamped);
-            setParamTouched({});
-        }
-    }, [workflows, workflow]);
-
-    // The workflow list's repo context must track the composer's repo WHEREVER the composer sets
-    // it — the mount initializer, the autoselect above, the clamp above, or the member's own
-    // hand — or the page fetches the list for a different context than the launched task resolves
-    // against, and repo-scoped workflows (and their parameters) go invisible exactly when they
-    // would apply. `reportedRepo` starts at null, the "nothing reported yet" sentinel: the
-    // mount-time repo — already set by the initializer when the workspace poll answered before
-    // mount — is reported exactly once by this effect, and every later change by the guard after
-    // it. This effect is the ONE reporting path; the select's onChange only updates local state.
-    const [reportedRepo, setReportedRepo] = useState<string | null>(null);
-    useEffect(() => {
-        const value = repo === '' ? null : repo;
-        if (value !== reportedRepo) {
-            setReportedRepo(value);
-            onRepoChange?.(value);
-        }
-    }, [repo, reportedRepo, onRepoChange]);
-
-    // The mirror of the board's check: a missing or malformed parameter must never reach the
-    // wire — the composer says nothing and the launch stays dark.
-    const send = async () => {
-        if (!draft.trim() || sending || !paramsReady || executor === '') return;
-        const chosenRepo = repo === '' ? null : repo;
-        const chosenWorkflowName = workflow === '' ? null : workflow;
-        // Values travel trimmed, and only beside an explicit choice — a task with no workflow
-        // carries no parameters at all.
-        const values: Record<string, string> = {};
-        for (const param of declaredParams) values[param.name] = (paramValues[param.name] ?? '').trim();
-        const chosenParams =
-            declaredParams.length > 0
-                ? Object.fromEntries(declaredParams.map((param) => [param.name, values[param.name] ?? '']))
-                : null;
-        const chosenDefaultWorkflow = defaultWorkflowPayload(workflow, effectiveSteps);
-        const queued = queueBody(
-            { command: draft, repo: chosenRepo, executor, workflow: chosenWorkflowName, workflowParams: chosenParams },
-            chosenDefaultWorkflow
-        );
-        if ((await onSend(queued)) === null) setDraft('');
-    };
-
-    return {
-        draft,
-        setDraft,
-        executor,
-        setExecutor,
-        repo,
-        setRepo,
-        setRepoTouched,
-        workflow,
-        setWorkflow,
-        setStoredParams,
-        paramTouched,
-        setParamTouched,
-        declaredParams,
-        chosenWorkflowId,
-        paramValues,
-        paramsReady,
-        effectiveDefaultSteps: effectiveSteps,
-        onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) =>
-            setDefaultStepOverrides(toggleDefaultStep(defaultStepOverrides, key, defaultWorkflowSettings)),
-        send,
-    };
-}
+type Update = (patch: Partial<ComposerDraftInput>) => void;
 
 /** How many of the two default-workflow steps are effectively on — the closed disclosure's
  * one-line summary, so the enabled count reads without opening it. */
@@ -260,147 +47,202 @@ function enabledStepCount(steps: DefaultWorkflowSteps): number {
 }
 
 /**
- * The compact context row (issue 228): Repository, Executor and Workflow as small, content-sized
- * controls under the prompt, plus the two contextual notes that only apply beside an empty
- * executor or repository list. Split out of `TaskComposer` so the parent's own body stays a
- * simple top-to-bottom outline — this owns every prop the row's own Listboxes need.
+ * One numbered section of the composer (plan §2.3): the accent step disc — decoration, hidden
+ * from assistive tech, since the heading carries the words — the heading with its helper, an
+ * optional action at the head's far end, and the section's own controls below.
+ */
+function ComposerSection({
+    step,
+    title,
+    helper,
+    action,
+    children,
+}: {
+    step: number;
+    title: ReactNode;
+    helper?: ReactNode;
+    action?: ReactNode;
+    children: ReactNode;
+}) {
+    return (
+        <section className="panel composer-section">
+            <div className="composer-section-head">
+                <span className="composer-step" aria-hidden="true">
+                    {step}
+                </span>
+                <div className="composer-section-title">
+                    <h2>{title}</h2>
+                    {helper}
+                </div>
+                {action}
+            </div>
+            {children}
+        </section>
+    );
+}
+
+/**
+ * Section 1, the request: the dominant textarea, the example offer — only on an empty draft, so
+ * it never types over the member's words — and the count against the board's command limit.
+ */
+function RequestSection({ draft, update }: { draft: string; update: Update }) {
+    const tooLong = commandTooLong(draft);
+    return (
+        <ComposerSection
+            step={1}
+            title={<label htmlFor={PROMPT_ID}>What should the agent do?</label>}
+            helper={
+                <p className="composer-helper" id="composer-prompt-helper">
+                    Include the outcome, relevant files or issue, and checks to run.
+                </p>
+            }
+            action={
+                <button
+                    type="button"
+                    className="composer-example"
+                    disabled={draft !== ''}
+                    onClick={() => update({ draft: EXAMPLE_PROMPT })}
+                >
+                    <Icon name="sparkles" />
+                    Try an example
+                </button>
+            }
+        >
+            <textarea
+                id={PROMPT_ID}
+                className="field composer-input"
+                aria-describedby="composer-prompt-helper composer-prompt-count"
+                aria-invalid={tooLong || undefined}
+                placeholder={PROMPT_PLACEHOLDER}
+                value={draft}
+                onChange={(e) => update({ draft: e.target.value })}
+            />
+            <p className={tooLong ? 'composer-counter is-over' : 'composer-counter'} id="composer-prompt-count">
+                {commandCount(draft)}
+            </p>
+        </ComposerSection>
+    );
+}
+
+/**
+ * Section 2, the execution context: Repository, Executor and Workflow, three columns on a wide
+ * screen and stacked below it. Each column is a visible label over its selector, and the
+ * repository column carries the one remediation that is a pointer rather than a blocker — an
+ * absent repository is a valid way to run. A missing executor is a blocker, said by the readiness
+ * banner; its trigger only wears the stop lamp's edge.
  */
 function ComposerContextRow({
     repos,
-    repo,
-    setRepo,
-    setRepoTouched,
     executors,
-    executor,
-    setExecutor,
     workflows,
-    workflow,
-    setWorkflow,
-    setParamTouched,
+    state,
+    update,
 }: {
     repos: readonly { owner: string; name: string }[];
-    repo: string;
-    setRepo: (value: string) => void;
-    setRepoTouched: (value: boolean) => void;
     executors: readonly { name: string; type: string; isDefault?: boolean }[];
-    executor: string;
-    setExecutor: (value: string) => void;
     workflows: readonly ComposerWorkflowOption[] | null;
-    workflow: string;
-    setWorkflow: (value: string) => void;
-    setParamTouched: (value: Record<string, boolean>) => void;
+    state: ComposerDraftInput;
+    update: Update;
 }) {
     // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
     // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
     const repoAnchor = useDownwardAnchor('start');
     const executorAnchor = useDownwardAnchor('start');
+    const { repo, executor } = state;
     return (
-        <>
-            <div className="composer-context">
-                <div className="composer-context-item">
-                    <span className="composer-label">Repository</span>
-                    <Listbox
-                        value={repo}
-                        onChange={(next) => {
-                            setRepoTouched(true);
-                            setRepo(next);
-                            // Reporting upward is the reporting effect's job — one path.
-                        }}
+        <div className="composer-context">
+            <div className="composer-context-item">
+                <span className="composer-label">
+                    <Icon name="repo" />
+                    Repository
+                </span>
+                {/* Reporting upward is the reporting effect's job — one path. */}
+                <Listbox value={repo} onChange={(next) => update({ repo: next, repoTouched: true })}>
+                    <ListboxButton
+                        ref={repoAnchor.setReference}
+                        className="select-trigger"
+                        aria-label="Repository"
+                        title={repo === '' ? 'No repository' : repo}
                     >
-                        <ListboxButton
-                            ref={repoAnchor.setReference}
-                            className="select-trigger"
-                            aria-label="Repository"
-                            title={repo === '' ? 'No repository' : repo}
-                        >
-                            <span className="composer-context-value">{repo === '' ? 'No repository' : repo}</span>
-                        </ListboxButton>
-                        <ListboxOptions
-                            ref={repoAnchor.setFloating}
-                            style={repoAnchor.floatingStyles}
-                            portal
-                            className="popover"
-                        >
-                            <ListboxOption value="" className="popover-option">
-                                No repository
-                            </ListboxOption>
-                            {repos.map(({ owner, name }) => {
-                                const full = `${owner}/${name}`;
-                                return (
-                                    <ListboxOption key={full} value={full} className="popover-option">
-                                        {full}
-                                    </ListboxOption>
-                                );
-                            })}
-                        </ListboxOptions>
-                    </Listbox>
-                </div>
-                <div className="composer-context-item">
-                    <span className="composer-label">Executor</span>
-                    <Listbox value={executor} disabled={executors.length === 0} onChange={setExecutor}>
-                        <ListboxButton
-                            ref={executorAnchor.setReference}
-                            className="select-trigger"
-                            aria-label="Executor"
-                            title={executor === '' ? 'No executor configured' : executor}
-                        >
-                            <span className="composer-context-value">
-                                {executor === '' ? 'No executor configured' : executor}
-                            </span>
-                        </ListboxButton>
-                        <ListboxOptions
-                            ref={executorAnchor.setFloating}
-                            style={executorAnchor.floatingStyles}
-                            portal
-                            className="popover"
-                        >
-                            {executors.map((candidate) => (
-                                <ListboxOption key={candidate.name} value={candidate.name} className="popover-option">
-                                    {candidate.name}
+                        <span className="composer-context-value">{repo === '' ? 'No repository' : repo}</span>
+                    </ListboxButton>
+                    <ListboxOptions
+                        ref={repoAnchor.setFloating}
+                        style={repoAnchor.floatingStyles}
+                        portal
+                        className="popover"
+                    >
+                        <ListboxOption value="" className="popover-option">
+                            No repository
+                        </ListboxOption>
+                        {repos.map(({ owner, name }) => {
+                            const full = `${owner}/${name}`;
+                            return (
+                                <ListboxOption key={full} value={full} className="popover-option">
+                                    {full}
                                 </ListboxOption>
-                            ))}
-                        </ListboxOptions>
-                    </Listbox>
-                </div>
-                <ComposerWorkflowTrigger
-                    workflows={workflows}
-                    workflow={workflow}
-                    setWorkflow={setWorkflow}
-                    setParamTouched={setParamTouched}
-                />
+                            );
+                        })}
+                    </ListboxOptions>
+                </Listbox>
+                {repos.length === 0 ? (
+                    <p className="composer-helper">
+                        Select repositories in <Link to={withDraftReturn('/settings/repos')}>Settings</Link> to run
+                        against a codebase
+                    </p>
+                ) : null}
             </div>
-            {executors.length === 0 ? (
-                <p className="muted">
-                    Add an executor in <Link to={withDraftReturn('/settings/executors')}>Settings</Link> before starting
-                    a task.
-                </p>
-            ) : null}
-            {repos.length === 0 ? (
-                <p className="muted">
-                    Select repositories in <Link to={withDraftReturn('/settings/repos')}>Settings</Link> to run against
-                    a codebase
-                </p>
-            ) : null}
-        </>
+            <div className="composer-context-item">
+                <span className="composer-label">
+                    <Icon name="terminal" />
+                    Executor
+                </span>
+                <Listbox
+                    value={executor}
+                    disabled={executors.length === 0}
+                    onChange={(next) => update({ executor: next })}
+                >
+                    <ListboxButton
+                        ref={executorAnchor.setReference}
+                        className={executor === '' ? 'select-trigger composer-trigger-missing' : 'select-trigger'}
+                        aria-label="Executor"
+                        title={executor === '' ? 'No executor configured' : executor}
+                    >
+                        <span className="composer-context-value">
+                            {executor === '' ? 'No executor configured' : executor}
+                        </span>
+                    </ListboxButton>
+                    <ListboxOptions
+                        ref={executorAnchor.setFloating}
+                        style={executorAnchor.floatingStyles}
+                        portal
+                        className="popover"
+                    >
+                        {executors.map((candidate) => (
+                            <ListboxOption key={candidate.name} value={candidate.name} className="popover-option">
+                                {candidate.name}
+                            </ListboxOption>
+                        ))}
+                    </ListboxOptions>
+                </Listbox>
+            </div>
+            <ComposerWorkflowTrigger workflows={workflows} workflow={state.workflow} update={update} />
+        </div>
     );
 }
 
 /**
- * The workflow context item: the compact Reusable workflow trigger that sits in the context row
- * beside Repository and Executor. Split out so `TaskComposer` can place it inside
- * `.composer-context` without also pulling in the steps disclosure and the parameter fields,
- * which render below the row instead.
+ * The workflow column of the execution context: the Reusable workflow trigger beside Repository
+ * and Executor. Split out so its null bail (no workflow list yet) stays after its own hook.
  */
 function ComposerWorkflowTrigger({
     workflows,
     workflow,
-    setWorkflow,
-    setParamTouched,
+    update,
 }: {
     workflows: readonly ComposerWorkflowOption[] | null;
     workflow: string;
-    setWorkflow: (value: string) => void;
-    setParamTouched: (value: Record<string, boolean>) => void;
+    update: Update;
 }) {
     // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
     // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`. Called
@@ -411,19 +253,14 @@ function ComposerWorkflowTrigger({
     const label = workflow === '' ? 'Default workflow' : workflow;
     return (
         <div className="composer-context-item">
-            <span className="composer-label">Workflow</span>
-            <Listbox
-                value={workflow}
-                onChange={(next) => {
-                    setWorkflow(next);
-                    // The values reset through the identity-keyed read, and this choice's
-                    // touched marks reset with it: fields the member never reached in the
-                    // new process must not arrive pre-failed.
-                    setParamTouched({});
-                    // A repo switch goes further and resets the whole draft — the repo
-                    // effect above.
-                }}
-            >
+            <span className="composer-label">
+                <Icon name="git-branch" />
+                Workflow
+            </span>
+            {/* The values reset through the identity-keyed read, and this choice's touched marks
+                reset with it: fields the member never reached in the new process must not arrive
+                pre-failed. A repo switch goes further and resets the whole workflow draft. */}
+            <Listbox value={workflow} onChange={(next) => update({ workflow: next, paramTouched: {} })}>
                 <ListboxButton
                     ref={setReference}
                     className="select-trigger"
@@ -448,44 +285,48 @@ function ComposerWorkflowTrigger({
 }
 
 /**
- * What renders below the context row for the chosen workflow: the two default-workflow steps
- * tucked behind a closed-by-default disclosure (issue 228 — a compact options menu rather than
- * two persistent rows) beside the unchosen '' value, or a named workflow's declared launch
- * parameters. Split out of `TaskComposer` so its independent visibility checks (no workflow list
- * at all; a chosen workflow with no declared params) do not add to the parent's own.
+ * Section 3, the workflow details: a named workflow's declared launch parameters; or, beside
+ * Default workflow, the mandatory spine in words and the two optional steps behind their
+ * closed-by-default disclosure (issue 228) once the saved settings have answered.
  */
 function ComposerWorkflowDetails({
     workflows,
-    workflow,
-    declaredParams,
-    paramValues,
-    paramTouched,
-    chosenWorkflowId,
-    setStoredParams,
-    setParamTouched,
-    effectiveDefaultSteps: effectiveSteps,
-    onToggleDefaultStep,
+    composer,
 }: {
     workflows: readonly ComposerWorkflowOption[] | null;
-    workflow: string;
-    declaredParams: WorkflowParamChoice[];
-    paramValues: Record<string, string>;
-    paramTouched: Record<string, boolean>;
-    chosenWorkflowId: string | null;
-    setStoredParams: (value: { workflowId: string | null; values: Record<string, string> }) => void;
-    setParamTouched: (value: Record<string, boolean>) => void;
-    effectiveDefaultSteps: DefaultWorkflowSteps | null;
-    onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) => void;
+    composer: ComposerDraft;
 }) {
+    const { state, update, declaredParams, paramValues, chosenWorkflowId, onToggleDefaultStep } = composer;
+    const steps = composer.effectiveDefaultSteps;
+    if (declaredParams.length > 0) {
+        return (
+            <WorkflowParameterFields
+                params={declaredParams}
+                values={paramValues}
+                touched={state.paramTouched}
+                onInput={(name, value) =>
+                    update({
+                        storedParams: { workflowId: chosenWorkflowId, values: { ...paramValues, [name]: value } },
+                    })
+                }
+                onBlur={(name) => update({ paramTouched: markTouched(state.paramTouched, name) })}
+            />
+        );
+    }
+    if (composer.workflowPending) return <p className="composer-helper">Loading the {state.workflow} workflow…</p>;
+    if (state.workflow !== '') {
+        return <p className="composer-helper">The {state.workflow} workflow needs no launch details.</p>;
+    }
     return (
         <>
-            {workflows !== null && workflow === '' && effectiveSteps !== null ? (
+            <p className="composer-helper">Every task runs: prompt → gates → publish.</p>
+            {workflows !== null && steps !== null ? (
                 <details className="composer-steps">
-                    <summary>Optional steps ({enabledStepCount(effectiveSteps)} of 2 on)</summary>
+                    <summary>Optional steps ({enabledStepCount(steps)} of 2 on)</summary>
                     <label className="settings-toggle">
                         <input
                             type="checkbox"
-                            checked={effectiveSteps.reviewReconciliation}
+                            checked={steps.reviewReconciliation}
                             onChange={() => onToggleDefaultStep('reviewReconciliation')}
                         />
                         Iterate on PR review comments
@@ -493,69 +334,216 @@ function ComposerWorkflowDetails({
                     <label className="settings-toggle">
                         <input
                             type="checkbox"
-                            checked={effectiveSteps.mergeConflictAutofix}
+                            checked={steps.mergeConflictAutofix}
                             onChange={() => onToggleDefaultStep('mergeConflictAutofix')}
                         />
                         Repair merge conflicts
                     </label>
                 </details>
             ) : null}
-
-            {declaredParams.length > 0 ? (
-                <div className="composer-field">
-                    <span className="composer-label">Workflow details</span>
-                    <WorkflowParameterFields
-                        params={declaredParams}
-                        values={paramValues}
-                        touched={paramTouched}
-                        onInput={(name, value) =>
-                            setStoredParams({
-                                workflowId: chosenWorkflowId,
-                                values: { ...paramValues, [name]: value },
-                            })
-                        }
-                        onBlur={(name) => setParamTouched(markTouched(paramTouched, name))}
-                    />
-                </div>
-            ) : null}
         </>
     );
 }
 
-/** The Start button's status line, the precedence `startBlocker` already picked — this only
- * spells each reason out in words. */
-function describeBlocker(blocker: StartBlocker | null): string | null {
+/** The quiet status line beside Start — only for the blockers that never raise a banner. */
+function describeQuietBlocker(blocker: StartBlocker | null): string | null {
     switch (blocker) {
         case 'in-flight':
             return 'Starting the task…';
-        case 'missing-executor':
-            return 'Configure an executor in Settings to continue.';
         case 'empty-prompt':
             return 'Describe the task to continue.';
-        case 'defaults-unresolved':
-            return 'Loading your saved workflow defaults…';
+        default:
+            return null;
+    }
+}
+
+/** A `banner-bad` readiness blocker: the lamp's glyph, what is wrong, and what to do. */
+function BadBanner({ title, children }: { title: string; children: ReactNode }) {
+    return (
+        <div className="banner-bad" id={READINESS_ID}>
+            <Icon name="alert-circle" size={24} />
+            <div>
+                <p className="banner-title">{title}</p>
+                <p>{children}</p>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * The readiness banner for the blockers worth one (`blockerTone`): `banner-bad` for what the member
+ * must go and fix — with the way to fix it where one exists — and `banner-info` while a list or
+ * the saved preferences load. One at a time, the one `startBlocker` picked.
+ */
+function ReadinessBanner({ blocker, workflow }: { blocker: StartBlocker | null; workflow: string }) {
+    switch (blocker) {
+        case 'missing-executor':
+            return (
+                <BadBanner title="No executor configured">
+                    Add one to run tasks.{' '}
+                    <Link to={withDraftReturn('/settings/executors')}>Add an executor in Settings</Link>
+                </BadBanner>
+            );
+        case 'workflow-loading':
+            return (
+                <div className="banner-info" id={READINESS_ID}>
+                    <Icon name="info" size={24} />
+                    <p>Loading the {workflow} workflow…</p>
+                </div>
+            );
+        case 'too-long':
+            return (
+                <BadBanner title="Request too long">
+                    Shorten the request to {COMMAND_LIMIT_TEXT} characters or fewer to continue.
+                </BadBanner>
+            );
         case 'invalid-params':
-            return 'Complete the required workflow details to continue.';
+            return (
+                <BadBanner title="Workflow details incomplete">
+                    Complete the required workflow details to continue.
+                </BadBanner>
+            );
+        case 'defaults-unresolved':
+            return (
+                <div className="banner-info" id={READINESS_ID}>
+                    <Icon name="info" size={24} />
+                    <p>Loading your saved workflow defaults…</p>
+                </div>
+            );
         default:
             return null;
     }
 }
 
 /**
+ * Section 4, readiness: what will run, what still blocks it — a banner for what the member must
+ * fix, quiet status text for an empty prompt or a launch in flight — and the actions. Start's
+ * `aria-describedby` names whichever of the two is saying why it is dark.
+ */
+function ReadinessSection({
+    preflight,
+    workflow,
+    blocker,
+    sending,
+    fresh,
+    onDiscard,
+    onStart,
+}: {
+    preflight: string;
+    /** The chosen workflow's name, for the banner that waits on its list. */
+    workflow: string;
+    blocker: StartBlocker | null;
+    sending: boolean;
+    fresh: boolean;
+    onDiscard: () => void;
+    onStart: () => void;
+}) {
+    const tone = blockerTone(blocker);
+    const describedBy = tone === 'quiet' ? BLOCKER_ID : tone === null ? undefined : READINESS_ID;
+    return (
+        <ComposerSection step={4} title="Readiness">
+            <p className="composer-preflight" aria-live="polite">
+                {preflight}
+            </p>
+            <ReadinessBanner blocker={blocker} workflow={workflow} />
+            <div className="composer-start">
+                {fresh ? null : (
+                    <button type="button" onClick={onDiscard}>
+                        Discard draft
+                    </button>
+                )}
+                <button
+                    type="button"
+                    className="primary"
+                    disabled={blocker !== null}
+                    aria-busy={sending || undefined}
+                    aria-describedby={describedBy}
+                    onClick={onStart}
+                >
+                    {sending ? 'Starting…' : 'Start task'}
+                </button>
+                <kbd>Ctrl/⌘ + Enter</kbd>
+                {/* Mounted even when silent — a live region can only announce a change it
+                    survives — so the reason Start is dark reaches a screen reader the moment
+                    it appears. */}
+                <span className="composer-blocker" id={BLOCKER_ID} role="status">
+                    {describeQuietBlocker(blocker)}
+                </span>
+            </div>
+        </ComposerSection>
+    );
+}
+
+/**
+ * What a restored draft lost while the member was away (F1): a dismissible `banner-info`, one
+ * line per choice that no longer exists. The request text is never among them.
+ */
+function RestoredNotices({ notices, onDismiss }: { notices: readonly string[]; onDismiss: () => void }) {
+    if (notices.length === 0) return null;
+    return (
+        <div className="banner-info composer-notices">
+            <Icon name="info" size={24} />
+            <div className="composer-notices-body">
+                <p className="banner-title">Your draft is back</p>
+                {notices.map((notice) => (
+                    <p key={notice}>{notice}</p>
+                ))}
+            </div>
+            <button type="button" className="composer-notices-dismiss" aria-label="Dismiss" onClick={onDismiss}>
+                <Icon name="x" />
+            </button>
+        </div>
+    );
+}
+
+/** The workspace poll has not answered: say why, or that it is still coming. */
+function WorkspacePending({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+    return (
+        <section className="panel">
+            {error !== null ? (
+                <p className="muted">
+                    {error}{' '}
+                    <button type="button" className="chat-resume" onClick={onRetry}>
+                        Retry
+                    </button>
+                </p>
+            ) : (
+                <p className="muted">Loading your workspace…</p>
+            )}
+        </section>
+    );
+}
+
+/**
+ * The composer's stand-in while the session is still being checked: the held draft belongs to a
+ * session, so nothing is restored — and nothing is typed over — before the session is known.
+ * Static blocks, no shimmer.
+ */
+export function TaskComposerSkeleton() {
+    return (
+        <section className="panel composer-skeleton" aria-busy="true">
+            <p className="muted">Loading your draft…</p>
+            <div className="composer-skeleton-block" />
+            <div className="composer-skeleton-line" />
+        </section>
+    );
+}
+
+/**
  * The guided new-task composer, the default right pane of the tasks area.
  *
  * Props in, markup out — every fetch lives in the hooks the pages own (`useWorkspace`, `useJobs`,
- * `useWorkflows`), so this panel is testable in the offline suite: `renderToStaticMarkup` runs no
- * effects, the page hands it finished props and the suite asserts markup.
+ * `useWorkflows`), and the held draft arrives as the store the page reads, so this panel is
+ * testable in the offline suite: `renderToStaticMarkup` runs no effects, the page hands it
+ * finished props and the suite asserts markup.
  *
- * The prompt is the dominant element (issue 228): it sits first and largest, immediately followed
- * by Repository, Executor and Workflow as one compact, content-sized row rather than a tall
- * stacked form — each control shows its own selected value, so the page needs no separate
- * "Execution context" heading to explain them. The repository, executor and workflow are task
+ * Four numbered sections, in the order a member decides (plan §2.3): the request, the execution
+ * context (repository, executor, workflow), the chosen workflow's details, and readiness — what
+ * will run, what still blocks it, and Start. The repository, executor and workflow are task
  * parameters. Repository and workflow may deliberately be absent; executor may not, because its
- * profile type chooses the runner. What is still blocking the launch and what will actually run
- * come last, right above Start. The pure layer beneath — the verdicts, preflight sentence and
- * blocker matrix — lives in `task-composer.ts`.
+ * profile type chooses the runner. The draft's state and effects live in `use-composer-draft.ts`;
+ * the pure layer beneath — the verdicts, preflight sentence, blocker matrix and draft shapes — in
+ * `task-composer.ts`.
  */
 export function TaskComposer({
     repos,
@@ -568,6 +556,7 @@ export function TaskComposer({
     sending,
     onSend,
     onRepoChange,
+    draftStore,
 }: {
     /**
      * The member's selected repositories, one option each. Null while the workspace poll has not
@@ -581,20 +570,13 @@ export function TaskComposer({
     executors: readonly { name: string; type: string; isDefault?: boolean }[];
     /**
      * The workflow choices for the selected repository's context, or null when the list has not
-     * answered (or this board serves no workflows at all). Null HIDES the section: a board
-     * without the feature renders exactly the composer that came before it. Each choice carries
-     * its declared launch parameters — choosing one renders an explicit, labelled input per
-     * param, and Start stays disabled until every one validates. Unchosen, the task runs the
-     * member's words verbatim — no workflow, no parameters.
+     * answered (or this board serves no workflows at all). Null HIDES the selector: a board
+     * without the feature offers no process to pick. Each choice carries its declared launch
+     * parameters — choosing one renders an explicit, labelled input per param, and Start stays
+     * disabled until every one validates. Unchosen, the task runs the member's words verbatim —
+     * no workflow, no parameters.
      */
-    workflows:
-        | readonly {
-              id: string;
-              name: string;
-              scope: 'org' | 'user' | 'repo';
-              params?: import('../task-composer.js').WorkflowParamChoice[];
-          }[]
-        | null;
+    workflows: readonly ComposerWorkflowOption[] | null;
     /**
      * The member's saved default-workflow step settings (issues 203/208), or null while they have
      * not answered yet — the two optional-step checkboxes stay hidden for exactly that duration,
@@ -612,154 +594,119 @@ export function TaskComposer({
      * repository's context. Optional — the panel is testable without it.
      */
     onRepoChange?: (repo: string | null) => void;
+    /** The shell's held draft (F1): read once at mount, written on every change, cleared on launch. */
+    draftStore: ComposerDraftStore;
 }) {
-    const {
-        draft,
-        setDraft,
-        executor,
-        setExecutor,
-        repo,
-        setRepo,
-        setRepoTouched,
-        workflow,
-        setWorkflow,
-        setStoredParams,
-        paramTouched,
-        setParamTouched,
-        declaredParams,
-        chosenWorkflowId,
-        paramValues,
-        paramsReady,
-        effectiveDefaultSteps: effectiveSteps,
-        onToggleDefaultStep,
-        send,
-    } = useComposerDraft({ repos, executors, workflows, defaultWorkflowSettings, onRepoChange, sending, onSend });
+    const composer = useComposerDraft({
+        repos,
+        executors,
+        workflows,
+        defaultWorkflowSettings,
+        onRepoChange,
+        sending,
+        onSend,
+        draftStore,
+    });
+    const { state, update, declaredParams, paramValues, effectiveDefaultSteps: steps } = composer;
+    const [confirmingDiscard, setConfirmingDiscard] = useState(false);
 
+    // Launching Default workflow before the saved step settings answer would silently omit the
+    // member's saved pair from the submitted JSON — only meaningful where the checkboxes
+    // themselves would render (the workflow list is known, and no custom workflow is chosen).
+    const blocker = startBlocker({
+        sending,
+        executorMissing: state.executor === '',
+        promptEmpty: state.draft.trim() === '',
+        promptTooLong: commandTooLong(state.draft),
+        workflowUnresolved: composer.workflowPending,
+        defaultsUnresolved: workflows !== null && state.workflow === '' && steps === null,
+        paramsInvalid: !composer.paramsReady,
+    });
     // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
     // button, never a bypass. An invalid keyboard submission owes the member the same screen a
     // tab-through would have left: every field marked, the first invalid one focused, and no
     // request sent. An empty prompt is the missing task itself; the visible blocker says so.
-    // Launching Default workflow before the saved step settings answer would silently omit the
-    // member's saved pair from the submitted JSON — only meaningful where the checkboxes
-    // themselves would render (the workflow section is visible, and no custom workflow is chosen).
-    const defaultsUnresolved = workflows !== null && workflow === '' && effectiveSteps === null;
-    const blocker = startBlocker({
-        sending,
-        executorMissing: executor === '',
-        promptEmpty: draft.trim() === '',
-        defaultsUnresolved,
-        paramsInvalid: !paramsReady,
-    });
     const attemptStart = () => {
         if (blocker === null) {
-            void send();
+            void composer.send();
             return;
         }
         if (blocker === 'invalid-params') {
-            setParamTouched(touchAll(declaredParams.map((param) => param.name)));
+            update({ paramTouched: touchAll(declaredParams.map((param) => param.name)) });
             const first = declaredParams.find((param) => !paramValueMatches(param, paramValues[param.name]));
             if (first) document.getElementById(`composer-param-${first.name}`)?.focus();
         }
     };
-    const blockerCopy = describeBlocker(blocker);
-    const preflight = preflightSentence({
-        repo: repo === '' ? null : repo,
-        executor: executor === '' ? null : executor,
-        workflow: workflow === '' ? null : workflow,
-        defaultSteps: workflow === '' ? effectiveSteps : null,
-    });
+    // Discarding typed words asks first, with the settings area's own dialog; a draft that is only
+    // choices goes at once — nothing typed is lost.
+    const requestDiscard = () => {
+        if (state.draft.trim() === '') composer.discard();
+        else setConfirmingDiscard(true);
+    };
 
-    if (repos === null) {
-        return (
-            <section className="panel">
-                {workspaceError !== null ? (
-                    <p className="muted">
-                        {workspaceError}{' '}
-                        <button type="button" className="chat-resume" onClick={onRetryWorkspace}>
-                            Retry
-                        </button>
-                    </p>
-                ) : (
-                    <p className="muted">Loading your workspace…</p>
-                )}
-            </section>
-        );
-    }
+    if (repos === null) return <WorkspacePending error={workspaceError} onRetry={onRetryWorkspace} />;
 
     return (
-        <section className="panel task-compose">
-            {actionError !== null ? (
-                <p className="status" role="alert">
-                    {actionError}
-                </p>
-            ) : null}
+        <>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: the launch shortcut is a composer-wide keystroke surface — a member tabbed into any field of the guided form (prompt, selects, workflow inputs) presses Ctrl/⌘+Enter and gets exactly what the Start button would have given them, so the handler must sit above every control rather than on each one */}
             <div
-                className="composer"
+                className="composer task-compose"
                 onKeyDown={(e) => {
                     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) attemptStart();
                 }}
             >
-                <div className="composer-field">
-                    <label className="composer-label" htmlFor="composer-prompt">
-                        What should the agent do?
-                    </label>
-                    <p className="composer-helper" id="composer-prompt-helper">
-                        Include the outcome, relevant files or issue, and checks to run.
+                {actionError !== null ? (
+                    <p className="status" role="alert">
+                        {actionError}
                     </p>
-                    <textarea
-                        id="composer-prompt"
-                        className="field composer-input"
-                        aria-describedby="composer-prompt-helper"
-                        placeholder={PROMPT_PLACEHOLDER}
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
+                ) : null}
+                <RequestSection draft={state.draft} update={update} />
+                <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />
+                <ComposerSection
+                    step={2}
+                    title="Execution context"
+                    helper={<p className="composer-helper">Choose where the task runs, what runs it, and how.</p>}
+                >
+                    <ComposerContextRow
+                        repos={repos}
+                        executors={executors}
+                        workflows={workflows}
+                        state={state}
+                        update={update}
                     />
-                </div>
-
-                <ComposerContextRow
-                    repos={repos}
-                    repo={repo}
-                    setRepo={setRepo}
-                    setRepoTouched={setRepoTouched}
-                    executors={executors}
-                    executor={executor}
-                    setExecutor={setExecutor}
-                    workflows={workflows}
-                    workflow={workflow}
-                    setWorkflow={setWorkflow}
-                    setParamTouched={setParamTouched}
+                </ComposerSection>
+                <ComposerSection step={3} title="Workflow details">
+                    <ComposerWorkflowDetails workflows={workflows} composer={composer} />
+                </ComposerSection>
+                <ReadinessSection
+                    preflight={preflightSentence({
+                        repo: state.repo === '' ? null : state.repo,
+                        executor: state.executor === '' ? null : state.executor,
+                        workflow: state.workflow === '' ? null : state.workflow,
+                        defaultSteps: state.workflow === '' ? steps : null,
+                    })}
+                    workflow={state.workflow}
+                    blocker={blocker}
+                    sending={sending}
+                    fresh={composer.fresh}
+                    onDiscard={requestDiscard}
+                    onStart={attemptStart}
                 />
-                <ComposerWorkflowDetails
-                    workflows={workflows}
-                    workflow={workflow}
-                    declaredParams={declaredParams}
-                    paramValues={paramValues}
-                    paramTouched={paramTouched}
-                    chosenWorkflowId={chosenWorkflowId}
-                    setStoredParams={setStoredParams}
-                    setParamTouched={setParamTouched}
-                    effectiveDefaultSteps={effectiveSteps}
-                    onToggleDefaultStep={onToggleDefaultStep}
-                />
-
-                <p className="composer-preflight" aria-live="polite">
-                    {preflight}
-                </p>
-
-                <div className="composer-start">
-                    <button type="button" className="primary" disabled={blocker !== null} onClick={attemptStart}>
-                        {sending ? 'Starting…' : 'Start task'}
-                    </button>
-                    <kbd>Ctrl/⌘ + Enter</kbd>
-                    {/* Mounted even when silent — a live region can only announce a change it
-                        survives — so the reason Start is dark reaches a screen reader the moment
-                        it appears. */}
-                    <span className="composer-blocker" role="status">
-                        {blockerCopy}
-                    </span>
-                </div>
             </div>
-        </section>
+            {/* Outside the shortcut's surface on purpose: the dialog portals, but React events still
+                bubble to their React parent, and Ctrl/⌘+Enter on "Continue editing" must never
+                launch the draft it is asking about. */}
+            {confirmingDiscard ? (
+                <UnsavedChangesDialog
+                    labels={['this task draft']}
+                    onClose={() => setConfirmingDiscard(false)}
+                    onConfirm={() => {
+                        setConfirmingDiscard(false);
+                        composer.discard();
+                        document.getElementById(PROMPT_ID)?.focus();
+                    }}
+                />
+            ) : null}
+        </>
     );
 }
