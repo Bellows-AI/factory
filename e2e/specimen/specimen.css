@@ -1,0 +1,105 @@
+/*
+ * The specimen's own layout, and nothing else: the grid the primitives sit in. It never changes how
+ * a primitive looks — the one geometry override is the dialog's viewport width, below, because here
+ * it sits in a cell — and never imitates hover or focus — those come from web/src/styles.css and from the
+ * spec's pointer and keyboard. Tokens only by var(); no color literal, no transition.
+ */
+.specimen-grid {
+    border-collapse: collapse;
+    table-layout: fixed;
+    width: 100%;
+}
+
+.specimen-grid th,
+.specimen-grid td {
+    border: 1px solid var(--line);
+    padding: 12px;
+    text-align: left;
+    vertical-align: top;
+}
+
+/* A primitive that cannot wrap its long label is cut at its own cell, so the defect shows in place
+   rather than pushing every other column off the page. */
+.specimen-grid td {
+    overflow: hidden;
+}
+
+.specimen-grid thead th {
+    color: var(--ink-muted);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.specimen-grid thead th:first-child {
+    width: 160px;
+}
+
+.specimen-grid tbody th {
+    font-weight: 600;
+}
+
+.specimen-na {
+    color: var(--ink-muted);
+}
+
+.specimen-cell {
+    align-items: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.specimen-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+}
+
+.specimen-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+/* Room below the open selector, so its popover covers nothing the sheet is showing. */
+.specimen-grid td.specimen-open-slot {
+    padding-bottom: 96px;
+}
+
+/* The dialog panel sits in a cell here, not in the viewport-centred layer the app gives it. */
+.specimen-cell .dialog {
+    width: 100%;
+}
+
+/* Narrow: one primitive per block, each state labelled by its column, and no empty states. */
+@media (max-width: 640px) {
+    .specimen-grid,
+    .specimen-grid tbody,
+    .specimen-grid tr,
+    .specimen-grid th,
+    .specimen-grid td {
+        display: block;
+    }
+
+    .specimen-grid thead {
+        display: none;
+    }
+
+    .specimen-grid tr {
+        margin-bottom: 16px;
+    }
+
+    .specimen-grid td.specimen-na {
+        display: none;
+    }
+
+    .specimen-grid td::before {
+        color: var(--ink-muted);
+        content: attr(data-label);
+        display: block;
+        font-size: 12px;
+        margin-bottom: 8px;
+    }
+}

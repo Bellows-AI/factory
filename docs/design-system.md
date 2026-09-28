@@ -231,6 +231,16 @@ static suites; `e2e/polish.spec.ts` measures the rendered values in both themes.
 What exists, and when to reach for which. Families first. The names are the pre-theme names (#148
 re-tokenized them, it did not rename them), so the inventory rows stand.
 
+**The specimen** (#275) renders these primitives in every state they have — default, selected,
+invalid, disabled, busy, a 60-character unbroken label — in one grid, from this stylesheet and the
+real components: `e2e/specimen/main.tsx`, served by its own test-only Vite server and shot by
+`e2e/specimen.spec.ts` (the `specimen` Playwright project). Hover and focus-visible are reached
+with the pointer and the keyboard, never with a class. Its four sheets, committed under
+`docs/plans/bellows-redesign-2026-09-26/specimen/`, are the reference the redesign lanes match; a
+new shared primitive gets a row there, and the sheets are re-shot when one changes. Its own layout
+lives in `e2e/specimen/specimen.css` — grid only, tokens by `var()`, held to this file's color and
+motion rules by `web/test/styles.test.ts`.
+
 `@layer components` is laid out in the order of this section: the shared primitives first, then
 one `/* ── region: <name> ── */` banner per lane — `inbox`, `composer`, `task-detail`,
 `settings`, `dashboard`, `entry` — and last, outside every region, the

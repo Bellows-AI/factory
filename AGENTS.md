@@ -97,6 +97,13 @@ npm run lint:fix       # biome check --write — fixes what lint flags
 # is a second board on 8124 with AUTH_MODE=github pointed at e2e/stub-idp.mjs, which drives a real
 # sign-in round trip offline. Needs factory_e2e AND factory_auth_e2e to exist.
 #
+# A third project, `specimen`, browses the component-state reference sheet (#275) on a test-only
+# Vite server at +3 (`npx vite --config e2e/specimen/vite.config.ts` serves it by hand): real
+# primitives from web/src, never built, so nothing reaches web/dist. It writes
+# artifacts/ui/specimen-{dark,light}-{1440,390}.png plus hover/focus shots under specimen-states/;
+# copy the four sheets into docs/plans/bellows-redesign-2026-09-26/specimen/ when a primitive
+# changes. Playwright boots every webServer whatever --project says, so it still needs the databases.
+#
 # Parallel runs: E2E_PORT_BASE (default 8123) puts the open board, auth board, stub IdP and
 # specimen page at +0/+1/+2/+3; E2E_DB_PREFIX (default `factory`) names the databases
 # `${prefix}_e2e` and `${prefix}_auth_e2e`, which must exist. Two worktrees with different values
@@ -193,8 +200,9 @@ Four carve-outs survive, and each is now **scoped to the file that earns it** ra
 tree-wide, so a new violation anywhere else is still caught: index keys drive chart ticks
 (`web/src/charts/**`), `stripAnsi` matches control characters on purpose
 (`driver/src/runner.ts`), bracket access preserves the raw-JSON contract (`otlp.ts` reads OTEL
-payloads field by field), and `web/src/main.tsx` carries the one bare CSS side-effect import that
-`useImportExtensions` has no mode for. `noNonNullAssertion` stays global: non-null assertions are
+payloads field by field), and the two entry points — `web/src/main.tsx` and the specimen's
+`e2e/specimen/main.tsx` — carry the bare CSS side-effect imports that `useImportExtensions` has no
+mode for. `noNonNullAssertion` stays global: non-null assertions are
 the house style under `noUncheckedIndexedAccess`, at 661 sites.
 
 Beyond the recommended preset, ~60 further rules are enabled explicitly. Every one was measured at

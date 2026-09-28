@@ -26,6 +26,7 @@ import {
     type ThreadJob,
     wokenContinuationThread,
 } from './fixtures/threads.js';
+import { THEMES, type Theme, VIEWPORTS } from './screenshot-matrix.js';
 import { finishSignIn } from './signin.js';
 
 /**
@@ -42,16 +43,9 @@ import { finishSignIn } from './signin.js';
  */
 
 const OUT = 'artifacts/ui/baseline';
-const THEMES = ['dark', 'light'] as const;
-const VIEWPORTS = [
-    { width: 1440, height: 1000 },
-    { width: 390, height: 844 },
-] as const;
 const AUTH_BASE = `http://127.0.0.1:${AUTH_PORT}`;
 /** The seeded board's cold stats fetch, and a sign-in round trip, can both take a while. */
 const SLOW = 60_000;
-
-type Theme = (typeof THEMES)[number];
 
 interface Shot {
     /** The route family — the filename's first segment. */
