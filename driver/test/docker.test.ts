@@ -40,6 +40,7 @@ import {
     parsePrSummary,
     publishPlan,
     repoPath,
+    TRANSIENT_SYNC_REASON,
     worktreeBranch,
     worktreeDir,
     worktreeRelDir,
@@ -490,6 +491,16 @@ describe("the board's environment", () => {
         // mode — no fetch, no rebase, a first attempt dead-ending on "the branch is gone" —
         // so the driver alone chooses it.
         const hijacked = { ...job, env: { RESTORE: '1', OTHER: 'fine' } };
+        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
+        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
+    });
+
+    it('drops a member SYNC_LOCK_* from the claim env and the env file', () => {
+        // The startup sync lock's bounds (issue #307) are the script's defaults; a member value
+        // riding the claim env into the sync container could shrink the wait to nothing or make
+        // every sync steal its neighbour's live lock — so the names stay driver-owned, like
+        // RESTORE beside them.
+        const hijacked = { ...job, env: { SYNC_LOCK_WAIT_MS: '1', SYNC_LOCK_STALE_MS: '1', OTHER: 'fine' } };
         expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
@@ -3178,6 +3189,15 @@ describe('publishing the produced work', () => {
         expect(gitWorktreeScript).toContain('rebased onto');
         // A path that holds a git tree this sync did not create is refused, never deleted.
         expect(gitWorktreeScript).toContain("fs.existsSync(wt + '/.git')");
+        // The startup sync serializes on a per-checkout lockfile (issue #307): concurrent claims
+        // of one repo fetch the same refs, and the loser used to die on git's ref transaction —
+        // lock contention answers with the transient marker the loop reads as infrastructure.
+        expect(gitWorktreeScript).toContain("'factory-sync.lock'");
+        expect(gitWorktreeScript).toContain('transient worktree sync');
+        expect(TRANSIENT_SYNC_REASON.test('transient worktree sync: still held')).toBe(true);
+        // Anchored at the head: ordinary refusal reasons splice member-controlled git stderr,
+        // and a conflicted file named after the marker must never read as transient.
+        expect(TRANSIENT_SYNC_REASON.test('conflict in transient worktree sync.md')).toBe(false);
     });
 
     it('hands the sync the clone, the worktree and the branch, by env', async () => {

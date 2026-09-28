@@ -110,7 +110,9 @@ export function workspacePath(job: BoardJob): string {
  * ad-hoc gate credentials the loop mints per attempt, CRED_HELPER is the credential-helper CODE
  * the sync fetch runs, RESTORE is the sync's restore-mode switch (a member value there would
  * flip starting claims into restore mode, silently skipping the fetch and rebase issue #58
- * reserves for continuations), FACTORY_TRANSCRIPT_DIR is where the headless transcript store
+ * reserves for continuations), the two SYNC_LOCK_* names are the startup sync lock's bounds
+ * (issue #307 — a member value would shrink the wait to nothing or make every sync steal its
+ * neighbour's live lock), FACTORY_TRANSCRIPT_DIR is where the headless transcript store
  * lives — the driver composes it (transcriptDir), and a member value would steer transcripts,
  * and through the entrypoint's redirect the CLI's whole config dir, somewhere else — and the
  * three reporter names steer the branch reporter — where it posts, which attempt it speaks for,
@@ -130,6 +132,8 @@ export const RESERVED_ENV_NAMES = [
     'BELLOWS_GATE_TOKEN',
     'CRED_HELPER',
     'RESTORE',
+    'SYNC_LOCK_WAIT_MS',
+    'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',

@@ -155,7 +155,10 @@ export interface Runner {
      * surviving thread branch (issue #58: git operations that touch the remote belong to the
      * task's beginning and end, never its middle). Called before the runner spawns, so a task
      * starts from the code it is meant to continue. Answers { ok: false, reason } rather than
-     * throwing; the loop turns that into the verdict.
+     * throwing; the loop turns that into the verdict — except a reason carrying the script's
+     * transient marker (TRANSIENT_SYNC_REASON, issue #307: lock contention on the shared
+     * checkout), which is infrastructure: the loop leaves the job to its lease and no verdict
+     * lands.
      */
     syncCheckout(job: BoardJob): Promise<SyncResult>;
     /**

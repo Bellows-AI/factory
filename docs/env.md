@@ -71,7 +71,12 @@ real value.
   `RESTORE` belong to the same container and are reserved for what a member value would do there:
   `CRED_HELPER` is member-controlled helper code the sync's git executes, and `RESTORE` is the
   sync's restore-mode switch (issue #58) — a member value would flip starting claims into
-  restore mode, silently skipping the fetch and rebase a fresh task needs.
+  restore mode, silently skipping the fetch and rebase a fresh task needs. The two
+  `SYNC_LOCK_*` names join them (issue #307): the startup sync serializes on a lockfile in the
+  clone's git dir, and these are its wait and stale bounds — the driver sets no literal (the
+  defaults live in the script), so reservation is what keeps a member value from reaching the
+  sync container and shrinking the wait to nothing or making every sync steal its neighbour's
+  live lock.
 
 ## Secrets are write-only, not encrypted
 
