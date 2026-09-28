@@ -290,7 +290,7 @@
        floats above it. */
     .appbar {
         align-items: center;
-        background: var(--surface-raised);
+        background: var(--surface);
         border-bottom: 1px solid var(--line);
         display: flex;
         flex-wrap: wrap;
@@ -300,8 +300,10 @@
            control is displaced or hidden, whatever the account login's length. */
         row-gap: 2px;
         justify-content: space-between;
-        min-height: 48px;
-        padding: 8px 24px;
+        /* 56px border-box: a 40px control, 4px above and below, and the 1px bottom edge fit
+           inside it (issue 274). */
+        min-height: 56px;
+        padding: 4px 24px;
         position: sticky;
         top: 0;
         z-index: 20;
@@ -809,12 +811,12 @@
 
     /* The shell frame (issue 160): a fixed navigation column and the content track. The nav is a
        grid item with its own height — a long task tree scrolls INSIDE it, and a long page never
-       stretches the column. 240 of nav + 48 of padding + 2x440 track floor = 1168, so the
+       stretches the column. 224 of nav + 48 of padding + 2x440 track floor = 1152, so the
        dashboard still fits two panels across at 1440px; `minmax(0, 1fr)` keeps a wide table from
        pushing the track past the viewport, because a grid item defaults to `min-width: auto`. */
     .shell {
         display: grid;
-        grid-template-columns: 240px minmax(0, 1fr);
+        grid-template-columns: 224px minmax(0, 1fr);
         min-height: 100dvh;
     }
 
@@ -824,7 +826,7 @@
 
     .sidenav {
         border-right: 1px solid var(--line);
-        padding: 16px 12px;
+        padding: 0 12px 16px;
         position: sticky;
         top: 0;
         align-self: start;
@@ -832,12 +834,17 @@
         overflow-y: auto;
     }
 
+    /* The text wordmark, on the app bar's 56px line so the two chrome edges read as one. */
     .sidenav-brand {
-        color: var(--ink-muted);
-        font-size: 13px;
+        align-items: center;
+        color: var(--ink);
+        display: flex;
+        font-size: 15px;
         font-weight: 600;
-        letter-spacing: 0.08em;
-        padding: 0 10px 12px;
+        letter-spacing: 0.12em;
+        margin-bottom: 8px;
+        min-height: 56px;
+        padding: 0 12px;
         text-transform: uppercase;
     }
 
@@ -847,24 +854,50 @@
         padding: 0;
     }
 
+    /* A primary item (issue 274): glyph, label, and the Tasks review pill pushed to the end edge. Muted
+       at rest; hover and the current item both lift to ink on the strong fill, and only the current
+       item's glyph takes the accent. */
     .sidenav-link {
         align-items: center;
         border-radius: var(--radius-lg);
-        color: var(--ink);
+        color: var(--ink-muted);
         display: flex;
-        gap: 8px;
-        justify-content: space-between;
-        padding: 8px 10px;
+        gap: 12px;
+        min-height: 40px;
+        padding: 0 12px;
         text-decoration: none;
     }
 
     .sidenav-link:hover {
-        background: var(--surface-raised);
+        background: var(--surface-strong);
+        color: var(--ink);
     }
 
     .sidenav-link.is-active {
-        background: var(--surface-raised);
+        background: var(--surface-strong);
+        color: var(--ink);
+    }
+
+    .sidenav-link.is-active .icon {
         color: var(--accent);
+    }
+
+    /* The Tasks item's review count. Decorative — aria-hidden; the link's name speaks it. */
+    .sidenav-count {
+        background: var(--surface-strong);
+        border-radius: var(--radius-md);
+        color: var(--ink);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        line-height: 20px;
+        margin-left: auto;
+        padding: 0 8px;
+    }
+
+    /* The task preview's one disclosure under the Tasks item; its summary is .sidenav-section. */
+    .sidenav-preview {
+        margin: 4px 0 8px;
     }
 
     /* The Settings tree's section links, under the Settings item: the task tree's scale without the
@@ -899,9 +932,9 @@
         border-radius: var(--radius-lg);
         color: var(--ink-muted);
         display: block;
-        font-size: 12px;
+        font-size: 13px;
         overflow: hidden;
-        padding: 4px 10px 4px 24px;
+        padding: 4px 12px 4px 24px;
         text-decoration: none;
     }
 
@@ -1014,15 +1047,19 @@
         padding: 0 10px 0 24px;
     }
 
-    /* The task tree's count line — Running / Need review clauses, zero-valued ones omitted. A
-       plain paragraph, so nothing here may claim a pointer or a press (issue 189). */
+    /* The task tree's count line — Running / Need review clauses, zero-valued ones omitted — as the
+       preview disclosure's summary (issue 274): a real control now, so it claims the pointer, and the
+       native marker says which way it is open — which holds only while it keeps the default
+       `display: list-item`, so no display is set here. */
     .sidenav-section {
         color: var(--ink-muted);
+        cursor: pointer;
         /* Navigation-caption floor (issue 189). */
         font-size: 12px;
+        font-weight: 600;
         letter-spacing: 0.05em;
         margin: 4px 0 0;
-        padding: 4px 10px;
+        padding: 4px 12px;
         text-align: left;
         text-transform: uppercase;
         width: 100%;
@@ -1051,7 +1088,7 @@
         color: var(--accent);
     }
 
-    /* Below this the two columns stop fitting side by side: 240 of nav leaves under 660 for a grid
+    /* Below this the two columns stop fitting side by side: 224 of nav leaves under 680 for a grid
         whose track floor is 440, so the panels would already be one-up and the nav is just tax.
         The persistent column leaves the LAYOUT entirely (issue 160) — the page's content starts in
         the first viewport, and navigation moves into the app bar's drawer. The app bar's org

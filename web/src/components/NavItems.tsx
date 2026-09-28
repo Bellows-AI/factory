@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
-import { type NavItem, SETTINGS_SECTIONS, ariaCurrentFor } from '../nav-model.js';
+import { type PrimaryNavItem, SETTINGS_SECTIONS, ariaCurrentFor, countLabel } from '../nav-model.js';
+import { Icon } from './Icon.js';
 
 /**
  * The navigation LINKS, shared by the persistent column (SideNav) and the compact drawer
@@ -17,14 +18,23 @@ import { type NavItem, SETTINGS_SECTIONS, ariaCurrentFor } from '../nav-model.js
  * into one component would mean a mode flag per difference and a different DOM for one of them.
  */
 
-/** One top-level route link. The `aria-current` rule is the model's, never re-derived here. */
+/** Nav glyphs are the 20px size (plan §1.4), not the 16px inline default. */
+export const NAV_ICON_SIZE = 20;
+
+/**
+ * One top-level route link: glyph, label, and — when the caller hands one over — the count pill
+ * (issue 274). The pill is decoration: it is `aria-hidden`, and the number travels in the link's name
+ * as a sentence instead, because a bare "12" after "Tasks" says nothing to a screen reader. With
+ * no count the text content names the link. The `aria-current` rule is the model's, never
+ * re-derived here.
+ */
 export function NavItemLink({
     item,
-    pathname,
+    count = null,
     onNavigate,
 }: {
-    item: NavItem;
-    pathname: string;
+    item: PrimaryNavItem;
+    count?: number | null;
     onNavigate?: (() => void) | undefined;
 }) {
     return (
@@ -33,9 +43,16 @@ export function NavItemLink({
             end={item.end ?? false}
             className={({ isActive }) => (isActive ? 'sidenav-link is-active' : 'sidenav-link')}
             onClick={onNavigate}
-            aria-current={ariaCurrentFor(item, pathname)}
+            aria-current={ariaCurrentFor(item)}
+            aria-label={count === null ? undefined : `${item.label}, ${countLabel('review', count)}`}
         >
+            <Icon name={item.icon} size={NAV_ICON_SIZE} />
             {item.label}
+            {count === null ? null : (
+                <span className="sidenav-count" aria-hidden="true">
+                    {count}
+                </span>
+            )}
         </NavLink>
     );
 }
@@ -52,6 +69,7 @@ export function SettingsSectionItems({ onNavigate }: { onNavigate?: (() => void)
                 <li key={section.to}>
                     <NavLink
                         to={section.to}
+                        end={section.end ?? false}
                         className={({ isActive }) => (isActive ? 'sidenav-sublink is-active' : 'sidenav-sublink')}
                         onClick={onNavigate}
                     >
