@@ -66,6 +66,16 @@ describe('inboxQueryString', () => {
     it('never sends an empty or clamped value', () => {
         expect(inboxQueryString({ ...DEFAULT_FILTERS, q: null, author: null, repo: null })).toBe('');
     });
+
+    it('round-trips a filter chip removal: one param gone, every other one kept', () => {
+        // The inbox's × links null exactly one key; the URL they land on must parse back to the
+        // same filters minus that key, or Back and reload would disagree with the chips.
+        const filters = { state: 'review', q: 'login', repo: 'acme/web', author: 'octocat', sort: 'oldest' } as const;
+        for (const key of ['q', 'repo', 'author'] as const) {
+            const query = inboxQueryString({ ...filters, [key]: null });
+            expect(inboxFiltersFromSearch(`?${query}`)).toEqual({ ...filters, [key]: null });
+        }
+    });
 });
 
 describe('firstPageError', () => {
