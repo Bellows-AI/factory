@@ -22,8 +22,8 @@ import type { TaskStatus, TaskTone } from '../task-tree.js';
  * filters), the state tabs / search form / sort links, one chip per applied filter, the rows and
  * a footer that counts only what is loaded. The row grammar: the title (the row's ONE link) over
  * its one-line summary, the state as a toned pill with a VISIBLE label, repository, author and
- * the relative last activity backed by a precise `<time>`. The grid in `styles.css` owns the
- * layout, and stacks each row into a card at ≤900px.
+ * the relative last activity backed by a precise `<time>`. The grid in `styles/regions/inbox.css`
+ * owns the layout, and stacks each row into a card at ≤900px.
  */
 
 const STATES: readonly { value: InboxFilters['state']; label: string }[] = [

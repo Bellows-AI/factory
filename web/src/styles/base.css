@@ -1,0 +1,57 @@
+/* The element floors: type scale, the bare content link, and the 36px desktop control floor
+   (issue 189). Inputs and selects have no global skin — the primitives that place them carry
+   their own padding. */
+
+@layer base {
+    body {
+        @apply bg-surface font-sans text-ink antialiased;
+        font-size: 14px;
+        line-height: 21px;
+    }
+
+    h1,
+    h2,
+    h3 {
+        @apply font-sans font-semibold;
+    }
+
+    h1 {
+        font-size: 28px;
+        letter-spacing: -0.01em;
+        line-height: 36px;
+    }
+
+    h2 {
+        font-size: 18px;
+        line-height: 26px;
+        margin: 0 0 4px;
+    }
+
+    h3 {
+        font-size: 15px;
+        line-height: 22px;
+    }
+
+    @media (max-width: 640px) {
+        h1 {
+            font-size: 24px;
+            line-height: 32px;
+        }
+    }
+
+    /* Preflight makes anchors inherit, and the primitives that skin links (sidenav-link,
+       popover-option, login-button) set their own; this keeps a bare content link — a branch
+       name, a GitHub login — recognizable as one. */
+    a {
+        color: var(--accent);
+        text-decoration: underline;
+    }
+
+    /* Inputs and selects have no global skin — the primitives that place them carry their own
+       padding — but the desktop control floor (issue 189) applies to every text-shaped control.
+       Checkboxes and radios paint their own box and are excluded. */
+    input:not([type='checkbox']):not([type='radio']),
+    select {
+        min-height: 36px;
+    }
+}

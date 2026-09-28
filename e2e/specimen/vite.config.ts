@@ -24,7 +24,8 @@ export const specimenPort = (env: NodeJS.ProcessEnv): number =>
 
 export default defineConfig({
     root: here,
-    // styles.css loads its faces from `/fonts/*`; without the app's public directory they 404 and
+    // the style entry loads its faces from `/fonts/*` (styles.css → styles/fonts.css); without
+    // the app's public directory they 404 and
     // the specimen would show fallback type.
     publicDir: join(repo, 'web', 'public'),
     cacheDir: join(repo, 'node_modules', '.vite', 'specimen'),

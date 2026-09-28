@@ -1,0 +1,1233 @@
+/*
+ * The shared primitives (docs/design-system.md is their inventory): shell, app bar, sidenav and
+ * page header, panels, pills and banners, fields, buttons, selectors, dialogs, tables and
+ * charts. Components participate by carrying these classes, and the names are the pre-theme
+ * names — issue 148 re-tokenized them, it did not rename them. A shared primitive changes here,
+ * reviewed against docs/design-system.md; a lane file never redefines one.
+ */
+
+/* Soft halo in the lamp's own color — it follows currentColor, so one utility serves every
+   lamp. The breathing status dots wear it. The mix lives in the --lamp-glow token, keeping the
+   color work inside the token blocks. */
+@utility lamp-glow {
+    box-shadow: 0 0 0 3px var(--lamp-glow);
+}
+
+@layer components {
+    code {
+        font-family: var(--font-mono);
+        font-size: 0.92em;
+        background: var(--surface-sunken);
+        padding: 1px 4px;
+        border-radius: var(--radius-md);
+    }
+
+    .muted {
+        color: var(--ink-muted);
+    }
+
+    .error {
+        color: var(--lamp-stop);
+    }
+
+    /* The global app bar (issue 160): chrome only, sticky, on the raised surface. The navigation
+       trigger and the brand are mobile content — the persistent nav is visible on desktop, so
+       the trigger would be a second way to the same place; they reveal at the 900px breakpoint
+       below. z-index sits under the popovers (30) and dialogs (40) so a menu opened from the bar
+       floats above it. */
+    .appbar {
+        align-items: center;
+        background: var(--surface);
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        /* Wrapping is the narrow-phone answer (issue 190): past the trigger+brand+actions sum
+           the actions drop to their own row instead of pushing the bar past the viewport — no
+           control is displaced or hidden, whatever the account login's length. */
+        row-gap: 2px;
+        justify-content: space-between;
+        /* 56px border-box: a 40px control, 4px above and below, and the 1px bottom edge fit
+           inside it (issue 274). */
+        min-height: 56px;
+        padding: 4px 24px;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+    }
+
+    .appbar-trigger,
+    .appbar-brand {
+        display: none;
+    }
+
+    .appbar-actions {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        /* Desktop shows only the actions (trigger and brand are hidden), and space-between
+           leaves a lone item at the START edge — the actions belong at the end edge. The mobile
+           breakpoint resets this, where all three groups use space-between. */
+        margin-left: auto;
+    }
+
+
+    /* The page's one heading and its slots (issue 159): title and description lead, meta and
+       actions trail. `flex-wrap` lets meta and actions drop below the title at narrow widths
+       without changing DOM order; `baseline` keeps them on the title's line while it fits. */
+    .page-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px 16px;
+    }
+
+    .page-header-eyebrow {
+        color: var(--ink-muted);
+        flex-basis: 100%;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        margin: 0;
+        text-transform: uppercase;
+    }
+
+    /* The title + description column. `min-width: 0` is load-bearing — this slot carries task
+       titles (a command's first line) and must wrap, not push the meta and actions off the page. */
+    .page-header-leading {
+        flex: 1 1 24rem;
+        min-width: 0;
+    }
+
+    .page-header-leading h1 {
+        margin: 0;
+    }
+
+    .page-header-description {
+        color: var(--ink-muted);
+        font-size: 15px;
+        line-height: 22px;
+        margin: 4px 0 0;
+        max-width: 72ch;
+    }
+
+    /* The state beside the title: pills, the wall clock, the live activity line. */
+    .page-header-meta {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    /* The page's actions, siblings of the heading — never inside it. `flex: none` keeps a long
+       title from squeezing the buttons; the title wraps instead. */
+    .page-header-actions {
+        align-items: center;
+        display: flex;
+        flex: none;
+        gap: 8px;
+    }
+
+    /* Header actions are primary-sized controls on desktop (the 36px floor below stays the
+       floor); the compact shell's touch list raises them to 44. */
+    .page-header-actions button {
+        min-height: 40px;
+    }
+
+    /* The secondary button — every button's default: an outline on the page, filled only on
+       hover. `primary` and `danger` below are the two variants. */
+    button {
+        background: transparent;
+        color: var(--ink);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        /* Desktop control floor (issue 189): padding alone lands a 31px control; every button,
+           tab and verdict clears 36. The compact shell restates 44 for touch below. */
+        min-height: 36px;
+        padding: 4px 12px;
+        font: inherit;
+        cursor: pointer;
+    }
+
+    /* Outranked by the class skins' own `:hover` rules (select-trigger, popover-option, env-tab,
+       the tinted verdicts), which keep their wash; it beats a class skin's plain `background`, so
+       a skin with status text or no frame restates its own hover. Disabled comes after, so a dead
+       button never lights up. */
+    button:hover {
+        background: var(--surface-strong);
+    }
+
+    button:disabled {
+        background: transparent;
+        color: var(--ink-muted);
+        cursor: default;
+        border-color: var(--line);
+    }
+
+    /* The page's one main action. Disabled trades the accent for the strong surface, so a
+       blocked Start reads as unavailable rather than as a paler invitation. */
+    button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--ink-inverse);
+        font-weight: 600;
+        min-height: 40px;
+        padding: 0 16px;
+    }
+
+    button.primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+    }
+
+    button.primary:disabled {
+        background: var(--surface-strong);
+        border-color: var(--surface-strong);
+        color: var(--ink-muted);
+        cursor: not-allowed;
+    }
+
+    /* The destructive variant: the stop lamp's text and edge, its wash on hover. */
+    button.danger {
+        border-color: var(--bad-border);
+        color: var(--lamp-stop);
+    }
+
+    button.danger:hover:not(:disabled) {
+        background: var(--bad-wash);
+    }
+
+    button.danger:disabled {
+        border-color: var(--line);
+        color: var(--ink-muted);
+    }
+
+    /* The one text-field skin (inputs, selects and textareas alike): sunken, framed by the
+       strong hairline, the accent edge while focused — the global ring still draws on top. */
+    .field {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        min-height: 40px;
+        padding: 8px 12px;
+    }
+
+    .field::placeholder {
+        color: var(--ink-muted);
+    }
+
+    .field:hover {
+        border-color: var(--ink-muted);
+    }
+
+    .field:focus {
+        border-color: var(--accent);
+    }
+
+    .field:disabled {
+        background: var(--surface);
+        border-color: var(--line-strong);
+        color: var(--ink-muted);
+    }
+
+    .field[aria-invalid='true'] {
+        border-color: var(--lamp-stop);
+    }
+
+    /* Keyboard focus is visible everywhere (issue 160): a two-pixel accent ring with a two-pixel
+       gap, in both themes. `:where` holds the specificity at zero, so nothing that skins its own
+       focus has to fight this rule, and mouse clicks do not ring (only `:focus-visible`). The
+       freshness stamp is in the list because it is focusable on purpose (issue 166) — the
+       keyboard path to the revealed timestamp. */
+    :where(a, button, input, select, textarea, summary, .updated-at):focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
+    /* The shared quiet-trigger skin (issue 224): the account menu, the organization and
+       appearance selectors, and the composer's listboxes. Unframed at rest — the persistent
+       border every other button carries would fight the reference's restrained look — with a
+       soft accent wash on hover, keyboard focus and while its panel is open, so the highlight
+       reads as one state whichever way it was reached. Border stays transparent rather than
+       `none` so nothing shifts size when a state adds one back. */
+    .select-trigger {
+        align-items: center;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        display: inline-flex;
+        font: inherit;
+        gap: 8px;
+        /* A long organization, workflow, repository or executor name wraps inside the trigger,
+           never the page. */
+        max-width: 100%;
+        min-height: 40px;
+        overflow-wrap: anywhere;
+        padding: 8px 12px;
+    }
+
+    .select-trigger:hover,
+    .select-trigger:focus-visible,
+    .select-trigger[data-open] {
+        background: var(--accent-wash);
+        border-color: transparent;
+    }
+
+    .select-trigger:disabled {
+        border-color: transparent;
+        color: var(--ink-muted);
+        cursor: default;
+    }
+
+    /* The chevron is the "a choice is available here" cue; a disabled trigger has none to make. */
+    .select-trigger::after {
+        content: '▾';
+        color: var(--ink-muted);
+        flex: none;
+        margin-left: auto;
+    }
+
+    .select-trigger:disabled::after {
+        display: none;
+    }
+
+    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
+       renders in the page's theme without this rule carrying one. */
+    .org-selector {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    /* A long organization name must not crowd the account menu before the charts have become
+        illegible anyway (~700px); past 900px the whole selector leaves the bar for the drawer. */
+    .org-select {
+        max-width: 220px;
+    }
+
+    /* The routed page's content container (issue 160) — a class, not a `main` element selector,
+       so the AppShell owns the region and a dialog or nested main never inherits page chrome.
+       `min-width: 0` lets wide content shrink inside the shell's `minmax(0, 1fr)` track. */
+    .page {
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        max-width: 1400px;
+        min-width: 0;
+    }
+
+    .panel {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        padding: 24px;
+    }
+
+    @media (max-width: 640px) {
+        .panel {
+            padding: 16px;
+        }
+    }
+
+    .panel p {
+        margin: 0 0 12px;
+        max-width: 68ch;
+    }
+
+    /* Preflight strips list markers the old UA sheet provided; a bare list in a panel gets them
+       back here. `:where` keeps the specificity at the panel's own, so a styled list whose class
+       comes later (onboarding-orgs, chat-gate-list) wins without a fight. */
+    .panel > :where(ul) {
+        list-style: disc;
+        margin: 0 0 12px;
+        padding-left: 20px;
+    }
+
+    .panel.warn {
+        border-color: var(--warn-border);
+    }
+
+    .panel.bad {
+        border-color: var(--bad-border);
+    }
+
+    .alert {
+        color: var(--lamp-stop);
+    }
+
+    /* Loud on purpose: synthetic figures beside real PR numbers must not read as measurements. */
+    .badge {
+        background: var(--lamp-stop);
+        border-radius: var(--radius-md);
+        color: var(--on-bad);
+        /* Status-marker floor (issue 189). */
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        margin-left: 10px;
+        padding: 3px 7px;
+        text-transform: uppercase;
+        vertical-align: middle;
+    }
+
+    .badge-warn {
+        background: var(--lamp-wait);
+        color: var(--on-warn);
+    }
+
+    .status {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        margin: 0;
+    }
+
+    /* Cells are nowrap, so a wide table overflows its panel rather than shrinking. Scrolling keeps
+       the rightmost columns reachable; without this they are clipped with no indication. The
+       region is keyboard-focusable (DataTable sets tabIndex), so a pointerless reader can still
+       reach a scrolled-off column — the generic focus rule skips plain divs, hence this one. */
+    .table-wrap {
+        overflow-x: auto;
+    }
+
+    .table-wrap:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
+    table.data {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+    }
+
+    table.data th,
+    table.data td {
+        text-align: left;
+        padding: 5px 8px;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+    }
+
+    table.data th {
+        color: var(--ink-muted);
+        font-weight: 500;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    /* The header cell is the button's hit area: the button fills the th, inheriting its type so
+       the header looks unchanged, and keyboard focus lands on a real control. */
+    table.data th.sortable {
+        padding: 0;
+    }
+
+    table.data th.sortable button {
+        display: block;
+        width: 100%;
+        font: inherit;
+        color: inherit;
+        letter-spacing: inherit;
+        text-transform: inherit;
+        text-align: inherit;
+        background: none;
+        border: none;
+        padding: 5px 8px;
+        cursor: pointer;
+        user-select: none;
+    }
+
+    table.data th.align-end,
+    table.data td.align-end {
+        text-align: right;
+    }
+
+    /* The arrow rides the button, not the th: the button fills the cell as a block, so a th
+       pseudo would wrap onto its own line below the label. */
+    table.data th.asc button::after {
+        content: ' ↑';
+    }
+
+    table.data th.desc button::after {
+        content: ' ↓';
+    }
+
+    table.data td:not(:first-child) {
+        font-family: var(--font-mono);
+    }
+
+    .kv {
+        display: grid;
+        grid-template-columns: auto auto;
+        gap: 2px 16px;
+        margin: 0;
+        font-size: 13px;
+    }
+
+    .kv dt {
+        color: var(--ink-muted);
+    }
+
+    .kv dd {
+        margin: 0;
+        font-family: var(--font-mono);
+    }
+
+    .limits {
+        list-style: disc;
+        margin: 0;
+        padding-left: 20px;
+        max-width: 88ch;
+    }
+
+    .limits li,
+    .panel.warn li {
+        margin-bottom: 6px;
+    }
+
+    .panel.warn ul {
+        list-style: disc;
+        margin: 0;
+        padding-left: 20px;
+        max-width: 88ch;
+    }
+
+    footer {
+        display: flex;
+        gap: 20px;
+        padding: 12px 24px 32px;
+        font-size: 12px;
+    }
+
+    /* The appearance control (issue 188): the one System/Light/Dark preference, worn by the app
+       bar and the public header's actions cell alike. Issue 224 moved it off a native `<select>`
+       onto the shared `select-trigger` Listbox skin — a native popup cannot be anchored below
+       the trigger, capped to the viewport, or given a checkmark, all of which the quiet-selector
+       treatment requires. The focus ring still comes from the global `:focus-visible` rule. */
+    .theme-field {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+    }
+
+    .theme-label {
+        color: var(--ink-muted);
+        font-size: 13px;
+    }
+
+    /* Narrow screens drop the visible label — the select keeps its accessible name, and the
+       clip pattern stays in the accessibility tree where `display: none` would not. */
+    @media (max-width: 640px) {
+        .theme-label {
+            clip-path: inset(50%);
+            height: 1px;
+            overflow: hidden;
+            position: absolute;
+            white-space: nowrap;
+            width: 1px;
+        }
+    }
+
+    /* --- Shell -------------------------------------------------------------------------------- */
+
+    /* The skip link: off the page until a keyboard Tab lands on it, then floating over the
+       content. The shift is a transform, so revealing it moves nothing else; z-index sits above
+       dialogs (40) because focus is inside it when it shows. */
+    .skip-link {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        left: 16px;
+        padding: 8px 12px;
+        position: fixed;
+        text-decoration: none;
+        top: 16px;
+        transform: translateY(calc(-100% - 24px));
+        z-index: 50;
+    }
+
+    .skip-link:focus-visible {
+        transform: none;
+    }
+
+    /* The shell frame (issue 160): a fixed navigation column and the content track. The nav is a
+       grid item with its own height — a long task tree scrolls INSIDE it, and a long page never
+       stretches the column. 224 of nav + 48 of padding + 2x440 track floor = 1152, so the
+       dashboard still fits two panels across at 1440px; `minmax(0, 1fr)` keeps a wide table from
+       pushing the track past the viewport, because a grid item defaults to `min-width: auto`. */
+    .shell {
+        display: grid;
+        grid-template-columns: 224px minmax(0, 1fr);
+        min-height: 100dvh;
+    }
+
+    .shell-main {
+        min-width: 0;
+    }
+
+    .sidenav {
+        border-right: 1px solid var(--line);
+        padding: 0 12px 16px;
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100dvh;
+        overflow-y: auto;
+    }
+
+    /* The text wordmark, on the app bar's 56px line so the two chrome edges read as one. */
+    .sidenav-brand {
+        align-items: center;
+        color: var(--ink);
+        display: flex;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        margin-bottom: 8px;
+        min-height: 56px;
+        padding: 0 12px;
+        text-transform: uppercase;
+    }
+
+    .sidenav-items {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    /* A primary item (issue 274): glyph, label, and the Tasks review pill pushed to the end edge. Muted
+       at rest; hover and the current item both lift to ink on the strong fill, and only the current
+       item's glyph takes the accent. */
+    .sidenav-link {
+        align-items: center;
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: flex;
+        gap: 12px;
+        min-height: 40px;
+        padding: 0 12px;
+        text-decoration: none;
+    }
+
+    .sidenav-link:hover {
+        background: var(--surface-strong);
+        color: var(--ink);
+    }
+
+    .sidenav-link.is-active {
+        background: var(--surface-strong);
+        color: var(--ink);
+    }
+
+    .sidenav-link.is-active .icon {
+        color: var(--accent);
+    }
+
+    /* The Tasks item's review count. Decorative — aria-hidden; the link's name speaks it. */
+    .sidenav-count {
+        background: var(--surface-strong);
+        border-radius: var(--radius-md);
+        color: var(--ink);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        line-height: 20px;
+        margin-left: auto;
+        padding: 0 8px;
+    }
+
+    /* The task preview's one disclosure under the Tasks item; its summary is .sidenav-section. */
+    .sidenav-preview {
+        margin: 4px 0 8px;
+    }
+
+    /* The Settings tree's section links, under the Settings item: the task tree's scale without the
+       task rows — a quiet link that lights up only for the section you are in. */
+    .sidenav-sublink {
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: block;
+        font-size: 12px;
+        padding: 4px 10px 4px 24px;
+        text-decoration: none;
+    }
+
+    .sidenav-sublink:hover {
+        background: var(--surface-raised);
+    }
+
+    .sidenav-sublink.is-active {
+        background: var(--surface-raised);
+        color: var(--accent);
+    }
+
+    /* The recent tasks, nested under the Tasks item. A command is long; the label clips and the full
+       text rides the title attribute. */
+    .sidenav-subitems {
+        list-style: none;
+        margin: 2px 0 6px;
+        padding: 0;
+    }
+
+    .sidenav-task {
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: block;
+        font-size: 13px;
+        overflow: hidden;
+        padding: 4px 12px 4px 24px;
+        text-decoration: none;
+    }
+
+    /* The task's own line — the command or title — next to the status dot; it alone clips, so a long
+       command never pushes the live summary below it off the tree. The 10px is the dot and its margin,
+       which share the title's line. */
+    .sidenav-task-title {
+        display: inline-block;
+        max-width: calc(100% - 10px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+    /* The task's live summary — the newest run's activity line, while it is going — a second, quieter
+       line under the title. `white-space` is per-line, because `.sidenav-task` no longer forces one. */
+    .sidenav-task-summary {
+        color: var(--ink-muted);
+        display: block;
+        font-family: var(--font-mono);
+        /* Task-information floor (issue 189); the token is the color — no extra opacity. */
+        font-size: 12px;
+        margin-top: 2px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* Who queued the task, inline after the title. 'unknown' is a fact here — a row queued before
+       accounts existed has no author — not a display hint to invent one. */
+    .sidenav-task-author {
+        color: var(--ink-muted);
+        display: inline-block;
+        /* Task-metadata floor (issue 189). */
+        font-size: 12px;
+        margin-left: 6px;
+        max-width: calc(100% - 10px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+    .task-avatar {
+        border-radius: 50%;
+        height: 18px;
+        width: 18px;
+    }
+
+    .by-user-user {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .sidenav-task:hover {
+        background: var(--surface-raised);
+        color: var(--ink);
+    }
+
+    .sidenav-task.is-active {
+        color: var(--accent);
+    }
+
+    /* The status dot before a task's name: the task's state in one painted pixel, the legend being the
+       colours the rest of the app already speaks — a live run breathes (with its halo), a parked one
+       holds grey, a success awaiting the user's review is accent blue, a failed one is red, and a done
+       one is solid green. */
+    .sidenav-dot {
+        background: currentColor;
+        border-radius: 50%;
+        display: inline-block;
+        height: 6px;
+        margin-right: 4px;
+        vertical-align: middle;
+        width: 6px;
+    }
+
+    .sidenav-dot-running {
+        color: var(--lamp-run);
+        @apply animate-lamp lamp-glow;
+    }
+
+    .sidenav-dot-stopping {
+        color: var(--ink-muted);
+        @apply animate-lamp lamp-glow;
+    }
+
+    .sidenav-dot-paused {
+        color: var(--ink-muted);
+    }
+
+    .sidenav-dot-failed {
+        color: var(--lamp-stop);
+    }
+
+    .sidenav-dot-done {
+        color: var(--lamp-run);
+    }
+
+    .sidenav-dot-review {
+        color: var(--accent);
+    }
+
+    .sidenav-empty {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 2px 0 6px;
+        padding: 0 10px 0 24px;
+    }
+
+    /* The task tree's count line — Running / Need review clauses, zero-valued ones omitted — as the
+       preview disclosure's summary (issue 274): a real control now, so it claims the pointer, and the
+       native marker says which way it is open — which holds only while it keeps the default
+       `display: list-item`, so no display is set here. */
+    .sidenav-section {
+        color: var(--ink-muted);
+        cursor: pointer;
+        /* Navigation-caption floor (issue 189). */
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        margin: 4px 0 0;
+        padding: 4px 12px;
+        text-align: left;
+        text-transform: uppercase;
+        width: 100%;
+    }
+
+    /* The New task action pinned above the Running rows — a link to the composer (/tasks), not a
+       task row: rows order by activity, so a task that just starts slides in BELOW it and can never
+       reorder above the affordance. Sized to the task rows so the list keeps one rhythm; `end` keeps
+       the active mark on the composer page itself. */
+    .sidenav-newtask {
+        border-radius: var(--radius-lg);
+        color: var(--ink-muted);
+        display: block;
+        font-size: 12px;
+        margin: 2px 0;
+        padding: 4px 10px 4px 24px;
+        text-decoration: none;
+    }
+
+    .sidenav-newtask:hover {
+        background: var(--surface-raised);
+        color: var(--ink);
+    }
+
+    .sidenav-newtask.is-active {
+        color: var(--accent);
+    }
+
+    /* Below this the two columns stop fitting side by side: 224 of nav leaves under 680 for a grid
+        whose track floor is 440, so the panels would already be one-up and the nav is just tax.
+        The persistent column leaves the LAYOUT entirely (issue 160) — the page's content starts in
+        the first viewport, and navigation moves into the app bar's drawer. The app bar's org
+        selector goes with it, into the drawer, where horizontal room is not scarce. */
+    @media (max-width: 900px) {
+        .shell {
+            grid-template-columns: 1fr;
+        }
+
+        .sidenav {
+            display: none;
+        }
+
+        .appbar-trigger,
+        .appbar-brand {
+            display: inline-flex;
+        }
+
+        /* Mobile shows all three groups, so space-between places them — the desktop-only
+           end-edge margin comes off here. */
+        .appbar-actions {
+            margin-left: 0;
+        }
+
+        .appbar-org {
+            display: none;
+        }
+    }
+
+    /* --- Workspace ---------------------------------------------------------------------------- */
+
+    .panel-head {
+        align-items: center;
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        margin-bottom: 8px;
+    }
+
+    /* A status or type chip: the text is the whole message, the tone only reinforces it. An
+       untoned pill (an executor type, a sampled vital) keeps the neutral hairline. */
+    .pill {
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 600;
+        gap: 4px;
+        line-height: 16px;
+        min-height: 24px;
+        padding: 0 8px;
+        white-space: nowrap;
+    }
+
+    /* The tones: a lamp's text on that lamp's own wash. `pill-done` is grey — parked, queued,
+       waiting on someone else — and `pill-accent` is "your turn". */
+    .pill-ok {
+        background: var(--ok-wash);
+        border-color: var(--ok-border);
+        color: var(--lamp-run);
+    }
+
+    .pill-warn {
+        background: var(--warn-wash);
+        border-color: var(--warn-border);
+        color: var(--lamp-wait);
+    }
+
+    .pill-bad {
+        background: var(--bad-wash);
+        border-color: var(--bad-border);
+        color: var(--lamp-stop);
+    }
+
+    .pill-done {
+        background: var(--done-wash);
+        border-color: transparent;
+        color: var(--lamp-done);
+    }
+
+    .pill-accent {
+        background: var(--accent-wash);
+        border-color: transparent;
+        color: var(--accent);
+    }
+
+    /* An applied filter, "Label: value" plus its remove button: a capsule on the accent wash. */
+    .inbox-chip {
+        align-items: center;
+        background: var(--accent-wash);
+        border: 1px solid var(--accent-border);
+        border-radius: 999px;
+        color: var(--ink);
+        display: inline-flex;
+        font-size: 13px;
+        gap: 4px;
+        min-height: 28px;
+        padding: 0 12px;
+    }
+
+    .inbox-chip button {
+        align-items: center;
+        background: none;
+        border: 0;
+        color: inherit;
+        display: inline-flex;
+        min-height: 0;
+        padding: 0;
+    }
+
+    /* A page-level notice: a lamp's wash and edge (the accent's for info), ink text, and the
+       lamp's color on the leading icon. */
+    .banner-warn,
+    .banner-bad,
+    .banner-info {
+        align-items: flex-start;
+        border: 1px solid;
+        border-radius: var(--radius-xl);
+        color: var(--ink);
+        display: flex;
+        gap: 16px;
+        margin: 0;
+        padding: 16px 24px;
+    }
+
+    .banner-warn {
+        background: var(--warn-wash);
+        border-color: var(--warn-border);
+    }
+
+    .banner-bad {
+        background: var(--bad-wash);
+        border-color: var(--bad-border);
+    }
+
+    .banner-info {
+        background: var(--accent-wash);
+        border-color: var(--accent-border);
+    }
+
+    .banner-warn > .icon {
+        color: var(--lamp-wait);
+    }
+
+    .banner-bad > .icon {
+        color: var(--lamp-stop);
+    }
+
+    .banner-info > .icon {
+        color: var(--accent);
+    }
+
+    .banner-title {
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 22px;
+        margin: 0;
+    }
+
+    /* The Icon component's svg: never squeezed by a flex row, centered on the text beside it. */
+    .icon {
+        flex: none;
+        vertical-align: middle;
+    }
+
+    /* --- The repository picker ---------------------------------------------------------------- */
+
+    /* The Headless UI dialog shell. The layer carries the z-index policy (the native <dialog> top
+       layer is gone), the backdrop div replaces `::backdrop` with the same `--overlay` token, and the
+       positioner centers the panel. The Dialog portals to <body>, so none of this can be trapped by
+       an ancestor's overflow or stacking context. */
+    .dialog-layer {
+        position: relative;
+        z-index: 40;
+    }
+
+    .dialog-backdrop {
+        background: var(--overlay);
+        inset: 0;
+        position: fixed;
+    }
+
+    .dialog-position {
+        align-items: center;
+        display: flex;
+        inset: 0;
+        justify-content: center;
+        padding: 16px;
+        position: fixed;
+    }
+
+    /* The panel every dialog floats: raised, the harder hairline over the dimmed page, the one
+       shadow the popovers share, and its own scroll so a long body never outgrows the viewport.
+       A dialog's own class (picker, task-remove, unsaved, range-dialog) only narrows it. */
+    .dialog {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-xl);
+        box-shadow: 0 8px 24px var(--shadow-float);
+        color: var(--ink);
+        max-height: calc(100dvh - 32px);
+        max-width: 560px;
+        overflow-y: auto;
+        padding: 24px;
+        width: 90vw;
+    }
+
+    @media (max-width: 640px) {
+        .dialog {
+            padding: 16px;
+            width: 100%;
+        }
+    }
+
+    /* The navigation drawer (issue 160): the compact shell's nav, rendered into the same dialog
+        shell as the pickers. Raised over the dimmed page, edge like the picker's — it floats, so
+        it takes the harder hairline. */
+    .mobile-nav {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 80dvh;
+        max-width: 400px;
+        overflow-y: auto;
+        padding: 16px;
+        width: 90vw;
+    }
+
+    .mobile-nav-head {
+        align-items: center;
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+    }
+
+    .mobile-nav-title {
+        font-size: 15px;
+        margin: 0;
+    }
+
+    /* The drawer reuses the sidenav's link primitives; the sublinks drop their desktop indent and
+        size up from 12px to the body size — no new small navigation text (issue 160). */
+    .mobile-nav .sidenav-sublink {
+        font-size: 14px;
+        padding-left: 10px;
+    }
+
+    .mobile-nav-count {
+        color: var(--ink-muted);
+        margin: 0;
+    }
+
+    /* The shared floating surface for the account, organization, appearance and composer
+       dropdowns (issue 224) — and their option rows. `useDownwardAnchor` (web/src/anchor.ts)
+       positions the panel and caps its height with an inline `max-height`; this class carries
+       the skin, the internal scroll and the z-index policy: dialogs sit at 40, popovers at 30,
+       nothing else on the page stacks. */
+    .popover {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        box-shadow: 0 8px 24px var(--shadow-float);
+        max-width: min(320px, calc(100vw - 16px));
+        overflow-y: auto;
+        padding: 6px;
+        z-index: 30;
+    }
+
+    .popover-option {
+        /* One skin for both an <a> and a <button> item: the button resets, so the sign-out item reads
+           exactly like the Settings link beside it. */
+        align-items: center;
+        background: none;
+        border: none;
+        border-radius: var(--radius-md);
+        color: inherit;
+        cursor: pointer;
+        display: flex;
+        font: inherit;
+        gap: 8px;
+        padding: 8px 12px;
+        text-align: left;
+        text-decoration: none;
+        width: 100%;
+    }
+
+    .popover-option:hover,
+    .popover-option[data-focus] {
+        background: var(--accent-wash);
+    }
+
+    /* The selected row (an equivalent to the reference's checkmark): bolder text plus a trailing
+       mark, never color alone. */
+    .popover-option[data-selected] {
+        color: var(--accent);
+        font-weight: 600;
+    }
+
+    .popover-option[data-selected]::after {
+        content: '✓';
+        margin-left: auto;
+    }
+
+    /* A restrained divider between option groups — the account menu's Account/Sign out split. */
+    .popover-separator {
+        border-top: 1px solid var(--line);
+        margin: 4px 2px;
+    }
+
+    /* The keyboard path beside the launch button — a documentation mark, not an affordance. */
+    kbd {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        color: var(--ink-muted);
+        display: inline-flex;
+        font-family: var(--font-mono);
+        /* Helper-text floor (issue 189) — documentation of the button is still read. */
+        font-size: 12px;
+        min-height: 24px;
+        padding: 0 8px;
+        white-space: nowrap;
+    }
+
+    /* The app bar's user menu and the settings page's identity section. */
+
+    /* The trigger wears the shared `select-trigger` skin (issue 224); this only lays the avatar
+       and the login out and keeps the old summary's tighter padding and gap. */
+    .user-menu-button {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        padding: 4px 10px;
+    }
+
+    .user-menu-login {
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* A 28px identity circle; the strong surface shows behind a loading picture and under the
+       initials when there is none. */
+    .avatar {
+        background: var(--surface-strong);
+        border-radius: 50%;
+        display: block;
+        flex: none;
+        height: 28px;
+        width: 28px;
+    }
+
+    .avatar-lg {
+        height: 40px;
+        width: 40px;
+    }
+
+    .avatar-fallback {
+        /* No picture from GitHub — the login's initial, sized to the avatar it stands in for. */
+        color: var(--ink);
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 28px;
+        text-align: center;
+    }
+
+    .avatar-lg.avatar-fallback {
+        font-size: 18px;
+        line-height: 40px;
+    }
+
+    /* The library's anchor engine positions the panel with inline styles, so this only keeps the
+       menu's own minimum width. */
+    .user-menu-panel {
+        min-width: 160px;
+    }
+
+    .user-menu-panel a.active {
+        color: var(--accent);
+    }
+
+    /* The environment panel's Variables | Secrets tabs, the draft editor's states (issue 182),
+       and the advanced .env editor. */
+
+    .panel-actions {
+        display: flex;
+        gap: 8px;
+    }
+}

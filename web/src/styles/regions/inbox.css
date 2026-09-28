@@ -1,0 +1,508 @@
+/* Region: inbox — the /tasks page and its count cards, filters, chips and rows. Owned by the
+   inbox lane; shared primitives live in ../primitives.css, contracts in docs/design-system.md. */
+@layer components {
+
+    /* The task inbox at /tasks (issues 158, 279): the header, three organization count cards, the
+       state tabs / search form / sort links, the applied-filter chips, then one grid per row —
+       title and summary, state pill, repository, author, relative age — that stacks into a card at
+       ≤900px instead of scrolling the page sideways. The state carries a VISIBLE label (color is
+       supplementary), the title is the row's one link, the age rides a precise <time>. */
+    .inbox {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        padding: 24px;
+    }
+
+    /* New task: the primary recipe on a link (`button.primary` only skins buttons). */
+    .inbox-new {
+        align-items: center;
+        background: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: var(--radius-lg);
+        color: var(--ink-inverse);
+        display: inline-flex;
+        font-weight: 600;
+        gap: 8px;
+        min-height: 40px;
+        padding: 0 16px;
+        text-decoration: none;
+    }
+
+    .inbox-new:hover {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+    }
+
+    /* The three organization counts: equal columns, one link each, never narrowed by a filter. */
+    .inbox-cards {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .inbox-card {
+        align-items: center;
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        color: var(--ink);
+        display: flex;
+        gap: 16px;
+        min-height: 88px;
+        min-width: 0;
+        padding: 16px 24px;
+        text-decoration: none;
+    }
+
+    .inbox-card:hover {
+        border-color: var(--line-strong);
+    }
+
+    /* The 40px icon disc: each count's wash, its lamp on the glyph and the label. */
+    .inbox-card-disc {
+        align-items: center;
+        border-radius: 50%;
+        display: inline-flex;
+        flex: none;
+        height: 40px;
+        justify-content: center;
+        width: 40px;
+    }
+
+    .inbox-card-review .inbox-card-disc {
+        background: var(--accent-wash);
+    }
+
+    .inbox-card-running .inbox-card-disc {
+        background: var(--ok-wash);
+    }
+
+    .inbox-card-past .inbox-card-disc {
+        background: var(--done-wash);
+    }
+
+    .inbox-card-review :is(.inbox-card-disc, .inbox-card-label) {
+        color: var(--accent);
+    }
+
+    .inbox-card-running :is(.inbox-card-disc, .inbox-card-label) {
+        color: var(--lamp-run);
+    }
+
+    .inbox-card-past :is(.inbox-card-disc, .inbox-card-label) {
+        color: var(--lamp-done);
+    }
+
+    .inbox-card-text {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .inbox-card-line {
+        align-items: baseline;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+    }
+
+    .inbox-card-value {
+        font-size: 28px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        line-height: 34px;
+    }
+
+    .inbox-card-label {
+        font-size: 14px;
+        font-weight: 600;
+    }
+
+    .inbox-card-caption {
+        color: var(--ink-muted);
+        font-size: 13px;
+        line-height: 18px;
+    }
+
+    /* Compact: the groups wrap as units. Desktop: the state tabs on their own line, then the
+       search form with the sort control at its end. */
+    .inbox-filters {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 16px;
+    }
+
+    @media (min-width: 901px) {
+        .inbox-filters {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        .inbox-filters > .inbox-tabs {
+            grid-column: 1 / -1;
+            justify-self: start;
+        }
+    }
+
+    /* The state tabs and the sort links: one segmented control each, the active segment raised. */
+    .inbox-tabs,
+    .inbox-sort {
+        align-items: center;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 4px;
+    }
+
+    .inbox-tab {
+        border: 1px solid transparent;
+        border-radius: var(--radius-md);
+        color: var(--ink-muted);
+        /* A link, so the desktop control floor (issue 189) needs the layout to center in. */
+        align-items: center;
+        display: inline-flex;
+        min-height: 36px;
+        padding: 4px 12px;
+        text-decoration: none;
+    }
+
+    .inbox-tab:hover {
+        background: var(--surface-strong);
+        color: var(--ink);
+    }
+
+    .inbox-tab.is-active {
+        background: var(--surface-raised);
+        border-color: var(--line-strong);
+        color: var(--ink);
+        font-weight: 600;
+    }
+
+    .inbox-search {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .inbox-search label,
+    .inbox-sort .muted {
+        color: var(--ink-muted);
+        font-size: 13px;
+        font-weight: 500;
+    }
+
+    .inbox-sort .muted {
+        padding: 0 8px;
+    }
+
+    .inbox-search input[name='q'] {
+        flex: 1 1 12rem;
+        min-width: 0;
+    }
+
+    .inbox-search input[name='author'] {
+        width: 10rem;
+    }
+
+    .inbox-search button {
+        min-height: 40px;
+    }
+
+    .inbox-chips {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 12px;
+    }
+
+    /* The chip's remove link: the × alone, named by its aria-label, on a 24px target (the WCAG
+       minimum) tucked into the chip's end padding so the capsule stays 28px. */
+    .inbox-chip-remove {
+        align-items: center;
+        border-radius: 50%;
+        color: inherit;
+        display: inline-flex;
+        height: 24px;
+        justify-content: center;
+        margin-right: -8px;
+        width: 24px;
+    }
+
+    .inbox-chip-remove:hover {
+        color: var(--accent);
+    }
+
+    .inbox-clear {
+        color: var(--accent);
+        font-size: 13px;
+    }
+
+    /* The list: one raised frame around the column header and the rows. */
+    .inbox-list {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        overflow: hidden;
+    }
+
+    .inbox-columns,
+    .inbox-row {
+        align-items: center;
+        column-gap: 12px;
+        display: grid;
+        /* The spec's `minmax(0,1fr) 168px 160px 144px 96px` at desktop widths (issue 279): the
+           state and age tracks are fixed so a long title or repository can never push the pill
+           out of sight. Between the drawer and the desktop the title keeps a 12rem floor and
+           the repository and author tracks give way instead, ellipsizing their text. */
+        grid-template-columns: minmax(12rem, 1fr) 168px minmax(0, 160px) minmax(0, 144px) 96px;
+        padding: 12px 16px;
+    }
+
+    .inbox-columns {
+        background: var(--surface);
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-muted);
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 18px;
+    }
+
+    .inbox-columns > :last-child,
+    .inbox-when {
+        text-align: right;
+    }
+
+    .inbox-rows {
+        display: flex;
+        flex-direction: column;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .inbox-row {
+        min-height: 60px;
+    }
+
+    .inbox-row + .inbox-row {
+        border-top: 1px solid var(--line);
+    }
+
+    .inbox-row:hover {
+        background: var(--surface-sunken);
+    }
+
+    /* The dot in its own 12px track, the title and summary stacked in the second. */
+    .inbox-title {
+        align-items: center;
+        column-gap: 4px;
+        display: grid;
+        grid-template-columns: 12px minmax(0, 1fr);
+        min-width: 0;
+    }
+
+    .inbox-title > a,
+    .inbox-summary {
+        grid-column: 2;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .inbox-title > a {
+        color: var(--ink);
+        font-weight: 600;
+        line-height: 20px;
+        text-decoration: none;
+    }
+
+    .inbox-title > a:hover {
+        color: var(--accent);
+    }
+
+    .inbox-summary {
+        color: var(--ink-muted);
+        font-size: 13px;
+        line-height: 18px;
+    }
+
+    /* The pill wraps inside its track rather than clipping: "Succeeded · Needs review" is the
+       whole message and must stay readable in 168px. */
+    .inbox-state {
+        min-width: 0;
+    }
+
+    .inbox-state .pill {
+        max-width: 100%;
+        padding-block: 4px;
+        white-space: normal;
+    }
+
+    /* Two status-table rows the pill tones do not carry alone: a review wait's edge, and the
+       done check in the run lamp's green. */
+    .inbox-state-waiting {
+        border-color: var(--line-strong);
+    }
+
+    .inbox-state-done > .icon {
+        color: var(--lamp-run);
+    }
+
+    .inbox-repo,
+    .inbox-author {
+        align-items: center;
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 13px;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .inbox-cell-text,
+    .inbox-when {
+        color: var(--ink-muted);
+        font-size: 13px;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .inbox-author .inbox-cell-text {
+        color: var(--ink);
+    }
+
+    /* Below the desktop tracks each row becomes a stacked card: title and summary, the pill, then
+       one muted metadata line; the column header has nothing left to label. */
+    @media (max-width: 900px) {
+        .inbox-cards {
+            grid-template-columns: 1fr;
+        }
+
+        .inbox-card {
+            min-height: 0;
+            padding: 12px 16px;
+        }
+
+        /* Each field takes the full width under its label; the form stays one group. */
+        .inbox-search {
+            flex: 1 1 100%;
+        }
+
+        .inbox-search > .field,
+        .inbox-search input[name='author'] {
+            flex: 1 1 100%;
+            width: auto;
+        }
+
+        .inbox-columns {
+            display: none;
+        }
+
+        .inbox-row {
+            align-items: start;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+        }
+
+        .inbox-title {
+            flex: 1 1 100%;
+        }
+
+        .inbox-state {
+            flex: 1 1 100%;
+        }
+
+        .inbox-when {
+            text-align: left;
+        }
+    }
+
+    .inbox-empty {
+        align-items: center;
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        color: var(--ink-muted);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 48px 24px;
+        text-align: center;
+    }
+
+    .inbox-empty p {
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0;
+    }
+
+    /* The page-level load failure's body: its message, then Retry. */
+    .inbox-banner-body {
+        align-items: flex-start;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .inbox-error {
+        align-items: center;
+        color: var(--lamp-stop);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .inbox-error p {
+        margin: 0;
+    }
+
+    /* "Showing N loaded tasks" and Load more: no total, because the list never knows one. */
+    .inbox-footer {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: space-between;
+    }
+
+    .inbox-footer p {
+        font-size: 13px;
+        margin: 0;
+    }
+
+    .inbox-note {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 0;
+        min-height: 1em;
+    }
+
+    /* ── inbox touch targets (44px, issue 189) ── */
+    @media (max-width: 900px) {
+        .inbox-tab,
+        .inbox-search input,
+        .inbox-search select,
+        .inbox-search button,
+        .inbox-new,
+        .inbox-chip-remove,
+        .inbox-clear,
+        .inbox-footer button,
+        .inbox-error button,
+        .inbox-banner-body button {
+            align-items: center;
+            display: inline-flex;
+            min-height: 44px;
+            min-width: 44px;
+        }
+    }
+}

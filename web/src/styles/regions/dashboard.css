@@ -1,0 +1,521 @@
+/* Region: dashboard — the control row, cards, usage summary and charts. Owned by the dashboard
+   lane; shared primitives live in ../primitives.css, contracts in docs/design-system.md. */
+@layer components {
+
+    /* The dashboard's control row (issue 160): the analytics toolbar, which moved here from the
+       old global topbar. */
+    .dashboard-controls {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+    }
+
+    /* The analytics toolbar (issue 166): visibly labeled groups — Range, Scope, Repositories —
+       a label above each control, read-only values sunken like the inputs they echo. */
+    .toolbar-group {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    /* Range, Scope and Repositories are real fieldsets, each with a legend rather than a bare
+       label — grouping the trigger under its caption without the caption stealing the
+       trigger's own accessible name (a `<label for>` would, since button is a labelable
+       element). The browser's fieldset chrome gives way to the same shape every toolbar group
+       wears. */
+    fieldset.toolbar-group {
+        border: 0;
+        margin: 0;
+        min-inline-size: 0;
+        padding: 0;
+    }
+
+    .toolbar-label {
+        color: var(--ink-muted);
+        /* Form-label floor (issue 189). */
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+
+    .toolbar-value {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        display: inline-flex;
+        font: inherit;
+        min-height: 30px;
+        padding: 5px 10px;
+    }
+
+    /* Custom opens this dialog (issue 246) rather than an inline expansion: the Range trigger
+       stays a single control, and the draft form floats over the dimmed page in the shared
+       `dialog` panel, at the task-remove and unsaved-changes confirmations' width. */
+    .range-dialog {
+        max-width: 440px;
+    }
+
+    .range-dialog-title {
+        font-size: 15px;
+        margin: 0 0 12px;
+    }
+
+    .range-draft {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    /* Start date and End date side by side where there is room, stacked below it — no media
+       query needed, the same self-wrapping shape the toolbar itself uses. */
+    .range-draft-fields {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+
+    .range-draft label {
+        color: var(--ink-muted);
+        display: flex;
+        flex-direction: column;
+        font-size: 12px;
+        gap: 6px;
+    }
+
+    /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
+       renders in the page's theme without this rule carrying one. `font: inherit` would
+       otherwise pull the 12px label size onto the input text; `font-size` after it restates the
+       14px control floor. */
+    .range-draft input {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        font: inherit;
+        font-size: 14px;
+        padding: 5px 8px;
+        width: 100%;
+    }
+
+    .range-draft-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+
+    /* Clear is a way out, not an answer: pushed to the opposite edge from Cancel/Apply so the
+       row reads as one dismissal plus one decision, not three equal buttons. */
+    .range-draft-actions button:first-child {
+        margin-right: auto;
+    }
+
+    /* The rendered-data summary: one mono line in the status line's voice, describing the
+       payload. It is a polite live region — changes are heard, keystrokes are not. */
+    .analytics-summary {
+        color: var(--ink-muted);
+        flex-basis: 100%;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        margin: 0;
+    }
+
+    /* Freshness: relative copy, with the precise stamp hidden in plain sight — revealed on
+       hover and on keyboard focus (the wrapper is focusable), never title-only. */
+    .updated-at {
+        color: var(--ink-muted);
+        cursor: default;
+        font-size: 12px;
+        position: relative;
+    }
+
+    .updated-at-full {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-md);
+        color: var(--ink);
+        display: none;
+        font-family: var(--font-mono);
+        font-size: 12px;
+        font-style: normal;
+        left: 0;
+        padding: 4px 8px;
+        position: absolute;
+        top: calc(100% + 6px);
+        white-space: nowrap;
+        z-index: 30;
+    }
+
+    .updated-at:hover .updated-at-full,
+    .updated-at:focus .updated-at-full {
+        display: block;
+    }
+
+    /* The metric summary's hierarchy is the grid: Sessions and the wider Token usage group
+       first, the two supporting measures after. Narrow widths restack the same DOM order —
+       presentation never reorders content. */
+    .usage-groups {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+
+    .usage-group {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 14px;
+    }
+
+    .usage-group strong {
+        font-size: 28px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        line-height: 34px;
+    }
+
+    .usage-group span {
+        font-size: 12px;
+    }
+
+    .usage-tokens {
+        grid-column: span 2;
+    }
+
+    .usage-label {
+        color: var(--ink-muted);
+    }
+
+    .usage-measures {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .usage-measure {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+
+    .usage-measure strong {
+        font-size: 20px;
+    }
+
+    /* The one analytics empty state: a raised panel where the figures would be, naming the
+       rendered selection and one next action — never a row of dash tiles. */
+    .usage-empty {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 24px 16px;
+        text-align: center;
+    }
+
+    .usage-empty p {
+        color: var(--ink-muted);
+        margin: 0 auto;
+        max-width: 52ch;
+    }
+
+    .two-up {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+        gap: 20px;
+    }
+
+    .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 12px;
+    }
+
+    .card {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    /* The card's gap is a 2px rhythm for figure + label; its paragraphs carry their own spacing,
+       which preflight took away with the UA sheet. */
+    .card p {
+        margin: 0 0 8px;
+    }
+
+    .card p:last-child {
+        margin-bottom: 0;
+    }
+
+    .card strong {
+        font-size: 28px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        line-height: 34px;
+    }
+
+    .card span {
+        font-size: 12px;
+    }
+
+    .chart-wrap {
+        overflow-x: auto;
+        margin-bottom: 12px;
+    }
+
+    .chart {
+        width: 100%;
+        height: auto;
+        display: block;
+    }
+
+    .grid {
+        stroke: var(--chart-grid);
+        stroke-width: 1;
+    }
+
+    .grid-alt {
+        stroke-dasharray: 2 4;
+    }
+
+    /* The one documented exception to the 12px text floor (issue 189): the narrowest plot's mono
+       ticks sit at 11px, with collision covered by the overflow matrix. */
+    .tick {
+        fill: var(--ink-muted);
+        font-size: 11px;
+        font-family: var(--font-mono);
+    }
+
+    .axis-label {
+        fill: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .bar {
+        fill: var(--accent);
+    }
+
+    .legend {
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 12px;
+        gap: 6px;
+        align-items: center;
+        margin: 0 0 8px;
+    }
+
+    .swatch {
+        border-radius: 2px;
+        display: inline-block;
+        height: 10px;
+        width: 10px;
+    }
+
+    .swatch:not(:first-child) {
+        margin-left: 10px;
+    }
+
+    /* Kept in step with .bar-primary / .bar-ok below, which the chart uses. */
+    .swatch-primary {
+        background: var(--chart-primary);
+    }
+
+    .swatch-ok {
+        background: var(--lamp-run);
+    }
+
+    /* Kept in step with .line, which the sessions series draws with. */
+    .swatch-warn {
+        background: var(--lamp-wait);
+    }
+
+    /* The legend's series toggles: bare buttons wearing the old swatch, dimmed when the
+       series is off — a state the swatch's opacity carries without color alone. */
+    .legend-button {
+        align-items: center;
+        background: none;
+        border: 0;
+        color: var(--ink);
+        cursor: pointer;
+        display: inline-flex;
+        font: inherit;
+        gap: 6px;
+        padding: 0;
+    }
+
+    .legend-button[aria-pressed='false'] {
+        color: var(--ink-muted);
+    }
+
+    .legend-button[aria-pressed='false'] .swatch {
+        opacity: 0.35;
+    }
+
+    /* The swatches' old inter-item spacing, now between the buttons that carry them. */
+    .legend-button:not(:first-child) {
+        margin-left: 10px;
+    }
+
+    /* A frameless toggle: the swatch's opacity is its state, so hover paints no fill. */
+    .legend-button:hover {
+        background: none;
+    }
+
+    /* The chart's one-line caption and the calculation disclosure that follows it. */
+    .chart-caption {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 4px 0 0;
+    }
+
+    .chart-disclosure {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin-top: 8px;
+    }
+
+    .chart-disclosure summary {
+        color: var(--ink);
+        cursor: pointer;
+    }
+
+    .bar-primary {
+        fill: var(--chart-primary);
+    }
+
+    .bar-ok {
+        fill: var(--lamp-run);
+    }
+
+    .bar-warn {
+        fill: var(--lamp-wait);
+    }
+
+    .bar-bad {
+        fill: var(--lamp-stop);
+    }
+
+    /* The partial bucket's hatch: a non-color mark the series still reads through, painted
+       behind the bars over the bucket's full band. */
+    .bar-partial {
+        fill: url(#partial-hatch);
+    }
+
+    .bar-partial-hatch {
+        fill: none;
+        stroke: var(--line-strong);
+    }
+
+    /* The bucket hit region: invisible until it is the roving tab stop, then an accent edge. */
+    .bucket-hit {
+        fill: transparent;
+    }
+
+    .bucket-hit:focus-visible {
+        outline: none;
+        stroke: var(--accent);
+        stroke-width: 2;
+    }
+
+    /* The SVG tooltip: the active bucket's exact readout, raised above the plot. It never
+       intercepts the pointer — a box over a neighbour's band must not blind that bucket. */
+    .chart-tooltip {
+        fill: var(--ink);
+        font-family: var(--font-mono);
+        /* Decision readout floor (issue 189). */
+        font-size: 12px;
+        pointer-events: none;
+    }
+
+    .chart-tooltip-box {
+        fill: var(--surface-raised);
+        stroke: var(--line-strong);
+    }
+
+    .chart-empty {
+        fill: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .line {
+        fill: none;
+        stroke: var(--lamp-wait);
+        stroke-width: 1.5;
+    }
+
+    .dot {
+        fill: var(--lamp-done);
+        fill-opacity: 0.8;
+    }
+
+    .dot-warn {
+        fill: var(--lamp-wait);
+    }
+
+    .dot-bad {
+        fill: var(--lamp-stop);
+    }
+
+    /* The proportional New-tokens bar in the by-user table. The track is a sunken well, the fill
+       the chart series blue; the width is decoration (aria-hidden in markup) — the cell's
+       accessible name carries the exact figure. */
+    .usage-track {
+        background: var(--surface-sunken);
+        border-radius: var(--radius-md);
+        display: block;
+        height: 4px;
+        margin-top: 3px;
+        min-width: 120px;
+    }
+
+    .usage-bar {
+        background: var(--chart-primary);
+        border-radius: inherit;
+        display: block;
+        height: 100%;
+    }
+
+    /* The board section's task identity cell: the title wraps to at most two lines, then clamps.
+       td nowrap is overridden, because clamping needs wrapping to be possible at all. */
+    .task-title {
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        color: var(--accent);
+        display: -webkit-box;
+        line-clamp: 2;
+        overflow: hidden;
+        white-space: normal;
+    }
+
+    @media (max-width: 900px) {
+        /* The token group's two-up measures need the width more than the split at this size. */
+        .usage-tokens {
+            grid-column: auto;
+        }
+
+        .usage-measures {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    /* ── dashboard touch targets (44px, issue 189) ── */
+    @media (max-width: 900px) {
+        .range-draft input,
+        .range-draft-actions button,
+        .legend-button {
+            align-items: center;
+            display: inline-flex;
+            min-height: 44px;
+            min-width: 44px;
+        }
+    }
+}

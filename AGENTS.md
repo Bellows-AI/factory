@@ -42,7 +42,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `workflow`, `027_workflows.sql`, `db/workflow-*.ts`, `routes/workflows.ts`, the claim's `publish` flag | [docs/workflows.md](docs/workflows.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, the driver's env forwarding, the `/env` page | [docs/env.md](docs/env.md) |
 | `filterTelemetryInput()`, `parseRange`, the range selector, charts | [docs/date-range.md](docs/date-range.md) |
-| `web/src/styles.css`, tokens and primitives, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) |
+| `web/src/styles/`, tokens and primitives, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) and the lane docs under [docs/design-system/](docs/design-system/) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
@@ -224,8 +224,9 @@ re-enabling any of them means teaching it the shape, not churning the source:
 - `useUniqueElementIds` — every hit is a deliberate stable anchor: `main-content` is the skip-link
   target (minting it breaks keyboard navigation), `mobile-nav` and `task-board-heading` are
   `aria-labelledby` anchors on singletons, and `BarChart`'s `partial-hatch` is an SVG `<pattern>`
-  referenced from `styles.css` as `fill: url(#partial-hatch)` — a static stylesheet cannot name a
-  minted id, and the duplicate patterns are identical, so the collision is harmless.
+  referenced from `styles/regions/dashboard.css` as `fill: url(#partial-hatch)` — a static
+  stylesheet cannot name a minted id, and the duplicate patterns are identical, so the collision
+  is harmless.
 
 - `noUnnecessaryConditions` — 35 hits, and most are guards the code keeps *on purpose* past a cast
   that lies. `parseVarEntry(entry: unknown)` asserts a shape and then writes `item?.name`; the

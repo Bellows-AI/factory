@@ -1,0 +1,159 @@
+/*
+ * The semantic tokens: the andon-board design from issue 148 — blue-graphite steel, status
+ * rendered as signal lamps in the green / amber / red trio, the one blue reserved for "a human
+ * is needed here". Dark is the default; the light palette rides `data-theme="light"` on <html>
+ * (set before paint by web/public/theme-bootstrap.js and owned at runtime by the provider in
+ * web/src/theme.tsx — issue 188). Every color in web/src is a token defined in one of the two
+ * :root blocks and nowhere else — web/test/styles.test.ts holds that line, and the two blocks
+ * are the only legal homes for color literals; the @theme blocks reference tokens, they hold
+ * none. The palette, its roles and the contrast history live in docs/design-system.md.
+ */
+
+/* ---------- Semantic tokens: dark (default) ---------- */
+:root {
+    color-scheme: dark; /* native controls + scrollbars follow the theme */
+
+    --surface-sunken: oklch(0.170 0.016 249); /* inputs, textareas, code and log wells, kbd */
+    --surface: oklch(0.189 0.017 253); /* page canvas, sidebar, top bar */
+    --surface-raised: oklch(0.227 0.021 252); /* cards, panels, menus, dialogs */
+    --surface-strong: oklch(0.281 0.026 253); /* hover fills, disabled primary — never under status text */
+    --line: oklch(0.273 0.024 254);
+    --line-strong: oklch(0.347 0.028 251);
+
+    --ink: oklch(0.938 0.010 253);
+    --ink-muted: oklch(0.717 0.028 254);
+    --ink-inverse: oklch(0.174 0.030 251); /* text on accent fills */
+
+    --accent: oklch(0.720 0.142 251); /* Bellows blue: "your turn", links, focus rings */
+
+    --lamp-run: oklch(0.775 0.162 154);
+    --lamp-wait: oklch(0.774 0.143 80);
+    --lamp-stop: oklch(0.688 0.172 17);
+    --lamp-done: oklch(0.657 0.029 252);
+
+    /* Derived — tokens the palette above does not carry, mixed per theme with color-mix, the
+       idiom the theme's own lamp-glow uses. --accent and --chart-primary are deliberately two
+       blues: the accent says "a human is needed", so the chart fill leans on its hue but sits
+       deeper. */
+    --overlay: color-mix(in oklab, var(--ink) 60%, transparent);
+    /* The status washes: a lamp's own hue behind its text. Bad and done sit under 16% because
+       their text pairs measured below AA at 16%. */
+    --ok-wash: color-mix(in oklab, var(--lamp-run) 16%, transparent);
+    --warn-wash: color-mix(in oklab, var(--lamp-wait) 16%, transparent);
+    --bad-wash: color-mix(in oklab, var(--lamp-stop) 14%, transparent);
+    --done-wash: color-mix(in oklab, var(--lamp-done) 10%, transparent);
+    --accent-hover: color-mix(in oklab, var(--accent) 88%, var(--ink));
+    --accent-border: color-mix(in oklab, var(--accent) 30%, var(--surface-raised));
+    --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
+    --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
+    --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
+    --on-warn: color-mix(in oklab, black 88%, var(--lamp-wait));
+    /* Issue 189: the dark theme's lamp-stop is bright enough that near-plain foreground text on
+       it washed out below AA, so its on-fill ink mixes dark instead. */
+    --on-bad: color-mix(in oklab, black 88%, var(--lamp-stop));
+    --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
+    --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
+    --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
+    /* Issue 224: the quiet selector's hover/focus/open highlight, and the floating panel's
+       shadow — a soft surface, never another hairline. */
+    --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
+    --shadow-float: color-mix(in oklab, black 40%, transparent);
+}
+
+/* ---------- Semantic tokens: light ---------- */
+:root[data-theme="light"] {
+    color-scheme: light;
+
+    --surface-sunken: oklch(0.960 0.008 254);
+    --surface: oklch(0.978 0.005 258);
+    --surface-raised: oklch(1 0 0);
+    --surface-strong: oklch(0.935 0.013 256);
+    --line: oklch(0.926 0.013 256);
+    --line-strong: oklch(0.853 0.021 250);
+
+    --ink: oklch(0.216 0.036 258);
+    --ink-muted: oklch(0.477 0.037 256);
+    --ink-inverse: oklch(1 0 0);
+
+    --accent: oklch(0.540 0.179 258);
+
+    /* Issue 189: every lamp carries status text on raised, canvas and sunken, so the light
+       palette darkens them until those text pairs clear AA; the status borders derive in step. */
+    --lamp-run: oklch(0.512 0.120 155);
+    --lamp-wait: oklch(0.531 0.119 65);
+    --lamp-stop: oklch(0.553 0.188 21);
+    --lamp-done: oklch(0.520 0.031 257);
+
+    /* Derived — the dark block's recipes over this theme's tokens, except where a pair demands
+       this theme's own mix; the --on-* notes below say which. */
+    --overlay: color-mix(in oklab, var(--ink) 60%, transparent);
+    /* Every wash sits at 8% here (at 10% the lamps' text drops to the AA line), and mixes into
+       raised rather than transparent: an 8% veil over the canvas or a sunken row darkens the
+       ground enough to sink the stop and accent text below AA, so this theme's washes are
+       opaque tints that read the same on every surface. The dark washes stay translucent. */
+    --ok-wash: color-mix(in oklab, var(--lamp-run) 8%, var(--surface-raised));
+    --warn-wash: color-mix(in oklab, var(--lamp-wait) 8%, var(--surface-raised));
+    --bad-wash: color-mix(in oklab, var(--lamp-stop) 8%, var(--surface-raised));
+    --done-wash: color-mix(in oklab, var(--lamp-done) 8%, var(--surface-raised));
+    --accent-hover: color-mix(in oklab, var(--accent) 88%, var(--ink));
+    --accent-border: color-mix(in oklab, var(--accent) 30%, var(--surface-raised));
+    --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
+    --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
+    --bad-border: color-mix(in oklab, var(--lamp-stop) 30%, var(--surface-raised));
+    /* Issue 189: this theme's deep amber cannot carry a darker ink at AA, so the on-fill color
+       is the inverse rather than a mix. */
+    --on-warn: var(--ink-inverse);
+    --on-bad: color-mix(in oklab, white 92%, var(--lamp-stop));
+    --chart-grid: color-mix(in oklab, var(--line) 60%, var(--surface));
+    --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
+    --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
+    --accent-wash: color-mix(in oklab, var(--accent) 8%, var(--surface-raised));
+    --shadow-float: color-mix(in oklab, var(--ink) 14%, transparent);
+}
+
+/* ---------- Expose semantic tokens as utilities ----------
+ * `inline` makes utilities reference var(--surface) directly, so the
+ * data-theme switch works at runtime without regenerating CSS. */
+@theme inline {
+    --color-surface: var(--surface);
+    --color-surface-raised: var(--surface-raised);
+    --color-surface-sunken: var(--surface-sunken);
+    --color-line: var(--line);
+    --color-line-strong: var(--line-strong);
+    --color-ink: var(--ink);
+    --color-ink-muted: var(--ink-muted);
+    --color-ink-inverse: var(--ink-inverse);
+    --color-accent: var(--accent);
+    --color-lamp-run: var(--lamp-run);
+    --color-lamp-wait: var(--lamp-wait);
+    --color-lamp-stop: var(--lamp-stop);
+    --color-lamp-done: var(--lamp-done);
+}
+
+/* ---------- Static tokens ----------
+ * `static` keeps every token emitted even where only var() points at it (the components below
+ * consume --font-mono and the radii that way; plain @theme prunes what no utility spells). */
+@theme static {
+    /* Barlow was drawn after highway signage: sturdy, legible, industrial — body and headings
+     * alike. Plex Mono is only for things that are literally identifiers or logs. */
+    --font-sans: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    /* Hardware, not bubbles: tight radii. md for pills, kbd and checkboxes; lg for controls; xl
+     * for panels, cards, dialogs and banners. */
+    --radius-md: 0.25rem;
+    --radius-lg: 0.375rem;
+    --radius-xl: 0.5rem;
+
+    /* The single ambient motion: a running lamp breathes. */
+    --animate-lamp: lamp 2.4s ease-in-out infinite;
+    @keyframes lamp {
+        0%,
+        100% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0.45;
+        }
+    }
+}

@@ -1,16 +1,44 @@
 # Design system
 
-Read before: adding or restyling anything under `web/src`, touching `web/src/styles.css`, or
-introducing a color.
+Read before: adding or restyling anything under `web/src`, touching anything under
+`web/src/styles/`, or introducing a color.
 
-The web app's styling is one stylesheet, `web/src/styles.css`, compiled by Tailwind CSS v4
-(`@tailwindcss/vite`, registered in `web/vite.config.ts`). There is no CSS-in-JS and no
-per-component files — a component participates by carrying primitive classes, and every color it
-renders flows through a token. The stylesheet's order: `@import "tailwindcss"` (preflight and the
-utility engine), the two token blocks, the `@theme` exposures, then the primitives in
-`@layer components`. `web/test/styles.test.ts` holds the lines: no color literal outside the two
-token blocks, every defined token used, every class the stylesheet defines appears in this
-document (the inventory cannot silently rot).
+The web app's styling is an ordered entry, `web/src/styles.css` — an import list and nothing
+else — compiled by Tailwind CSS v4 (`@tailwindcss/vite`, registered in `web/vite.config.ts`).
+There is no CSS-in-JS and no per-component files — a component participates by carrying primitive
+classes, and every color it renders flows through a token. The import order is the cascade:
+`@import "tailwindcss"` (preflight and the utility engine), the self-hosted fonts, the two token
+blocks, the base layer, the shared primitives, the six lane regions, the shared touch-target
+floor, then the unlayered platform conditions. `web/test/styles.test.ts` reads all the shipped
+files as one style system and holds the lines: one deliberate import order with each construct in
+its own file, no color literal outside the two token blocks, every defined token used, every
+class the stylesheets define appears in this document or in the lane docs beside it (the
+inventory cannot silently rot).
+
+## File map and ownership
+
+The redesign lanes (#306) edit distinct files; the shared system is the part with one owner and
+one review path. A lane PR touches its own region file and its own lane doc
+(`docs/design-system/<lane>.md`); a primitive, token or contract change touches the shared files
+and this document.
+
+| File | Owner | Contents |
+| --- | --- | --- |
+| `web/src/styles.css` | shared | The entry: the ordered import list and nothing else — an order change is a cascade change, reviewed here |
+| `web/src/styles/fonts.css` | shared | The five self-hosted `@font-face` blocks (CSP: font-src 'self') |
+| `web/src/styles/tokens.css` | shared | Both `:root` token blocks and the `@theme` blocks — the only legal homes for color literals |
+| `web/src/styles/base.css` | shared | `@layer base`: the type scale, the bare content link, the 36px control floor |
+| `web/src/styles/primitives.css` | shared | `@utility lamp-glow` and the `@layer components` shared primitives — shell, sidenav, app bar, page header, panels, pills, banners, fields, buttons, selectors, dialogs, tables, charts |
+| `web/src/styles/regions/<lane>.css` | the lane | One file per lane — `inbox`, `composer`, `task-detail`, `settings`, `dashboard`, `entry` — imported in the lanes' historical order; each ends with the lane's 44px touch-target segment |
+| `web/src/styles/touch-targets.css` | shared | The ≤900px 44px rule for the controls the whole shell owns; the components layer's last file, so it outranks every lane's own control rules at equal specificity |
+| `web/src/styles/platform.css` | shared | The unlayered `prefers-reduced-motion` and `forced-colors` overrides — outside every layer, so they outrank all of them |
+
+Touch targets (#189): the 44px compact-shell floor is owned where the control is owned. A lane's
+controls carry their segment at the end of the lane's own region file — its last compact-shell
+media block, followed by the value restatements two members need — and the shell-wide controls
+(app bar, drawer, selectors, page-header actions) are listed in `touch-targets.css`. A new
+mobile-visible control joins its owner's list, never a one-off rule;
+`web/test/styles.test.ts` holds the owner map and the lists' disjointness.
 
 ## Tailwind setup
 
@@ -23,15 +51,16 @@ document (the inventory cannot silently rot).
   that drives the attribute is the appearance control (#188, below).
 - **`color-scheme` lives in each theme block** (`:root` dark, `:root[data-theme="light"]`
   light), so native controls — date-input popups, scrollbars — follow the page.
-- **Fonts are self-hosted** under `web/public/fonts/` with `@font-face` at the top of the
-  stylesheet: the CSP is `font-src 'self'`, and `verify:ui` runs offline, so a Google Fonts link
-  would silently fall back exactly where faces are checked (a guard test pins this).
+- **Fonts are self-hosted** under `web/public/fonts/` with `@font-face` in `styles/fonts.css`,
+  imported first after the engine: the CSP is `font-src 'self'`, and `verify:ui` runs offline, so
+  a Google Fonts link would silently fall back exactly where faces are checked (a guard test
+  pins this).
 - **One ambient motion:** a running lamp breathes — `--animate-lamp` (2.4s ease-in-out,
   opacity 1 → 0.45). Nothing else on the page moves by itself.
 
 ## Tokens
 
-Two `:root` blocks in `styles.css` — dark is the default, light rides
+Two `:root` blocks in `styles/tokens.css` — dark is the default, light rides
 `:root[data-theme="light"]` — and they are the whole theme surface, and the only place a color
 literal may appear. The palette is the Bellows redesign's (plan §1.1, 2026-09-26), sampled from
 the concept screens and adjusted to pass contrast; the values are written in `oklch`, and the hex
@@ -204,9 +233,10 @@ static suites; `e2e/polish.spec.ts` measures the rendered values in both themes.
   `input`/`select` (a base-layer floor — there is no global input skin), and the `.inbox-tab`
   links. `.toolbar-value` is exempt — it echoes a value, it is not a control. Sidenav links are
   prose navigation, and inline prose links are exempt everywhere. At ≤900px the compact shell's
-  control list (navigation, filters, task actions, dialog actions, editor tabs, composer
-  controls) clears 44px — the smallest reliable finger target; new mobile-visible controls join
-  that one rule, which lives in the shared touch-target block at the end of the layer.
+  controls clear 44px — the smallest reliable finger target. The floor is owned where the control
+  is owned: a lane's controls join the 44px segment at the end of the lane's own region file, the
+  shell-wide controls join `styles/touch-targets.css` (the components layer's last file, so the
+  floor still outranks every equal-specificity rule); never a one-off rule.
 - **Focus.** The shared ring is a two-pixel accent outline with a two-pixel gap, applied to
   every focusable control through a zero-specificity `:where(...):focus-visible` rule so
   self-skinned primitives never have to fight it. The chart's `.bucket-hit` paints its own
@@ -238,18 +268,18 @@ real components: `e2e/specimen/main.tsx`, served by its own test-only Vite serve
 with the pointer and the keyboard, never with a class. Its four sheets, committed under
 `docs/plans/bellows-redesign-2026-09-26/specimen/`, are the reference the redesign lanes match; a
 new shared primitive gets a row there, and the sheets are re-shot when one changes. Its own layout
-lives in `e2e/specimen/specimen.css` — grid only, tokens by `var()`, held to this file's color and
-motion rules by `web/test/styles.test.ts`.
+lives in `e2e/specimen/specimen.css` — grid only, tokens by `var()`, held to the style system's
+color and motion rules by `web/test/styles.test.ts`.
 
-`@layer components` is laid out in the order of this section: the shared primitives first, then
-one `/* ── region: <name> ── */` banner per lane — `inbox`, `composer`, `task-detail`,
-`settings`, `dashboard`, `entry` — and last, outside every region, the
-`/* ── shared: touch targets ── */` block that holds the one ≤900px 44px rule. A lane edits only
-its own region and its own rows below, plus append-only lines (its own selectors, one per line) in
-the touch-target list; a shared primitive changes in its shared section. The touch-target block
-sits last so it outranks each region's own control rules at equal specificity; the two members
-whose region rule used to follow it — `settings-toggle`'s `display: flex` and
-`repo-search input`'s `min-width` — restate that value right after the list.
+The shared primitives live in `styles/primitives.css` in the order of this section; each lane's
+rules live in its own file under `styles/regions/` and its own doc beside this one (below). A
+lane edits only its own region file and its own lane doc; a shared primitive changes in
+`primitives.css`, reviewed against this document. Each region file ends with the lane's 44px
+touch-target segment — its last compact-shell media block, then the value restatements two
+members need (`settings-toggle`'s `display: flex`, `repo-search input`'s `min-width` — restated
+right after their segment's list, as they always were). `styles/touch-targets.css` imports after
+every region file for the reason the shared block always sat last: it outranks each region's own
+control rules at equal specificity.
 
 ### Shared
 
@@ -391,94 +421,17 @@ the per-field skins of `composer-input`, `inbox-search input`/`select`, `repo-se
 `picker-search input` (now `field`); and the per-dialog skins of `picker`, `task-remove`,
 `unsaved` and `range-dialog` (now `dialog`).
 
-### Region: inbox
+### Regions
 
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Task inbox | `inbox`, `inbox-new` | The `/tasks` page (issue 279) and its header action: New task is the primary recipe (accent fill, `--ink-inverse` text, 40px, 20px `plus`) on a link, since `button.primary` skins buttons only |
-| Count cards | `inbox-cards`, `inbox-card`, `inbox-card-review`, `inbox-card-running`, `inbox-card-past`, `inbox-card-disc`, `inbox-card-text`, `inbox-card-line`, `inbox-card-value`, `inbox-card-label`, `inbox-card-caption` | Three 88px raised cards, one link each to `?state=review/running/past`, from `navigation.counts` — they never read the filters. A 40px disc on the count's wash (`--accent-wash` + `circle-dot`, `--ok-wash` + `refresh`, `--done-wash` + `check-circle`), the value 28px/600 tabular, the label 14px/600 in the tone's color, "Organization total" 13px muted; the link's `aria-label` is the sentence ("12 tasks need review across the organization"). One column at ≤900px |
-| Filters | `inbox-filters`, `inbox-tabs`, `inbox-tab`, `inbox-search`, `inbox-sort` | The state tabs and the sort links are two segmented controls (`--surface` track, the active `inbox-tab` raised with a `--line-strong` edge); the search form keeps its labels, `field` skins and its Filter button. The inputs are controlled, re-synced from the URL, so a removed chip or Back never leaves stale text |
-| Chips | `inbox-chips`, `inbox-chip-remove`, `inbox-clear` | One `inbox-chip` per applied `q`/`repo`/`author` (never state or sort); `inbox-chip-remove` is the × — a link, not the primitive's inner button, so removal is a history entry Back undoes — to the same URL without that one param, on a 24px target tucked into the chip's end padding; `inbox-clear` the "Clear filters" link to `/tasks` |
-| Rows | `inbox-list`, `inbox-columns`, `inbox-rows`, `inbox-row`, `inbox-title`, `inbox-summary`, `inbox-state`, `inbox-state-waiting`, `inbox-state-done`, `inbox-repo`, `inbox-author`, `inbox-cell-text`, `inbox-when` | A raised frame around an `aria-hidden` column header and the rows, grid `minmax(12rem, 1fr) 168px minmax(0, 160px) minmax(0, 144px) 96px` — the plan's `minmax(0,1fr) 168px 160px 144px 96px` at desktop widths, but between the drawer and the desktop the title keeps a 12rem floor and the repository/author tracks give way instead — 60px min, `--surface-sunken` on hover. The title is the row's one link, 14px/600, over a one-line 13px summary (activity while running, the head's summary once terminal, full text in `title`); the state is a `pill` per the status table, allowed to wrap in its fixed track so a long title never hides it (`inbox-state-waiting` adds the `--line-strong` edge, `inbox-state-done` greens the check); repository with the `repo` glyph, author as `avatar` + login ("?" and "Unknown author" when none), the `RelativeTime` right-aligned. At ≤900px each row stacks into a card: title, pill, then the metadata line |
-| States | `inbox-empty`, `inbox-banner-body`, `inbox-error`, `inbox-footer`, `inbox-note` | Empty board and zero matches are distinct centered panels with a 24px glyph (`list`, `search`); a first-page failure is a `banner-bad` whose `inbox-banner-body` holds the message and Retry, a failed refresh a `banner-warn` above rows that stay; `inbox-error` is the inline Load more failure; `inbox-footer` is "Showing N loaded tasks" (no total) beside Load more; `inbox-note` the polite append announcement |
+Each lane's primitives live in the lane's own doc — one per region file under
+`web/src/styles/regions/`, kept in `docs/design-system/`:
 
-### Region: composer
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Composer | `composer`, `composer-input`, `composer-row`, `composer-label`, `select-trigger`, `composer-param-input`, `task-compose`, `composer-field`, `composer-fields`, `composer-context`, `composer-context-item`, `composer-context-value`, `composer-steps`, `composer-helper`, `composer-preflight`, `composer-start`, `composer-blocker`, `composer-param-error`, `composer-param-details` | The message input and its row (the detail view's chat footer); `task-compose` is the full-page variant. A chosen workflow's declared parameters render as the `composer-fields` list, each a `composer-field` with a `composer-label`, `composer-helper` guidance, per-field `composer-param-error` lines, and the raw rule only inside `composer-param-details`; a failed field tints its `.composer-param-input` edge via `aria-invalid`. The `composer-start` action row holds Discard draft, Start, the `kbd` shortcut and the `composer-blocker` status (quiet reasons only — an empty prompt, a launch in flight), after the `composer-preflight` sentence. The trigger and menu skin itself (`select-trigger`, `popover`, `popover-option`) is shared with every other selector and owned by #224, not this pattern |
-| New-task page | `composer-section`, `composer-section-head`, `composer-section-title`, `composer-step`, `composer-example`, `composer-counter`, `is-over`, `composer-trigger-missing`, `composer-notices`, `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton`, `composer-skeleton-block`, `composer-skeleton-line` | `/tasks/new` (#280, concept 02): four numbered `panel composer-section`s — Request, Execution context, Workflow details, Readiness — each headed by a `composer-section-head` with a 28px `--accent` `composer-step` disc (`aria-hidden`; the h2 in `composer-section-title` carries the words). Request: a 160px/15px textarea, "Try an example" (`composer-example`, `sparkles`, enabled only on an empty draft) and the `composer-counter` (`{length} / 16,384` from core's `COMMAND_LIMIT`, `is-over` in `--lamp-stop`). Execution context: `composer-context`, three `composer-context-item` columns ≥1024px (stacked below), each a glyphed `composer-label` over a full-width framed `select-trigger`, its value in an ellipsis-truncating `composer-context-value` (full value in the trigger's `title`); `composer-trigger-missing` is the executor's stop-lamp edge. Workflow details: a named workflow's fields, or the spine sentence and the closed `composer-steps` disclosure ("Optional steps (n of 2 on)"). Readiness: `banner-bad` only for a missing executor (with its settings link), incomplete workflow details and an over-limit request; `banner-info` while a chosen workflow's list or the saved preferences load — Start's `aria-describedby` names the banner or the status text. A draft restored from the shell (F1) says what it lost in a dismissible `banner-info composer-notices`; `composer-skeleton` holds the page, static, while the session is checked |
-
-### Region: task-detail
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Grid | `task-layout`, `task-main` | The task page's grid: the outcome rail (`task-outcome`) and the main column (`task-main`: conversation → run history → verification → services → published work → follow-up). Rail first in the DOM; a 320px right column from 1024px, a two-column summary above the main column below it — DOM order is visual order |
-| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
-| Run article | `run-label`, `run-summary`, `run-output`, `run-well` | One run's sections in reading order: labels (Request / Follow-up / Agent response / activity), the stored summary as flowing prose, and the raw-output disclosure (collapsed behind a summary, expanded when it is all there is) — never a fabricated response. Gates and publication are the task's panels, not a run's |
-| Run history | `task-history`, `task-history-item` | The recorded stamps only, oldest first — created, started, finished, stop requested, `waitingSince`, `doneAt` + `doneBy` — each with its relative `time`. No inferred rows ("Implemented changes", "Published PR") |
-| Verification | `task-verification`, `task-verification-counts`, `gate-output-wrap`, `gate-output` | The newest run's gates as a panel (`#task-verification`, a focus target for the rail's View checks): "N failed" `pill-bad` / "N passed" `pill-ok` / "N running" `pill-done`, each only when N > 0; each gate a `<details>`, failed ones `open`; the output a 12px mono well on `--surface-sunken`, lines kept whole and scrolled in its own well, with a copy button. No durations, no per-test tree |
-| Published work | `task-published`, `task-branch`, `run-publish`, `task-copy` | The branch as a mono chip with its copy button, and the PR link only through `isHttpUrl`. `task-copy` is the copy button (a `chat-resume`, so the 44px rule already covers it) |
-| Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
-| Gates | `chat-gate-list` | The verification-gate list; each gate's status (and the counts) is a `pill` in the tone the `GATE_PILL` map in `task-outcome.ts` names — passed `pill-ok`, failed `pill-bad`, running `pill-done`; a zero count is not drawn at all |
-| Output | `chat-output` | The scrolled raw-run well (`--surface`); `gate-output` is the gate variant |
-| Verdicts | `chat-resume`, `chat-toggle`, `chat-done`, `chat-stop`, `chat-remove` | The task's action buttons, status-tinted; the tinted ones (`chat-done`, `chat-stop`, `chat-remove`) hover on their own lamp's wash, never on the strong surface their status text may not sit on |
-| Outcome | `task-outcome`, `task-outcome-summary`, `task-outcome-body`, `task-outcome-label` | The task page's summary disclosure: result (the header's own state pill, not a second live region), a failure's next action (Ask for another pass when `followUpEligibility` allows it, else the same not-author sentence as the follow-up slot; nothing while the session loads), execution, verification counts, published work — one `<details>`, expanded by default, a two-column summary above the main column (600–1023px; one column on a phone, where two key/value columns cannot hold a label) and a one-column 320px rail (≥1024px) without a second component |
-| Task head | `task-actions`, `task-action-help`, `task-closed`, `task-meta-line`, `task-opened-by`, `task-pill-wait`, `task-pill-done`, `task-avatar` | The page header's parts: the state pill (`taskStatusLabel` in the `taskTone` tone, per the status table — `task-pill-wait` is the wait's `--line-strong` edge, `task-pill-done` the done check in `--lamp-run`), `#id · Opened … by (avatar) login · repo`, and the action row — one primary action from the plan §3.2 matrix, the More task actions overflow, and the one sentence that says what the primary does (`task-action-help`), or the closure as "Closed by X · time" (`task-closed`), never a disabled control. The row wraps, so narrow screens drop its second line rather than clip it |
-| Follow up | `task-follow-up` | The composer, offered only when `followUpEligibility` answers `eligible`; another member's task says who can continue instead, and a loading session renders nothing |
-| Remove dialog | `task-remove`, `task-remove-title`, `task-remove-actions` | The remove confirmation over the task page (issue 178): in the shared `dialog` panel at 440px, the body copy carries every consequence, Cancel and the destructive Remove task end-aligned |
-
-### Region: settings
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Toggle | `settings-toggle` | A labelled checkbox row — the design system's one boolean-control primitive (no dedicated switch family exists): the default-workflow settings panel's two switches and the composer's matching pair of optional-step checkboxes (issue 208), the latter now inside the composer's `composer-steps` disclosure (issue 228) |
-| Picker | `picker`, `picker-search`, `picker-list`, `picker-name`, `picker-option`, `picker-actions` | The Headless UI Dialog/Combobox executor picker, rendered into the shared `dialog` panel and shell, its fields wearing `field`; options carry `data-focus`/`data-selected` |
-| Repository setup | `repo-scope`, `repo-cards`, `repo-card`, `repo-card-disc`, `repo-card-disc-accent`, `repo-card-disc-ok`, `repo-card-disc-warn`, `repo-card-disc-bad`, `repo-card-label`, `repo-card-value`, `repo-card-caption`, `repo-search`, `repo-toolbar`, `repo-toolbar-count`, `repo-table`, `repo-row-configured`, `repo-save`, `repo-na`, `repo-detail`, `repo-detail-body` | The repositories page (issue 181, recomposed on concept 06 by issue 282), top to bottom in DOM and reading order at every width: the header's `repo-scope` context (Workspace / Organization, a bordered `kv`); the root-null `banner-warn` (never a button); four `repo-card`s straight from `counts()` — Selected (`repo`, accent disc, captioned "of 20 allowed" and, once the list answered, the available figure on its own line), Ready (`check-circle`, ok), Setting up (`refresh`, warn; queued + cloning) and Failed (`alert-circle`, bad) — each a 40px `repo-card-disc` on its lamp's wash beside a 13px label and a 28px tabular figure, four columns, two at ≤900px, one at ≤640px, with an "—" named `Loading` (or `Not available` after a failed first poll) until the poll answers, never 0; a labeled search row; the `repo-toolbar` selection bar ("n selected · Selection limited to 20 repositories." and Save selection, `primary` only while a dirty, unblocked selection is worth prompting for); the full-width `repo-table`, a fixed-layout `data` table with sized secondary columns and a sticky Configure column that stays reachable while scrolled, the configured row on the accent wash (`repo-row-configured`), and unmeasured facts as `repo-na` words; at ≤640px it stacks into `data-label` cards like `env-vars`. Last, the selected repository's `repo-detail` panel: checkout facts (a `kv`, `Not available` where nothing was measured) beside the repository's scope context and environment editor at ≥1100px (`repo-detail-body`, 1fr/2fr), stacked below it. No Health tab and no status/environment filters |
-| Editor footer | `settings-actions`, `settings-dirty` | The end of every settings editor (issue 282): an "Unsaved changes" indicator (13px `--lamp-wait`, text, never a live region) on the leading edge while the draft differs from what is stored, then Cancel (secondary; back to the stored rows) and Save (the panel's one `primary`), after a `--line` hairline. Action words never wrap: `settings-actions`, `repo-toolbar` and `repo-table` buttons are `nowrap` |
-| Unsaved-changes dialog | `unsaved`, `unsaved-title`, `unsaved-actions` | The settings area's discard confirmation (issue 182), one instance raised by the dirty-draft coordinator before a blocked navigation or a repository switch: the shared `dialog` panel at the remove dialog's width, Continue editing safe-focused, Discard changes destructive |
-| Env | `env-tab`, `env-tabs`, `env-vars`, `env-pending`, `env-advanced-note`, `env-raw`, `env-errors`, `env-row-actions`, `env-add`, `env-advanced-toggle`, `env-row-remove` | The compact draft editor (issue 182, restyled by issue 222): a real `tablist` of Variables/Secrets tabs whose selected tab is the `aria-selected` one; the scope's editable table with aligned, bounded Name/Value/Actions columns (`table-layout: fixed`, the Value column absorbing the width the fixed Name/Actions columns leave, so a long value wraps instead of clipping); a pending-removal row that waits with its Undo until the whole-list save; a compact `env-row-actions` row beneath the table holding the quiet `env-add` control (accent text, hovering on the accent wash) and, for Variables only, the de-emphasized text-style `env-advanced-toggle` disclosure trigger — neither styled `.primary`, so Save stays the panel's one prominent action; `env-row-remove` sizes the row's own remove button as a small square icon control; the advanced `.env` disclosure's warning line, the textarea editor, and the row/scope validation lines (`env-errors`, paired with `.error` for its red tint and attached per-field via `aria-describedby` so a name problem renders under the name input, not the value one). At ≤640px an `env-vars` row becomes a bordered card that reflows into labeled groups via each cell's `data-label` |
-| Readiness | `readiness`, `readiness-item`, `readiness-status`, `readiness-fact`, `readiness-action` | The configuration overview's five ordered items (#180): raised cards in a grid — two columns above 700px, one at and below it; each item's status is a toned `pill` on its own row (ok `pill-ok`, attention `pill-bad`, pending `pill-warn`, a neutral fact the untoned pill) while the card edge stays the neutral hairline; the words carry the meaning, never color alone, and `overflow-wrap` keeps long paths from widening the page |
-| Scope context | `scope-context`, `scope-context-label` | The readable scope/impact/editability block every environment editor renders before its controls (#180); the label is a small uppercase caption, the precedence sentence `muted` |
-
-### Region: dashboard
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Grid | `two-up` | Two-panel dashboards |
-| Controls row | `dashboard-controls` | The dashboard's control row under the page header: the analytics toolbar, which moved here from the old global topbar (issues 160 and 159) |
-| Cards | `cards`, `card` | Numeric figure tiles inside a panel |
-| Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value` | The dashboard's visibly labeled Range / Scope / Repositories groups (#166, refined by #246): each a real `fieldset`/`legend` — the caption groups the trigger without stealing its own accessible name — read-only values sunken like the inputs they echo |
-| Range | `range-dialog`, `range-dialog-title`, `range-draft`, `range-draft-fields`, `range-draft-actions` | The Range group's one dropdown (issue 246): a `select-trigger`/`popover`/`popover-option` Listbox over the presets plus Custom; picking a preset commits it, picking Custom opens the `range-dialog` — a Headless UI Dialog in the shared `dialog` panel and shell — holding the draft form (`range-draft`, `range-draft-fields` for the two labeled date fields); Apply, Cancel and Clear are the only ways to commit or discard it |
-| Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar groups — mono, muted, a polite live region |
-| Freshness | `updated-at`, `updated-at-full` | Relative "Updated …" copy; the precise stamp is revealed on hover and keyboard focus and carried by a `<time dateTime>` |
-| Metric summary | `usage-summary`, `usage-groups`, `usage-group`, `usage-tokens`, `usage-label`, `usage-measures`, `usage-measure` | The dashboard's six measures in four groups (#166): the hierarchy IS the grid — Sessions and the wider Token usage group first — and narrow widths restack the same DOM order. Each `usage-measure` stacks its figure, label and cache detail in its own column (#246) so nothing collides; Token usage holds Total input (with its uncached, cache-read and cache-write parts beneath it), Cache hit rate and Output, and Output carries none of the input parts |
-| Analytics empty state | `usage-empty` | The one "nothing measured in this selection" state that replaces the dash-card chorus, naming the selection and one next action |
-| Usage bar | `usage-track`, `usage-bar` | The proportional New-tokens bar in the by-user table: a sunken-well track with a chart-blue fill, `aria-hidden` — width is decoration, the cell's accessible name carries the exact figure |
-| Task title | `task-title` | The board section's linked task identity cell, clamped after two lines |
-
-Charts:
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Frame | `chart-wrap`, `chart` | The overflow scroll and the SVG itself |
-| Grid | `grid`, `grid-alt`, `tick`, `axis-label` | Gridlines (alt = dashed), ticks and labels — all `--ink-muted`/`--chart-grid` |
-| Marks | `bar` (+ `bar-primary`, `bar-ok`, `bar-warn`, `bar-bad`), `line`, `dot` (+ `dot-warn`, `dot-bad`) | Series fills; `dot` default is `--lamp-done` |
-| Partial | `bar-partial`, `bar-partial-hatch` | The hatch over a partial bucket (the current day/week), painted behind the bars — a non-color mark, grayscale-safe |
-| Bucket target | `bucket-hit` | The transparent rect over each bucket; one roving tab stop, accent edge on `:focus-visible` |
-| Tooltip | `chart-tooltip`, `chart-tooltip-box` | The active bucket's exact readout, rendered inside the SVG so it scales with it |
-| Legend | `legend`, `legend-button`, `swatch`, `swatch-primary`, `swatch-ok`, `swatch-warn` | Series toggle buttons (`aria-pressed`); swatches stay in step with their marks and dim when the series is off; a toggle paints no hover fill |
-| Caption | `chart-caption`, `chart-disclosure` | The one-line caption (keying the hatched partial bucket when one exists) and the calculation `<details>` after the chart |
-| Empty | `chart-empty` | The all-hidden readout — **All series hidden** instead of a broken plot |
-
-### Region: entry
-
-| Primitive | Classes | Use for |
-| --- | --- | --- |
-| Login | `login-gate`, `login-card`, `login-button` | The signed-out screen: one raised card centered in the gate (the dialog recipe without the float), its `h1` at the page-title size, and a `banner-bad` alert for a failed session check or a callback's `auth_error` reason. `login-button` is the OAuth anchor skinned as `button.primary` (the CSP forbids a form, a fetch cannot follow the 302); the onboarding restart and the account's tracked-organizations link reuse it |
-| Public header | `public-header`, `public-brand`, `public-context`, `public-header-actions` | The compact chrome both public pages (gate, onboarding) carry, on the app bar's 56px line, `--surface` fill and bottom hairline: the product brand (`PRODUCT_NAME`) in the shell's uppercase wordmark, one context word, and the actions cell, which holds the theme control (issue 187; the appearance control arrived in issue 188). No navigation, no session, no `h1` — each page owns its one heading. The theme bootstrap resolves the palette before paint here as everywhere, so nothing on a public page switches its own colors (issue 284) |
-| Onboarding | `onboarding`, `onboarding-purpose`, `onboarding-banner-body`, `onboarding-identity`, `onboarding-orgs`, `onboarding-org`, `onboarding-org-head`, `onboarding-org-name`, `onboarding-org-mark`, `onboarding-org-details`, `onboarding-org-summary`, `onboarding-mode`, `onboarding-mode-option`, `onboarding-mode-help`, `onboarding-repos`, `onboarding-repo`, `onboarding-repo-count`, `onboarding-note`, `onboarding-summary`, `onboarding-summary-total`, `onboarding-summary-rows`, `onboarding-summary-row`, `onboarding-actions`, `onboarding-blocker`, `onboarding-loading`, `onboarding-loading-line` | The setup screen (issue 125, recomposed by issue 187, restyled by issue 284): the centered 640px column, the org list of raised cards with each org's initial identity mark and its `Requested for this sign-in` `pill pill-accent`, one org's card — a focus target for a blocked attempt, never a click target — whose disclosure summary names the org's repository mode while collapsed, the explicit mode radios with their helpers, the specific-mode checklist (mono names) with its `N of M` count, the access note, the raised selection summary, and the action region. States keep apart: an expired sign-in is `banner-warn`, a failed load or a refused submission is a `banner-bad` alert, a zero-installation payload is `banner-info` — `onboarding-banner-body` stacks a banner's sentence over its one action — and `onboarding-blocker` is a missing choice, muted like `composer-blocker`: a disabled Continue's reason (nothing chosen, or a named org's empty specific list), visible and wired as Continue's `aria-describedby`, and an org card's own empty-list reason. Continue is `aria-disabled`, never `disabled`, so the action region repaints it with the disabled-primary recipe on that attribute. Inside a card the same split holds: a failed listing is a `banner-bad` alert with its Retry, an unavailable one a `banner-info` with its Retry. A loading or unreadable listing never blocks, so it is never a blocker. `onboarding-loading` shapes the pending-load placeholders: static rows and a status line, no shimmer |
-| Identity | `identity-head`, `identity-name` | The account page's identity section |
+- inbox — [design-system/inbox.md](design-system/inbox.md)
+- composer — [design-system/composer.md](design-system/composer.md)
+- task-detail — [design-system/task-detail.md](design-system/task-detail.md)
+- settings — [design-system/settings.md](design-system/settings.md)
+- dashboard — [design-system/dashboard.md](design-system/dashboard.md) (its charts too)
+- entry — [design-system/entry.md](design-system/entry.md)
 
 ### One-offs
 
@@ -488,9 +441,10 @@ why no family fits.
 ## Inventory
 
 Every UI unit under `web/src`, mapped to the primitives it uses and grouped by the region that owns
-it — the same six regions as the stylesheet, plus the shared shell. Kept honest by
-`web/test/styles.test.ts`: a new file under `components/`, `panels/`, `pages/` or `charts/` fails
-the suite until it has a row, and a new class in `styles.css` fails until this document names it.
+it — the shared shell here, each lane's rows in its own doc beside this one. Kept honest by
+`web/test/styles.test.ts`, which reads all these documents together: a new file under
+`components/`, `panels/`, `pages/` or `charts/` fails the suite until it has a row, and a new
+class in the stylesheets fails until one of these documents names it.
 Helpers with no markup: `env-raw.ts` is the `.env` raw-editor parser the env panel imports, and
 `scale.ts` is the charts' band/linear scale helper.
 
@@ -515,91 +469,17 @@ Helpers with no markup: `env-raw.ts` is the `.env` raw-editor parser the env pan
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
 
-### Region: inbox
+### Regions
 
-| File | Primitives |
-| --- | --- |
-| `TaskInboxPage.tsx` | page-header, icon, inbox, inbox-new, inbox-cards, inbox-card, inbox-card-review, inbox-card-running, inbox-card-past, inbox-card-disc, inbox-card-text, inbox-card-line, inbox-card-value, inbox-card-label, inbox-card-caption, inbox-filters, inbox-tabs, inbox-tab, inbox-search, field, inbox-sort, inbox-chips, inbox-chip, inbox-chip-remove, inbox-clear, inbox-list, inbox-columns, inbox-rows, inbox-row, inbox-title, inbox-summary, inbox-state, inbox-state-waiting, inbox-state-done, pill, pill-ok, pill-done, pill-accent, pill-bad, inbox-repo, inbox-author, inbox-cell-text, avatar, avatar-fallback, inbox-when, inbox-empty, banner-bad, banner-warn, banner-title, inbox-banner-body, inbox-error, inbox-footer, inbox-note, sidenav-dot, muted |
+Each lane's UI-unit rows live in its own doc, beside its primitives — one per region file under
+`web/src/styles/regions/`, kept in `docs/design-system/`:
 
-### Region: composer
-
-| File | Primitives |
-| --- | --- |
-| `TaskComposer.tsx` | panel, composer, task-compose, composer-section, composer-section-head, composer-section-title, composer-step, composer-example, composer-counter, field, selector, composer-label, composer-context, composer-context-item, composer-context-value, composer-trigger-missing, composer-steps, composer-helper, composer-preflight, composer-start, composer-blocker, banner-bad, banner-info, banner-title, composer-notices, composer-skeleton, icon, settings-toggle, kbd, chat-resume, unsaved (the discard confirmation) |
-| `TaskComposerPage.tsx` | page-header, status, composer-skeleton |
-| `WorkflowParameterFields.tsx` | composer-field, composer-fields, composer-label, composer-param-input, composer-helper, composer-param-error, composer-param-details |
-
-### Region: task-detail
-
-| File | Primitives |
-| --- | --- |
-| `TaskDetailPage.tsx` | page-header, status |
-| `TaskHeader.tsx` | page-header, pill, pill-ok, pill-bad, pill-done, pill-accent, task-pill-wait, task-pill-done, sidenav-dot, icon, task-meta-line, task-opened-by, avatar, avatar-fallback, task head, task-action-help, task-closed, popover, popover-option, primary, chat-resume, chat-stop, chat-remove, muted |
-| `TaskDetail.tsx` | task-layout, task-main, task-conversation, task-history, task-history-item, task-follow-up, panel-head, panel, kv, composer, field, status, muted |
-| `TaskRun.tsx` | chat-exchange, run-label, run-summary, run-output, run-well, run-publish, msg-user, msg-meta, chat-runtime, chat-activity, chat-exit, chat-done, chat-stop, task-verification, task-verification-counts, chat-gate-list, gate-output-wrap, gate-output, task-published, task-branch, task-copy, chat-resume, icon, pill-ok, pill-bad, pill-done, chat-output, panel, panel-head, pill, muted, code |
-| `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, pill-ok, pill-bad, pill-done, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
-| `TaskRemoveDialog.tsx` | dialog, task-remove, status, chat-resume, chat-remove |
-
-### Region: settings
-
-| File | Primitives |
-| --- | --- |
-| `SettingsExecutorsPage.tsx` | page-header, banner-warn (via `WorkspaceRootBanner`), panel, status, muted |
-| `SettingsOrganizationPage.tsx` | page-header, kv, scope-context, panel |
-| `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness, pill, pill-ok, pill-bad, pill-warn |
-| `SettingsRepositoriesPage.tsx` | page-header, repo-scope, kv, status, muted |
-| `SettingsWorkflowsPage.tsx` | page-header, status |
-| `SettingsWorkspacePage.tsx` | page-header, banner-warn (via `WorkspaceRootBanner`), scope-context, panel, status, muted |
-| `RepositorySetup.tsx` | panel, icon, kv, table-wrap, data, pill, repo-cards, repo-card, repo-search, field, repo-toolbar, repo-table, repo-row-configured, repo-save, repo-na, repo-detail, repo-detail-body, scope-context, status, muted, primary |
-| `SettingsSaveActions.tsx` | settings-actions, settings-dirty, primary |
-| `WorkspaceRootBanner.tsx` | banner-warn, banner-title, icon |
-| `repository-setup.ts` | helper — no markup |
-| `ConfigurationScope.tsx` | scope-context |
-| `ExecutorDialog.tsx` | dialog, picker, field, status, muted |
-| `UnsavedChangesDialog.tsx` | dialog, unsaved, chat-resume, chat-remove |
-| `EnvVarsPanel.tsx` | panel, env, settings-actions (via `SettingsSaveActions`) |
-| `env-vars-panel-parts.tsx` | presentational helper `EnvVarsPanel.tsx` imports (tablist, table, banner, tab panels) — no primitives beyond `env` |
-| `env-draft.ts` | helper — no markup |
-| `env-raw.ts` | helper — no markup |
-| `DefaultWorkflowPanel.tsx` | panel, muted, status, settings-toggle, settings-actions (via `SettingsSaveActions`) |
-| `default-workflow-draft.ts` | helper — no markup |
-| `WorkflowsPanel.tsx` | panel, panel-head, table-wrap, data, pill, muted, status, primary, env-raw |
-| `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
-
-### Region: dashboard
-
-| File | Primitives |
-| --- | --- |
-| `DashboardPage.tsx` | page-header, dashboard-controls |
-| `AnalyticsToolbar.tsx` | analytics toolbar, rendered-data summary, range |
-| `RangeSelector.tsx` | analytics toolbar, selector, range, dialog, primary, status |
-| `ScopeToggle.tsx` | analytics toolbar, selector |
-| `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
-| `Card.tsx` | card |
-| `TaskUsagePanel.tsx` | data, align-end, muted |
-| `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
-| `RecentTasksPanel.tsx` | panel, alert, muted, data, task-title, task-avatar, by-user-user |
-| `UsageSummaryPanel.tsx` | metric summary, badge |
-| `TokenUsagePanel.tsx` | chart-wrap, legend, legend-button, swatch, chart-caption, chart-disclosure |
-| `TelemetryFrame.tsx` | alert, badge |
-| `Axes.tsx` | grid, tick, axis-label |
-| `BarChart.tsx` | bar, line, bucket-hit, bar-partial, bar-partial-hatch, chart-tooltip, chart-tooltip-box, chart-empty |
-| `HBarChart.tsx` | bar |
-| `Scatter.tsx` | dot, axis-label |
-| `scale.ts` | helper — no markup |
-
-### Region: entry
-
-| File | Primitives |
-| --- | --- |
-| `AccountPage.tsx` | page-header, panel, banner (info, open mode only: what `AUTH_MODE=none` leaves out), icon |
-| `OnboardingPage.tsx` | onboarding, appearance, public-header, banner, icon, muted, avatar, login-button, primary |
-| `LoginGate.tsx` | login, appearance, public-header, banner, icon |
-| `PublicPageHeader.tsx` | public-header |
-| `OnboardingOrganization.tsx` | onboarding, pill, banner, icon, muted |
-| `IdentityPanel.tsx` | identity, avatar |
-| `AccessTokensPanel.tsx` | panel, status |
-| `TrackedOrgsPanel.tsx` | panel, login-button |
+- inbox — [design-system/inbox.md](design-system/inbox.md)
+- composer — [design-system/composer.md](design-system/composer.md)
+- task-detail — [design-system/task-detail.md](design-system/task-detail.md)
+- settings — [design-system/settings.md](design-system/settings.md)
+- dashboard — [design-system/dashboard.md](design-system/dashboard.md)
+- entry — [design-system/entry.md](design-system/entry.md)
 
 A class used but not defined here (`visually-hidden`, `token-once`) is a hook with no styles or a
 leftover — do not style it by inventing a rule without a row above.
