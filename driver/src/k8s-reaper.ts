@@ -148,15 +148,17 @@ const scan = async (config: DriverConfig, request: K8sRequest): Promise<OrphanGr
     return [...groups.values()];
 };
 
-/** Deletes one named object, answering whether THIS call removed it (2xx) or it was already
- * going (404/409); a transport rejection or an unexpected status is the next round's problem. */
-const deleteNamed = async (request: K8sRequest, path: string): Promise<boolean> => {
+/** How one named delete landed: removed it this call, it was already going (404/409), or it
+ * failed — a transport rejection or an unexpected status is the next round's problem. */
+type DeleteResult = 'removed' | 'gone' | 'failed';
+
+const deleteNamed = async (request: K8sRequest, path: string): Promise<DeleteResult> => {
     try {
         const response = await request('DELETE', path);
-        if (response.status >= HTTP_ERROR_STATUS && !GONE_STATUSES.includes(response.status)) return false;
-        return response.status < HTTP_ERROR_STATUS;
+        if (response.status >= HTTP_ERROR_STATUS) return GONE_STATUSES.includes(response.status) ? 'gone' : 'failed';
+        return 'removed';
     } catch {
-        return false;
+        return 'failed';
     }
 };
 
@@ -174,6 +176,27 @@ const derivedSecretPaths = (config: DriverConfig, group: OrphanGroup): string[] 
 const uuidScoped = (group: OrphanGroup): group is OrphanGroup & { leaseToken: string } =>
     group.leaseToken !== null && JOB_ID.test(group.jobId) && JOB_ID.test(group.leaseToken);
 
+/**
+ * The attempt-scoped env Secrets, deleted FIRST — before the Pod and Service, and one failed
+ * delete stops the round (answers false): a Secret has no ownerReferences, so once the listed
+ * objects are gone no next scan can rediscover the (job, lease) pair these names are hashed
+ * from. Already-gone Secrets (404/409) never hold the teardown back. The names hash the OLD
+ * lease token, so this ordering never reaches a replacement attempt's resources.
+ */
+const reapDerivedSecrets = async (
+    config: DriverConfig,
+    request: K8sRequest,
+    group: OrphanGroup & { leaseToken: string },
+    removed: string[]
+): Promise<boolean> => {
+    for (const path of derivedSecretPaths(config, group)) {
+        const result = await deleteNamed(request, path);
+        if (result === 'failed') return false;
+        if (result === 'removed') removed.push(`secret ${path.split('/').pop()}`);
+    }
+    return true;
+};
+
 const reap = async (
     config: DriverConfig,
     request: K8sRequest,
@@ -182,32 +205,50 @@ const reap = async (
 ): Promise<readonly string[]> => {
     const paths = basePathOf(config);
     const removed: string[] = [];
+    if (uuidScoped(group) && !(await reapDerivedSecrets(config, request, group, removed))) return removed;
     for (const object of group.objects) {
-        if (await deleteNamed(request, `${paths[object.kind]}/${object.name}?propagationPolicy=Foreground`)) {
-            removed.push(`${object.kind} ${object.name}`);
-        }
+        const result = await deleteNamed(request, `${paths[object.kind]}/${object.name}?propagationPolicy=Foreground`);
+        if (result === 'removed') removed.push(`${object.kind} ${object.name}`);
     }
     if (!uuidScoped(group)) return removed;
-    // The attempt-scoped env Secrets and, on a provably dead job, the checkout claim: answered
-    // in the log like the fleet's objects, so "is the reaper running?" stays answerable from a
-    // round that only cleaned Secrets.
-    for (const path of derivedSecretPaths(config, group)) {
-        if (await deleteNamed(request, path)) removed.push(`secret ${path.split('/').pop()}`);
-    }
     // The checkout claim is JOB-scoped — the one name a replacement attempt can hold — so only a
     // provably dead job's claim may be removed. A superseded attempt's group must never touch
-    // it: the live attempt's fence is holding it right now.
+    // it: the live attempt's fence is holding it right now. Deleted the fence's own way — read
+    // first, delete THAT incarnation by uid precondition — so the removal can only ever reach
+    // the exact object this call read, never one created after it; an unreadable or
+    // unidentifiable claim is deferred to the next round rather than deleted on a maybe. (A
+    // `gone` job can hold no live attempt, so any claim here is a leftover — the precondition is
+    // what makes that argument structural instead of argued.) Answered in the log like the
+    // fleet's objects, so "is the reaper running?" stays answerable from a round that only
+    // cleaned Secrets.
     if (verdict === 'gone') {
-        const claim = `${configmapsPath(config.k8sNamespace)}/${claimName(attemptPair(group.jobId, group.leaseToken))}?propagationPolicy=Foreground`;
-        if (await deleteNamed(request, claim)) removed.push(`claim ${claim.split('/').pop()}`);
+        const claimPath = `${configmapsPath(config.k8sNamespace)}/${claimName(attemptPair(group.jobId, group.leaseToken))}`;
+        try {
+            const read = await request('GET', claimPath);
+            const uid =
+                read.status < HTTP_ERROR_STATUS
+                    ? parse<{ metadata?: { uid?: string } }>(read.body).metadata?.uid
+                    : undefined;
+            if (!uid) return removed;
+            const claim = `${claimPath}?propagationPolicy=Foreground`;
+            const result = await request('DELETE', claim, {
+                apiVersion: 'v1',
+                kind: 'DeleteOptions',
+                preconditions: { uid },
+            });
+            if (result.status < HTTP_ERROR_STATUS) removed.push(`claim ${claimPath.split('/').pop()}`);
+        } catch {
+            // Best effort: a leaked claim is taken over by the next claimant anyway.
+        }
     }
     return removed;
 };
 
 /**
- * The arm. See the file header for the posture; `scan` is two collection GETs, `reap` is one
- * Foreground delete per named object plus the derived-name Secret deletes and — only on a
- * provably dead job — the checkout claim.
+ * The arm. See the file header for the posture; `scan` is two collection GETs, `reap` is the
+ * derived-name Secret deletes FIRST — one failure stops the round, since nothing rediscoverable
+ * would survive it — then one Foreground delete per named object and — only on a provably dead
+ * job — the checkout claim.
  */
 export function createKubernetesReaper({ config, request }: { config: DriverConfig; request: K8sRequest }): ReaperArm {
     return {

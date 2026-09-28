@@ -137,14 +137,16 @@ const removeNetwork = async (execDocker: ExecDocker, network: string): Promise<b
 
 const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonly string[]> => {
     const removed: string[] = [];
+    // The network goes first: scan lists service containers only, so a network that fails to
+    // come down after the containers are gone would be undiscoverable to every later sweep.
+    if (group.leaseToken) {
+        const network = networkName({ id: group.jobId, leaseToken: group.leaseToken } as BoardJob);
+        if (await removeNetwork(execDocker, network)) removed.push(`network ${network}`);
+    }
     for (const object of group.objects) {
         if (await removeTolerantly(execDocker, ['rm', '-f', object.name])) {
             removed.push(`container ${object.name}`);
         }
-    }
-    if (group.leaseToken) {
-        const network = networkName({ id: group.jobId, leaseToken: group.leaseToken } as BoardJob);
-        if (await removeNetwork(execDocker, network)) removed.push(`network ${network}`);
     }
     return removed;
 };

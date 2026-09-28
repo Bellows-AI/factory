@@ -28,6 +28,7 @@ const NAMESPACE = 'factory';
 interface Recorded {
     method: K8sMethod;
     path: string;
+    body?: unknown;
 }
 
 /** A router that answers each (method, path) from a table and records every call. */
@@ -39,8 +40,8 @@ const router = (
     const calls: Recorded[] = [];
     return {
         calls,
-        request: async (method, path) => {
-            calls.push({ method, path });
+        request: async (method, path, body) => {
+            calls.push({ method, path, body });
             const hit = answers.find(([m, p]) => m === method && p === path);
             return hit ? hit[2] : { status: fallbackStatus, body: '' };
         },
@@ -220,8 +221,8 @@ describe('the kubernetes reaper arm: reap', () => {
         expect(fleet).toEqual([
             `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-timescale?propagationPolicy=Foreground`,
             `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
-            // The job is gone, so the checkout claim goes with it (pinned in full below).
-            `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim?propagationPolicy=Foreground`,
+            // The checkout claim is pinned in full below — here the read answers nothing (this
+            // router models a claim that was already released), so nothing is deleted on a maybe.
         ]);
     });
 
@@ -266,27 +267,94 @@ describe('the kubernetes reaper arm: reap', () => {
         expect(removed).toContain(`secret ${runnerSecret.split('/').pop()}`);
     });
 
-    it('deletes the checkout claim only when the job is gone, never while a replacement lives', async () => {
+    it('deletes the checkout claim only when the job is gone, by uid precondition, never while a replacement lives', async () => {
+        const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
         const { request, calls } = router([
             ...emptyLists,
-            ...[
-                `${podsPath(NAMESPACE)}/svc-timescale?propagationPolicy=Foreground`,
-                `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
-                `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim?propagationPolicy=Foreground`,
-            ].map((path): readonly [K8sMethod, string, K8sResponse] => ['DELETE', path, { status: 200, body: '' }]),
+            // The read the precondition is built from — the fence's own release shape.
+            ['GET', claimPath, { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' } }) }],
+            ['DELETE', `${claimPath}?propagationPolicy=Foreground`, { status: 200, body: '' }],
         ]);
         const arm = createKubernetesReaper({ config, request });
 
         await arm.reap(group(), 'gone');
-        expect(deleteCalls(calls)).toContainEqual(
-            `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim?propagationPolicy=Foreground`
-        );
+        expect(deleteCalls(calls)).toContainEqual(`${claimPath}?propagationPolicy=Foreground`);
+        // The delete can only ever reach the exact incarnation this call read.
+        const claimDelete = calls.find((call) => call.method === 'DELETE' && call.path.startsWith(`${claimPath}?`));
+        expect(claimDelete?.body).toEqual({
+            apiVersion: 'v1',
+            kind: 'DeleteOptions',
+            preconditions: { uid: 'claim-uid-1' },
+        });
 
         const superseded = router([...emptyLists], 404);
         const arm2 = createKubernetesReaper({ config, request: superseded.request });
         await arm2.reap(group(), 'superseded');
         // A live replacement attempt holds the claim; the reaper must never touch it.
         expect(deleteCalls(superseded.calls).some((path) => path.startsWith(configmapsPath(NAMESPACE)))).toBe(false);
+    });
+
+    it('defers the claim when the read cannot identify an incarnation — never a delete on a maybe', async () => {
+        const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
+        const { request, calls } = router([
+            ...emptyLists,
+            // 2xx but no uid: garbage is never proof of anything, and an UNCONDITIONED delete
+            // could reach a newer claim. Nothing is deleted; the next round reads again.
+            ['GET', claimPath, { status: 200, body: JSON.stringify({ metadata: {} }) }],
+        ]);
+        const arm = createKubernetesReaper({ config, request });
+
+        await arm.reap(group(), 'gone');
+
+        expect(deleteCalls(calls).some((path) => path.startsWith(configmapsPath(NAMESPACE)))).toBe(false);
+    });
+
+    it('deletes the derived Secrets BEFORE the Pod and Service, and stops the round when one fails', async () => {
+        // Once the listed Pod and Service are gone, no next scan can rediscover the (job, lease)
+        // pair to re-derive these names — a Secret has no ownerReferences. So a failed Secret
+        // delete must hold back the fleet: here the FIRST Secret answers 500, and nothing but
+        // that one Secret may be deleted all round.
+        const names = [
+            secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+            syncEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+            gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+            publishEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+        ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+        const { request, calls } = router([['DELETE', names[0]!, { status: 500, body: '' }]]);
+        const arm = createKubernetesReaper({ config, request });
+
+        const removed = await arm.reap(group(), 'gone');
+
+        expect(removed).toEqual([]);
+        expect(deleteCalls(calls)).toEqual([names[0]]);
+    });
+
+    it('deletes Secrets ahead of the fleet, and 404 Secrets do not block teardown', async () => {
+        const names = [
+            secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+            syncEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+            gateEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+            publishEnvSecretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob),
+        ].map((name) => `${secretsPath(NAMESPACE)}/${name}`);
+        const { request, calls } = router([
+            ...names.map((path): readonly [K8sMethod, string, K8sResponse] => [
+                'DELETE',
+                path,
+                { status: 404, body: '' },
+            ]),
+            ...[
+                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-timescale?propagationPolicy=Foreground`,
+                `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
+            ].map((path): readonly [K8sMethod, string, K8sResponse] => ['DELETE', path, { status: 200, body: '' }]),
+        ]);
+        const arm = createKubernetesReaper({ config, request });
+
+        const removed = await arm.reap(group(), 'gone');
+
+        // Ordering is the point: the four Secret deletes are the FIRST four calls, before any
+        // fleet object — and already-gone Secrets never hold the round back.
+        expect(deleteCalls(calls).slice(0, names.length)).toEqual(names);
+        expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-timescale`, 'service factory-svc-abc']);
     });
 
     it('answers what it removed without throwing on any single delete failure', async () => {

@@ -680,8 +680,13 @@ else
 fi
 
 # The runner container is the fence's territory, not the reaper's — cleaned up by label, the
-# way an operator would, so the daemon is left as the script found it.
-docker rm -f "$(docker ps -aq --filter "label=factory.job=$orphan")" >/dev/null 2>&1
+# way an operator would, so the daemon is left as the script found it. One id per rm: a quoted
+# command substitution would hand docker the whole match list as ONE newline-joined argument and
+# nothing would be removed.
+docker ps -aq --filter "label=factory.job=$orphan" |
+    while IFS= read -r container_id; do
+        [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
+    done
 
 stop_driver
 

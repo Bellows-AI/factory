@@ -134,13 +134,34 @@ describe('the docker reaper arm: reap', () => {
         const removed = await arm.reap(group(), 'gone');
 
         expect(removed).toEqual([
-            `container ${JOB}-${LEASE}-svc-timescale`,
             `network factory-job-${JOB}-${LEASE}-services`,
+            `container ${JOB}-${LEASE}-svc-timescale`,
         ]);
         expect(calls).toEqual([
-            ['rm', '-f', `${JOB}-${LEASE}-svc-timescale`],
             ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
             ['network', 'disconnect', '-f', networkName(job), 'gate-env'],
+            ['network', 'rm', networkName(job)],
+            ['rm', '-f', `${JOB}-${LEASE}-svc-timescale`],
+        ]);
+    });
+
+    it('attempts the network teardown before removing containers — a failed network rm leaves them retryable', async () => {
+        const calls: string[][] = [];
+        const failing: ExecDocker = async (args) => {
+            calls.push([...args]);
+            if (args[0] === 'network' && args[1] === 'rm') {
+                throw new Error(
+                    'Error response from daemon: error while removing network: network has active endpoints'
+                );
+            }
+            return { stdout: '' };
+        };
+        const arm = createDockerReaper(failing);
+
+        await expect(arm.reap(group(), 'gone')).rejects.toThrow('active endpoints');
+        // The containers were never touched: scan lists them, so the next sweep can retry both.
+        expect(calls).toEqual([
+            ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
             ['network', 'rm', networkName(job)],
         ]);
     });
