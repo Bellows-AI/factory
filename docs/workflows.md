@@ -276,7 +276,11 @@ reconciles an existing task's pull request with its current base branch. It expa
   cleanly, or leaves a known conflicted rebase state — writing its verdict to
   `.factory/merge-conflict-probe.json` in the worktree (the generic helper transport surfaces only
   ok/fail to the loop, never a helper's own output, to the agent turn that follows — the state file
-  is how that agent reads it). `repair`'s own prompt is a fixed relay: read the file, and when the
+  is how that agent reads it). The whole `.factory/` namespace is never publishable: the worktree
+  sync writes `/.factory/` into the clone's common `info/exclude` (a worktree's `.git` is a file,
+  so a `.git/info` join silently misses), and the publisher's `git add` and dirty probe exclude it
+  by pathspec, so a copy an older commit tracks is never re-staged — before both, the state file
+  rode `git add -A` into task PRs and onto main. `repair`'s own prompt is a fixed relay: read the file, and when the
   verdict names a real conflict, resolve it using ONLY `git rebase --continue`/`--abort` — an
   INITIATING `git rebase`, `git merge`, `git switch`/`checkout` of a branch, and `gh pr create` are
   all denied to the agent by the executor's git guard for exactly this reason (docs/jobs.md,

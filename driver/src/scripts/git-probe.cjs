@@ -21,7 +21,9 @@ try {
     try {
         out.defaultBranch = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
     } catch {}
-    out.dirty = git('status', '--porcelain').length > 0;
+    // The `.factory/` state namespace is never publishable work — publish.ts's GIT_ADD_ARGS
+    // excludes it, so a tree dirty only there must read clean or the commit would find nothing.
+    out.dirty = git('status', '--porcelain', '--', ':/', ':(top,exclude).factory').length > 0;
     try {
         out.unpushed = Number(git('rev-list', '--count', 'origin/' + out.defaultBranch + '..HEAD')) || 0;
     } catch {
