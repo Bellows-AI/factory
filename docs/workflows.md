@@ -565,6 +565,35 @@ existing columns) — a later settings change or block update can never affect a
 thread, the same frozen-snapshot doctrine every other workflow gets. A follow-up inherits it exactly
 like any other workflow thread.
 
+**A failed gate queues a bounded repair round (issue #49).** When the caller selected at least one
+repair round, the authored graph gains one more `agent` node, `gate-fix` — resuming the thread's
+primary session (the implementation conversation), gated, and `publish: true`, because the task's
+own publish never ran when its gates failed — with the board-owned `gateFixPrompt`
+(`workflow-templates.ts`, shared with the seeded `fix-issue` template): the prompt interpolates the
+completed run's `{{gate.name}}`/`{{gate.output}}` and instructs the agent to fix the cause and let
+the gates rerun, never to weaken one. Two edges route into it — `task`'s on `gate-failed`, and its
+own retry edge — and BOTH carry the same `max`, so per "give EVERY edge into X the same max" the
+bound counts repair ROUNDS (rows for the node, dead rows included), never worker attempts on one
+row. A repaired round that passes re-enters the same first hop `task`'s succeeded edge targets (or
+rests, when no block is selected — the pre-#49 success path); another failed gate queues the next
+round while budget remains; at exhaustion the thread rests `loop_bound` with the last failed gate
+report and its output still visible. Only a stored gate report with `status: "failed"` fires the
+route: an agent crash (`failed` with green gates), exhausted attempts, a stop, and a publish
+failure all leave `gate-failed` unmatched, exactly as the edge vocabulary defines it.
+
+**The round limit is the selected executor's option.** `PUT /api/workspace/executors` takes an
+optional `gateFixRounds` per row — a whole number in 0..10 (042's check constraint restates it at
+the row), `3` when absent, `0` disabling automatic repair and omitting the node entirely, leaving
+the pre-#49 graph byte-for-byte. `POST /api/jobs` reads the row the body's `executor` label names
+at launch (`resolveGateFixRounds`) and bakes the value into every edge's `max` at compile time —
+the selected executor is the natural home because the executor is what runs the gates, and the
+per-task `defaultWorkflow` override deliberately does NOT grow the field (it selects blocks, not
+runner policy). The launch-time value freezes three ways: the snapshot's edge bounds, 043's
+root-only `default_gate_fix_rounds` column (the triple null-together constraint the pair columns
+got in 039, extended), and `ResolvedWorkflow.defaultOptions` — so a later executor edit changes
+later tasks, never a running thread, and the task view counts the thread's `gate-fix` rows against
+the frozen column rather than re-deriving the budget from settings.
+
 **No repository or nothing publishable rests the thread instead of entering a selected block.**
 Every declared block helper is handed `{publication}` generically at claim time
 (`resolveClaimHelperPlans`) — a task with no repo, or whose entry never actually published, has none
@@ -644,6 +673,7 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | The settings page and composer checkboxes that read/write that API (#208) | `web/src/pages/SettingsWorkflowsPage.tsx`, `web/src/panels/DefaultWorkflowPanel.tsx`, `web/src/api/useDefaultWorkflowSettings.ts` |
 | The code-owned default workflow: the assembler, the selected pair, the launch resolution (issue #209) | `server/src/db/default-workflow.ts`, `server/src/routes/job-workflow-resolution.ts` |
 | The frozen selected-pair columns (issue #209) | `server/migrations/039_default_workflow_snapshot.sql` |
+| The executor round-limit column and the frozen root column (issue #49) | `server/migrations/042_user_executor_gate_fix_rounds.sql`, `server/migrations/043_job_default_gate_fix_rounds.sql` |
 | The no-publication block-entry guard (issue #209) | `server/src/db/workflow-blocks/runtime-settle.ts` `entersBlockHelperNode()` |
 | The board-owned master prompt (issue #244): the renderer, and its claim-time capability read of the frozen snapshot | `server/src/db/master-prompt.ts` (docs/jobs.md, "The master prompt") |
 
@@ -687,12 +717,14 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
   included) stays byte-identical.
 - Offline units (extended): `server/test/workflow-schema.test.ts` — `runtime` refuses `UNKNOWN_KEY`
   on both an authored agent node and a block node (issue #231's "never authorable" guarantee).
-- Offline units: `server/test/default-workflow.test.ts` (issue #209) — every selectable pair
-  compiles to the promised graph shape, `compileDefaultWorkflow` deep-equals compiling the authored
-  graph directly, an arbitrary prompt/skill invocation/literal `{{x}}` interpolates untouched, and a
-  pure orchestration walk through the real `nextTransition` (both excluded rests `no_edge`, a gate
-  failure never reaches a block, the selected block's entry inserts on `succeeded`, and
-  `REVIEW-CLEAN` hands off to merge-conflict-autofix only when both are selected).
+- Offline units: `server/test/default-workflow.test.ts` (issues #209/#49) — every selectable pair
+  compiles to the promised graph shape at rounds 0, 1 and 3 (`0` omitting `gate-fix` entirely),
+  `compileDefaultWorkflow` deep-equals compiling the authored graph directly, an arbitrary
+  prompt/skill invocation/literal `{{x}}` interpolates untouched, and a pure orchestration walk
+  through the real `nextTransition` (a gate failure inserts a `gate-fix` round whose command names
+  the gate, budget counted in rows until `loop_bound`, zero rounds resting `no_edge`, a green-gates
+  crash resting `no_edge`, a repaired round re-entering the first selected block, and
+  `REVIEW-CLEAN` handing off to merge-conflict-autofix only when both are selected).
 - Offline units (extended): `server/test/workflow-block-runtime-settle.test.ts` — `entersBlockHelperNode`
   (issue #209): true entering a helper-plan node from a bare node, a different block's scope, or the
   graph's own entry (`from: null`); false for a same-scope move, a rest, or a node with no declared
@@ -702,15 +734,24 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
   /api/workflows/:id`, issue 131 — visibility versus modify-permission, the `scope` field's
   `BAD_SCOPE` refusal, rename-collision 409, and the validator's refusals passing through at 400),
   the workflow-resolution block of `routes.jobs.test.ts`, and `server/test/routes.jobs.default-workflow.test.ts`
-  (issue #209) — the full `workflow`/`defaultWorkflow` body matrix, every refusal's no-row
-  guarantee, and that the stored pair and snapshot agree with the request.
+  (issues #209/#49) — the full `workflow`/`defaultWorkflow` body matrix, every refusal's no-row
+  guarantee, the stored pair and snapshot agreeing with the request, and the gate-repair round
+  limit resolving from the executor row the body names (falling back to `3` for no store, no
+  caller, no label or an unknown one). The same file's workspace half,
+  `routes.workspace.test.ts`, covers `gateFixRounds` validation (`BAD_EXECUTOR_ROUNDS`) and its
+  echo on all three executor reads.
 - Render smoke: `web/test/workflows-panel.render.test.tsx` (issue 131) — the list with its scope
   badges, the empty state, a fetch refusal rendered as the panel's status line, and the
   organization scope option gated to an admin caller.
 - Against a real database (`npm run test:db`): `server/test-db/job-store.workflow.default.test.ts`
-  (issue #209) — the frozen name/null-id/node/snapshot/pair, the claim's `publish: true`, entering a
-  selected block only with a recorded publication, both-excluded leaving one row, follow-up
-  inheritance, and the check constraint's own refusals.
+  (issues #209/#49) — the frozen name/null-id/node/snapshot/pair/round-limit, the claim's
+  `publish: true`, entering a selected block only with a recorded publication, both-excluded leaving
+  one row, follow-up inheritance, the check constraint's own refusals, and the repair walk end to
+  end: a gate failure queueing a `gate-fix` claim that publishes and resumes the primary session
+  (the docker/kubernetes parity pin — one shared loop drives both transports from exactly this
+  claim shape), a repaired round continuing into the block, exhaustion at 1 and 3 rounds resting
+  with the last failed gate visible, zero rounds and non-gate failures queueing nothing, and a
+  stopped round firing no edge.
 - Against a real database (`npm run test:db`): `server/test-db/workflow-store.test.ts` and
   `job-store.workflow.test.ts` — atomicity, the walks, session copies, publish flags, bounds; the
   former also covers `create()` compiling `builtin/github-review-reconcile` and storing its

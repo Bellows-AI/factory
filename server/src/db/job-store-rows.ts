@@ -53,6 +53,8 @@ export interface JobRow {
     workflow_node: string | null;
     /** The thread's frozen workflow name (033); null on workflow-less rows. */
     workflow_name: string | null;
+    /** Only thread() selects it — the root's frozen gate-repair round limit (043), root-only. */
+    default_gate_fix_rounds?: number | null;
     done_at: Date | null;
     cancel_requested_at: Date | null;
     command_delivered_at: Date | null;
@@ -160,6 +162,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         rootJobId: row.root_job_id,
         workflowNode: row.workflow_node ?? null,
         workflowName: row.workflow_name ?? null,
+        defaultGateFixRounds: row.default_gate_fix_rounds ?? null,
         doneAt: iso(row.done_at),
         cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,

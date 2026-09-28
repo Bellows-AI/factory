@@ -1,4 +1,10 @@
-import { CLAUDE_CODE, type ExecutorType, OPENCODE } from '@factory-ai/core';
+import {
+    CLAUDE_CODE,
+    DEFAULT_GATE_FIX_ROUNDS,
+    type ExecutorType,
+    MAX_GATE_FIX_ROUNDS,
+    OPENCODE,
+} from '@factory-ai/core';
 
 /**
  * Client-side structural validation for the pasted executor config.
@@ -56,9 +62,30 @@ export type ValidExecutor = {
     name: string;
     type: ExecutorType;
     config: object;
+    /** The default workflow's gate-repair round limit this executor launches tasks with (#49). */
+    gateFixRounds: number;
 };
 
 export type ExecutorValidation = { ok: true; value: ValidExecutor } | { ok: false; error: string };
+
+/**
+ * The gate-repair round limit field (#49): a bounded nonnegative integer, the code default when
+ * the field is left blank. UX only — the server re-validates authoritatively and the database's
+ * check constraint is the final word — but the dialog's live error keeps an out-of-range value
+ * from ever reaching the PUT.
+ */
+export function validateGateFixRounds(raw: string): { ok: true; value: number } | { ok: false; error: string } {
+    const trimmed = raw.trim();
+    if (!trimmed) return { ok: true, value: DEFAULT_GATE_FIX_ROUNDS };
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_GATE_FIX_ROUNDS) {
+        return {
+            ok: false,
+            error: `Gate repair rounds must be a whole number between 0 and ${MAX_GATE_FIX_ROUNDS}.`,
+        };
+    }
+    return { ok: true, value: parsed };
+}
 
 /**
  * The config half of the validation, on its own: JSON that parses to an object, whatever the type
@@ -98,7 +125,12 @@ export function validateExecutorPayload(raw: string, type: ExecutorType): Execut
     return { ok: true, value: parsed };
 }
 
-export function validateExecutorConfig(raw: string, name: string, type: ExecutorType): ExecutorValidation {
+export function validateExecutorConfig(
+    raw: string,
+    name: string,
+    type: ExecutorType,
+    gateFixRounds: string
+): ExecutorValidation {
     const payload = validateExecutorPayload(raw, type);
     if (!payload.ok) return payload;
 
@@ -107,7 +139,10 @@ export function validateExecutorConfig(raw: string, name: string, type: Executor
     if (/[/\\]/.test(trimmedName)) return { ok: false, error: 'The name cannot contain "/" or "\\".' };
     if (/^[-.]/.test(trimmedName)) return { ok: false, error: 'The name cannot start with "-" or ".".' };
 
-    return { ok: true, value: { name: trimmedName, type, config: payload.value } };
+    const rounds = validateGateFixRounds(gateFixRounds);
+    if (!rounds.ok) return rounds;
+
+    return { ok: true, value: { name: trimmedName, type, config: payload.value, gateFixRounds: rounds.value } };
 }
 
 /**
@@ -119,6 +154,7 @@ export type ExecutorRow = {
     type: string;
     config: object;
     isDefault: boolean;
+    gateFixRounds: number;
 };
 
 /**
@@ -187,3 +223,7 @@ export const EXECUTOR_GUIDANCE =
 
 /** What choosing a Type does; tied to the select with aria-describedby. */
 export const TYPE_CONFIG_NOTE = 'Tasks using this executor run with the selected type: Claude Code or OpenCode.';
+
+/** What the gate-repair field decides; tied to the number input with aria-describedby (#49). */
+export const GATE_FIX_ROUNDS_HELP =
+    'How many rounds a task on this executor may spend automatically repairing a failed gate (0 turns repair off). The limit is fixed when the task is created.';

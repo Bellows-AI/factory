@@ -6,7 +6,7 @@
  * saved settings from #203, else both on). Split out of `job-handlers-worker.ts` to keep
  * `handleCreateJob` within the repo's complexity/parameter budget (AGENTS.md).
  */
-import { ERROR_CODES } from '@factory-ai/core';
+import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
     compileDefaultWorkflow,
@@ -15,6 +15,7 @@ import {
     type DefaultWorkflowSelection,
 } from '../db/default-workflow.js';
 import { BOTH_ENABLED, type DefaultWorkflowSettingsStore } from '../db/default-workflow-settings-store.js';
+import type { UserExecutorStore } from '../db/user-executor-store.js';
 import type { workflowsFor } from './job-context.js';
 import { type ResolvedWorkflow, buildWorkflowSelection } from './job-field-validation.js';
 import { bad, guard } from './helpers.js';
@@ -70,8 +71,32 @@ async function resolveNamedWorkflow(
 }
 
 /**
+ * The gate-repair round limit (issue #49): the executor row the body names decides, and only a row
+ * of the CALLER's own can answer — `createdBy` null (open mode) skips the read. No store, no
+ * label, or no such row answers the code default. `handled: true` means a refusal already landed
+ * on `reply` (the store read failed).
+ */
+async function resolveGateFixRounds(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: { executorsStore: UserExecutorStore | null; executor: string | null; createdBy: string | null }
+): Promise<{ handled: true } | { handled: false; rounds: number }> {
+    const { executorsStore, executor, createdBy } = opts;
+    if (!executorsStore || !createdBy || !executor) return { handled: false, rounds: DEFAULT_GATE_FIX_ROUNDS };
+    const row = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'executor row read failed'),
+        () => executorsStore.configFor(createdBy, executor)
+    );
+    if (!row.ok) return { handled: true };
+    return { handled: false, rounds: row.value?.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS };
+}
+
+/**
  * Resolves the code-owned default workflow's selected pair — an explicit per-task override, else
- * the caller's saved settings (missing row/no store/no caller means both on) — and compiles it.
+ * the caller's saved settings (missing row/no store/no caller means both on) — and the gate-repair
+ * round limit: the configured value of the executor row the body names (issue #49), the code
+ * default when no store, no caller or no such row resolves. Compiles the graph with both.
  * `handled: true` means a refusal already landed on `reply`.
  */
 async function resolveDefaultWorkflow(
@@ -79,12 +104,14 @@ async function resolveDefaultWorkflow(
     reply: FastifyReply,
     opts: {
         defaultsStore: DefaultWorkflowSettingsStore | null;
+        executorsStore: UserExecutorStore | null;
+        executor: string | null;
         fields: Record<string, unknown>;
         createdBy: string | null;
         command: string;
     }
 ): Promise<{ handled: true } | { handled: false; workflow: ResolvedWorkflow; command: string }> {
-    const { defaultsStore, fields, createdBy, command } = opts;
+    const { defaultsStore, executorsStore, executor, fields, createdBy, command } = opts;
     const hasOverride = fields.defaultWorkflow !== undefined && fields.defaultWorkflow !== null;
 
     let selection: DefaultWorkflowSelection;
@@ -110,7 +137,13 @@ async function resolveDefaultWorkflow(
         selection = pairOf(BOTH_ENABLED);
     }
 
-    const definition = compileDefaultWorkflow(selection);
+    // The value freezes into defaultOptions and the snapshot below; a later settings edit changes
+    // later tasks, never this thread.
+    const rounds = await resolveGateFixRounds(request, reply, { executorsStore, executor, createdBy });
+    if (rounds.handled) return { handled: true };
+    const gateFixRounds = rounds.rounds;
+
+    const definition = compileDefaultWorkflow(selection, gateFixRounds);
     const built = buildWorkflowSelection(
         { id: null, name: DEFAULT_WORKFLOW_NAME, definition },
         fields.workflowParams,
@@ -122,7 +155,7 @@ async function resolveDefaultWorkflow(
     }
     return {
         handled: false,
-        workflow: { ...built.value, defaultOptions: selection },
+        workflow: { ...built.value, defaultOptions: { ...selection, gateFixRounds } },
         command: built.command,
     };
 }
@@ -139,13 +172,15 @@ export async function resolveLaunchWorkflow(
     opts: {
         workflowsStore: NamedWorkflowStore | null;
         defaultsStore: DefaultWorkflowSettingsStore | null;
+        executorsStore: UserExecutorStore | null;
+        executor: string | null;
         fields: Record<string, unknown>;
         repo: string | null;
         createdBy: string | null;
         command: string;
     }
 ): Promise<LaunchResolution> {
-    const { workflowsStore, defaultsStore, fields, repo, createdBy, command } = opts;
+    const { workflowsStore, defaultsStore, executorsStore, executor, fields, repo, createdBy, command } = opts;
     const named = fields.workflow !== undefined && fields.workflow !== null;
     const hasOverride = fields.defaultWorkflow !== undefined && fields.defaultWorkflow !== null;
 
@@ -162,5 +197,12 @@ export async function resolveLaunchWorkflow(
         return resolveNamedWorkflow(request, reply, { workflowsStore, fields, repo, createdBy, command });
     }
 
-    return resolveDefaultWorkflow(request, reply, { defaultsStore, fields, createdBy, command });
+    return resolveDefaultWorkflow(request, reply, {
+        defaultsStore,
+        executorsStore,
+        executor,
+        fields,
+        createdBy,
+        command,
+    });
 }

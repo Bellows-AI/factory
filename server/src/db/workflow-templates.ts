@@ -116,7 +116,13 @@ implementation conversation and fix them — nothing else.
 
 End your final message with the list of blockers you fixed and the verification commands you ran.`;
 
-const gateFixPrompt = `A verification gate failed on this task's latest run. Resume the implementation conversation
+/**
+ * The gate-repair turn, shared by the seeded `fix-issue` template and the code-owned default
+ * workflow (issue #49): resume the implementation conversation, fix the first failed gate's cause,
+ * rerun the check — never weaken the gate. The board interpolates `{{gate.name}}` /
+ * `{{gate.output}}` from the completed run's stored gate report at row-insert time.
+ */
+export const gateFixPrompt = `A verification gate failed on this task's latest run. Resume the implementation conversation
 and make the gate pass — nothing else. Gates are the checks the checkout declares; the run's own
 work is otherwise done.
 

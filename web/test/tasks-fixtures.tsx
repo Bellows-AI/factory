@@ -30,6 +30,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         executor: null,
         workflowName: null,
         workflowNode: null,
+        defaultGateFixRounds: null,
         followUpTo: null,
         rootJobId: '11111111-1111-4111-8111-111111111111',
         doneAt: null,

@@ -190,6 +190,12 @@ come and go with a PUT).
   Field-level rules wait until a consumer exists that can be wrong about them — the opencode
   consumer reads `model`, `small_model` and `provider` only by opencode's own merge semantics, not
   by schema.
+- **Each row also carries the default workflow's gate-repair round limit (issue #49).** The
+  dialog's `gate repair rounds` field is a whole number 0..10 (042's check constraint restates the
+  bound at the row), `3` when left blank, `0` turning automatic gate repair off. `POST /api/jobs`
+  reads the row the task's executor label names at launch and freezes the value onto the thread
+  (docs/workflows.md), so editing it later changes later tasks, never a running one — and the task
+  view counts the thread's spent repair rounds against the frozen budget.
 - **The page refuses before any dialog when there is no root.** With `root: null` the header drops
   its Add action and the page renders a sentence pointing at workspace setup — both executor
   routes would answer 409 `WORKSPACE_DISABLED` anyway, so the client refuses first instead of

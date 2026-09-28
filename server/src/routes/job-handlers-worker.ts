@@ -2,7 +2,14 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { type BoardScanner, boardsFor, storeFor, workflowDefaultsFor, workflowsFor } from './job-context.js';
+import {
+    type BoardScanner,
+    boardsFor,
+    executorsFor,
+    storeFor,
+    workflowDefaultsFor,
+    workflowsFor,
+} from './job-context.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import {
     type ResolvedWorkflow,
@@ -62,9 +69,12 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
      */
     const workflowsStore = await workflowsFor(orgs, request);
     const defaultsStore = await workflowDefaultsFor(orgs, request);
+    const executorsStore = await executorsFor(orgs, request);
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         defaultsStore,
+        executorsStore,
+        executor,
         fields,
         repo,
         createdBy,

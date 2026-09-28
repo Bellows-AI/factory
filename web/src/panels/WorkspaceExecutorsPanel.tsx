@@ -45,6 +45,7 @@ export function WorkspaceExecutorsPanel({
                             <tr>
                                 <th scope="col">Name</th>
                                 <th scope="col">Type</th>
+                                <th scope="col">Gate repair</th>
                                 <th scope="col">Added</th>
                                 <th scope="col">
                                     <span className="muted">Actions</span>
@@ -70,6 +71,11 @@ export function WorkspaceExecutorsPanel({
                                     </td>
                                     <td>
                                         <span className="pill">{executorTypeLabel(executor.type)}</span>
+                                    </td>
+                                    <td>
+                                        {/* The default-workflow repair budget tasks on this executor
+                                            launch with (#49); 0 means automatic repair is off. */}
+                                        {executor.gateFixRounds}
                                     </td>
                                     <td>{commitDate(executor.createdAt)}</td>
                                     <td>

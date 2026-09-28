@@ -24,14 +24,15 @@ export async function createJobRow(
     // the entry the first run carries, the snapshot freezes the graph onto
     // the root — where every transition decision reads it — and workflow_params freezes the
     // validated launch values beside it (030). default_review_reconciliation/
-    // default_merge_conflict_autofix (039) freeze the selected optional-block pair, root-only
-    // like the snapshot, and stay null on every other create — a named workflow, or the
-    // pre-209 workflow-less create this insert has always supported.
+    // default_merge_conflict_autofix (039) and default_gate_fix_rounds (043) freeze the
+    // default workflow's launch-time options, root-only like the snapshot, and stay null on
+    // every other create — a named workflow, or the pre-209 workflow-less create this insert
+    // has always supported.
     const rows = await sql<{ id: string }[]>`
         insert into job (
             org_id, command, created_by, repo, executor, id, root_job_id,
             workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params,
-            default_review_reconciliation, default_merge_conflict_autofix
+            default_review_reconciliation, default_merge_conflict_autofix, default_gate_fix_rounds
         )
         select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
                ${target.workflow?.id ?? null},
@@ -40,7 +41,8 @@ export async function createJobRow(
                ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
                ${target.workflow ? sql.json(target.workflow.params as never) : null},
                ${target.workflow?.defaultOptions?.reviewReconciliation ?? null},
-               ${target.workflow?.defaultOptions?.mergeConflictAutofix ?? null}
+               ${target.workflow?.defaultOptions?.mergeConflictAutofix ?? null},
+               ${target.workflow?.defaultOptions?.gateFixRounds ?? null}
         from (select gen_random_uuid() as x) s
         returning id
     `;

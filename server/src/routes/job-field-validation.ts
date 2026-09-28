@@ -98,8 +98,12 @@ export interface ResolvedWorkflow {
     node: string;
     snapshot: WorkflowDefinition;
     params: ParamValues;
-    /** The selected optional-block pair, only for the code-owned default. Absent on a named workflow. */
-    defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean };
+    /**
+     * The default workflow's launch-time options, only for the code-owned default. Absent on a
+     * named workflow. `gateFixRounds` is the selected executor's configured repair-round limit
+     * (issue #49) — resolved here, frozen with the snapshot, never re-read from settings later.
+     */
+    defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean; gateFixRounds: number };
 }
 
 /**

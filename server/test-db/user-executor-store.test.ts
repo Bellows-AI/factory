@@ -48,7 +48,11 @@ describe.skipIf(!enabled)('the user executor store', () => {
         const config = { model: 'zai-coding-plan/glm-5.3-flash', provider: { 'zai-coding-plan': {} } };
         await store.replace(ALICE, [{ name: 'main', type: 'opencode', config }]);
 
-        expect(await store.configFor(ALICE, 'main')).toEqual({ type: 'opencode', config });
+        expect(await store.configFor(ALICE, 'main')).toEqual({
+            type: 'opencode',
+            config,
+            gateFixRounds: 3,
+        });
         expect(await store.configFor(ALICE, 'deleted')).toBeNull();
         // Another member's row is not this member's answer.
         expect(await store.configFor('00000000-0000-4000-8000-00000000b22d', 'main')).toBeNull();
@@ -64,6 +68,40 @@ describe.skipIf(!enabled)('the user executor store', () => {
             expect.objectContaining({ name: 'main', isDefault: false }),
             expect.objectContaining({ name: 'heavy', isDefault: true }),
         ]);
+    });
+
+    it('stores and lists gateFixRounds, the column default filling an omitted value', async () => {
+        await store.replace(ALICE, [
+            { name: 'main', type: 'claude-code', config: {} },
+            { name: 'heavy', type: 'claude-code', config: {}, gateFixRounds: 7 },
+        ]);
+
+        expect(await store.list(ALICE)).toEqual([
+            expect.objectContaining({ name: 'main', gateFixRounds: 3 }),
+            expect.objectContaining({ name: 'heavy', gateFixRounds: 7 }),
+        ]);
+        expect(await store.listWithConfigs(ALICE)).toEqual([
+            expect.objectContaining({ name: 'main', gateFixRounds: 3 }),
+            expect.objectContaining({ name: 'heavy', gateFixRounds: 7 }),
+        ]);
+        // The claim-time read carries it too, though the claim itself ignores it — the default
+        // workflow's round limit freezes onto the thread at launch, never at claim.
+        expect(await store.configFor(ALICE, 'heavy')).toEqual({
+            type: 'claude-code',
+            config: {},
+            gateFixRounds: 7,
+        });
+    });
+
+    it('refuses a gate_fix_rounds outside 0..10 at the row', async () => {
+        for (const rounds of [-1, 11]) {
+            await expect(
+                sql`
+                    insert into user_executor (org_id, user_id, name, type, config, gate_fix_rounds)
+                    values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb, ${rounds})
+                `
+            ).rejects.toThrow(/user_executor_gate_fix_rounds_ck/);
+        }
     });
 
     /**

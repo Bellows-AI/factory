@@ -19,12 +19,16 @@ import { validateDefinition } from './workflow-schema-validate.js';
 import { BLOCK_REGISTRY, compileDefinition } from './workflow-blocks/index.js';
 import { REVIEW_MARKERS } from './workflow-blocks/github-review-reconcile.js';
 import type { BlockRegistry } from './workflow-blocks/types.js';
+import { gateFixPrompt } from './workflow-templates.js';
 
 /** The frozen `workflow_name` every default-workflow root row carries (never a member's name). */
 export const DEFAULT_WORKFLOW_NAME = 'default';
 
 /** The mandatory spine's one node: `{{command}}`, gated, publishing — the graph's entry. */
 export const DEFAULT_ENTRY_NODE = 'task';
+
+/** The gate-repair node a failed gate routes to (issue #49); bounded by the launch-time round limit. */
+export const DEFAULT_GATE_FIX_NODE = 'gate-fix';
 
 /** The outer node names the two optional blocks are chained under, in the issue's declared order. */
 export const REVIEW_BLOCK_NODE = 'review-reconciliation';
@@ -73,11 +77,25 @@ export function parseDefaultWorkflowSelection(
 }
 
 /**
- * The AUTHORED graph for a selected pair: the mandatory spine, then only the selected blocks,
- * chained in order. With both excluded this is `nodes: [task], edges: []` — exactly today's
- * unnamed path once compiled (a single node, no block expansion to run).
+ * The AUTHORED graph for a selected pair and a gate-repair round limit: the mandatory spine, the
+ * gate-fix node when repair is on (issue #49), then only the selected blocks, chained in order.
+ * With both excluded and zero rounds this is `nodes: [task], edges: []` — exactly the unnamed path
+ * as it was before #49 once compiled (a single node, no block expansion to run).
+ *
+ * The repair loop (issue #49): `gate-fix` is an ordinary agent node — resuming the thread's
+ * primary session (the implementation conversation), gated, and publishing, because the task's
+ * own publish never ran when its gates failed. Every edge INTO it — `task`'s and its own
+ * retry edge — carries the same `max`, so per "give EVERY edge into X the same max"
+ * (docs/workflows.md, "Loops") the bound counts REPAIR ROUNDS (rows for the node, dead rows
+ * included), never worker attempts on one row. The limit is a launch-time argument: the route
+ * reads the selected executor's configured value and the frozen snapshot fixes it for the
+ * thread, so later settings edits change later tasks, never a running one. `0` omits the node
+ * and both edges entirely — today's no-repair shape.
  */
-export function authorDefaultWorkflow(selection: DefaultWorkflowSelection): AuthoredWorkflowDefinition {
+export function authorDefaultWorkflow(
+    selection: DefaultWorkflowSelection,
+    gateFixRounds: number
+): AuthoredWorkflowDefinition {
     const nodes: AuthoredWorkflowDefinition['nodes'] = [
         { name: DEFAULT_ENTRY_NODE, kind: 'agent', session: 'resume', publish: true, prompt: '{{command}}' },
     ];
@@ -86,6 +104,10 @@ export function authorDefaultWorkflow(selection: DefaultWorkflowSelection): Auth
     // The chain of outer node names the spine feeds into, in declared order — each hop only added
     // for a selected block, so exclusion truly removes the node rather than leaving a bypassed one.
     let previous = DEFAULT_ENTRY_NODE;
+    // The first block the spine's succeeded path enters, if any — a repaired task (issue #49)
+    // re-enters the same hop: its gates now pass and its publish ran, so the walk continues
+    // exactly where an ordinarily successful task would have picked up.
+    let firstHop: (typeof REVIEW_BLOCK_NODE | typeof MERGE_BLOCK_NODE) | null = null;
 
     if (selection.reviewReconciliation) {
         nodes.push({
@@ -96,6 +118,7 @@ export function authorDefaultWorkflow(selection: DefaultWorkflowSelection): Auth
         });
         edges.push({ from: previous, to: REVIEW_BLOCK_NODE, when: 'succeeded' });
         previous = REVIEW_BLOCK_NODE;
+        firstHop = REVIEW_BLOCK_NODE;
     }
 
     if (selection.mergeConflictAutofix) {
@@ -105,6 +128,24 @@ export function authorDefaultWorkflow(selection: DefaultWorkflowSelection): Auth
                 ? { from: previous, to: MERGE_BLOCK_NODE, when: { marker: REVIEW_MARKERS.CLEAN } }
                 : { from: previous, to: MERGE_BLOCK_NODE, when: 'succeeded' }
         );
+        if (firstHop === null) firstHop = MERGE_BLOCK_NODE;
+    }
+
+    // The gate-repair loop, appended after the chain edges — the first-match order still gives
+    // every source its succeeded rule before its gate-failed rule, the base workflow's shape.
+    if (gateFixRounds > 0) {
+        nodes.push({
+            name: DEFAULT_GATE_FIX_NODE,
+            kind: 'agent',
+            session: 'resume',
+            publish: true,
+            prompt: gateFixPrompt,
+        });
+        if (firstHop !== null) {
+            edges.push({ from: DEFAULT_GATE_FIX_NODE, to: firstHop, when: 'succeeded' });
+        }
+        edges.push({ from: DEFAULT_ENTRY_NODE, to: DEFAULT_GATE_FIX_NODE, when: 'gate-failed', max: gateFixRounds });
+        edges.push({ from: DEFAULT_GATE_FIX_NODE, to: DEFAULT_GATE_FIX_NODE, when: 'gate-failed', max: gateFixRounds });
     }
 
     return { entry: DEFAULT_ENTRY_NODE, nodes, edges, params: [] };
@@ -118,9 +159,10 @@ export function authorDefaultWorkflow(selection: DefaultWorkflowSelection): Auth
  */
 export function compileDefaultWorkflow(
     selection: DefaultWorkflowSelection,
+    gateFixRounds: number,
     registry: BlockRegistry = BLOCK_REGISTRY
 ): WorkflowDefinition {
-    const authored = authorDefaultWorkflow(selection);
+    const authored = authorDefaultWorkflow(selection, gateFixRounds);
     const validated = validateDefinition(authored);
     if (!validated.ok) {
         throw new Error(`default workflow failed to validate: ${validated.refusal.code} ${validated.refusal.message}`);

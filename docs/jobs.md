@@ -1066,6 +1066,14 @@ top-level `services:` block is the one tolerated foreign key — the services ha
 read by the driver's own parser, which skips the `environment:` block in return; a file may carry
 both halves. Anything else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — is a
 named error with the line number.
+
+**A failed gate can queue a bounded repair round — board-side, driver-untouched (issue #49).**
+The gate report the driver lands (`POST /api/jobs/:id/gates`, then the failed verdict) is what the
+default workflow's `gate-failed` edge evaluates: the board queues a `gate-fix` round whose claim
+is byte-shape identical to any gated publishing claim, so the existing claim/lease/gate/publish
+machinery runs it unchanged on both transports (docs/workflows.md, "The code-owned default
+workflow"). The round limit is the selected executor's configured option, frozen onto the thread
+at create; nothing in `driver/` grew a gate, a retry, or a config key for this.
 **One environment container per task worktree, a `docker exec` per gate.** The container
 (`factory-env-…`, labelled `factory.gates=<key>`) runs the declared image as a `sleep infinity`
 sleeper over the workspaces volume, working directory at the task worktree —

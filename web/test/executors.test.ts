@@ -2,19 +2,29 @@ import { describe, expect, it } from 'vitest';
 import { EXECUTOR_TYPES } from '@factory-ai/core';
 import {
     EXECUTOR_TYPE_META,
+    GATE_FIX_ROUNDS_HELP,
     MAX_CONFIG_BYTES,
+    MAX_GATE_FIX_ROUNDS,
     REQUIRED_FIELDS,
     defaultExecutorName,
     executorTypeLabel,
     mergeExecutors,
     validateExecutorConfig,
     validateExecutorPayload,
+    validateGateFixRounds,
     withDefault,
     type ExecutorRow,
     type ValidExecutor,
 } from '../src/workspace/executors.js';
 
-const valid = () => validateExecutorConfig('{ "model": "sonnet" }', 'main', 'claude-code');
+const valid = () => validateExecutorConfig('{ "model": "sonnet" }', 'main', 'claude-code', '3');
+const validRow = (): ExecutorRow => ({
+    name: 'main',
+    type: 'claude-code',
+    config: {},
+    isDefault: false,
+    gateFixRounds: 3,
+});
 
 describe('validateExecutorPayload', () => {
     // The dialog's live textarea error is the payload's — parse, object, per-type fields, size —
@@ -48,36 +58,36 @@ describe('validateExecutorConfig', () => {
     it('accepts a plain object with a name and a known type', () => {
         expect(valid()).toEqual({
             ok: true,
-            value: { name: 'main', type: 'claude-code', config: { model: 'sonnet' } },
+            value: { name: 'main', type: 'claude-code', config: { model: 'sonnet' }, gateFixRounds: 3 },
         });
     });
 
     it('trims the name it keeps', () => {
-        const result = validateExecutorConfig('{}', '  main  ', 'claude-code');
+        const result = validateExecutorConfig('{}', '  main  ', 'claude-code', '3');
         expect(result.ok && result.value.name).toBe('main');
     });
 
     it('rejects paste that is not JSON, with the parser said so', () => {
-        const result = validateExecutorConfig('{ model: sonnet }', 'main', 'claude-code');
+        const result = validateExecutorConfig('{ model: sonnet }', 'main', 'claude-code', '3');
         expect(result.ok).toBe(false);
         if (!result.ok) expect(result.error).toMatch(/Not valid JSON/);
     });
 
     it('rejects an empty paste', () => {
-        expect(validateExecutorConfig('   ', 'main', 'claude-code').ok).toBe(false);
+        expect(validateExecutorConfig('   ', 'main', 'claude-code', '3').ok).toBe(false);
     });
 
     it('rejects a JSON array or scalar as the config', () => {
         // An object is the contract; an array would pass a naive `typeof === 'object'` check.
-        expect(validateExecutorConfig('[]', 'main', 'claude-code').ok).toBe(false);
-        expect(validateExecutorConfig('7', 'main', 'claude-code').ok).toBe(false);
-        expect(validateExecutorConfig('"text"', 'main', 'claude-code').ok).toBe(false);
-        expect(validateExecutorConfig('null', 'main', 'claude-code').ok).toBe(false);
+        expect(validateExecutorConfig('[]', 'main', 'claude-code', '3').ok).toBe(false);
+        expect(validateExecutorConfig('7', 'main', 'claude-code', '3').ok).toBe(false);
+        expect(validateExecutorConfig('"text"', 'main', 'claude-code', '3').ok).toBe(false);
+        expect(validateExecutorConfig('null', 'main', 'claude-code', '3').ok).toBe(false);
     });
 
     it('rejects a blank, slashed, or dash-leading name', () => {
         for (const name of ['', '  ', 'a/b', 'a\\b', '-x', '.hidden']) {
-            const result = validateExecutorConfig('{}', name, 'claude-code');
+            const result = validateExecutorConfig('{}', name, 'claude-code', '3');
             expect(result.ok, name).toBe(false);
         }
     });
@@ -90,7 +100,7 @@ describe('validateExecutorConfig', () => {
 
     it('rejects a config over the size limit', () => {
         const big = JSON.stringify({ padding: 'x'.repeat(MAX_CONFIG_BYTES) });
-        expect(validateExecutorConfig(big, 'main', 'claude-code').ok).toBe(false);
+        expect(validateExecutorConfig(big, 'main', 'claude-code', '3').ok).toBe(false);
     });
 
     it('covers every executor type in REQUIRED_FIELDS', () => {
@@ -100,10 +110,10 @@ describe('validateExecutorConfig', () => {
     });
 
     it('accepts an opencode executor with a plain object config', () => {
-        const result = validateExecutorConfig('{ "model": "x" }', 'main', 'opencode');
+        const result = validateExecutorConfig('{ "model": "x" }', 'main', 'opencode', '3');
         expect(result).toEqual({
             ok: true,
-            value: { name: 'main', type: 'opencode', config: { model: 'x' } },
+            value: { name: 'main', type: 'opencode', config: { model: 'x' }, gateFixRounds: 3 },
         });
     });
 
@@ -111,6 +121,38 @@ describe('validateExecutorConfig', () => {
         // Same raw-JSON contract as claude-code: field rules wait for a consumer that can be
         // wrong about them.
         expect(REQUIRED_FIELDS.opencode).toEqual([]);
+    });
+
+    it('carries the parsed gate-fix round limit', () => {
+        const result = validateExecutorConfig('{}', 'main', 'claude-code', '7');
+        expect(result.ok && result.value.gateFixRounds).toBe(7);
+    });
+
+    it('rejects a round limit the field validator refused', () => {
+        for (const raw of ['11', '-1', '2.5', 'three']) {
+            expect(validateExecutorConfig('{}', 'main', 'claude-code', raw).ok, raw).toBe(false);
+        }
+    });
+});
+
+describe('validateGateFixRounds', () => {
+    it('parses a bounded nonnegative integer and defaults a blank field to 3', () => {
+        expect(validateGateFixRounds('')).toEqual({ ok: true, value: 3 });
+        expect(validateGateFixRounds('   ')).toEqual({ ok: true, value: 3 });
+        expect(validateGateFixRounds('0')).toEqual({ ok: true, value: 0 });
+        expect(validateGateFixRounds('3')).toEqual({ ok: true, value: 3 });
+        expect(validateGateFixRounds(' 10 ')).toEqual({ ok: true, value: 10 });
+    });
+
+    it('rejects out-of-range, fractional, and non-numeric input', () => {
+        for (const raw of ['11', `${MAX_GATE_FIX_ROUNDS + 1}`, '-1', '2.5', 'three', '1e2']) {
+            expect(validateGateFixRounds(raw).ok, raw).toBe(false);
+        }
+    });
+
+    it('carries help copy that says what the setting does', () => {
+        expect(GATE_FIX_ROUNDS_HELP).toMatch(/gate/i);
+        expect(GATE_FIX_ROUNDS_HELP).toMatch(/0.*off|off.*0/i);
     });
 });
 
@@ -152,8 +194,8 @@ describe('EXECUTOR_TYPE_META', () => {
 });
 
 describe('mergeExecutors', () => {
-    const first: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'sonnet' } };
-    const second: ValidExecutor = { name: 'oc', type: 'opencode', config: { model: 'x' } };
+    const first: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'sonnet' }, gateFixRounds: 3 };
+    const second: ValidExecutor = { name: 'oc', type: 'opencode', config: { model: 'x' }, gateFixRounds: 1 };
     const firstRow: ExecutorRow = { ...first, isDefault: false };
     const secondRow: ExecutorRow = { ...second, isDefault: false };
 
@@ -165,13 +207,29 @@ describe('mergeExecutors', () => {
     it('replaces the edited row, matched by its original name, keeping its position', () => {
         // A rename changes the name the row is saved under; the match is still against the name
         // the row had when the dialog opened.
-        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {} };
+        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {}, gateFixRounds: 3 };
         const result = mergeExecutors([firstRow, secondRow], 'main', renamed);
         expect(result).toEqual({ ok: true, value: [{ ...renamed, isDefault: false }, secondRow] });
     });
 
+    it('keeps the round limit the dialog saved on the edited row', () => {
+        const changed: ValidExecutor = {
+            name: 'main',
+            type: 'claude-code',
+            config: { model: 'opus' },
+            gateFixRounds: 5,
+        };
+        const result = mergeExecutors([firstRow, secondRow], 'main', changed);
+        expect(result.ok && result.value[0]?.gateFixRounds).toBe(5);
+    });
+
     it('allows saving an edit with the name unchanged', () => {
-        const changed: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'opus' } };
+        const changed: ValidExecutor = {
+            name: 'main',
+            type: 'claude-code',
+            config: { model: 'opus' },
+            gateFixRounds: 3,
+        };
         const result = mergeExecutors([firstRow, secondRow], 'main', changed);
         expect(result).toEqual({ ok: true, value: [{ ...changed, isDefault: false }, secondRow] });
     });
@@ -195,7 +253,7 @@ describe('mergeExecutors', () => {
 
     it('keeps the default flag across a rename', () => {
         const defaultRow: ExecutorRow = { ...firstRow, isDefault: true };
-        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {} };
+        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {}, gateFixRounds: 3 };
         const result = mergeExecutors([defaultRow, secondRow], 'main', renamed);
         expect(result).toEqual({ ok: true, value: [{ ...renamed, isDefault: true }, secondRow] });
     });
@@ -208,8 +266,8 @@ describe('mergeExecutors', () => {
 });
 
 describe('withDefault', () => {
-    const first: ExecutorRow = { name: 'main', type: 'claude-code', config: {}, isDefault: false };
-    const second: ExecutorRow = { name: 'oc', type: 'opencode', config: {}, isDefault: true };
+    const first: ExecutorRow = validRow();
+    const second: ExecutorRow = { name: 'oc', type: 'opencode', config: {}, isDefault: true, gateFixRounds: 2 };
 
     it('flags exactly the named row and clears every other', () => {
         const result = withDefault([first, second], 'main');

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ADD_LABEL, ExecutorDialog, SAVE_LABEL } from '../src/components/ExecutorDialog.js';
-import { TYPE_CONFIG_NOTE } from '../src/workspace/executors.js';
+import { GATE_FIX_ROUNDS_HELP, TYPE_CONFIG_NOTE } from '../src/workspace/executors.js';
 
 /**
  * The add/edit executor dialog is a Headless UI Dialog, so it portals — and
@@ -38,5 +38,9 @@ describe('ExecutorDialog', () => {
         expect(ADD_LABEL).toBe('Add executor');
         expect(SAVE_LABEL).toBe('Save executor');
         expect(TYPE_CONFIG_NOTE).toMatch(/run with the selected type: Claude Code or OpenCode/);
+        // The gate-repair field's help is the same contract: what the number decides, and that
+        // zero turns automatic repair off (issue #49).
+        expect(GATE_FIX_ROUNDS_HELP).toMatch(/failed gate/);
+        expect(GATE_FIX_ROUNDS_HELP).toMatch(/0 turns/i);
     });
 });

@@ -8,7 +8,15 @@ import type {
 import { compileDefaultWorkflow, DEFAULT_ENTRY_NODE, DEFAULT_WORKFLOW_NAME } from '../src/db/default-workflow.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
-import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    githubAuth,
+    memoryAuthStore,
+    memoryUserExecutorStore,
+    signedIn,
+    staticRegistry,
+    stubTelemetryClient,
+    testConfig,
+} from './helpers.js';
 
 /**
  * The HTTP contract of the launch-time default-workflow resolution (issue #209): the three
@@ -39,7 +47,7 @@ interface TargetRecord {
     node: string;
     snapshot: unknown;
     params: unknown;
-    defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean };
+    defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean; gateFixRounds: number };
 }
 
 /** Records exactly what `store.create` was handed — the HTTP contract's own concern, not the SQL. */
@@ -129,11 +137,13 @@ async function boot(opts: {
     workflows?: WorkflowStore;
     workflowDefaults?: DefaultWorkflowSettingsStore;
     signedIn?: boolean;
+    userExecutors?: ReturnType<typeof memoryUserExecutorStore>;
 }) {
     const registryParts = {
         jobs: opts.jobs,
         workflows: opts.workflows,
         workflowDefaults: opts.workflowDefaults,
+        userExecutors: opts.userExecutors,
         telemetry: stubTelemetryClient(),
     };
     if (!opts.signedIn) {
@@ -175,9 +185,9 @@ describe('POST /api/jobs — the default workflow launch contract (issue #209)',
                 id: null,
                 name: DEFAULT_WORKFLOW_NAME,
                 node: DEFAULT_ENTRY_NODE,
-                snapshot: compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }),
+                snapshot: compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 3),
                 params: {},
-                defaultOptions: { reviewReconciliation: true, mergeConflictAutofix: true },
+                defaultOptions: { reviewReconciliation: true, mergeConflictAutofix: true, gateFixRounds: 3 },
             },
         ]);
         expect(jobs.commands).toEqual(['echo hi']);
@@ -205,9 +215,13 @@ describe('POST /api/jobs — the default workflow launch contract (issue #209)',
 
         expect(response.statusCode).toBe(HTTP_CREATED);
         expect(getCalls).toHaveLength(1);
-        expect(jobs.created[0]!.defaultOptions).toEqual({ reviewReconciliation: false, mergeConflictAutofix: true });
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: false,
+            mergeConflictAutofix: true,
+            gateFixRounds: 3,
+        });
         expect(jobs.created[0]!.snapshot).toEqual(
-            compileDefaultWorkflow({ reviewReconciliation: false, mergeConflictAutofix: true })
+            compileDefaultWorkflow({ reviewReconciliation: false, mergeConflictAutofix: true }, 3)
         );
     });
 
@@ -219,7 +233,11 @@ describe('POST /api/jobs — the default workflow launch contract (issue #209)',
         const response = await post(instance, { command: 'echo hi' }, cookie);
 
         expect(response.statusCode).toBe(HTTP_CREATED);
-        expect(jobs.created[0]!.defaultOptions).toEqual({ reviewReconciliation: true, mergeConflictAutofix: true });
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 3,
+        });
     });
 
     it.each([
@@ -240,7 +258,7 @@ describe('POST /api/jobs — the default workflow launch contract (issue #209)',
 
         expect(response.statusCode).toBe(HTTP_CREATED);
         expect(getCalls).toEqual([]);
-        expect(jobs.created[0]!.defaultOptions).toEqual(override);
+        expect(jobs.created[0]!.defaultOptions).toEqual({ ...override, gateFixRounds: 3 });
     });
 
     it("workflow: null alongside a valid override uses the default path (the composer's own shape)", async () => {
@@ -258,7 +276,11 @@ describe('POST /api/jobs — the default workflow launch contract (issue #209)',
         );
 
         expect(response.statusCode).toBe(HTTP_CREATED);
-        expect(jobs.created[0]!.defaultOptions).toEqual({ reviewReconciliation: false, mergeConflictAutofix: true });
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: false,
+            mergeConflictAutofix: true,
+            gateFixRounds: 3,
+        });
     });
 
     it('an explicit workflow plus a valid override refuses BAD_DEFAULT_WORKFLOW, never resolving the name', async () => {
@@ -377,7 +399,151 @@ describe('POST /api/jobs — the default workflow launch contract (issue #209)',
         const response = await post(instance, { command: 'echo hi', defaultWorkflow: pair }, cookie);
 
         expect(response.statusCode).toBe(HTTP_CREATED);
-        expect(jobs.created[0]!.defaultOptions).toEqual(pair);
-        expect(jobs.created[0]!.snapshot).toEqual(compileDefaultWorkflow(pair));
+        expect(jobs.created[0]!.defaultOptions).toEqual({ ...pair, gateFixRounds: 3 });
+        expect(jobs.created[0]!.snapshot).toEqual(compileDefaultWorkflow(pair, 3));
+    });
+});
+
+describe('POST /api/jobs — the gate-repair round limit (issue #49)', () => {
+    /** Seeds an executor store with one row under the signed-in caller, returning it and the app. */
+    async function bootWithExecutor(row: { gateFixRounds?: number; name?: string } | null) {
+        const jobs = stubJobs();
+        const executors = memoryUserExecutorStore();
+        const auth = memoryAuthStore();
+        const alice = auth.seedMember('test-org', 'alice');
+        if (row) {
+            await executors.replace(alice.user.id, [
+                {
+                    name: row.name ?? 'main',
+                    type: 'claude-code',
+                    config: {},
+                    ...(row.gateFixRounds !== undefined ? { gateFixRounds: row.gateFixRounds } : {}),
+                },
+            ]);
+        }
+        const config = testConfig({ auth: githubAuth() });
+        const instance = await buildApp({
+            config,
+            orgs: staticRegistry({ config, jobs, userExecutors: executors, telemetry: stubTelemetryClient() }),
+            auth,
+        });
+        app = instance;
+        return { instance, cookie: await signedIn(auth, alice), executors, aliceId: alice.user.id, jobs };
+    }
+
+    it('the selected executor row freezes its round limit into the snapshot and defaultOptions', async () => {
+        const { instance, cookie, jobs } = await bootWithExecutor({ gateFixRounds: 5 });
+
+        const response = await post(instance, { command: 'echo hi', executor: 'main' }, cookie);
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 5,
+        });
+        expect(jobs.created[0]!.snapshot).toEqual(
+            compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 5)
+        );
+    });
+
+    it('reads the row the body names, not the first row', async () => {
+        const { instance, cookie, executors, aliceId, jobs } = await bootWithExecutor({ gateFixRounds: 5 });
+        await executors.replace(aliceId, [
+            { name: 'other', type: 'claude-code', config: {}, gateFixRounds: 1 },
+            { name: 'main', type: 'claude-code', config: {}, gateFixRounds: 5 },
+        ]);
+
+        const response = await post(instance, { command: 'echo hi', executor: 'other' }, cookie);
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 1,
+        });
+        expect(jobs.created[0]!.snapshot).toEqual(
+            compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 1)
+        );
+    });
+
+    it('rounds zero disables repair: the snapshot has no gate-fix node and the option says zero', async () => {
+        const { instance, cookie, jobs } = await bootWithExecutor({ gateFixRounds: 0 });
+
+        const response = await post(instance, { command: 'echo hi', executor: 'main' }, cookie);
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 0,
+        });
+        expect(jobs.created[0]!.snapshot).toEqual(
+            compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 0)
+        );
+    });
+
+    it('an unknown executor label falls back to the default of three', async () => {
+        const { instance, cookie, jobs } = await bootWithExecutor({ gateFixRounds: 5 });
+
+        const response = await post(instance, { command: 'echo hi', executor: 'missing' }, cookie);
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 3,
+        });
+    });
+
+    it('no executor label falls back to the default of three', async () => {
+        const { instance, cookie, jobs } = await bootWithExecutor({ gateFixRounds: 5 });
+
+        const response = await post(instance, { command: 'echo hi' }, cookie);
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 3,
+        });
+    });
+
+    it('no executor store at all falls back to the default of three', async () => {
+        const jobs = stubJobs();
+        const auth = memoryAuthStore();
+        const alice = auth.seedMember('test-org', 'alice');
+        const config = testConfig({ auth: githubAuth() });
+        const instance = await buildApp({
+            config,
+            orgs: staticRegistry({ config, jobs, telemetry: stubTelemetryClient() }),
+            auth,
+        });
+        app = instance;
+
+        const response = await post(instance, { command: 'echo hi', executor: 'main' }, await signedIn(auth, alice));
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 3,
+        });
+    });
+
+    it('no caller (open mode) falls back to the default of three', async () => {
+        const jobs = stubJobs();
+        const executors = memoryUserExecutorStore();
+        const { instance } = await boot({ jobs, signedIn: false, userExecutors: executors });
+        await executors.replace('nobody', [{ name: 'main', type: 'claude-code', config: {}, gateFixRounds: 9 }]);
+
+        const response = await post(instance, { command: 'echo hi', executor: 'main' });
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 3,
+        });
     });
 });

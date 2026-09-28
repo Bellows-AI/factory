@@ -48,6 +48,15 @@ export async function workflowDefaultsFor(orgs: OrgRegistry, request: FastifyReq
     return rt?.workflowDefaults ?? null;
 }
 
+/**
+ * The caller's configured executor rows — read at launch for the default workflow's gate-repair
+ * round limit (issue #49), mirroring `workflowDefaultsFor`'s org lookup.
+ */
+export async function executorsFor(orgs: OrgRegistry, request: FastifyRequest) {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.userExecutors ?? null;
+}
+
 export type BoardScanner = <T>(
     boards: readonly JobStore[],
     log: (e: Error) => void,
