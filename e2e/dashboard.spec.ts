@@ -396,3 +396,147 @@ test.describe('the user menu', () => {
         await page.locator('.appbar').screenshot({ path: `${SHOTS}/appbar-user-menu.png` });
     });
 });
+
+test.describe('the analytics dashboard layout (issue 283)', () => {
+    test('the toolbar is one 64px panel carrying range, scope, coverage and freshness', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await open(page);
+
+        const toolbar = page.locator('.analytics-toolbar');
+        const box = (await toolbar.boundingBox())!;
+        expect(box.height, 'toolbar height at 1440').toBeGreaterThanOrEqual(64);
+        expect(box.height, 'toolbar height at 1440').toBeLessThanOrEqual(72);
+        await expect(toolbar.locator('#range-select')).toBeVisible();
+        await expect(toolbar.locator('#range-select svg.icon')).toHaveCount(1);
+        await expect(toolbar.locator('.updated-at')).toContainText('Updated');
+        // Coverage is text with a dot, never a selector.
+        await expect(toolbar.locator('.toolbar-coverage')).toHaveText(/\d+ (tracked )?repositor(y|ies)/);
+        await expect(toolbar.locator('.toolbar-coverage-dot')).toHaveCount(1);
+        await expect(toolbar.locator('.toolbar-coverage button')).toHaveCount(0);
+        // Open mode has no personal scope — the "unavailable identity" case: a read-only value,
+        // never a dead dropdown.
+        await expect(page.locator('#scope-select')).toHaveCount(0);
+        await expect(toolbar.locator('.toolbar-value')).toHaveText('Organization');
+        // Every item shares one row: the legends sit inline beside their controls.
+        const range = (await toolbar.locator('#range-select').boundingBox())!;
+        const stamp = (await toolbar.locator('.updated-at').boundingBox())!;
+        expect(Math.abs(range.y + range.height / 2 - (stamp.y + stamp.height / 2))).toBeLessThan(4);
+        await toolbar.screenshot({ path: `${SHOTS}/dashboard-toolbar-1440.png` });
+    });
+
+    test('the precise freshness stamp opens inside the viewport from the toolbar edge', async ({ page }) => {
+        for (const width of [1440, 390]) {
+            await page.setViewportSize({ width, height: 900 });
+            await open(page);
+            await page.locator('.updated-at').focus();
+            const box = (await page.locator('.updated-at-full').boundingBox())!;
+            expect(box.x, `${width}px: stamp left edge`).toBeGreaterThanOrEqual(0);
+            expect(box.x + box.width, `${width}px: stamp right edge`).toBeLessThanOrEqual(width);
+        }
+    });
+
+    test('four metric cards, no decorative trend, comparison or cost', async ({ page }) => {
+        await open(page);
+
+        await expect(page.locator('.usage-summary .usage-group')).toHaveCount(4);
+        await expect(page.locator('.usage-summary .usage-disc')).toHaveCount(4);
+        for (const label of ['Sessions', 'Total input tokens', 'Active time', 'Edit acceptance']) {
+            await expect(page.locator('.usage-summary .usage-label', { hasText: label })).toBeVisible();
+        }
+        const text = await page.locator('main').innerText();
+        expect(text).not.toMatch(/vs\.? previous|↑|↓|estimated cost/i);
+        await expect(page.getByRole('button', { name: /weekly|bar chart|line chart/i })).toHaveCount(0);
+    });
+
+    test('the main chart plots at 360px on the desktop', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await open(page);
+
+        const svg = page.locator('section.panel', { hasText: 'AI token usage' }).locator('.chart-wrap svg').first();
+        const box = (await svg.boundingBox())!;
+        // 360px of plot plus the axis padding, drawn near 1:1 at this width.
+        expect(box.height).toBeGreaterThanOrEqual(400);
+        expect(box.height).toBeLessThanOrEqual(432);
+    });
+
+    test('the legend toggles a series and the buckets inspect from the keyboard', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await open(page);
+
+        const panel = page.locator('section.panel', { hasText: 'AI token usage' });
+        const output = panel.getByRole('button', { name: 'Output', exact: true });
+        await expect(panel.locator('rect[data-series="output"]').first()).toBeAttached();
+        await output.click();
+        await expect(output).toHaveAttribute('aria-pressed', 'false');
+        await expect(panel.locator('rect[data-series="output"]')).toHaveCount(0);
+        await output.click();
+        await expect(output).toHaveAttribute('aria-pressed', 'true');
+
+        const buckets = panel.locator('.bucket-hit');
+        await buckets.first().focus();
+        await page.keyboard.press('ArrowRight');
+        await expect(buckets.nth(1)).toBeFocused();
+        await expect(panel.locator('.chart-tooltip')).toBeVisible();
+    });
+
+    test('a partial period is hatched and keyed in the caption', async ({ page }) => {
+        await open(page);
+
+        const panel = page.locator('section.panel', { hasText: 'AI token usage' });
+        await expect(panel.locator('pattern#partial-hatch')).toHaveCount(1);
+        await expect(panel.getByText('The hatched bucket is a partial period.')).toBeVisible();
+    });
+
+    test('Usage by user and Recent tasks sit side by side from 1200px and stack below', async ({ page }) => {
+        const byUser = page.locator('section.panel', { hasText: 'Usage by user' });
+        const recent = page.locator('section.panel', { hasText: 'Recent tasks' });
+
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await open(page);
+        const [a, b] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
+        expect(Math.abs(a.y - b.y), 'same row at 1440').toBeLessThan(2);
+        expect(b.x).toBeGreaterThan(a.x + a.width);
+
+        await page.setViewportSize({ width: 1024, height: 900 });
+        const [c, d] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
+        expect(d.y, 'stacked at 1024').toBeGreaterThanOrEqual(c.y + c.height);
+    });
+
+    test('a recent task status is a toned pill, and the section says range and scope do not apply', async ({
+        page,
+    }) => {
+        await open(page);
+
+        const recent = page.locator('section.panel', { hasText: 'Recent tasks' });
+        await expect(recent.locator('.recent-tasks-head .pill-done')).toHaveText('Task board');
+        await expect(recent.getByText('Not affected by range or scope')).toBeVisible();
+        const status = recent.locator('tbody tr').first().locator('td').nth(1).locator('.pill');
+        await expect(status).toHaveText(
+            /^(Running|Stopping|Done|Waiting for review|Queued|(Succeeded|Failed|Stopped) · Needs review.*)$/
+        );
+    });
+
+    test('a failed refresh keeps the last good data and recovers on the next read', async ({ page }) => {
+        test.slow();
+        await open(page);
+
+        await page.route('**/api/stats**', (route) => route.fulfill({ status: 500, body: 'boom' }));
+        await expect(page.getByText('showing the last successful')).toBeVisible({ timeout: 90_000 });
+        await expect(page.locator('.usage-summary')).toBeVisible();
+
+        await page.unroute('**/api/stats**');
+        await expect(page.getByText('showing the last successful')).toHaveCount(0, { timeout: 90_000 });
+        await expect(page.locator('.usage-summary')).toBeVisible();
+    });
+
+    test('screenshots: dark and light at 1440 and 390', async ({ page }) => {
+        for (const width of [1440, 390]) {
+            await page.setViewportSize({ width, height: 1000 });
+            await open(page);
+            for (const theme of ['dark', 'light']) {
+                await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+                await page.screenshot({ path: `${SHOTS}/dashboard-${theme}-${width}.png`, fullPage: true });
+            }
+        }
+    });
+});
