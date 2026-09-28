@@ -24,7 +24,7 @@ export function UserMenu({ session }: { session: Session }) {
                 title={`${session.user.login} (${session.role})`}
             >
                 {session.user.avatarUrl ? (
-                    <img className="avatar" src={session.user.avatarUrl} alt="" width={24} height={24} />
+                    <img className="avatar" src={session.user.avatarUrl} alt="" width={28} height={28} />
                 ) : (
                     <span className="avatar avatar-fallback" aria-hidden="true">
                         {session.user.login.slice(0, 1).toUpperCase()}

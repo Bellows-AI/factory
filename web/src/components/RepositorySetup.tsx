@@ -279,6 +279,7 @@ export function RepositorySetupList({
                 <label htmlFor="repo-setup-search">Search repositories</label>
                 <input
                     id="repo-setup-search"
+                    className="field"
                     type="text"
                     placeholder="owner/name"
                     value={search}

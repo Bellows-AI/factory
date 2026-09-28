@@ -119,7 +119,7 @@ export function UnsavedChangesDialog({
         <Dialog open onClose={onClose} className="dialog-layer" initialFocus={continueRef}>
             <DialogBackdrop className="dialog-backdrop" />
             <div className="dialog-position">
-                <DialogPanel className="unsaved">
+                <DialogPanel className="dialog unsaved">
                     {/* The page's one h1 is the header's; a dialog title is an h2. */}
                     <DialogTitle as="h2" className="unsaved-title">
                         {unsavedDialogTitle()}

@@ -709,7 +709,7 @@ export function TaskComposer({
                     </p>
                     <textarea
                         id="composer-prompt"
-                        className="composer-input"
+                        className="field composer-input"
                         aria-describedby="composer-prompt-helper"
                         placeholder={PROMPT_PLACEHOLDER}
                         value={draft}

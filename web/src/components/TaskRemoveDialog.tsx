@@ -68,7 +68,7 @@ export function TaskRemoveDialog({
         >
             <DialogBackdrop className="dialog-backdrop" />
             <div className="dialog-position">
-                <DialogPanel className="task-remove">
+                <DialogPanel className="dialog task-remove">
                     {/* The page's one h1 is the header's; a dialog title is an h2. */}
                     <DialogTitle as="h2" className="task-remove-title">
                         {removeDialogTitle(command)}

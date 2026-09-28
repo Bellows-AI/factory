@@ -95,9 +95,9 @@ function InboxFilterBar({
             </nav>
             <form className="inbox-search" onSubmit={onSubmit}>
                 <label htmlFor={`${fieldId}-q`}>Search</label>
-                <input id={`${fieldId}-q`} name="q" defaultValue={filters.q ?? ''} type="text" />
+                <input className="field" id={`${fieldId}-q`} name="q" defaultValue={filters.q ?? ''} type="text" />
                 <label htmlFor={`${fieldId}-repo`}>Repository</label>
-                <select id={`${fieldId}-repo`} name="repo" defaultValue={filters.repo ?? ''}>
+                <select className="field" id={`${fieldId}-repo`} name="repo" defaultValue={filters.repo ?? ''}>
                     <option value="">All repositories</option>
                     {repoOptions.map((repo) => (
                         <option key={`${repo.owner}/${repo.name}`} value={`${repo.owner}/${repo.name}`}>
@@ -106,7 +106,13 @@ function InboxFilterBar({
                     ))}
                 </select>
                 <label htmlFor={`${fieldId}-author`}>Author</label>
-                <input id={`${fieldId}-author`} name="author" defaultValue={filters.author ?? ''} type="text" />
+                <input
+                    className="field"
+                    id={`${fieldId}-author`}
+                    name="author"
+                    defaultValue={filters.author ?? ''}
+                    type="text"
+                />
                 <button type="submit">Filter</button>
             </form>
             <div className="inbox-sort">

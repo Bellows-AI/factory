@@ -2,8 +2,17 @@ import { Link } from 'react-router-dom';
 import { roleLabel } from '../api/useSession.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
-import { deriveReadiness } from '../settings/readiness.js';
+import { deriveReadiness, type ReadinessTone } from '../settings/readiness.js';
 import { useSettingsPage } from './SettingsLayout.js';
+
+/** An item's status pill: ready is the ok lamp, attention the bad one, pending a warning, and a
+ * neutral fact (info) the untoned pill. */
+const READINESS_PILL: Record<ReadinessTone, string> = {
+    ok: 'pill pill-ok',
+    attention: 'pill pill-bad',
+    pending: 'pill pill-warn',
+    info: 'pill',
+};
 
 /**
  * The settings tree's index (issue 180): what is configured for this organization and this
@@ -49,9 +58,9 @@ export function SettingsOverviewPage() {
 
             <ol className="readiness">
                 {items.map((item) => (
-                    <li key={item.id} className={`readiness-item is-${item.tone}`}>
+                    <li key={item.id} className="readiness-item">
                         <h2>{item.heading}</h2>
-                        <p className="readiness-status">{item.status}</p>
+                        <p className={`readiness-status ${READINESS_PILL[item.tone]}`}>{item.status}</p>
                         {item.facts.length > 0 ? (
                             <ul>
                                 {item.facts.map((fact) => (
