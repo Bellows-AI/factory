@@ -3,20 +3,12 @@ import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateManager, GateRun } from './gates.js';
-import { deleteJob, deleteSecret, jobPodsPath, secretsPath } from './k8s-auxspec.js';
-import { readJobPodVerdict, readJobStatus, timedOutOf } from './k8s-poll.js';
+import { deleteJob, deleteSecret, secretsPath } from './k8s-auxspec.js';
+import { readImagePullStatus, readJobPodVerdict, readJobStatus, timedOutOf, unpullableImage } from './k8s-poll.js';
 import type { JobStatusResult } from './k8s-poll.js';
 import { envBodyToData, gateEnvSecretName, gateJobName, gateJobSpec, jobsPath, secretBody } from './k8s-podspec.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
-import {
-    ERROR_PREVIEW_CHARS,
-    HTTP_CONFLICT,
-    livePod,
-    POLL_MS,
-    refusal,
-    TIMEOUT_EXIT_CODE,
-    wait,
-} from './k8s-transport.js';
+import { HTTP_CONFLICT, POLL_MS, refusal, TIMEOUT_EXIT_CODE, wait } from './k8s-transport.js';
 import type { K8sDeps, K8sRequest } from './k8s-transport.js';
 
 /**
@@ -54,35 +46,14 @@ async function createGateEnvSecret(deps: K8sDeps, job: BoardJob, secretName: str
 }
 
 /**
- * The one k8s-shaped harness failure worth naming: a declared image the cluster cannot pull would
- * otherwise burn the full deadline and report "timeout" over what is really "no such image".
- * Named as soon as the pod says so; once a pod exists with no blocked container in it, the image
- * has pulled and the caller stops calling this. Pulled out of the poll below purely to keep that
- * function's complexity readable.
- */
-async function checkGateImagePullable(deps: K8sDeps, jobName: string, image: string): Promise<boolean> {
-    const pods = await deps
-        .request('GET', jobPodsPath(deps.config.k8sNamespace, jobName))
-        .catch(() => ({ status: 0, body: '' }));
-    const pod = livePod(pods.body);
-    const container = pod?.status?.containerStatuses?.[0];
-    const waiting = container?.state?.waiting;
-    if (waiting?.reason === 'ImagePullBackOff' || waiting?.reason === 'ErrImagePull') {
-        throw gateHarness(
-            `the gate image "${image}" cannot be pulled: ${waiting.reason}` +
-                (waiting.message ? ` — ${waiting.message.slice(0, ERROR_PREVIEW_CHARS)}` : '')
-        );
-    }
-    // A pod with no container status yet has not reported anything — the image question is
-    // still open, and the caller keeps watching.
-    return container !== undefined;
-}
-
-/**
  * Poll the gate Job to a terminal status. The kubelet's activeDeadlineSeconds guarantees the Job
  * reaches one; the read of it gets the same bounded patience every verdict-carrying read shares
  * (`readJobStatus`, the same core the runner and aux polls share), because an apiserver blink is
  * not a gate verdict — every give-up shape it can answer becomes a `gateHarness` failure here.
+ * While the Job is pending, the poll also watches for a declared image the cluster cannot pull —
+ * the one k8s-shaped harness failure worth naming, through the same `readImagePullStatus` the
+ * runner and aux polls use (issue #302): naming it beats burning the full deadline and reporting
+ * "timeout" over what is really "no such image".
  */
 async function pollGateJobToTerminal(
     deps: K8sDeps,
@@ -102,7 +73,11 @@ async function pollGateJobToTerminal(
         if (result.kind === 'terminal') {
             return { succeeded: result.outcome === 'succeeded', timedOut: timedOutOf(result.status) };
         }
-        if (!imageCleared) imageCleared = await checkGateImagePullable(deps, jobName, image);
+        if (!imageCleared) {
+            const pull = await readImagePullStatus(deps, jobName);
+            if (pull.blocked) throw gateHarness(unpullableImage('gate', image, pull.blocked));
+            imageCleared = pull.containerSeen;
+        }
         await deps.sleep(POLL_MS);
     }
 }

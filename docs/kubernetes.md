@@ -207,6 +207,18 @@ the same `job-name` label the final read uses, skipping terminating pods for the
 replaced attempt's log is not this run's), and every failed read is a skipped preview rather than
 a verdict: the status poll owns the outcome, the final log read owns the report.
 
+**Every poll that gates the run names an unpullable image (issue #302).** The gate poll was
+first; the runner, sync and reclaim polls now read the pod's waiting reason through the same
+`readImagePullStatus` (`driver/src/k8s-poll.ts`), and on `ImagePullBackOff`/`ErrImagePull` fail
+right away naming the image and the kubelet's message — `the executor image "claude-executor"
+cannot be pulled: ImagePullBackOff — …` — instead of burning the deadline and reporting a timeout
+or "answered nothing readable" over what is really "no such image". A container that is running
+or terminated has answered the image question and the check stops; one still waiting —
+`ContainerCreating` covers the whole first pull — has not, so the watch keeps reading. A
+pod-list blink is never the verdict. (The other aux polls — the `.bellows.yaml` readout, the
+opencode session scrape, the publish steps and the block helpers — do not watch: on an
+unpullable image the sync poll fails before any of them can run.)
+
 ## The operator is the driver
 
 "Operator for runners" is satisfied by running the driver in-cluster, not by a CRD controller. The
