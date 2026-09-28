@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ConsoleMessage, Page } from '@playwright/test';
-import { E2E_EXECUTOR, withExecutor } from './executor.js';
+import { countLaunches, E2E_EXECUTOR, mockExecutors, withExecutor } from './executor.js';
 import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
@@ -311,65 +311,6 @@ test.describe('the guided task composer', () => {
         await expect(composer.getByRole('button', { name: 'Discard draft' })).toHaveCount(0);
     });
 });
-
-/** One executor profile as the mocked workspace holds it — the config-bearing list row. */
-interface MockExecutor {
-    name: string;
-    type: string;
-    createdAt: string;
-    isDefault: boolean;
-    config: object;
-}
-
-/**
- * A workspace whose executor list the test owns. The open board has no ORG_WORKSPACE_ROOT, so its
- * executor routes refuse and the settings page offers no Add — which is exactly the page the
- * round trip must drive. This stands in a root and a mutable list, served to the poll, the
- * dialog's config read and its whole-list PUT alike; everything else is the real server's answer.
- */
-async function mockExecutors(
-    page: Page,
-    initial: MockExecutor[],
-    repos: { owner: string; name: string }[] = []
-): Promise<{ executors: MockExecutor[] }> {
-    const held = { executors: initial };
-    const selected = repos.map((repo) => ({
-        ...repo,
-        status: 'ready',
-        error: null,
-        selectedAt: E2E_EXECUTOR.createdAt,
-        readyAt: E2E_EXECUTOR.createdAt,
-        branch: null,
-        lastCommit: null,
-        sizeBytes: null,
-    }));
-    await page.route('**/api/workspace', async (route) => {
-        const response = await route.fetch();
-        const body = (await response.json()) as Record<string, unknown>;
-        const executors = held.executors.map(({ config: _config, ...row }) => row);
-        const withRepos = repos.length > 0 ? { repos: selected } : {};
-        await route.fulfill({ response, json: { ...body, root: '/e2e/workspace', executors, ...withRepos } });
-    });
-    await page.route('**/api/workspace/executors', async (route) => {
-        if (route.request().method() === 'PUT') {
-            const { executors } = route.request().postDataJSON() as { executors: Omit<MockExecutor, 'createdAt'>[] };
-            held.executors = executors.map((row) => ({ ...row, createdAt: E2E_EXECUTOR.createdAt }));
-        }
-        await route.fulfill({ json: { executors: held.executors } });
-    });
-    return held;
-}
-
-/** Every `POST /api/jobs` the page sends — the round trip must launch exactly once. */
-function countLaunches(page: Page): { bodies: unknown[] } {
-    const seen = { bodies: [] as unknown[] };
-    page.on('request', (request) => {
-        if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/jobs') {
-            seen.bodies.push(request.postDataJSON());
-        }
-    });
-    return seen;
-}
 
 test.describe('the draft survives the configuration detour (F1)', () => {
     const prompt = (page: Page) => page.getByLabel('What should the agent do?');

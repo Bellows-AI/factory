@@ -19,6 +19,7 @@ import {
     runningThread,
     sessionAuthor,
     sessionlessThread,
+    taskSummaryOf,
     type ThreadJob,
     unsafePrUrlThread,
 } from './fixtures/threads.js';
@@ -514,29 +515,6 @@ test.describe('the task detail page', () => {
         }
     });
 
-    /** The inbox row the board would answer for `jobs`' thread — the root's identity, the head's state. */
-    const summaryOf = (jobs: readonly ThreadJob[]) => {
-        const root = jobs[0]!;
-        const head = jobs[jobs.length - 1]!;
-        return {
-            id: root.id,
-            command: root.command,
-            status: head.status,
-            cancelRequestedAt: head.cancelRequestedAt,
-            doneAt: head.doneAt,
-            repo: head.repo,
-            executor: head.executor,
-            author: root.author,
-            activity: null,
-            summary: head.summary,
-            waitReason: head.waitReason,
-            waitingSince: head.waitingSince,
-            waitTerminalReason: head.waitTerminalReason,
-            createdAt: root.createdAt,
-            activityAt: head.doneAt ?? head.finishedAt ?? head.createdAt,
-        };
-    };
-
     test('a parked review wait offers Mark done, never Stop, and closing it reads Done everywhere', async ({
         page,
     }) => {
@@ -568,7 +546,7 @@ test.describe('the task detail page', () => {
         await page.screenshot({ path: `${SHOTS}/task-detail-review-wait-done.png`, fullPage: true });
 
         // The inbox row and the sidebar read the same precedence off the board's summary row.
-        const row = summaryOf(done);
+        const row = taskSummaryOf(done);
         await page.route(/\/api\/tasks(\?|$)/, (route) =>
             route.fulfill({
                 json: {
