@@ -241,15 +241,30 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                 },
                 (res) => {
                     let text = '';
+                    // The classification prefix, kept separately: once the sliding tail below has
+                    // dropped the start of the stream, the `400 Bad Request` line readVerdict and
+                    // postRefusal classify on (issue #308) would be gone from the diagnosis log
+                    // and the resolved body alike. Bounded at the diagnosis length.
+                    let prefix = '';
+                    let truncated = false;
                     res.setEncoding('utf8');
                     res.on('data', (chunk: string) => {
+                        if (prefix.length < DIAGNOSIS_BODY_CHARS) {
+                            prefix = (prefix + chunk).slice(0, DIAGNOSIS_BODY_CHARS);
+                        }
                         text += chunk;
                         // Only the tail survives OUTPUT_LIMIT downstream, so buffering a
                         // multi-megabyte single log line whole would be exactly the unbounded
                         // string the docker runner's cap exists to avoid. Keep a sliding tail.
-                        if (text.length > STREAM_BUFFER_LIMIT) text = text.slice(-STREAM_BUFFER_TAIL);
+                        if (text.length > STREAM_BUFFER_LIMIT) {
+                            text = text.slice(-STREAM_BUFFER_TAIL);
+                            truncated = true;
+                        }
                     });
                     res.on('end', () => {
+                        // A truncated answer carries the prefix ahead of the tail so the original
+                        // start survives classification; an untruncated one is already whole.
+                        const body = truncated ? prefix + text : text;
                         if ((res.statusCode ?? 0) >= HTTP_ERROR_STATUS) {
                             // The diagnosis line (issue #308): a refused answer carries everything
                             // the cause needs — method, path, status, headers and the first chunk
@@ -260,10 +275,10 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                             log(
                                 `${method} ${path} answered ${res.statusCode} ` +
                                     `headers=${JSON.stringify(res.headers ?? {})} ` +
-                                    `body=${text.slice(0, DIAGNOSIS_BODY_CHARS)}`
+                                    `body=${prefix}`
                             );
                         }
-                        resolve({ status: res.statusCode ?? 0, body: text });
+                        resolve({ status: res.statusCode ?? 0, body });
                     });
                 }
             );

@@ -139,15 +139,42 @@ describe('the in-cluster kubernetes transport', () => {
         await expect(request('GET', '/version')).rejects.toThrow(/API server did not answer within/);
     });
 
-    it('keeps only a bounded response tail when the API sends an oversized log line', async () => {
+    it('keeps the classification prefix ahead of a bounded response tail for an oversized log line', async () => {
         const OVERSIZED_MULTIPLIER = 4;
         const transport = fakeTransport([{ chunks: [`prefix-${'x'.repeat(OVERSIZED_MULTIPLIER * OUTPUT_LIMIT)}`] }]);
         const request = inClusterRequest({ env: CLUSTER_ENV, readFile: CREDENTIALS, request: transport.request });
 
         const response = await request('GET', '/api/v1/pods/runner/log');
 
-        expect(response.body).toHaveLength(2 * OUTPUT_LIMIT);
-        expect(response.body).toBe('x'.repeat(2 * OUTPUT_LIMIT));
+        expect(response.body).toHaveLength(DIAGNOSIS_BODY_CHARS + 2 * OUTPUT_LIMIT);
+        expect(response.body.startsWith('prefix-')).toBe(true);
+        expect(response.body.endsWith('x'.repeat(2 * OUTPUT_LIMIT))).toBe(true);
+    });
+
+    it('preserves the 400 Bad Request prefix of an oversized refusal for classification and the log', async () => {
+        const refusal = `400 Bad Request: label does not match selector ${'x'.repeat(4 * OUTPUT_LIMIT)}`;
+        const transport = fakeTransport([
+            {
+                status: 400,
+                chunks: [refusal.slice(0, 17), refusal.slice(17)],
+                headers: { 'content-type': 'text/plain' },
+            },
+        ]);
+        const logs: string[] = [];
+        const request = inClusterRequest({
+            env: CLUSTER_ENV,
+            readFile: CREDENTIALS,
+            request: transport.request,
+            log: (message) => logs.push(message),
+        });
+
+        const response = await request('GET', '/apis/batch/v1/namespaces/default/jobs/factory-sync-x');
+
+        expect(isMalformedRequest400(response.status, response.body)).toBe(true);
+        expect(response.body).toHaveLength(DIAGNOSIS_BODY_CHARS + 2 * OUTPUT_LIMIT);
+        expect(response.body).not.toContain('x'.repeat(4 * OUTPUT_LIMIT));
+        expect(logs).toHaveLength(1);
+        expect(logs[0]).toContain(refusal.slice(0, DIAGNOSIS_BODY_CHARS));
     });
 
     it('answers every call through one dedicated agent, never the global one', async () => {
