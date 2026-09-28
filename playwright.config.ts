@@ -29,7 +29,7 @@ const PORT = PORT_BASE;
  */
 export const AUTH_PORT = PORT_BASE + AUTH_PORT_OFFSET;
 const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
-/** Reserved for the design-system specimen page; nothing listens on it yet. */
+/** The component-state specimen's test-only Vite server (#275): no database, nothing built. */
 export const SPECIMEN_PORT = PORT_BASE + SPECIMEN_PORT_OFFSET;
 const E2E_LOGIN = 'e2e-user';
 /**
@@ -62,6 +62,8 @@ const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member; follow-up-auth.spec.ts is the slot #281 fills. */
 const AUTH_SPECS = /\/(auth|workspace|follow-up-auth)\.spec\.ts$/;
+/** The specimen browses its own server, never a board, so no board project may pick it up. */
+const SPECIMEN_SPEC = /\/specimen\.spec\.ts$/;
 
 /**
  * The built SPA is served by the API rather than by Vite, so the suite exercises the same
@@ -95,7 +97,7 @@ export default defineConfig({
     projects: [
         {
             name: 'chromium',
-            testIgnore: AUTH_SPECS,
+            testIgnore: [AUTH_SPECS, SPECIMEN_SPEC],
             use: { ...devices['Desktop Chrome'] },
         },
         {
@@ -105,6 +107,14 @@ export default defineConfig({
             name: 'auth',
             testMatch: AUTH_SPECS,
             use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${AUTH_PORT}` },
+        },
+        {
+            // The design-system reference sheet (redesign plan §1.7): real primitives on a Vite
+            // server outside web/, because the API serves only web/dist and a second entry there
+            // would ship publicly.
+            name: 'specimen',
+            testMatch: SPECIMEN_SPEC,
+            use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${SPECIMEN_PORT}` },
         },
     ],
     webServer: [
@@ -185,6 +195,18 @@ export default defineConfig({
                 SEED_ORGS: '999999,888888',
             },
             timeout: 180_000,
+            reuseExistingServer: false,
+            stdout: 'ignore',
+            stderr: 'pipe',
+        },
+        {
+            // Served, never built: nothing it renders reaches web/dist. Playwright starts every
+            // webServer whatever --project says, so `--project specimen` still boots the boards
+            // above; for a look without them, run this command by hand.
+            command: 'npx vite --config e2e/specimen/vite.config.ts',
+            url: `http://127.0.0.1:${SPECIMEN_PORT}/`,
+            cwd: root,
+            env: { SPECIMEN_PORT: String(SPECIMEN_PORT) },
             reuseExistingServer: false,
             stdout: 'ignore',
             stderr: 'pipe',

@@ -187,7 +187,7 @@
             "linter": { "rules": { "complexity": { "useLiteralKeys": "off" } } }
         },
         {
-            "includes": ["web/src/main.tsx"],
+            "includes": ["web/src/main.tsx", "e2e/specimen/main.tsx"],
             "linter": { "rules": { "correctness": { "useImportExtensions": "off" } } }
         },
         {

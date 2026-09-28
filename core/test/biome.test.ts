@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -11,18 +11,31 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const biomeBin = () =>
     join(dirname(createRequire(import.meta.url).resolve('@biomejs/biome/package.json')), 'bin', 'biome');
 
-// A tree-wide format drift prints a diff per file; the 1 MiB default would overflow
-// exactly when the failure message matters most.
-const BYTES_PER_KIB = 1024;
-const SPAWN_MAX_BUFFER_MIB = 16;
-const SPAWN_MAX_BUFFER_BYTES = SPAWN_MAX_BUFFER_MIB * BYTES_PER_KIB * BYTES_PER_KIB;
+interface BiomeResult {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+}
 
-const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}) =>
-    spawnSync(process.execPath, [biomeBin(), ...args], {
-        encoding: 'utf8',
-        cwd: options.cwd ?? root,
-        input: options.input,
-        maxBuffer: SPAWN_MAX_BUFFER_BYTES,
+// Asynchronous on purpose, never spawnSync: a tree-wide pass takes over a minute on a contended
+// box, and blocking the worker's event loop that long times out every vitest RPC in flight
+// ("Timeout calling onTaskUpdate" — birpc's fixed 60s). Every test still passes, but the run
+// reports unhandled errors and exits 1. Output is collected unbounded, so a tree-wide format
+// drift's per-file diff reaches the failure message whole.
+const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}): Promise<BiomeResult> =>
+    new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [biomeBin(), ...args], { cwd: options.cwd ?? root });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+            stdout += chunk;
+        });
+        child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+            stderr += chunk;
+        });
+        child.on('error', reject);
+        child.on('close', (status) => resolve({ status, stdout, stderr }));
+        child.stdin.end(options.input);
     });
 
 describe('biome', () => {
@@ -73,8 +86,8 @@ describe('biome', () => {
      * the suite's heaviest single operation — running a second one here timed out under the
      * contention of a full run while passing in isolation.
      */
-    it('runs every plugin without a compile error', () => {
-        const result = runBiome(['check', 'driver/src', '--reporter=json', '--max-diagnostics=2000']);
+    it('runs every plugin without a compile error', async () => {
+        const result = await runBiome(['check', 'driver/src', '--reporter=json', '--max-diagnostics=2000']);
         expect(result.stdout, `biome printed no JSON report:\n${result.stderr}`).not.toBe('');
         const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
         const errored = (report.diagnostics ?? []).filter(
@@ -93,15 +106,15 @@ describe('biome', () => {
         expect(pkg.devDependencies['@biomejs/biome']).toMatch(/^\d+\.\d+\.\d+$/);
     });
 
-    it('formats a violating snippet into the pinned style', () => {
+    it('formats a violating snippet into the pinned style', async () => {
         const messy = 'const a = 1\nfunction f() {\n\treturn "text";\n}\n';
-        const result = runBiome(['format', '--stdin-file-path=core/style-probe.ts'], { input: messy });
+        const result = await runBiome(['format', '--stdin-file-path=core/style-probe.ts'], { input: messy });
         expect(result.status).toBe(0);
         expect(result.stdout).toBe("const a = 1;\nfunction f() {\n    return 'text';\n}\n");
     });
 
-    it('still fails a file that violates a rule (negative control)', () => {
-        const result = runBiome(['lint', '--stdin-file-path=core/bad-probe.ts'], { input: 'debugger;\n' });
+    it('still fails a file that violates a rule (negative control)', async () => {
+        const result = await runBiome(['lint', '--stdin-file-path=core/bad-probe.ts'], { input: 'debugger;\n' });
         expect(result.status).not.toBe(0);
         expect(`${result.stdout}${result.stderr}`).not.toBe('');
     });
@@ -113,10 +126,10 @@ describe('biome', () => {
     const BIOME_CHECK_TIMEOUT_MS = 120_000;
     it(
         'passes biome check on the repository',
-        () => {
+        async () => {
             // A vacuous pass (mis-shaped includes checking nothing) must fail, not pass.
             const MIN_FILES_CHECKED = 50;
-            const result = runBiome(['check', '.']);
+            const result = await runBiome(['check', '.']);
             expect(result.status, `biome check output:\n${result.stdout}${result.stderr}`).toBe(0);
             const checked = /Checked (\d+) files/.exec(result.stdout)?.[1];
             expect(checked, `biome check output:\n${result.stdout}${result.stderr}`).toBeDefined();

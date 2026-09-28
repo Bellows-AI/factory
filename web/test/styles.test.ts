@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const webSrc = fileURLToPath(new URL('../src', import.meta.url));
 const docPath = fileURLToPath(new URL('../../docs/design-system.md', import.meta.url));
+const specimenDir = fileURLToPath(new URL('../../e2e/specimen', import.meta.url));
 
 // Functional color syntaxes join hex and rgb/hsl, matched case-insensitively because CSS
 // function names are. `transparent` and `currentColor` are theme keywords, not literals,
@@ -112,6 +113,21 @@ describe('the stylesheet', () => {
             const rel = path.slice(webSrc.length + 1);
             const spans = rel === 'styles.css' ? tokenSpans(text) : [];
             violations.push(...colorViolationsIn(rel, text, spans));
+        }
+        expect(violations).toEqual([]);
+    });
+
+    it('holds the specimen to the same rules: no color literal, no transition (#275)', () => {
+        // The specimen lives under e2e/ so it never ships, which also puts it outside every scan
+        // above — and it is the reference the redesign lanes match, so a literal there would be
+        // copied into web/src.
+        const violations: string[] = [];
+        for (const path of walkFiles(specimenDir)) {
+            if (!/\.(css|ts|tsx|html)$/.test(path)) continue;
+            const text = readFileSync(path, 'utf8');
+            const rel = path.slice(specimenDir.length + 1);
+            violations.push(...colorViolationsIn(rel, text, []));
+            if (/transition\s*:/.test(stripComments(text))) violations.push(`${rel}: transition`);
         }
         expect(violations).toEqual([]);
     });
