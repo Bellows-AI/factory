@@ -511,3 +511,30 @@ export async function routeThread(page: Page, jobs: readonly ThreadJob[]): Promi
     await page.unroute('**/api/jobs/*/thread*');
     await page.route('**/api/jobs/*/thread*', (route) => route.fulfill({ json: { jobs } }));
 }
+
+/** The same thread queued by `author` — every member, the way the board attributes a chain. Only
+ *  the task's author is offered a follow-up (#281), so a spec that needs the composer re-authors
+ *  a fixture to whoever is signed in. */
+export function authoredBy(jobs: readonly ThreadJob[], author: ThreadUser | null): ThreadJob[] {
+    return jobs.map((job) => ({ ...job, author, createdBy: author?.id ?? null }));
+}
+
+/** The signed-in account, as a thread author. Under AUTH_MODE=none this is the stand-in account,
+ *  whose id the database mints — not `LOCAL_AUTHOR.id` — so it is read, never assumed. */
+export async function sessionAuthor(page: Page): Promise<ThreadUser> {
+    const response = await page.request.get('/api/auth/me');
+    const me = (await response.json()) as { user: { id: string; login: string; name: string | null } };
+    return { id: me.user.id, login: me.user.login, name: me.user.name, avatarUrl: null };
+}
+
+/** Published with a url no reader should open: the branch shows, the url is never a link. */
+export const unsafePrUrlThread = thread([
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000124',
+        command: 'publish somewhere odd',
+        repo: REPO,
+        sessionId: 'bbbbbbbb-0000-4000-8000-000000000124',
+        summary: 'Published the branch.',
+        output: 'pushed\n[driver] published fix/odd — javascript:alert(1)',
+    }),
+]);

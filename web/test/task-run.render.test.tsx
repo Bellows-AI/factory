@@ -124,36 +124,25 @@ describe('TaskRun — gates, publication and metadata', () => {
         ...over,
     });
 
-    it('keeps gates attached to the run that produced them', () => {
+    it('carries no gates or publication of its own — those are the task panels', () => {
         const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
-        const html = renderDetail({ jobs: [{ ...root, gates }, child()] });
-        expect(articleOf(html, 'first command')).toContain('chat-gates');
-        expect(articleOf(html, 'second command')).not.toContain('chat-gates');
-    });
-
-    it('renders the per-run publication beside its run checks, under a stable anchor', () => {
         const html = renderDetail({
-            jobs: [
-                job({ gates: [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }] }),
-                child({ output: '[driver] published fix/2 — https://github.com/o/r/pull/2' }),
-            ],
+            jobs: [{ ...root, gates }, child({ output: '[driver] published fix/2 — https://github.com/o/r/pull/2' })],
         });
-        const second = articleOf(html, 'second command');
-        expect(second).toContain('id="run-2-checks"');
-        expect(second).toContain('tabindex="-1"');
-        expect(second).toContain('run-publish');
-        expect(second).toContain('<code>fix/2</code>');
-        // The run's publication line has no label of its own, so the link says what it is.
-        expect(second).toContain('Pull request #2');
-        expect(second).toContain('<a href="https://github.com/o/r/pull/2"');
+        for (const marker of ['first command', 'second command']) {
+            const article = articleOf(html, marker);
+            expect(article, marker).not.toContain('chat-gate-list');
+            expect(article, marker).not.toContain('Pull request');
+        }
     });
 
-    it('the outcome links View checks in run N only when the newest run has gates', () => {
+    it('the outcome links View checks only when the newest run has gates', () => {
         const gates = [{ name: 'test', status: 'passed' as const, exitCode: 0, output: 'ok' }];
         const linked = renderDetail({ jobs: [job({ gates })] });
-        expect(linked).toContain('View checks in run 1');
-        expect(linked).toContain('href="#run-1-checks"');
-        expect(renderDetail({ jobs: [job(), child()] })).not.toContain('View checks');
+        expect(linked).toContain('>View checks</a>');
+        expect(linked).toContain('href="#task-verification"');
+        expect(linked).toContain('id="task-verification"');
+        expect(renderDetail({ jobs: [{ ...root, gates }, child()] })).not.toContain('View checks');
     });
 
     it('metadata follows the work in markup order, and omits what the run does not carry', () => {
@@ -170,10 +159,10 @@ describe('TaskRun — gates, publication and metadata', () => {
             ],
         });
         const article = articleOf(html, 'fix the flaky login test');
-        const workAt = article.indexOf('run-work');
-        const metaAt = article.indexOf('msg-meta', workAt);
-        expect(workAt).toBeGreaterThan(-1);
-        expect(metaAt).toBeGreaterThan(workAt);
+        const responseAt = article.indexOf('Agent response');
+        const metaAt = article.indexOf('msg-meta', responseAt);
+        expect(responseAt).toBeGreaterThan(-1);
+        expect(metaAt).toBeGreaterThan(responseAt);
         expect(article).toContain('workflow fix-issue');
         expect(article).toContain('node implement');
         expect(article).toContain('4m');
@@ -260,8 +249,8 @@ describe('TaskRun — footer attribution, prompt and output wells', () => {
             }),
             'Agent response'
         );
-        expect(finished).toContain('tabindex="0"');
-        expect(finished.match(/tabindex="0"/g)?.length).toBe(2);
+        // The run's own raw output well; the gate's well is Verification's, outside the article.
+        expect(finished.match(/tabindex="0"/g)?.length).toBe(1);
     });
 });
 

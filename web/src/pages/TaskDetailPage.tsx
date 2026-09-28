@@ -23,6 +23,7 @@ function useTaskConversationActions(
 ) {
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
+    const [followUpError, setFollowUpError] = useState<string | null>(null);
     const [stoppingId, setStoppingId] = useState<string | null>(null);
     const [doneId, setDoneId] = useState<string | null>(null);
     // See the module-level note on the removal hook's generation ref — the same discipline,
@@ -31,6 +32,7 @@ function useTaskConversationActions(
     useEffect(() => {
         generation.current += 1;
         setActionError(null);
+        setFollowUpError(null);
         setSending(false);
         setStoppingId(null);
         setDoneId(null);
@@ -42,7 +44,7 @@ function useTaskConversationActions(
     const followUp = async (command: string): Promise<string | null> => {
         if (latest === null) return 'No task to follow up on';
         const atStart = generation.current;
-        setActionError(null);
+        setFollowUpError(null);
         setSending(true);
         try {
             // The adjustment continues the NEWEST run — it is the one that is finished and
@@ -51,7 +53,8 @@ function useTaskConversationActions(
             const result = await tasks.actions.followUp(latest.id, command);
             if (generation.current !== atStart) return result.error;
             if (result.error !== null) {
-                setActionError(result.error);
+                // Said inside the composer, beside the draft it refused — a 403 FORBIDDEN too.
+                setFollowUpError(result.error);
                 return result.error;
             }
             // Same task, one message longer: the thread poll stopped when every run in it was
@@ -109,7 +112,7 @@ function useTaskConversationActions(
         }
     };
 
-    return { sending, actionError, stoppingId, doneId, followUp, doneTask, stopTask };
+    return { sending, actionError, followUpError, stoppingId, doneId, followUp, doneTask, stopTask };
 }
 
 /**
@@ -184,7 +187,7 @@ function useTaskRemoval(id: string | null, tasks: UseTasks, latest: Job | null, 
  * rather than off the URL.
  */
 export function TaskDetailPage() {
-    const { tasks } = useTasksPage();
+    const { tasks, session, sessionLoading } = useTasksPage();
     const navigate = useNavigate();
     const params = useParams();
     const id = params.id ?? null;
@@ -195,12 +198,10 @@ export function TaskDetailPage() {
     const latest =
         detail.jobs !== null && detail.jobs.length > 0 ? (detail.jobs[detail.jobs.length - 1] ?? null) : null;
 
-    const { sending, actionError, stoppingId, doneId, followUp, doneTask, stopTask } = useTaskConversationActions(
-        id,
-        tasks,
-        detail,
-        latest
-    );
+    const { sending, actionError, followUpError, stoppingId, doneId, followUp, doneTask, stopTask } =
+        useTaskConversationActions(id, tasks, detail, latest);
+    // Who is looking: only the task's author may follow it up (the board checks the same row).
+    const viewer = { loading: sessionLoading, id: session?.user.id ?? null };
     const { removingId, removeOpen, removeError, openRemove, closeRemove, removeTask } = useTaskRemoval(
         id,
         tasks,
@@ -213,6 +214,7 @@ export function TaskDetailPage() {
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
             <TaskHeader
                 jobs={detail.jobs}
+                viewer={viewer}
                 stoppingId={stoppingId}
                 doneId={doneId}
                 onStop={stopTask}
@@ -222,8 +224,10 @@ export function TaskDetailPage() {
             <TaskDetail
                 key={id ?? 'none'}
                 jobs={detail.jobs}
+                viewer={viewer}
                 error={detail.error}
                 actionError={actionError}
+                followUpError={followUpError}
                 sending={sending}
                 onFollowUp={followUp}
             />

@@ -155,28 +155,9 @@ function __rcpActionableItems(collection) {
     return items;
 }
 
-/** Best-effort: git-ignoring the state dir keeps `git add -A` (the publisher's own commit step)
- *  from ever picking it up. A failure here never blocks the digest itself. */
-function __rcpExcludeStateDir() {
-    const fs = require('node:fs');
-    const path = require('node:path');
-    try {
-        const excludePath = path.join('.git', 'info', 'exclude');
-        const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, 'utf8') : '';
-        const excludeLine = '/' + __rcpStateDir + '/';
-        if (!existing.split('\n').includes(excludeLine)) {
-            fs.appendFileSync(
-                excludePath,
-                (existing === '' || existing.endsWith('\n') ? '' : '\n') + excludeLine + '\n'
-            );
-        }
-    } catch {
-        // See the function comment above — never fatal to the digest write itself.
-    }
-}
-
 /** Writes the digest state file and clears any stale intents; returns false on a write failure
- *  (already reported via __rcpFail). */
+ *  (already reported via __rcpFail). The worktree sync git-ignores `.factory/` (git-worktree.cjs),
+ *  so the publisher's `git add -A` never picks the digest up. */
 function __rcpWriteDigest(items) {
     const fs = require('node:fs');
     const digestItems = items.slice(0, __rcpDigestItemsMax).map((it) => ({
@@ -196,7 +177,6 @@ function __rcpWriteDigest(items) {
         __rcpFail('runner_error', 'could not write the review digest: ' + String((e && e.message) || e));
         return false;
     }
-    __rcpExcludeStateDir();
     return true;
 }
 

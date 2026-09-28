@@ -15,8 +15,8 @@ const SHOTS = 'artifacts/ui';
  * 200% zoom gets the same sentinel, and the route/state/theme/width screenshot matrix is
  * captured for inspection.
  *
- * What the issue's checklist assigns to the task inbox — filters, sort, Load more, a task older
- * than the former newest-50 window — lands with the inbox itself and is not pretended here.
+ * The task inbox's own cases (issue 279) close the file: count-card links, chip removal with
+ * Back/reload, poll-stable depth and focus, the pill under long content, and its screenshots.
  */
 
 /** Every page the shell routes to, with the name its screenshot carries. */
@@ -693,5 +693,159 @@ test.describe('the visual regression matrix', () => {
             path: `${SHOTS}/matrix/task-detail_remove-dialog-open_dark_390.png`,
             animations: 'disabled',
         });
+    });
+});
+
+test.describe('the task inbox (issue 279)', () => {
+    /** The three count cards' accessible names, in card order. */
+    const cardLabels = (page: Page): Promise<string[]> =>
+        page.locator('.inbox-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('aria-label') ?? ''));
+
+    test('each count card opens its state tab, and no filter changes the counts', async ({ page }) => {
+        await page.goto('/tasks');
+        await settle(page, '/tasks');
+        const before = await cardLabels(page);
+        expect(before).toHaveLength(3);
+        expect(before[0]).toMatch(/^\d+ tasks? needs? review across the organization$/);
+
+        for (const [index, state, tab] of [
+            [0, 'review', 'Needs review'],
+            [1, 'running', 'Running'],
+            [2, 'past', 'Past'],
+        ] as const) {
+            await page.goto('/tasks');
+            await settle(page, '/tasks');
+            await page.locator('.inbox-card').nth(index).click();
+            await expect(page).toHaveURL(`/tasks?state=${state}`);
+            await expect(page.locator('.inbox-tabs [aria-current="page"]')).toHaveText(tab);
+        }
+
+        // A search that matches nothing: the list empties into the filtered state, never the
+        // empty-board one, and the organization counts above it hold still.
+        await page.locator('.inbox-search').getByLabel('Search').fill('zz-no-task-says-this');
+        await page.locator('.inbox-search').getByRole('button', { name: 'Filter' }).click();
+        await expect(page.getByText('No tasks match these filters')).toBeVisible();
+        await expect(page.getByText('No tasks yet')).toHaveCount(0);
+        expect(await cardLabels(page)).toEqual(before);
+    });
+
+    test('a chip removes its one filter, Back restores it, Clear filters empties them all', async ({ page }) => {
+        await page.goto('/tasks?state=past&q=task&author=nobody');
+        await settle(page, '/tasks');
+        const search = page.locator('.inbox-search').getByLabel('Search');
+        const chips = page.locator('.inbox-chip');
+        await expect(chips).toHaveCount(2);
+        await expect(chips.first()).toHaveText('Search: task');
+        await expect(search).toHaveValue('task');
+
+        await page.getByRole('link', { name: 'Remove filter: Search' }).click();
+        await expect(page).toHaveURL('/tasks?state=past&author=nobody');
+        await expect(chips).toHaveCount(1);
+        await expect(chips.first()).toHaveText('Author: nobody');
+        // The field follows the URL: the removed filter's text must not linger in the box.
+        await expect(search).toHaveValue('');
+
+        await page.goBack();
+        await expect(page).toHaveURL('/tasks?state=past&q=task&author=nobody');
+        await expect(chips).toHaveCount(2);
+        await expect(search).toHaveValue('task');
+
+        await page.reload();
+        await settle(page, '/tasks');
+        await expect(chips).toHaveCount(2);
+
+        await page.getByRole('link', { name: 'Clear filters' }).first().click();
+        await expect(page).toHaveURL('/tasks');
+        await expect(chips).toHaveCount(0);
+        await expect(search).toHaveValue('');
+    });
+
+    test('polling keeps the loaded depth, each row once, and the focused field', async ({ page }) => {
+        // The seed leaves nothing running, so the poll is on its 30s idle cadence.
+        test.setTimeout(120_000);
+        await page.goto('/tasks');
+        await settle(page, '/tasks');
+        const rows = page.locator('.inbox-row');
+        const first = await rows.count();
+        // The first page landing is not an append: the polite note stays silent.
+        await expect(page.locator('.inbox-note')).toHaveText('');
+        await page.getByRole('button', { name: 'Load more' }).click();
+        await expect.poll(() => rows.count()).toBeGreaterThan(first);
+        const loaded = await rows.count();
+        await expect(page.locator('.inbox-footer')).toContainText(`Showing ${loaded} loaded tasks`);
+
+        const search = page.locator('.inbox-search').getByLabel('Search');
+        await search.fill('half-typed');
+        // Past the idle poll interval: a refresh must neither collapse the depth nor steal focus.
+        // At depth two the rebuild reads page two by cursor — its response is the rebuild landing.
+        await page.waitForResponse((response) => /\/api\/tasks\?.*cursor=/.test(response.url()), {
+            timeout: 45_000,
+        });
+        await page.waitForTimeout(500);
+        await expect(search).toBeFocused();
+        await expect(search).toHaveValue('half-typed');
+        expect(await rows.count()).toBeGreaterThanOrEqual(loaded);
+        const hrefs = await page
+            .locator('.inbox-row a')
+            .evaluateAll((links) => links.map((a) => a.getAttribute('href')));
+        expect(new Set(hrefs).size, 'each loaded task renders once').toBe(hrefs.length);
+    });
+
+    test('a long title or repository never hides the state pill', async ({ page }) => {
+        const long = 'refactor-'.repeat(20);
+        await page.route('**/api/tasks*', async (route) => {
+            const response = await route.fetch();
+            const body = (await response.json()) as { page: { items: Array<{ command: string; repo: string }> } };
+            for (const item of body.page.items.slice(0, 2)) {
+                item.command = `${long}${long}`;
+                item.repo = `acme/${long}`;
+            }
+            await route.fulfill({ response, json: body });
+        });
+        for (const width of [1440, 1024, 390] as const) {
+            await page.setViewportSize({ width, height: 900 });
+            await page.goto('/tasks');
+            await settle(page, '/tasks');
+            await expect(page.locator('.inbox-row').first()).toContainText('refactor-');
+            for (const row of (await page.locator('.inbox-row').all()).slice(0, 4)) {
+                const rowBox = (await row.boundingBox())!;
+                const pill = row.locator('.pill');
+                await expect(pill).toBeVisible();
+                const pillBox = (await pill.boundingBox())!;
+                expect(pillBox.width, `pill width at ${width}`).toBeGreaterThan(24);
+                expect(pillBox.x + pillBox.width, `pill inside its row at ${width}`).toBeLessThanOrEqual(
+                    rowBox.x + rowBox.width + 1
+                );
+            }
+            await noHorizontalOverflow(page);
+            await page.screenshot({ path: `${SHOTS}/inbox-long-content-${width}.png` });
+        }
+    });
+
+    test('inbox screenshots, filtered and stale, in both themes at 1440 and 390', async ({ page }) => {
+        test.setTimeout(150_000);
+        for (const width of [1440, 390] as const) {
+            await page.setViewportSize({ width, height: 1000 });
+            for (const theme of ['dark', 'light'] as const) {
+                await page.emulateMedia({ colorScheme: theme });
+                await page.goto('/tasks');
+                await settle(page, '/tasks');
+                await page.screenshot({ path: `${SHOTS}/inbox-${theme}-${width}.png`, fullPage: true });
+                await page.goto('/tasks?state=past&q=task&author=nobody');
+                await settle(page, '/tasks');
+                await page.screenshot({ path: `${SHOTS}/inbox-filtered-${theme}-${width}.png` });
+            }
+        }
+
+        // The stale state: the first page lands, then every refresh fails — the warning joins
+        // the rows and never replaces them.
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await page.goto('/tasks');
+        await settle(page, '/tasks');
+        await page.route('**/api/tasks*', (route) => route.fulfill({ status: 503, body: 'down' }));
+        await expect(page.locator('.banner-warn')).toBeVisible({ timeout: 45_000 });
+        await expect(page.locator('.inbox-row').first()).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/inbox-stale-dark-1440.png` });
     });
 });
