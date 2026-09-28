@@ -175,6 +175,30 @@ be ported there without reintroducing the race it exists to close, and the one-d
 topology leaves the loop's own heartbeat-409 kill as the arbiter between writers. The divergence
 is stated, not hidden.
 
+**The orphan reaper is the fence's clock-free counterpart (issue #301).** The fence acts on the
+`factory.job` label at CLAIM time, under the checkout claim — so it never runs for a job that
+ends `dead`, a later attempt that dies before `prepare()`, or an attempt whose driver crashed
+after starting its fleet. The reaper (`driver/src/reaper.ts` + `driver/src/k8s-reaper.ts`) is a
+periodic watcher that acts on the same label when the BOARD says no attempt can ever come: it
+lists pods and Services carrying BOTH `factory.job` and `factory.service` — the runner, gate,
+sync, publish and helper pods carry only the job label and are excluded by construction, which is
+also why they stay the fence's to sweep — plus `app.kubernetes.io/instance=<K8S_RELEASE>` when
+one is configured, so two releases sharing a namespace against different boards can never reap
+each other's fleets as "unknown jobs". Groups by `factory.job` + `factory.lease`, asks the board
+in one batched call (`POST /api/jobs/leases`), and deletes Foreground by name when the job is
+terminal, unknown, or running under another lease — 404/409 read as "already going away", exactly
+like the fence's sweep. The attempt-scoped env Secrets (`factory-job-…-env`,
+`factory-sync-…-env`, `factory-gate-…-env`, `factory-publish-…-env`) are reaped by DERIVED NAME,
+never enumerated: `list` on secrets stays deliberately ungranted, and every one of those names
+hashes the same (job id, lease token) pair the labels carry. The HELPER env Secret's name carries
+a caller-minted nonce and is not derivable — it remains the stated residual, holding bytes rather
+than CPU, memory and disk. The checkout-claim ConfigMap is job-scoped, so it is deleted only when
+the job is
+provably GONE — a superseded attempt's group never touches it, because a live replacement holds
+it right now. No new verbs anywhere: `list` on pods/services is the fence's grant, `delete` on
+all four kinds is the chart's Role, and the admission policy already admits deletes of
+`factory.job`-labelled objects.
+
 **Live output here is the pod log, re-read per poll.** The docker runner sees output as stream
 chunks; this platform has no equivalent attach, so the runner reads the pod log's tail on each
 status poll and hands it to the loop's flusher — doubling the API-server reads of a running job

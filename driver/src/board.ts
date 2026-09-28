@@ -134,6 +134,37 @@ export interface BoardJob {
 export type LeaseState = 'held' | 'lost';
 
 /**
+ * The job statuses the board answers a lease lookup with — the row statuses of
+ * `POST /api/jobs/leases`, copied rather than imported (this package depends on nothing).
+ * `succeeded`, `failed`, `dead` and `stopped` are the terminal set; `queued` and `running` are
+ * the live ones.
+ */
+export type BoardJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
+
+/**
+ * One row of the batched lease lookup the orphan reaper sweeps with (issue #301): the job's
+ * status and its CURRENT lease token, or null when the row holds no live lease — the answer
+ * that marks every labelled object of the job as a dead attempt's.
+ */
+export interface BoardLease {
+    id: string;
+    status: BoardJobStatus;
+    leaseToken: string | null;
+}
+
+/**
+ * How many job ids one `POST /api/jobs/leases` may carry — the same bound the server's route
+ * enforces, copied here because this package imports nothing from the server. The reaper chunks
+ * its sweep by it.
+ */
+export const LEASE_BATCH_MAX = 100;
+
+const BOARD_JOB_STATUSES: readonly BoardJobStatus[] = ['queued', 'running', 'succeeded', 'failed', 'dead', 'stopped'];
+
+/** The shape of every id this board speaks — job ids and lease tokens alike. */
+export const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
  * How one heartbeat landed.
  *
  * `held` carries the stop flag the board set on a Stop while this attempt was running: the driver
@@ -242,6 +273,14 @@ export interface Board {
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
+     * Asks the board what it thinks of a batch of job ids (issue #301): each known id's status
+     * and CURRENT lease token. Unknown ids are ABSENT from the answer — that absence is the
+     * board saying "no such job here", which is exactly the fact a reaper acts on. Null — a
+     * refused, failed, or malformed answer — means "the board cannot answer", and the reaper
+     * reaps nothing on it: absence must be proven, never guessed.
+     */
+    leases(ids: readonly string[]): Promise<BoardLease[] | null>;
+    /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,
      * stored beside the attempt's vitals on the board. `agentTurns` rides when the runner
@@ -290,6 +329,43 @@ const HTTP_NO_CONTENT = 204;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const ERROR_BODY_PREVIEW_LENGTH = 200;
+
+/** Whether a row of the leases answer is fully readable — every field present and well-shaped. */
+const isLeaseRow = (row: unknown): row is BoardLease => {
+    const lease = row as Partial<BoardLease> | null;
+    return (
+        typeof lease?.id === 'string' &&
+        UUID_SHAPE.test(lease.id) &&
+        BOARD_JOB_STATUSES.includes(lease.status as BoardJobStatus) &&
+        (lease.leaseToken === null || (typeof lease.leaseToken === 'string' && UUID_SHAPE.test(lease.leaseToken)))
+    );
+};
+
+/**
+ * The readable rows of a leases answer. FAIL-CLOSED: one row the driver cannot read nulls the
+ * WHOLE answer — a partially-trusted answer would read the dropped rows as "unknown to board",
+ * which is a reap verdict, and a server/driver version skew must never manufacture one.
+ */
+const parseLeaseRows = (rows: unknown[]): BoardLease[] | null =>
+    rows.every(isLeaseRow) ? (rows as BoardLease[]) : null;
+
+/**
+ * The whole leases exchange — best-effort by contract: a refused, failed, or malformed answer is
+ * null ("board cannot answer"), never a partial list the reaper would act on.
+ */
+const bestEffortLeases = async (
+    post: (path: string, body: unknown, allow404?: boolean) => Promise<Response>,
+    ids: readonly string[]
+): Promise<BoardLease[] | null> => {
+    try {
+        const response = await post('/api/jobs/leases', { ids: [...ids] });
+        if (!response.ok) return null;
+        const bodyJson = (await response.json()) as { jobs?: unknown };
+        return Array.isArray(bodyJson.jobs) ? parseLeaseRows(bodyJson.jobs) : null;
+    } catch {
+        return null;
+    }
+};
 
 export function createBoard({
     url,
@@ -443,6 +519,10 @@ export function createBoard({
         async suspend(job) {
             const response = await post(`/api/jobs/${job.id}/suspend`, { leaseToken: job.leaseToken });
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
+        },
+
+        async leases(ids) {
+            return bestEffortLeases(post, ids);
         },
 
         async complete(

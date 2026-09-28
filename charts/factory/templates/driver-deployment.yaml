@@ -117,6 +117,13 @@ spec:
                         value: {{ $.Values.driver.jobTimeoutMs | quote }}
                       - name: GATE_TIMEOUT_MS
                         value: {{ $.Values.driver.gateTimeoutMs | quote }}
+                      # The orphan reaper (issue #301): the periodic sweep of service objects whose
+                      # owning job is terminal, unknown, or running under another lease. Deletes are
+                      # board-gated and attempt-scoped, so every replica can run one.
+                      - name: DRIVER_REAP_INTERVAL_MS
+                        value: {{ $.Values.driver.reapIntervalMs | quote }}
+                      - name: DRIVER_REAP_GRACE_MS
+                        value: {{ $.Values.driver.reapGraceMs | quote }}
                       # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port; the
                       # runner reaches it at THIS pod's IP, the driver appending the bound port. A
                       # Service name would resolve to every driver replica — and, during a rollout,

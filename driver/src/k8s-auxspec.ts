@@ -345,7 +345,10 @@ export function servicePodSpec(
  * matching pods, which is exactly the "any port, direct to the container" semantics docker's
  * network alias had. It selects by the fleet label, which only service pods carry.
  */
-export function serviceDnsSpec(job: BoardJob): {
+export function serviceDnsSpec(
+    config: DriverConfig,
+    job: BoardJob
+): {
     apiVersion: 'v1';
     kind: 'Service';
     metadata: { name: string; labels: Record<string, string> };
@@ -357,11 +360,15 @@ export function serviceDnsSpec(job: BoardJob): {
         kind: 'Service',
         metadata: {
             name: subdomain,
-            // factory.service is what the lease-scoped teardown selects on (byLease below).
+            // factory.service is what the lease-scoped teardown selects on (byLease below) and
+            // what the orphan reaper's scan pairs with factory.job; the release label rides along
+            // like it does on the service pods, so a shared-namespace reaper scopes to one
+            // release's fleets and never touches a neighbour's (issue #301).
             labels: {
                 [JOB_LABEL]: job.id,
                 [LEASE_LABEL]: job.leaseToken,
                 [SERVICE_LABEL]: subdomain,
+                ...releaseLabel(config),
             },
         },
         spec: {

@@ -702,4 +702,35 @@ describe.skipIf(!enabled)('job store', () => {
             expect((await store.claim('w1', LEASE_SECONDS))?.id).toBe(next);
         });
     });
+
+    // The orphan reaper's batched lookup (issue #301): status and CURRENT lease per id, and
+    // silence — never a row — for the ids this org's board does not know.
+    it('answers leases() with the status and current lease of every known id, and nothing for unknown ones', async () => {
+        const { id: claimedId } = await queue('claimed');
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        expect(claim?.id).toBe(claimedId);
+        const { id: terminalId } = await queue('terminal');
+        const terminalClaim = await store.claim('w2', LEASE_SECONDS);
+        await store.complete(terminalId, terminalClaim!.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: '',
+        });
+
+        const answer = await store.leases([claimedId, terminalId, ABSENT]);
+
+        expect(answer).toContainEqual({ id: claimedId, status: 'running', leaseToken: claim?.leaseToken });
+        // A terminal row RETAINS its lease token by design — the branch reporter's final sample
+        // still resolves against it. The reaper's decision needs only the status: terminal means
+        // the fleet is orphaned whatever token the row keeps.
+        expect(answer).toContainEqual({
+            id: terminalId,
+            status: 'failed',
+            leaseToken: terminalClaim!.leaseToken,
+        });
+        // The absent id is the reaper's whole question: its omission is the verdict.
+        expect(answer.map((leaseInfo) => leaseInfo.id)).not.toContain(ABSENT);
+        // And the org guard holds, as it does on every read: another org's board answers nothing.
+        expect(await otherOrgStore.leases([claimedId])).toEqual([]);
+    });
 });

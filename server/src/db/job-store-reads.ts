@@ -5,7 +5,15 @@
 
 import type { Sql, Fragment } from 'postgres';
 import { type JobRow, toJobRow, type TaskRow, toTask } from './job-store-rows.js';
-import type { JobStoreContext, Job, JobStore, TaskListFilters, TaskSummary } from './job-store-types.js';
+import type {
+    JobStoreContext,
+    Job,
+    JobStatus,
+    JobStore,
+    JobLeaseInfo,
+    TaskListFilters,
+    TaskSummary,
+} from './job-store-types.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from './task-summary.js';
 
 export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] | null> {
@@ -58,6 +66,21 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     `;
     const row = rows[0];
     return row ? toJobRow(ctx, row) : null;
+}
+
+/**
+ * The orphan reaper's batched lease lookup (issue #301): status and CURRENT lease token for every
+ * named id this org holds, nothing for the ids it does not. No author join and no audit columns —
+ * the reaper needs three facts, and a worker credential must never pull more of a row than the
+ * question asked for.
+ */
+export async function leasesOf(ctx: JobStoreContext, ids: readonly string[]): Promise<JobLeaseInfo[]> {
+    const { sql, orgId } = ctx;
+    const rows = await sql<{ id: string; status: JobStatus; lease_token: string | null }[]>`
+        select id, status, lease_token from job
+        where org_id = ${orgId} and id = any(${[...ids]}::uuid[])
+    `;
+    return rows.map((row) => ({ id: row.id, status: row.status, leaseToken: row.lease_token }));
 }
 
 export type ListFilter = Parameters<JobStore['list']>[0];

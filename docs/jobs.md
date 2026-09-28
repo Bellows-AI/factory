@@ -38,6 +38,9 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, masterPrompt, leaseToken, l
      user asked to park this run (see Stop) — the kill order of a different kind
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
   POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
+POST /api/jobs/leases {ids}                     the orphan reaper's batched lookup (see Auxiliary
+                                                services) — each known id's status and CURRENT
+                                                lease, absent for the ids the board does not know
 POST /api/jobs/:id/complete {leaseToken, status, exitCode, output,
                              publication?}  (see Publishing and the verdict paragraph below)
   -> 200 {id, status, threadDone}   the verdict, plus whether EVERY job of the thread is
@@ -171,6 +174,8 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `GATE_ADVERTISE_URL` | unset | The URL runners are told to reach the gate endpoint by. Unset builds `http://host.docker.internal:<port>` from the bound port, which dockerArgs makes resolvable for gated jobs (`--add-host … host-gateway`). Set it when that default cannot reach the driver — the compose stack points it at `http://driver`, the chart at the driver pod's own IP (`http://$(POD_IP)`, so a gate call never lands on another replica). A URL with no port of its own has the bound (ephemeral) port appended — the listener is `listen(0)`, so no fixed URL could name it; one with a port stays verbatim. |
 | `GATE_TIMEOUT_MS` | `600000` | The wall-clock cap on one gate run. A gate that outlives it is a failed gate, exit 124 — the runner's own timeout covers the agent, this covers a gate that hangs. The chart sets it from `driver.gateTimeoutMs` (thirty minutes in the local profile); compose passes it through from `.env`. |
 | `RUNNER_SERVICES` | on | Honors `.bellows.yaml` in the author's checkouts: before a run, the driver starts each declared service on a per-job network (docker) or as a pod under a per-attempt headless DNS Service (kubernetes), so `postgres://db:5432` resolves for exactly that job. `0` opts out. Read the section below for the security posture. |
+| `DRIVER_REAP_INTERVAL_MS` | `300000` | How often the orphan reaper sweeps — the watcher that reaps service objects whose owning job can no longer use them (terminal, `dead`, board-unknown, or superseded lease). Every delete is decided by the board's answer and scoped to a dead attempt's labels, so it is on by default; `0` disables it. |
+| `DRIVER_REAP_GRACE_MS` | `600000` | How old an object must be before the reaper may act on it — the defer that keeps a fleet created moments before its attempt's verdict from being raced by the attempt's own teardown. Age only ever DEFERS an action the board state already decided; it never decides one. |
 
 **The workspace is passed as a volume name, not a path.** The driver's runners are *siblings*, not
 children: it talks to the host's daemon over a socket, so a path inside the driver container means
@@ -571,6 +576,24 @@ connection and retry, which is what agents are for.
   meets the next claim's fence all the same; reclaim a fleet that has no next claim by hand with
   `docker rm`/`docker network rm` — by the `factory.job` label, since the names now carry the
   attempt token, and pruning the workspaces volume removes neither.
+- **The orphan reaper is what replaces "reclaim by hand" (issue #301).** The fence only runs when
+  a later attempt of the same job reaches its `prepare()` — a job that ends `dead` (attempts
+  exhausted), a later attempt that dies before `prepare()` (a pre-run helper refusing, a checkout
+  sync throwing), or an attempt whose own driver crashed after starting its fleet, all leave
+  objects nothing would ever look at again. So the driver runs a periodic watcher, independent of
+  any claim: enumerate every object carrying the service label (`factory.service` — service
+  containers under docker, service pods and their headless Services under kubernetes), group by
+  `factory.job` + `factory.lease`, and ask the board once per batch what it thinks of those ids
+  (`POST /api/jobs/leases`). Reap when the job is terminal (`succeeded`/`failed`/`dead`/`stopped`)
+  or unknown to the board, or when the object's lease is not the job's current one (including a
+  job holding no lease at all). NEVER reap the live attempt's objects — its teardown and the
+  fence own those, and attempt-scoped names mean the reaper cannot reach them even by mistake.
+  The fence's no-clock rule is preserved in a weaker form: age (the object's creation time) only
+  ever DEFERS an action the board state already decided, inside `DRIVER_REAP_GRACE_MS` — it never
+  decides one. A board that cannot answer the lookup reaps nothing: absence must be proven for
+  every id, which is why one org board failing 503s the whole batched route. Deletes are
+  idempotent and board-gated, so there is no leader election — every replica sweeps.
+  `DRIVER_REAP_INTERVAL_MS=0` disables the watcher; the default is five minutes.
 - **A refused read or a refused service start is infrastructure, not a verdict.** Thrown, so the
   job goes back to its lease instead of being reported failed — the distinction "a run that never
   started is not a failed job" draws, one layer out.

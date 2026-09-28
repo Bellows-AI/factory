@@ -1,13 +1,17 @@
 import { writeFileSync } from 'node:fs';
 import { createBoard } from './board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
+import { createDockerReaper } from './docker-reaper.js';
 import { createDockerRunner } from './docker-runner.js';
 import { createGateManager, createGateServer } from './gates.js';
 import { createKubernetesGateManager } from './k8s-gates.js';
+import { createKubernetesReaper } from './k8s-reaper.js';
 import { createKubernetesRunner } from './k8s-runner.js';
 import { inClusterRequest } from './k8s-transport.js';
 import { createLoop } from './loop.js';
 import type { GateStack } from './loop-types.js';
+import { createReaper } from './reaper.js';
+import { run } from './docker-runner-support.js';
 
 const config = loadDriverConfig(process.env);
 const HEARTBEAT_INTERVAL_MS = 10_000;
@@ -74,6 +78,23 @@ const loop = createLoop({
     log: (m) => console.log(`[driver] ${m}`),
 });
 
+// The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
+// job can no longer use them — the fleet of a terminal, dead, board-unknown or superseded
+// attempt, whose own teardown never ran. Independent of any claim: its deletes are board-gated
+// and attempt-scoped, so it can share the executor with the fence without ever racing it, and
+// it is idempotent, so every replica may run one. Zero interval is the off switch.
+const reaper = createReaper({
+    board,
+    arm:
+        config.executor === 'kubernetes'
+            ? createKubernetesReaper({ config, request: request! })
+            : createDockerReaper((args, options) => run('docker', args, { ...options, encoding: 'utf8' })),
+    intervalMs: config.reapIntervalMs,
+    graceMs: config.reapGraceMs,
+    log: (m) => console.log(`[driver] ${m}`),
+});
+if (config.reapIntervalMs > 0) reaper.start();
+
 // Stop claiming, then drain. A second signal is the escape hatch, since a drain waits for a job
 // that may have half an hour left on it.
 let stopping = false;
@@ -86,6 +107,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         stopping = true;
         console.log('[driver] draining; signal again to exit immediately');
         loop.stop();
+        reaper.stop();
     });
 }
 

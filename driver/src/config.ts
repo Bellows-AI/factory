@@ -183,6 +183,21 @@ export interface DriverConfig {
      * that the daemon never notices.
      */
     cacheWatchPollMs: number;
+    /**
+     * How often the orphan reaper sweeps (DRIVER_REAP_INTERVAL_MS): the periodic watcher that
+     * reaps service objects whose owning job can no longer use them — a terminal job's fleet, a
+     * board-unknown job's, a superseded attempt's. Every delete is decided by the board's answer
+     * and scoped to a dead attempt's labels, so the default-on cadence costs one list and one
+     * lease lookup per period. `0` disables the reaper.
+     */
+    reapIntervalMs: number;
+    /**
+     * How long an object must have existed before the reaper may act on it
+     * (DRIVER_REAP_GRACE_MS) — the defer that keeps a fleet created a moment before its
+     * attempt's verdict from being raced by the attempt's own teardown. Age only ever DEFERS an
+     * action the board state already decided; it never decides one.
+     */
+    reapGraceMs: number;
 }
 
 /** The deployment image paired with one task-selected executor type. */
@@ -215,6 +230,10 @@ const DEFAULT_CACHE_WATCH_POLL_MS = 30_000;
 const MIN_CACHE_WATCH_POLL_MS = 250;
 /** The upper bound on RUNNER_CACHE_WATCH_POLL_MS. */
 const MAX_CACHE_WATCH_POLL_MS = 300_000;
+/** The default DRIVER_REAP_INTERVAL_MS: one sweep every five minutes. */
+const DEFAULT_REAP_INTERVAL_MS = 300_000;
+/** The default DRIVER_REAP_GRACE_MS: ten minutes, comfortably longer than an attempt's own teardown. */
+const DEFAULT_REAP_GRACE_MS = 600_000;
 
 // An explicit enum, like the server's AUTH_MODE: a value this process does not know is fatal,
 // never a fallback to docker — the first symptom of a fallback would be a driver that claims
@@ -434,6 +453,14 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             DEFAULT_CACHE_WATCH_POLL_MS,
             { min: MIN_CACHE_WATCH_POLL_MS, max: MAX_CACHE_WATCH_POLL_MS }
         ),
+        reapIntervalMs: int(env.DRIVER_REAP_INTERVAL_MS, 'DRIVER_REAP_INTERVAL_MS', DEFAULT_REAP_INTERVAL_MS, {
+            min: 0,
+            max: 24 * MS_PER_HOUR,
+        }),
+        reapGraceMs: int(env.DRIVER_REAP_GRACE_MS, 'DRIVER_REAP_GRACE_MS', DEFAULT_REAP_GRACE_MS, {
+            min: 0,
+            max: 24 * MS_PER_HOUR,
+        }),
     };
 }
 

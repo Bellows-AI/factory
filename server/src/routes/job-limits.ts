@@ -198,6 +198,14 @@ export function leaseSeconds(raw: unknown): number | null {
 /** A worker's own name, reported on every claim so a stray container can be identified and killed. */
 export const WORKER_NAME_LIMIT = 128;
 
+/**
+ * How many job ids one `POST /api/jobs/leases` may carry — the bound the orphan reaper chunks its
+ * sweep by, mirrored on the driver side (which copies, never imports). A 4096-byte control body
+ * caps ~100 uuids anyway; the explicit bound is what makes the refusal a 400 rather than a
+ * payload surprise.
+ */
+export const LEASE_BATCH_MAX = 100;
+
 /** The body limit shared by every worker/person control route below — no payload, just ids and a token. */
 export const CONTROL_BODY_LIMIT = 4096;
 

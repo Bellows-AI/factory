@@ -210,6 +210,12 @@ services:
             DRIVER_LEASE_SECONDS: ${DRIVER_LEASE_SECONDS:-300}
             DRIVER_JOB_TIMEOUT_MS: ${DRIVER_JOB_TIMEOUT_MS:-7200000}
             GATE_TIMEOUT_MS: ${GATE_TIMEOUT_MS:-600000}
+            # The orphan reaper (issue #301): the periodic sweep of service objects whose owning
+            # job is terminal, unknown to the board, or running under another lease. Interval 0
+            # disables it; the grace keeps a fleet created moments before its verdict from being
+            # raced by the attempt's own teardown.
+            DRIVER_REAP_INTERVAL_MS: ${DRIVER_REAP_INTERVAL_MS:-300000}
+            DRIVER_REAP_GRACE_MS: ${DRIVER_REAP_GRACE_MS:-600000}
             # Off by default. On, the agent edits and runs whatever it likes inside the runner
             # without asking; off, most jobs stall at a permission prompt nobody can answer. Read
             # docs/jobs.md before setting it.
