@@ -393,6 +393,12 @@ export type RunPublishStep = (step: PublishStep) => Promise<{ stdout: string }>;
 const STEP_ERROR_MAX_CHARS = 300;
 /** The final failure reason's cap — reported to the board, not a log; kept to one glance. */
 const PUBLISH_FAILURE_MAX_CHARS = 400;
+/**
+ * Stages the whole tree except the `.factory/` state namespace. The sync's `info/exclude` keeps it
+ * untracked; this pathspec also keeps a copy an older commit already tracks from being re-staged.
+ * git-probe.cjs spells the same exclusion, so a tree dirty only there reads clean.
+ */
+export const GIT_ADD_ARGS = ['add', '-A', '--', ':/', ':(top,exclude).factory'];
 
 /**
  * Probes the checkout. A probe that cannot run reads as no state at all — the caller's
@@ -454,7 +460,7 @@ async function ensureTaskBranch(
  * so a member-configured identity is never overridden.
  */
 async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string): Promise<void> {
-    await step({ label: 'git add', entrypoint: 'git', args: ['add', '-A'], env: false, inRepo: true });
+    await step({ label: 'git add', entrypoint: 'git', args: GIT_ADD_ARGS, env: false, inRepo: true });
     const identity = state.hasIdentity
         ? []
         : ['-c', 'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'];
