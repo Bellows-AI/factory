@@ -1,1 +1,0 @@
-{"schema":"merge-conflict-probe/v1","version":1,"ok":true,"output":{"verdict":"up-to-date","baseSha":"8fb10707ee7caef57ff4125180db228faac37bcd","headSha":"013097eca6f3f9d3b5303ab47031a8119461f96b","conflictingPaths":[]}}

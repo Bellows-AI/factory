@@ -61,6 +61,7 @@ const branch = process.env.BRANCH;
 const restore = process.env.RESTORE === '1';
 const GIT_ERROR_MAX_LENGTH = 200;
 const SYNC_ERROR_MAX_LENGTH = 300;
+const FACTORY_STATE_EXCLUDE = '/.factory/';
 
 const positiveIntEnv = (name, fallback) => {
     const parsed = Number.parseInt(process.env[name], 10);
@@ -229,8 +230,27 @@ const fetchOriginWithRetries = () => {
     }
 };
 
+/**
+ * Git-ignores the `.factory/` state namespace (helper verdicts, review digests) for every worktree
+ * of this clone: `info/exclude` lives in the COMMON dir, which a worktree's `.git` FILE only
+ * points at, so the path comes from `git rev-parse --git-path`, never a `.git/info` join. Without
+ * it the publisher's `git add -A` committed the probe's state file into task PRs.
+ */
+const excludeFactoryState = () => {
+    let excludePath = git('rev-parse', '--git-path', 'info/exclude');
+    if (!path.isAbsolute(excludePath)) excludePath = path.resolve(repo, excludePath);
+    const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, 'utf8') : '';
+    if (existing.split('\n').includes(FACTORY_STATE_EXCLUDE)) return;
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    fs.appendFileSync(
+        excludePath,
+        (existing === '' || existing.endsWith('\n') ? '' : '\n') + FACTORY_STATE_EXCLUDE + '\n'
+    );
+};
+
 try {
     acquireSyncLock();
+    excludeFactoryState();
     if (restore) {
         // Mid-task: the tree is what the conversation continues from, kept exactly as the run
         // before it left it — or recreated from the branch that outlived the tree's reclaim.

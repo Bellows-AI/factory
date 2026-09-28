@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { gitProbeScript } from '../src/publish.js';
+import { GIT_ADD_ARGS, gitProbeScript } from '../src/publish.js';
 import {
     GIT_FIXTURE_CONFIG,
     OTHER_ROOT,
@@ -161,6 +161,21 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         expect(result.reason).toContain('git tree this sync did not create');
         expect(readFileSync(join(fx.worktree(), 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
     });
+
+    it('git-ignores the .factory/ state namespace in every worktree, once', () => {
+        // Helpers write their verdicts under .factory/ in the task worktree; untracked there, the
+        // publisher's `git add -A` committed merge-conflict-probe.json into task PRs. A worktree's
+        // `.git` is a FILE, so the exclude must land in the clone's common dir to apply at all.
+        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toEqual({ ok: true, reason: null });
+
+        const exclude = readFileSync(join(fx.clone(), '.git', 'info', 'exclude'), 'utf8');
+        expect(exclude.split('\n').filter((line) => line === '/.factory/')).toHaveLength(1);
+        mkdirSync(join(fx.worktree(), '.factory', 'review-reconcile'), { recursive: true });
+        writeFileSync(join(fx.worktree(), '.factory', 'merge-conflict-probe.json'), '{}\n');
+        writeFileSync(join(fx.worktree(), '.factory', 'review-reconcile', 'digest.json'), '{}\n');
+        expect(git(fx.worktree(), 'status', '--porcelain')).toBe('');
+    });
 });
 
 /**
@@ -242,6 +257,24 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
         // The constant is the file — asserting the executed path is the artifact (parity with
         // the loader is pinned in scripts.test.ts).
         expect(gitProbeScript.length).toBeGreaterThan(0);
+    });
+
+    it('reads a tree dirty only under .factory/ as clean, and the publisher never stages it', () => {
+        // A state file an older commit already tracks (how merge-conflict-probe.json leaked into
+        // main): rewriting it is not publishable work, and staging it again re-spreads the leak.
+        mkdirSync(join(repo, '.factory'), { recursive: true });
+        writeFileSync(join(repo, '.factory', 'merge-conflict-probe.json'), '{"verdict":"up-to-date"}\n');
+        git(repo, 'add', '.factory');
+        git(repo, 'commit', '-m', 'leaked state');
+        writeFileSync(join(repo, '.factory', 'merge-conflict-probe.json'), '{"verdict":"rebased"}\n');
+        writeFileSync(join(repo, '.factory', 'digest.json'), '{}\n');
+
+        expect(probe().dirty).toBe(false);
+
+        writeFileSync(join(repo, 'WORK.md'), 'real work\n');
+        expect(probe().dirty).toBe(true);
+        git(repo, ...GIT_ADD_ARGS);
+        expect(git(repo, 'diff', '--cached', '--name-only')).toBe('WORK.md');
     });
 });
 

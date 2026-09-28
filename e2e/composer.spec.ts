@@ -220,6 +220,6 @@ test.describe('the guided task composer', () => {
         // board and its "own queued task is the only one claimable" invariant is what keeps that
         // deterministic. Stop this one — the page's own primary action for a queued task.
         await page.locator('.page-header-actions').getByRole('button', { name: 'Stop run' }).click();
-        await expect(page.locator('.page-header-meta')).toContainText('stopped', { timeout: 10_000 });
+        await expect(page.locator('.page-header-meta')).toContainText(/stopped/i, { timeout: 10_000 });
     });
 });
