@@ -14,6 +14,9 @@ import type { CloneStatus, WorkspaceRepo } from '../api/useWorkspace.js';
 /** The existing per-member ceiling (server/src/routes/workspace.ts). The server still enforces it. */
 export const MAX_SELECTED_REPOS = 20;
 
+/** What an unmeasured fact says — never a zero, and never a bare dash with no text behind it. */
+export const NOT_AVAILABLE = 'Not available';
+
 export const repoKey = (repo: { owner: string; name: string }): string => `${repo.owner}/${repo.name}`;
 
 /** Case-insensitive `owner/name` substring match; a blank query filters nothing. */
@@ -178,8 +181,8 @@ export type CheckoutCell =
  *
  * `checking` — the workspace poll has not answered, so nothing about checkouts may be stated as
  * fact. `unknown` — not measured: the draft selects the repository but the poll carries no row for
- * it yet, or the last poll failed and no row is in hand — either way an em dash, never a zero and
- * never a claimed "Not checked out". `absent` — nothing selects it and the poll answered: not
+ * it yet, or the last poll failed and no row is in hand — either way "Not available", never a zero
+ * and never a claimed "Not checked out". `absent` — nothing selects it and the poll answered: not
  * checked out. A row wins over all of those.
  */
 export function checkoutCell(selected: boolean, row: WorkspaceRepo | undefined, ws: WorkspaceState): CheckoutCell {
@@ -195,7 +198,7 @@ export function checkoutText(cell: CheckoutCell): string {
         case 'checking':
             return 'Checking checkout status…';
         case 'unknown':
-            return '—';
+            return NOT_AVAILABLE;
         case 'absent':
             return 'Not checked out';
         case 'status':

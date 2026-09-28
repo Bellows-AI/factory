@@ -2,23 +2,16 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import type { UseEnv } from '../api/useEnv.js';
 import type { WorkspacePayload } from '../api/useWorkspace.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
-/** The header's description: the missing-root notice, the checkout root once a poll has
- * answered, or nothing while the first poll is still unresolved. */
-function workspaceRootDescription(data: WorkspacePayload | null, noRoot: boolean): ReactNode {
-    if (noRoot) {
-        return (
-            <>
-                This deployment has no workspace root. Tasks cannot run until an operator sets{' '}
-                <code>ORG_WORKSPACE_ROOT</code>.
-            </>
-        );
-    }
-    if (data) {
+/** The header's description: the checkout root once a poll has answered, or nothing — while
+ * the first poll is unresolved, or when there is no root and the banner below says so. */
+function workspaceRootDescription(data: WorkspacePayload | null): ReactNode {
+    if (data?.root) {
         return (
             <>
                 Your checkouts live at <code>{data.root}</code>. Agents you start run here.
@@ -78,13 +71,20 @@ export function SettingsWorkspacePage() {
             <PageHeader
                 eyebrow="Settings"
                 title="Workspace"
-                description={workspaceRootDescription(data, noRoot)}
+                description={workspaceRootDescription(data)}
                 actions={
                     // The link exists only when there is a workspace to check out into; over a
                     // failed poll there is no root to reason about, so nothing offers management.
                     data && !noRoot ? <Link to="/settings/repos">Manage repository checkouts</Link> : undefined
                 }
             />
+
+            {noRoot ? (
+                <WorkspaceRootBanner>
+                    This deployment has no workspace root. Tasks cannot run until an operator sets{' '}
+                    <code>ORG_WORKSPACE_ROOT</code>.
+                </WorkspaceRootBanner>
+            ) : null}
 
             {error ? <p className="status">{error}</p> : null}
 

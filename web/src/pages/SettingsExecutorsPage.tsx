@@ -4,6 +4,7 @@ import type { WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
+import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
 import { EXECUTOR_GUIDANCE, withDefault } from '../workspace/executors.js';
 import { useSettingsPage } from './SettingsLayout.js';
@@ -110,14 +111,16 @@ export function SettingsExecutorsPage() {
                 list to reason about, and the empty sentence beside the error would claim
                 "nothing configured" as a fact about the workspace rather than the request. */}
             {data && noRoot ? (
-                <section className="panel">
-                    <h2>My workspace</h2>
-                    <p className="muted">{EXECUTOR_GUIDANCE}</p>
-                    <p className="status">
+                <>
+                    <WorkspaceRootBanner>
                         Personal executors are unavailable because this deployment has no workspace root. Tasks cannot
                         run until <Link to="/settings/workspace">workspace setup</Link> is complete.
-                    </p>
-                </section>
+                    </WorkspaceRootBanner>
+                    <section className="panel">
+                        <h2>My workspace</h2>
+                        <p className="muted">{EXECUTOR_GUIDANCE}</p>
+                    </section>
+                </>
             ) : data ? (
                 <WorkspaceExecutorsPanel
                     executors={data.executors}

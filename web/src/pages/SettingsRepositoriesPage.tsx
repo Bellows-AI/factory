@@ -4,6 +4,7 @@ import type { UseRepos } from '../api/useRepos.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import type { EnvVarView, UseEnv } from '../api/useEnv.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
+import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { useGuardedDraft, useUnsavedChanges } from '../components/UnsavedChangesDialog.js';
 import type { GuardApi } from '../components/UnsavedChangesDialog.js';
@@ -154,7 +155,7 @@ function useRepositorySelectionDraft(workspace: UseWorkspace) {
 
 /**
  * The configured-repository detail: which repository is open, its editor's dirty flag, the
- * narrow-widths focus handoff, and the guarded switch between repositories. Split out of
+ * focus handoff, and the guarded switch between repositories. Split out of
  * `SettingsRepositoriesPage` for the same reason as `useRepositorySelectionDraft`.
  */
 function useConfiguredRepoDetail(guard: GuardApi | null) {
@@ -164,11 +165,10 @@ function useConfiguredRepoDetail(guard: GuardApi | null) {
     const [detailDirty, setDetailDirty] = useState(false);
     const headingRef = useRef<HTMLHeadingElement | null>(null);
 
-    // The narrow-widths handoff: Configure moved the reader to the detail, so the focus follows —
-    // only where the detail is not already beside the list.
+    // The handoff: the detail opens below the full-width table, so Configure moves the reader
+    // there and the focus follows at every width.
     useEffect(() => {
         if (!configured) return;
-        if (!window.matchMedia('(max-width: 1099px)').matches) return;
         headingRef.current?.focus();
     }, [configured]);
 
@@ -234,8 +234,12 @@ function deriveRepositoryPageView(input: {
     const shown = matchesSearch(orderByRecency(reported), search);
     const rowsByKey = new Map((workspace.data?.repos ?? []).map((row) => [repoKey(row), row]));
     const absent = loaded ? absentSelection(chosen, reported) : [];
-    const loadingCheckouts = workspaceState !== 'ready';
-    const countsValue = loaded && workspace.data ? counts(reported, workspace.data.repos, chosen) : null;
+    // The cards, the selection bar and the checkboxes all state the draft, so they wait for its
+    // first seed as well as the poll: a draft empty for lack of a seed would flash a zero (or an
+    // unchecked box) the member never chose.
+    const seeded = workspace.data !== null && baseline !== null;
+    const loadingCheckouts = !seeded;
+    const countsValue = seeded && workspace.data ? counts(reported, workspace.data.repos, chosen) : null;
     const reposNotice = installationListNotice(repos);
     const saveState = selectionSaveState({
         saving: workspace.saving,
@@ -248,7 +252,12 @@ function deriveRepositoryPageView(input: {
     // for lack of an answer, not because the member deselected everything — so it stays blocked.
     const saveDisabled = saveState.disabled || baseline === null;
     const configuredRepo = configured ? rowsByKey.get(configured) : undefined;
-    const configuredCheckout = configured ? checkoutText(checkoutCell(true, configuredRepo, workspaceState)) : '';
+    const configuredDefaultBranch = reported.find((repo) => repoKey(repo) === configured)?.defaultBranch ?? null;
+    // The detail states the same fact as its row: the draft's selection decides "Not checked out"
+    // from "Not available", exactly as the table cell does.
+    const configuredCheckout = configured
+        ? checkoutText(checkoutCell(chosen.has(configured), configuredRepo, workspaceState))
+        : '';
     const [configuredOwner, configuredName] = configured?.split('/') ?? [];
     const configuredScope = env.data?.repos.find(
         (scope) => configuredOwner !== undefined && scope.owner === configuredOwner && scope.name === configuredName
@@ -268,13 +277,15 @@ function deriveRepositoryPageView(input: {
         saveDisabled,
         configuredOwner,
         configuredName,
+        configuredRepo,
+        configuredDefaultBranch,
         configuredCheckout,
         configuredScope,
     };
 }
 
 export function SettingsRepositoriesPage() {
-    const { workspace, env } = useSettingsPage();
+    const { workspace, env, session } = useSettingsPage();
     const repos = useRepos(true);
     const [search, setSearch] = useState('');
     const guard = useUnsavedChanges();
@@ -289,66 +300,78 @@ export function SettingsRepositoriesPage() {
                 eyebrow="Settings"
                 title="Repositories"
                 description="Choose which repositories are checked out for your workspace and configure repository-wide environment."
+                meta={
+                    // The scope context (concept 06): the selection is this member's workspace;
+                    // the per-repository environment is the organization's.
+                    session ? (
+                        <div className="repo-scope">
+                            <KeyValues
+                                pairs={[
+                                    ['Workspace', 'My workspace'],
+                                    ['Organization', session.organization.name],
+                                ]}
+                            />
+                        </div>
+                    ) : undefined
+                }
             />
             <DraftReturnBanner />
             {/* A failed poll with no data has no last-good facts to mark stale — the named error is
                 the whole story. With data, the summary carries the stale marker instead. */}
             {!workspace.data && workspace.error ? <p className="status">{workspace.error}</p> : null}
             {env.error ? <p className="status">{env.error}</p> : null}
-            <div className={configured ? 'repo-columns has-detail' : 'repo-columns'}>
-                <div>
-                    <RepositorySetupSummary
-                        counts={view.countsValue}
-                        installation={repos.data?.installation ?? null}
-                        cachedError={repos.data?.meta.error ?? null}
-                        fetchedAt={repos.data?.meta.fetchedAt ?? null}
-                        listNotice={view.reposNotice}
-                        rootNull={view.rootNull}
-                        staleError={workspace.data ? workspace.error : null}
-                    />
-                    <RepositorySetupList
-                        repos={view.reported}
-                        shown={view.shown}
-                        search={search}
-                        onSearch={setSearch}
-                        chosen={chosen}
-                        onToggle={onToggle}
-                        workspaceState={view.workspaceState}
-                        rows={view.rowsByKey}
+            <RepositorySetupSummary
+                counts={view.countsValue}
+                workspaceState={view.workspaceState}
+                listLoaded={view.loaded}
+                installation={repos.data?.installation ?? null}
+                cachedError={repos.data?.meta.error ?? null}
+                fetchedAt={repos.data?.meta.fetchedAt ?? null}
+                listNotice={view.reposNotice}
+                rootNull={view.rootNull}
+                staleError={workspace.data ? workspace.error : null}
+            />
+            <RepositorySetupList
+                repos={view.reported}
+                shown={view.shown}
+                search={search}
+                onSearch={setSearch}
+                chosen={chosen}
+                onToggle={onToggle}
+                workspaceState={view.workspaceState}
+                rows={view.rowsByKey}
+                configured={configured}
+                onConfigure={(key) => void configure(key)}
+                loadingCheckouts={view.loadingCheckouts}
+                rootNull={view.rootNull}
+                saving={workspace.saving}
+                absent={view.absent}
+                onDeselectAbsent={onDeselectAbsent}
+                loaded={view.loaded}
+                dirty={dirty}
+                saveState={{ disabled: view.saveDisabled, reason: view.saveState.reason }}
+                savedNote={savedNote}
+                failure={failure}
+                onSave={() => void saveSelection()}
+            />
+            <RepositoryConfigDetail
+                repo={configured ? { owner: view.configuredOwner!, name: view.configuredName! } : null}
+                checkout={view.configuredCheckout}
+                row={view.configuredRepo}
+                defaultBranch={view.configuredDefaultBranch}
+                headingRef={headingRef}
+            >
+                {configured && view.configuredOwner !== undefined ? (
+                    <ConfiguredRepoEnv
                         configured={configured}
-                        onConfigure={(key) => void configure(key)}
-                        loadingCheckouts={view.loadingCheckouts}
-                        rootNull={view.rootNull}
-                        saving={workspace.saving}
-                        absent={view.absent}
-                        onDeselectAbsent={onDeselectAbsent}
-                        loaded={view.loaded}
-                        dirty={dirty}
-                        saveState={{ disabled: view.saveDisabled, reason: view.saveState.reason }}
-                        savedNote={savedNote}
-                        failure={failure}
-                        onSave={() => void saveSelection()}
+                        owner={view.configuredOwner}
+                        name={view.configuredName!}
+                        scope={view.configuredScope}
+                        env={env}
+                        onDirtyChange={setDetailDirty}
                     />
-                </div>
-                <div>
-                    <RepositoryConfigDetail
-                        repo={configured ? { owner: view.configuredOwner!, name: view.configuredName! } : null}
-                        checkout={view.configuredCheckout}
-                        headingRef={headingRef}
-                    >
-                        {configured && view.configuredOwner !== undefined ? (
-                            <ConfiguredRepoEnv
-                                configured={configured}
-                                owner={view.configuredOwner}
-                                name={view.configuredName!}
-                                scope={view.configuredScope}
-                                env={env}
-                                onDirtyChange={setDetailDirty}
-                            />
-                        ) : null}
-                    </RepositoryConfigDetail>
-                </div>
-            </div>
+                ) : null}
+            </RepositoryConfigDetail>
         </>
     );
 }

@@ -34,6 +34,22 @@ describe('DefaultWorkflowPanel', () => {
         expect(save).toContain('disabled');
     });
 
+    it('ends with the Save/Cancel footer after the two switches, clean and without the indicator', () => {
+        const html = renderToStaticMarkup(
+            <DefaultWorkflowPanel
+                initialSettings={{ reviewReconciliation: true, mergeConflictAutofix: true, updatedAt: null }}
+                onSave={noop}
+            />
+        );
+        const footerAt = html.indexOf('class="settings-actions"');
+        expect(footerAt).toBeGreaterThan(html.indexOf('Repair merge conflicts'));
+        expect(html.indexOf('>Save changes</button>')).toBeGreaterThan(footerAt);
+        expect(html).not.toContain('panel-actions');
+        expect(html).toContain('<h2>Default workflow</h2>');
+        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Cancel<\/button>/);
+        expect(html).not.toContain('Unsaved changes');
+    });
+
     it('round-trips all four saved/default combinations into the checkboxes it renders', () => {
         for (const reviewReconciliation of [true, false]) {
             for (const mergeConflictAutofix of [true, false]) {

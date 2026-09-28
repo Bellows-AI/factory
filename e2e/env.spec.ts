@@ -81,7 +81,7 @@ test.describe('environment editors', () => {
         // The per-repository editor (#150) moved behind a row's Configure action (#181), and the
         // open board's missing root keeps the checkout offer off — the dedicated root-null test
         // below pins that posture. This leg pins only that the page renders cleanly.
-        await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
+        await expect(page.getByRole('button', { name: 'Save selection' })).toBeVisible({ timeout: 60_000 });
         const reposText = await page.locator('main').innerText();
         for (const token of FORBIDDEN) expect(reposText, `repos section contains ${token}`).not.toContain(token);
         await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
@@ -110,6 +110,33 @@ test.describe('environment editors', () => {
         // The echoed rows are adopted inside the mounted panel: the value survives as the input's.
         await expect(core.getByLabel('Variable 1 value')).toHaveValue('probe-value');
         await page.screenshot({ path: `${SHOTS}/env-row-saved.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('Unsaved changes shows while dirty, and Cancel returns the draft to the stored rows', async ({ page }) => {
+        const problems = watchConsole(page);
+        await open(page);
+
+        const core = corePanel(page);
+        await clearScope(core);
+        // The footer (issue 282), scoped: the open .env editor carries a Cancel of its own.
+        const footer = core.locator('.settings-actions');
+        await expect(footer.getByText('Unsaved changes')).toHaveCount(0);
+        await expect(footer.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+
+        await core.getByRole('button', { name: 'Add variable' }).click();
+        await core.getByLabel('Variable 1 name').fill('E2E_CANCEL_VAR');
+        await expect(footer.getByText('Unsaved changes')).toBeVisible();
+
+        await footer.getByRole('button', { name: 'Cancel' }).click();
+        await expect(core.getByText('No variables configured.')).toBeVisible();
+        await expect(footer.getByText('Unsaved changes')).toHaveCount(0);
+        await expect(footer.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+
+        // Clean again: leaving asks nothing.
+        await page.getByRole('link', { name: 'Tasks' }).click();
+        await expect(page).toHaveURL(/\/tasks$/);
+        await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
         expect(problems.join('\n')).toBe('');
     });
 
@@ -253,24 +280,25 @@ test.describe('environment editors', () => {
         await page.goto('/settings/repos');
         // The open board runs without ORG_WORKSPACE_ROOT (issue 181's root-null posture):
         // availability and status stay readable — the seeded repository is named, its cached
-        // checkout status renders — while every checkout control is off, with the reason and the
-        // Workspace link beside the summary. The dirty-draft dialog and the guarded Configure
+        // checkout status renders — while every checkout control is off, with the reason in the
+        // warn banner and its Workspace link. The dirty-draft dialog and the guarded Configure
         // switch drive on the auth project's board, where a root exists (workspace.spec.ts).
-        await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
+        await expect(page.getByRole('button', { name: 'Save selection' })).toBeVisible({ timeout: 60_000 });
         await expect(page.getByText('Bellows-AI/bellows.ai')).toBeVisible();
-        await expect(page.getByText('0 of 1 repositories enabled')).toBeVisible();
+        const selected = page.locator('.repo-card', { hasText: 'Selected' });
+        await expect(selected.locator('.repo-card-value')).toHaveText('0');
+        await expect(selected).toContainText('of 20 allowed');
+        await expect(selected).toContainText('1 available');
         const checkbox = page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' });
         await expect(checkbox).toBeDisabled();
-        await expect(page.getByRole('button', { name: 'Save repository selection' })).toBeDisabled();
-        await expect(page.getByText('no workspace root')).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Save selection' })).toBeDisabled();
+        const banner = page.locator('.banner-warn');
+        await expect(banner).toContainText('Workspace root not configured');
+        await expect(banner).toContainText('An operator must set ORG_WORKSPACE_ROOT on the deployment');
+        // The operator's setting, never a member's: the banner offers no button.
+        await expect(banner.getByRole('button')).toHaveCount(0);
 
-        // Scoped to the availability panel: the settings nav also carries a link named
-        // Workspace, and an unscoped locator would be a strict-mode violation.
-        await page
-            .locator('section.panel')
-            .filter({ hasText: 'no workspace root' })
-            .getByRole('link', { name: 'Workspace', exact: true })
-            .click();
+        await banner.getByRole('link', { name: 'Learn about workspaces' }).click();
         await expect(page).toHaveURL(/\/settings\/workspace$/);
         expect(problems.join('\n')).toBe('');
         await page.screenshot({ path: `${SHOTS}/settings-repos-root-null.png`, fullPage: true });

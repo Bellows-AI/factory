@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Dispatch, KeyboardEvent as ReactKeyboardEvent, SetStateAction } from 'react';
 import type { EnvSaveResult } from '../api/useEnv.js';
+import { SettingsSaveActions } from '../components/SettingsSaveActions.js';
 import { useGuardedDraft } from '../components/UnsavedChangesDialog.js';
 import {
     advancedUnapplied,
@@ -43,6 +44,11 @@ export interface EnvVarsPanelProps {
     draftLabel?: string;
     /** Dirty mirror for a page that must ask before swapping the editor (the repository select). */
     onDirtyChange?: (dirty: boolean) => void;
+}
+
+/** Runs each step in order — the footer's Cancel is three resets, kept on one line of the panel. */
+function runEach(...steps: (() => void)[]) {
+    for (const step of steps) step();
 }
 
 /** Focus routing after add/remove/undo: a request recorded during the state update, resolved
@@ -329,7 +335,8 @@ function useEnvTabs() {
  * remounting, so the "Changes saved." confirmation survives; on failure the draft is retained,
  * the error is an alert that takes focus, and the inputs are untouched. While dirty, the editor
  * is registered with the settings area's guard (useGuardedDraft), which blocks navigation and
- * repository switches behind the one discard confirmation.
+ * repository switches behind the one discard confirmation. The footer's Cancel is that same discard,
+ * run in place: the draft returns to the stored rows, and an open .env editor closes with it.
  *
  * Both tab panels always render (the inactive one carries `hidden`), because the page is
  * server-render-tested by markup assertions; the interaction states unreachable from props are
@@ -400,11 +407,6 @@ export function EnvVarsPanel({
                     saveState.saveErrorRef.current = el;
                 }}
                 statusText={saveState.statusText}
-                saving={saveState.saving}
-                canSave={canSave}
-                onSave={() => {
-                    if (canSave) void save();
-                }}
             />
 
             <EnvTabsBar
@@ -464,6 +466,16 @@ export function EnvVarsPanel({
             />
 
             {invalid && !scopeMsg ? <p className="env-errors error">Fix the highlighted rows to save.</p> : null}
+
+            <SettingsSaveActions
+                dirty={rowsState.dirty}
+                saving={saveState.saving}
+                canSave={canSave}
+                onSave={() => {
+                    if (canSave) void save();
+                }}
+                onCancel={() => runEach(discard, saveState.clearConfirmation, advanced.closeAdvanced)}
+            />
         </section>
     );
 }
