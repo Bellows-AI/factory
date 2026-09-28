@@ -21,7 +21,11 @@ export function SettingsWorkflowsPage() {
 
     return (
         <>
-            <PageHeader eyebrow="Settings" title="Workflows" />
+            <PageHeader
+                eyebrow="Settings"
+                title="Workflows"
+                description="Your defaults for new tasks, and the reusable workflows you manage."
+            />
             {loading && !data ? <p className="status">Loading your default workflow…</p> : null}
             {/* Gated on `!data`: `unavailable` also flips true when a SAVE hits the 503 (the
                 settings store vanished mid-session, data already loaded) — the panel's own

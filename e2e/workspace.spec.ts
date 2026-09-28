@@ -111,17 +111,27 @@ test('the repositories page carries the selection surface, and its draft meets t
      * and the workspace poll answers with no checkouts: one row, offered, nothing enabled — and
      * only once both answered does the enabled count state its zero.
      */
-    await expect(page.getByRole('heading', { name: 'Repository list' })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('button', { name: 'Save selection' })).toBeVisible({ timeout: 60_000 });
     const checkbox = page.getByRole('checkbox', { name: 'Enable Bellows-AI/bellows.ai in my workspace' });
     await expect(checkbox).toBeVisible();
-    await expect(page.getByText('0 of 1 repositories enabled')).toBeVisible();
+    // The four cards come from counts() (issue 282): Selected against the ceiling, then the three
+    // checkout states of the chosen repositories.
+    const selected = page.locator('.repo-card', { hasText: 'Selected' });
+    await expect(selected.locator('.repo-card-value')).toHaveText('0');
+    await expect(selected).toContainText('of 20 allowed');
+    await expect(selected).toContainText('1 available');
+    for (const label of ['Ready', 'Setting up', 'Failed']) {
+        await expect(page.locator('.repo-card', { hasText: label }).locator('.repo-card-value')).toHaveText('0');
+    }
+    await expect(page.locator('.banner-warn')).toHaveCount(0);
     await expect(page.getByLabel('Search repositories')).toBeVisible();
-    await expect(page.getByText('Selections are limited to 20 repositories.')).toBeVisible();
+    await expect(page.getByText('0 selected · Selection limited to 20 repositories.')).toBeVisible();
 
     // A toggle makes the whole-selection draft dirty, and leaving meets the area's ONE discard
     // confirmation (issue 182) — the selection is guarded like every other settings draft.
     await checkbox.click();
     await expect(page.getByText('Selection changed — save to update your workspace')).toBeVisible();
+    await expect(page.getByText('1 selected · Selection limited to 20 repositories.')).toBeVisible();
     await page.getByRole('link', { name: 'Dashboard' }).click();
     await expect(page.getByText('Discard unsaved changes?')).toBeVisible();
     await expect(page.getByText('Your changes to the repository selection have not been saved.')).toBeVisible();
@@ -145,11 +155,82 @@ test('the repositories page carries the selection surface, and its draft meets t
     // Configuration is independent of personal checkout enablement: the editor mounts behind
     // Configure with the checkbox still off, and a clean area raises no dialog.
     await page.getByRole('button', { name: 'Configure' }).click();
-    await expect(page.getByRole('heading', { name: 'Environment for Bellows-AI/bellows.ai' })).toBeVisible();
-    await expect(page.getByText('Repository · Bellows-AI/bellows.ai')).toBeVisible();
+    const detail = page.locator('.repo-detail');
+    await expect(page.getByRole('heading', { name: 'Selected repository: Bellows-AI/bellows.ai' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Selected repository: Bellows-AI/bellows.ai' })).toBeFocused();
+    await expect(detail.getByText('Repository · Bellows-AI/bellows.ai')).toBeVisible();
+    // Nothing is checked out, so the checkout facts say so in words — never a zero or a bare dash.
+    await expect(detail).toContainText('Not checked out');
+    await expect(detail.getByText('Not available')).toHaveCount(3);
+    await expect(page.locator('tr.repo-row-configured')).toHaveCount(1);
     await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
 
     await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
+});
+
+test('the default-workflow footer shows Unsaved changes, and Cancel restores the stored switches', async ({ page }) => {
+    await signedIn(page);
+    await page.goto('/settings/workflows');
+    const panel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'Default workflow' }) });
+    const footer = panel.locator('.settings-actions');
+    const toggle = panel.getByRole('checkbox', { name: 'Repair merge conflicts' });
+    await expect(toggle).toBeVisible({ timeout: 60_000 });
+    const stored = await toggle.isChecked();
+    await expect(footer.getByText('Unsaved changes')).toHaveCount(0);
+
+    await toggle.click();
+    await expect(footer.getByText('Unsaved changes')).toBeVisible();
+    await expect(footer.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+
+    await footer.getByRole('button', { name: 'Cancel' }).click();
+    await expect(toggle).toBeChecked({ checked: stored });
+    await expect(footer.getByText('Unsaved changes')).toHaveCount(0);
+    await expect(footer.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+
+    // Clean again: leaving asks nothing.
+    await page.getByRole('link', { name: 'Dashboard' }).click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
+});
+
+test('no settings action word wraps at 1024px', async ({ page }) => {
+    // The acceptance (issue 282, PLAN §7.4): at a 1024px window, every button in the page region
+    // keeps its label on one line — a wrapped "Config / ure" reads as two words and a broken row.
+    await signedIn(page);
+    await page.setViewportSize({ width: 1024, height: 800 });
+
+    /** Labels whose text runs over more than one line box, among the visible buttons in main. */
+    const wrapped = () =>
+        page.locator('main').evaluate((main) =>
+            [...main.querySelectorAll('button')]
+                .filter((button) => button.offsetParent !== null && button.textContent?.trim())
+                .filter((button) => {
+                    const range = document.createRange();
+                    range.selectNodeContents(button);
+                    const tops = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
+                    return tops.size > 1;
+                })
+                .map((button) => button.textContent?.trim())
+        );
+
+    for (const [path, ready] of [
+        ['/settings/organization', 'Core (organization)'],
+        ['/settings/workspace', 'My workspace'],
+        ['/settings/executors', 'My workspace'],
+        ['/settings/workflows', 'Default workflow'],
+    ] as const) {
+        await page.goto(path);
+        await expect(page.getByRole('heading', { name: ready })).toBeVisible({ timeout: 60_000 });
+        expect(await wrapped(), path).toEqual([]);
+    }
+
+    // The repositories page with its detail open: the table's Configure, the selection bar's
+    // save and the repository editor's footer all share the narrowed width.
+    await page.goto('/settings/repos');
+    await page.getByRole('button', { name: 'Configure' }).click();
+    await expect(page.getByRole('heading', { name: /^Selected repository:/ })).toBeVisible({ timeout: 60_000 });
+    expect(await wrapped(), '/settings/repos').toEqual([]);
+    await page.screenshot({ path: `${SHOTS}/settings-repos-1024.png`, fullPage: true });
 });
 
 test('an executor is added through the dialog, with bad JSON refused in place', async ({ page }) => {

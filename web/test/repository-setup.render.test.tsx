@@ -8,7 +8,8 @@ import {
     RepositorySetupList,
     RepositorySetupSummary,
 } from '../src/components/RepositorySetup.js';
-import { MAX_SELECTED_REPOS } from '../src/components/repository-setup.js';
+import { MAX_SELECTED_REPOS, NOT_AVAILABLE } from '../src/components/repository-setup.js';
+import { bytes, commitDate } from '../src/format.js';
 
 /**
  * The three repository-setup components, server-rendered (#159's contract: presentational, no
@@ -53,6 +54,8 @@ const summary = (overrides: Record<string, unknown> = {}) =>
             listNotice={null}
             rootNull={false}
             staleError={null}
+            listLoaded={true}
+            workspaceState="ready"
             {...overrides}
         />
     );
@@ -86,19 +89,46 @@ const list = (overrides: Record<string, unknown> = {}) =>
     );
 
 describe('RepositorySetupSummary', () => {
-    it('states the enabled count only once both answers exist — never 0 of 0 unresolved', () => {
-        expect(summary()).not.toContain('repositories enabled');
-        expect(summary()).not.toContain('0 of 0');
-        expect(summary({ counts: { available: 5, enabled: 2, ready: 1, settingUp: 1, failed: 0 } })).toContain(
-            '2 of 5 repositories enabled'
+    const COUNTS = { available: 5, enabled: 2, ready: 1, settingUp: 1, failed: 0 };
+
+    it('shows four cards from counts(): Selected of 20 allowed, Ready, Setting up, Failed', () => {
+        const html = summary({ counts: COUNTS });
+        expect(html).toContain('aria-label="Selection summary"');
+        const at = ['Selected', 'Ready', 'Setting up', 'Failed'].map((label) =>
+            html.indexOf(`class="repo-card-label">${label}<`)
         );
+        for (const index of at) expect(index).toBeGreaterThanOrEqual(0);
+        expect([...at].sort((a, b) => a - b)).toEqual(at);
+        expect(html).toMatch(/Selected<\/p><p class="repo-card-value">2</);
+        expect(html).toMatch(/Ready<\/p><p class="repo-card-value">1</);
+        expect(html).toMatch(/Setting up<\/p><p class="repo-card-value">1</);
+        expect(html).toMatch(/Failed<\/p><p class="repo-card-value">0</);
+        expect(html).toContain(`<p class="repo-card-caption">of ${MAX_SELECTED_REPOS} allowed</p>`);
+        expect(html).toContain('<p class="repo-card-caption">5 available</p>');
     });
 
-    it('carries the ready, setting-up and failed counts with the enabled sentence', () => {
-        const html = summary({ counts: { available: 5, enabled: 2, ready: 1, settingUp: 1, failed: 0 } });
-        expect(html).toContain('1 ready');
-        expect(html).toContain('1 setting up');
-        expect(html).toContain('0 failed');
+    it('shows a dash named Loading on every card, never 0, while counts are unresolved', () => {
+        const html = summary({ workspaceState: 'loading' });
+        expect(html.match(/aria-label="Loading"/g)).toHaveLength(4);
+        expect(html).not.toMatch(/repo-card-value">0</);
+        expect(html).not.toContain('0 of 0');
+    });
+
+    it('names the dash Not available after a failed first poll', () => {
+        const html = summary({ workspaceState: 'error' });
+        expect(html.match(new RegExp(`aria-label="${NOT_AVAILABLE}"`, 'g'))).toHaveLength(4);
+        expect(html).not.toContain('aria-label="Loading"');
+    });
+
+    it('omits the available figure until the installation list answers', () => {
+        const html = summary({ counts: COUNTS, listLoaded: false });
+        expect(html).toContain(`of ${MAX_SELECTED_REPOS} allowed`);
+        expect(html).not.toContain('5 available');
+    });
+
+    it('tones the card discs: accent, ok, warn, bad', () => {
+        const html = summary({ counts: COUNTS });
+        for (const tone of ['accent', 'ok', 'warn', 'bad']) expect(html).toContain(`repo-card-disc-${tone}`);
     });
 
     it('names the installation account and its access when present', () => {
@@ -116,10 +146,15 @@ describe('RepositorySetupSummary', () => {
         expect(summary({ cachedError: 'GitHub is unreachable' })).toContain('GitHub is unreachable');
     });
 
-    it('says the workspace root is missing, with the way back, when there is none', () => {
+    it('warns in a banner that an operator must set ORG_WORKSPACE_ROOT, links to Workspace, offers no button', () => {
         const html = summary({ rootNull: true });
-        expect(html).toContain('no workspace root');
-        expect(html).toContain('/settings/workspace');
+        expect(html).toContain('class="banner-warn"');
+        expect(html).toContain('Workspace root not configured');
+        expect(html).toContain('An operator must set <code>ORG_WORKSPACE_ROOT</code> on the deployment');
+        expect(html).toMatch(/href="\/settings\/workspace"[^>]*>Learn about workspaces</);
+        expect(html).not.toContain('<button');
+        expect(html).not.toContain('Configure workspace root');
+        expect(summary()).not.toContain('banner-warn');
     });
 
     it('marks last-good checkout facts stale when a later poll fails', () => {
@@ -135,37 +170,36 @@ describe('RepositorySetupSummary', () => {
         expect(summary({ listNotice: null })).not.toContain('Could not reach GitHub');
     });
 
-    it('carries no save action — the save lives beside the list', () => {
+    it('carries no save action — the save lives in the selection bar', () => {
         expect(summary()).not.toContain('<button');
-        expect(summary()).not.toContain('Save repository selection');
+        expect(summary()).not.toContain('Save selection');
     });
 
-    it('states counts and installation as one concise summary line', () => {
+    it('names the installation after the cards', () => {
         const html = summary({
-            counts: { available: 5, enabled: 2, ready: 1, settingUp: 1, failed: 0 },
+            counts: COUNTS,
             installation: { account: 'Acme Inc', repositorySelection: 'selected' },
         });
-        expect(html).toMatch(
-            /<p class="repo-summary">[\s\S]*2 of 5 repositories enabled[\s\S]*Installation: Acme Inc[\s\S]*<\/p>/
-        );
-        expect(summary()).not.toContain('repo-summary');
+        expect(html.indexOf('Installation: Acme Inc')).toBeGreaterThan(html.indexOf('repo-cards'));
     });
 });
 
 describe('RepositorySetupList', () => {
-    it('puts the save action in the list head, before the search and the table', () => {
+    it('orders the search, the selection bar with its save, then the full-width table', () => {
         const html = list();
-        const headAt = html.indexOf('<h2>Repository list</h2>');
-        const saveAt = html.indexOf('Save repository selection');
         const searchAt = html.indexOf('id="repo-setup-search"');
-        expect(headAt).toBeGreaterThanOrEqual(0);
-        expect(saveAt).toBeGreaterThan(headAt);
-        expect(searchAt).toBeGreaterThan(saveAt);
-        expect(html).toContain('class="panel-actions"');
+        const barAt = html.indexOf('class="repo-toolbar"');
+        const saveAt = html.indexOf('>Save selection</button>');
+        const tableAt = html.indexOf('aria-label="Repositories"');
+        expect(searchAt).toBeGreaterThanOrEqual(0);
+        expect(barAt).toBeGreaterThan(searchAt);
+        expect(saveAt).toBeGreaterThan(barAt);
+        expect(tableAt).toBeGreaterThan(saveAt);
+        expect(html).not.toContain('panel-actions');
     });
 
     it('makes the save prominent only while a dirty selection can save', () => {
-        expect(list({ dirty: true })).toMatch(/class="primary repo-save"[^>]*>Save repository selection/);
+        expect(list({ dirty: true })).toMatch(/class="primary repo-save"[^>]*>Save selection/);
         expect(list()).not.toContain('class="primary');
         expect(list({ savedNote: true })).not.toContain('class="primary');
         expect(list({ dirty: true, saving: true, saveState: { disabled: true, reason: null } })).not.toContain(
@@ -173,14 +207,14 @@ describe('RepositorySetupList', () => {
         );
         expect(list({ dirty: true, saveState: { disabled: true, reason: 'x' } })).not.toContain('class="primary');
         expect(list({ dirty: true, failure: 'Too many repositories' })).toMatch(
-            /class="primary repo-save"[^>]*>Save repository selection/
+            /class="primary repo-save"[^>]*>Save selection/
         );
     });
 
     it('locks the action and renames it while a save runs', () => {
         const html = list({ saving: true, saveState: { disabled: true, reason: null } });
         expect(html).toContain('Saving selection…');
-        expect(html).not.toContain('>Save repository selection</button>');
+        expect(html).not.toContain('>Save selection</button>');
     });
 
     it('announces an adopted save, and keeps a failure beside the action', () => {
@@ -190,7 +224,7 @@ describe('RepositorySetupList', () => {
 
     it('shows the dirty sentence', () => {
         expect(list({ dirty: true })).toContain('Selection changed — save to update your workspace');
-        expect(list()).toContain('Save repository selection');
+        expect(list()).toContain('Save selection');
     });
 
     it('associates the save-blocking reason with the disabled action', () => {
@@ -204,10 +238,21 @@ describe('RepositorySetupList', () => {
         expect(html).toMatch(/aria-describedby="repo-save-reason"/);
     });
 
-    it('names the ceiling inside the search row', () => {
-        expect(list()).toMatch(
-            /class="repo-search">[\s\S]*Selections are limited to 20 repositories\.[\s\S]*aria-label="Repositories"/
-        );
+    it('counts the selection and names the ceiling in the selection bar', () => {
+        expect(list()).toMatch(/class="repo-toolbar">[\s\S]*1 selected · Selection limited to 20 repositories\./);
+    });
+
+    it('states no selected count while checkouts load, and names the withheld checkbox', () => {
+        const html = list({ workspaceState: 'loading', loadingCheckouts: true });
+        expect(html).not.toContain(' selected · ');
+        expect(html).toContain('Selection limited to 20 repositories.');
+        expect(html).toContain('aria-label="Loading"');
+    });
+
+    it('marks the configured row, and only that one', () => {
+        expect(list({ configured: 'acme/web' })).toContain('class="repo-row-configured"');
+        expect(list({ configured: 'acme/other' })).not.toContain('repo-row-configured');
+        expect(list()).not.toContain('repo-row-configured');
     });
 
     it('labels every data cell for the narrow stacked layout, and leaves the action unlabeled', () => {
@@ -238,11 +283,14 @@ describe('RepositorySetupList', () => {
         expect(html).toContain('Failed · fatal: repository not found');
     });
 
-    it('never fakes a measurement: unmeasured branch, commit and size render as dashes', () => {
+    it('never fakes a measurement: unmeasured branch, commit and size say Not available', () => {
         const html = list({
+            repos: [repo({ defaultBranch: null })],
+            shown: [repo({ defaultBranch: null })],
             rows: new Map([['acme/web', checkout({ branch: null, lastCommit: null, sizeBytes: null })]]),
         });
-        expect(html).toContain('—');
+        expect(html.match(/Not available/g)?.length).toBeGreaterThanOrEqual(3);
+        expect(html).not.toContain('—');
         expect(html).not.toContain('0 B');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
@@ -337,14 +385,21 @@ describe('RepositorySetupList', () => {
 
 describe('RepositoryConfigDetail', () => {
     it('renders nothing before a repository is chosen — no empty panel', () => {
-        expect(render(<RepositoryConfigDetail repo={null} checkout="Ready" headingRef={undefined} />)).toBe('');
+        expect(
+            render(<RepositoryConfigDetail repo={null} checkout="Ready" headingRef={undefined} row={undefined} />)
+        ).toBe('');
     });
 
-    it('heads with the environment and states the shared scope truth (issue 180)', () => {
+    it('heads with the selected repository and states the shared scope truth (issue 180)', () => {
         const html = render(
-            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" headingRef={undefined} />
+            <RepositoryConfigDetail
+                repo={{ owner: 'acme', name: 'web' }}
+                checkout="Ready"
+                headingRef={undefined}
+                row={undefined}
+            />
         );
-        expect(html).toContain('Environment for acme/web');
+        expect(html).toContain('Selected repository: acme/web');
         // The scope copy is ConfigurationScope's — the same table every editor states.
         expect(html).toContain('Repository · acme/web');
         expect(html).toContain('Applies to every task using acme/web in the organization.');
@@ -352,18 +407,63 @@ describe('RepositoryConfigDetail', () => {
         expect(html).toContain('organization &lt; workspace &lt; repository');
     });
 
-    it('gives the checkout status as context', () => {
+    it('lists the checkout facts: status, branch, last commit, size', () => {
+        const at = '2026-08-19T10:00:00.000Z';
+        const row = checkout({ branch: 'trunk', lastCommit: { sha: 'abc1234', at, headline: 'Fix' }, sizeBytes: 2048 });
         const html = render(
-            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Cloning" headingRef={undefined} />
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Cloning" row={row} />
         );
-        expect(html).toContain('Cloning');
+        expect(html).toContain('<h3>Checkout</h3>');
+        for (const label of ['Checkout status', 'Branch', 'Last commit', 'Size']) {
+            expect(html).toContain(`<dt>${label}</dt>`);
+        }
+        expect(html).toContain('<dd>Cloning</dd>');
+        expect(html).toContain('<dd>trunk</dd>');
+        expect(html).toContain(`<dd>${commitDate(at)}</dd>`);
+        expect(html).toContain(`<dd>${bytes(2048)}</dd>`);
+        expect(html).not.toContain(NOT_AVAILABLE);
+    });
+
+    it('says Not available for each fact nothing measured', () => {
+        const html = render(
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Not checked out" row={undefined} />
+        );
+        expect(html.match(new RegExp(NOT_AVAILABLE, 'g'))).toHaveLength(3);
+        expect(html).not.toContain('—');
+    });
+
+    it('names the default branch before any checkout, as the table row does', () => {
+        const html = render(
+            <RepositoryConfigDetail
+                repo={{ owner: 'acme', name: 'web' }}
+                checkout="Not checked out"
+                row={undefined}
+                defaultBranch="main"
+            />
+        );
+        expect(html).toContain('<dt>Branch</dt><dd>main</dd>');
+        expect(html.match(new RegExp(NOT_AVAILABLE, 'g'))).toHaveLength(2);
+    });
+
+    it('renders the environment editor after the checkout facts', () => {
+        const html = render(
+            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" row={undefined}>
+                <p>EDITOR</p>
+            </RepositoryConfigDetail>
+        );
+        expect(html.indexOf('EDITOR')).toBeGreaterThan(html.indexOf('<dt>Size</dt>'));
     });
 
     it("carries no switch blocker of its own — the guarded switch is the area dialog's (issue 182)", () => {
         // The dirty detail guards its switch through the settings area's ONE discard confirmation;
         // a blocker line here would be a second dialog contract.
         const html = render(
-            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} checkout="Ready" headingRef={undefined} />
+            <RepositoryConfigDetail
+                repo={{ owner: 'acme', name: 'web' }}
+                checkout="Ready"
+                headingRef={undefined}
+                row={undefined}
+            />
         );
         expect(html).not.toContain('unsaved');
         expect(html).not.toContain('Discard');

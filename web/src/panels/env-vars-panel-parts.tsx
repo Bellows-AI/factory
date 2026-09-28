@@ -307,8 +307,9 @@ export function AdvancedEnvEditor({
     );
 }
 
-/** The panel's title, Save button, and the hint/error/status lines beneath it. Split out of
- * `EnvVarsPanel` so its own markup does not add to the panel's line count. */
+/** The panel's title and the hint/error/status lines beneath it — Save and Cancel are the
+ * footer's (`SettingsSaveActions`). Split out of `EnvVarsPanel` so its own markup does not add to
+ * the panel's line count. */
 export function EnvPanelBanner({
     title,
     hint,
@@ -316,9 +317,6 @@ export function EnvPanelBanner({
     saveError,
     saveErrorRef,
     statusText,
-    saving,
-    canSave,
-    onSave,
 }: {
     title: string;
     hint: string;
@@ -326,19 +324,11 @@ export function EnvPanelBanner({
     saveError: string | null;
     saveErrorRef: (el: HTMLParagraphElement | null) => void;
     statusText: string;
-    saving: boolean;
-    canSave: boolean;
-    onSave: () => void;
 }) {
     return (
         <>
             <div className="panel-head">
                 <h2>{title}</h2>
-                <div className="panel-actions">
-                    <button type="button" className="primary" onClick={onSave} disabled={!canSave}>
-                        {saving ? 'Saving changes…' : 'Save changes'}
-                    </button>
-                </div>
             </div>
             {hint ? <p className="muted">{hint}</p> : null}
             {scopeMsg ? (

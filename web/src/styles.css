@@ -2760,10 +2760,101 @@
         font-size: 12px;
     }
 
-    /* The repository setup page (issue 181, compacted by issue 223): a labeled search row above
-       the list, and the summary/list/detail stack that becomes master/detail beside itself once
-       a wide window can hold both — below 1100px the DOM order (summary, list, detail) is the
-       reading order. */
+    /* The repository setup page (issue 181, recomposed on concept 06 by issue 282): the header's
+       scope context, the four summary cards, a labeled search row, the selection bar, the
+       full-width table, and the selected repository's detail below it — the DOM order is the
+       reading order at every width. */
+    .repo-scope {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        padding: 12px 16px;
+    }
+
+    .repo-cards {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    @media (max-width: 900px) {
+        .repo-cards {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (max-width: 640px) {
+        .repo-cards {
+            grid-template-columns: minmax(0, 1fr);
+        }
+    }
+
+    /* Top-aligned, so the four labels share a line whatever a caption adds below its figure. */
+    .repo-card {
+        align-items: flex-start;
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        display: flex;
+        gap: 12px;
+        min-width: 0;
+        padding: 16px;
+    }
+
+    /* The card's glyph on its lamp's wash — decoration beside the words, never the message. */
+    .repo-card-disc {
+        align-items: center;
+        border-radius: 50%;
+        display: inline-flex;
+        flex: none;
+        height: 40px;
+        justify-content: center;
+        width: 40px;
+    }
+
+    .repo-card-disc-accent {
+        background: var(--accent-wash);
+        color: var(--accent);
+    }
+
+    .repo-card-disc-ok {
+        background: var(--ok-wash);
+        color: var(--lamp-run);
+    }
+
+    .repo-card-disc-warn {
+        background: var(--warn-wash);
+        color: var(--lamp-wait);
+    }
+
+    .repo-card-disc-bad {
+        background: var(--bad-wash);
+        color: var(--lamp-stop);
+    }
+
+    .repo-card-label,
+    .repo-card-caption {
+        color: var(--ink-muted);
+        font-size: 13px;
+        line-height: 18px;
+        margin: 0;
+    }
+
+    .repo-card-label {
+        font-weight: 500;
+    }
+
+    .repo-card-value {
+        font-size: 28px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        line-height: 34px;
+        margin: 0;
+    }
+
     .repo-search {
         align-items: center;
         display: flex;
@@ -2782,32 +2873,53 @@
         min-width: 12ch;
     }
 
-    /* The availability summary's one line of counts plus installation context (issue 223):
-       both spans wrap onto their own line rather than crowding together on narrow panels. */
-    .repo-summary {
+    /* The selection bar (concept 06): the count and ceiling sentence, and Save selection at the
+       trailing edge; it wraps under the sentence rather than squeezing the label. */
+    .repo-toolbar {
+        align-items: center;
+        border-top: 1px solid var(--line);
         display: flex;
         flex-wrap: wrap;
-        gap: 4px 16px;
+        gap: 12px;
+        justify-content: space-between;
+        margin: 12px 0;
+        padding-top: 12px;
     }
 
-    .repo-columns {
+    .repo-toolbar-count {
+        color: var(--ink-muted);
+        font-size: 13px;
+        margin: 0;
+    }
+
+    /* An unmeasured fact, in words: quieter than a measurement, never a zero. */
+    .repo-na {
+        color: var(--ink-muted);
+        font-family: var(--font-sans);
+        font-size: 13px;
+    }
+
+    /* The selected repository: checkout facts beside its environment scope and editor once the
+       width holds both, stacked (facts first) below that. */
+    .repo-detail-body {
         display: grid;
-        gap: 16px;
-        /* minmax(0, 1fr), not 1fr: the track's implicit minimum is the list table's min-content
-           (its cells are nowrap by design, scrolling inside the table wrap), which otherwise
-           widens the whole page on narrow screens — the same treatment the two-column layout
-           below already applies (issue 190). */
+        gap: 24px;
         grid-template-columns: minmax(0, 1fr);
     }
 
-    /* The list stays full width until a repository is actually opened — `has-detail` only
-       applies once `RepositoryConfigDetail` has something to render. Splitting unconditionally
-       reserved the detail column's share even when it was empty, which is what left Configure
-       clipped at ordinary desktop widths (issue 223). */
+    .repo-detail-body h3 {
+        margin: 0 0 8px;
+    }
+
+    /* The facts read label → value at every width, not spread across a stacked full row. */
+    .repo-detail-body .kv {
+        grid-template-columns: max-content minmax(0, 1fr);
+    }
+
     @media (min-width: 1100px) {
-        .repo-columns.has-detail {
+        .repo-detail-body {
             align-items: start;
-            grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+            grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
         }
     }
 
@@ -2852,7 +2964,7 @@
 
     table.repo-table th:nth-child(6),
     table.repo-table td:nth-child(6) {
-        width: 70px;
+        width: 110px;
     }
 
     /* Configure stays reachable without hunting for it: pinned to the wrap's trailing edge, with
@@ -2864,7 +2976,17 @@
         box-shadow: inset 1px 0 0 var(--line-strong);
         position: sticky;
         right: 0;
-        width: 96px;
+        width: 120px;
+    }
+
+    /* The configured row (concept 06's selected row): the accent wash, layered over the raised
+       fill on the sticky cell so scrolled content never shows through a translucent wash. */
+    table.repo-table tr.repo-row-configured td {
+        background: var(--accent-wash);
+    }
+
+    table.repo-table tr.repo-row-configured td:last-child {
+        background: linear-gradient(var(--accent-wash), var(--accent-wash)), var(--surface-raised);
     }
 
     /* Narrow widths stack rows as cards, mirroring the environment editor's pattern (issue 222):
@@ -2954,6 +3076,33 @@
         gap: 8px;
         justify-content: flex-end;
         margin-top: 16px;
+    }
+
+    /* The editor footer every settings panel ends with (issue 282): the dirty indicator on the
+       leading edge, Cancel and Save on the trailing one. */
+    .settings-actions {
+        align-items: center;
+        border-top: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: flex-end;
+        margin-top: 24px;
+        padding-top: 16px;
+    }
+
+    .settings-dirty {
+        color: var(--lamp-wait);
+        font-size: 13px;
+        line-height: 18px;
+        margin-right: auto;
+    }
+
+    /* Action words never wrap (acceptance at 1024px): a button grows, its label stays whole. */
+    .settings-actions button,
+    .repo-toolbar button,
+    .repo-table button {
+        white-space: nowrap;
     }
 
     /* The default-workflow settings panel's two switches and the composer's matching pair
@@ -4111,6 +4260,7 @@
         .inbox-footer button,
         .inbox-error button,
         .inbox-banner-body button,
+        .settings-actions button,
         .composer-example,
         .composer-notices-dismiss {
             align-items: center;

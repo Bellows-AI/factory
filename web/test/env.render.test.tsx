@@ -155,6 +155,18 @@ describe('the env draft editor', () => {
         expect(html).not.toMatch(/class="[^"]*\bprimary\b[^"]*"/);
     });
 
+    it('ends with the Save/Cancel footer after both tab panels, clean and without the indicator', () => {
+        // The settings editor pattern (issue 282): form first, then the footer — never Save in
+        // the heading. Clean means both actions are off and nothing claims unsaved changes.
+        const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneVar} onSave={noop} />);
+        const footerAt = html.indexOf('class="settings-actions"');
+        expect(footerAt).toBeGreaterThan(html.lastIndexOf('role="tabpanel"'));
+        expect(html.indexOf('>Save changes</button>')).toBeGreaterThan(footerAt);
+        expect(html).not.toContain('panel-actions');
+        expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Cancel<\/button>/);
+        expect(html).not.toContain('Unsaved changes');
+    });
+
     it('renders the add control and the .env toggle after the table, near the rows', () => {
         const html = renderToStaticMarkup(<EnvVarsPanel title="Core" hint="" initialVars={oneVar} onSave={noop} />);
         expect(html.indexOf('env-vars')).toBeLessThan(html.indexOf('Add variable'));
