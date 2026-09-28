@@ -219,6 +219,33 @@ pod-list blink is never the verdict. (The other aux polls — the `.bellows.yaml
 opencode session scrape, the publish steps and the block helpers — do not watch: on an
 unpullable image the sync poll fails before any of them can run.)
 
+**A plain-text `400 Bad Request` from the API server is transient (issue #308).** The driver
+observed seven of them in twelve hours, on GETs and POSTs alike, with nothing in the apiserver
+logs: the body is Go's `net/http` pre-handler answer — `400 Bad Request`, no kubernetes `Status`
+JSON — which names the request bytes or the connection, never the API. Three layers answer it.
+The transport (`inClusterRequest`, `driver/src/k8s-transport.ts`) runs on ONE dedicated
+`https.Agent` with `keepAlive: false` — Node's global agent keeps sockets alive, and a request
+written onto a connection the apiserver has just idle-closed is the suspected source; the
+per-request TLS handshake is the accepted cost. Every refused answer (status ≥ 300, the
+transport's own refusal threshold) is logged
+with its method, path, status, response headers and the first 500 bytes of body — the body IS
+the diagnosis; when one of these recurs, read that line first. `readVerdict`
+(`driver/src/k8s-poll.ts`) retries a non-JSON `400 Bad Request` within the same bounded patience
+as a 5xx (`isMalformedRequest400`; deliberately prefix-matched to Go's answer, because a broad
+"any non-JSON 400" would retry permanent kubelet refusals — widen only with a logged body as
+evidence), while a genuine JSON `Status` 400 stays an immediate refusal. A POST answered the same
+pre-handler 400 throws too (`postRefusal` on the sync's Secret and Job creates and the reclaim's
+Job create), into the same leave-to-lease arms. And a poll whose
+patience runs out — transport failures, 429s, 5xx, this 400 — THROWS: infrastructure is never a
+verdict, so `syncCheckout`'s exhaustion reaches the loop's catch and the job goes back to its
+lease instead of a terminal `failed` with attempts left (the opencode session scrape is the one
+caller that wraps the poll, because its throw must never burn a completed run's verdict; the
+fence's claim POST already threw on every refusal — leave to the lease is its standing answer).
+Stated residual: the gate env Secret/Job and helper Secret/Job POSTs keep the plain `refusal`
+channel — a pre-handler 400 there fails the gate or the helper step rather than leaving anything
+to a lease; the dedicated agent above is the only fix those sites get, which is the trade of the
+issue's mandated retry scope being the sync path.
+
 ## The operator is the driver
 
 "Operator for runners" is satisfied by running the driver in-cluster, not by a CRD controller. The

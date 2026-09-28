@@ -15,6 +15,7 @@ import {
 import { jobsPath, runnerName, secretBody, secretName, type RunnerJobSpec } from './k8s-podspec.js';
 import { readVerdict } from './k8s-poll.js';
 import {
+    answerPreview,
     CLAIM_ROUNDS,
     expectOk,
     HTTP_CONFLICT,
@@ -359,7 +360,7 @@ export async function prepare(deps: K8sDeps, job: BoardJob, _cleanup: RunCleanup
     if (!claimReadIsOurs(pre, job)) {
         throw new Error(
             `the checkout claim of job ${job.id} could not be confirmed before creating the runner job ` +
-                `(answered ${pre.status})`
+                `(${answerPreview(pre.status, pre.body)})`
         );
     }
 }
@@ -388,7 +389,7 @@ export async function launch(deps: K8sDeps, job: BoardJob, spec: RunnerJobSpec, 
         await standDownOwnJob(deps, job, cleanup);
         throw new Error(
             `the checkout claim of job ${job.id} could not be confirmed after creating the runner job ` +
-                `(answered ${held.status})`
+                `(${answerPreview(held.status, held.body)})`
         );
     }
 }

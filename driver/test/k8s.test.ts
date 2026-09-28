@@ -4,8 +4,9 @@ import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript } from '../src/container-scripts.js';
 import { lookupHelper } from '../src/helpers.js';
 import type { HelperPlan } from '../src/helpers.js';
-import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { POLL_MAX_CONSECUTIVE_FAILURES, parseServicePods, parsePodMetrics } from '../src/k8s-transport.js';
+import { readVerdict } from '../src/k8s-poll.js';
 import {
     bellowsJobSpec,
     claudeTurnsJobName,
@@ -733,6 +734,48 @@ const claimServer = () => {
     };
 };
 
+describe('readVerdict', () => {
+    const depsOf = (request: K8sRequest): K8sDeps => ({
+        request,
+        sleep: async () => {},
+        config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+    });
+
+    it('retries a plain-text 400 Bad Request like a 5xx and answers the eventual 2xx', async () => {
+        let reads = 0;
+        const request: K8sRequest = () => {
+            reads += 1;
+            return reads <= 2
+                ? Promise.resolve({ status: 400, body: '400 Bad Request' })
+                : Promise.resolve({ status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) });
+        };
+        const response = await readVerdict(depsOf(request), jobPath(namespace, 'j'), 'reading the job j');
+        expect(response.status).toBe(200);
+        expect(reads).toBe(3);
+    });
+
+    it('does not retry a JSON Status 400 — the API refused, and retrying would only repeat it', async () => {
+        let reads = 0;
+        const request: K8sRequest = () => {
+            reads += 1;
+            return Promise.resolve({
+                status: 400,
+                body: '{"kind":"Status","status":"Failure","reason":"Invalid","message":"Job.batch is invalid"}',
+            });
+        };
+        const response = await readVerdict(depsOf(request), jobPath(namespace, 'j'), 'reading the job j');
+        expect(response.status).toBe(400);
+        expect(reads).toBe(1);
+    });
+
+    it('throws with the body in the message when the malformed 400 never stops', async () => {
+        const request: K8sRequest = () => Promise.resolve({ status: 400, body: '400 Bad Request' });
+        await expect(readVerdict(depsOf(request), jobPath(namespace, 'j'), 'reading the job j')).rejects.toThrow(
+            /answered 400 .* in a row.*400 Bad Request/s
+        );
+    });
+});
+
 /*
  * The startup sync (issue #35), ported: the docker runner creates the task worktree with a
  * `docker run` of the worktree script; here the same script is the same Job shape every other
@@ -926,11 +969,61 @@ describe('the worktree sync', () => {
         expect(calls).toHaveLength(0);
     });
 
-    it('answers ok:false when the sync Job never reaches a verdict it can read', async () => {
-        const { request } = fakeRequest({ job: { status: 500, body: 'nope' } });
+    it('leaves the sync to the lease when its poll exhausts: throws, Job down Foreground, claim released', async () => {
+        const { request, calls } = fakeRequest({ job: { status: 400, body: '400 Bad Request' } });
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/answered 400/);
+        // The handover is clean BEFORE the throw reaches the loop: the sync Job is gone, then the
+        // claim — a mid-flight sync pod never outlives the claim it ran under.
+        const foregroundDelete = calls.findIndex(
+            (call) =>
+                call.method === 'DELETE' &&
+                call.path === `${jobsPath(namespace)}/${syncJobName(repoJob)}?propagationPolicy=Foreground`
+        );
+        const claimDelete = calls.findIndex(
+            (call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id)
+        );
+        expect(foregroundDelete).toBeGreaterThanOrEqual(0);
+        expect(claimDelete).toBeGreaterThan(foregroundDelete);
+    });
+
+    it('carries the API’s own reason in the sync poll’s refusal', async () => {
+        const { request } = fakeRequest({
+            job: { status: 422, body: '{"kind":"Status","reason":"Invalid","message":"Job.batch is invalid"}' },
+        });
         const result = await runner(request).syncCheckout(repoJob);
         expect(result.ok).toBe(false);
-        expect(result.reason).toContain('500');
+        expect(result.reason).toContain('422');
+        expect(result.reason).toContain('Job.batch is invalid');
+    });
+
+    // The 400s arrive on POSTs too (issue #308): a pre-handler `400 Bad Request` on either of the
+    // sync's creates is connection damage, never the sync's verdict — it throws, and the loop's
+    // catch leaves the job to its lease. A genuine Status refusal still answers ok:false.
+    it('leaves the sync to the lease when its Job POST answers the pre-handler 400', async () => {
+        const { request, calls } = fakeRequest({ create: { status: 400, body: '400 Bad Request' } });
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(
+            /creating the worktree sync job answered 400/
+        );
+        // The throw still hands the checkout over cleanly.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id))).toBe(true);
+    });
+
+    it('leaves the sync to the lease when its env Secret POST answers the pre-handler 400', async () => {
+        const envJob: BoardJob = { ...repoJob, env: { CORE_TOKEN: 'shh' } };
+        const { request } = fakeRequest({ secretCreate: { status: 400, body: '400 Bad Request' } });
+        await expect(runner(request).syncCheckout(envJob)).rejects.toThrow(/creating the sync secret answered 400/);
+    });
+
+    it('answers ok:false when the sync Job POST answers a genuine API Status 400', async () => {
+        const { request } = fakeRequest({
+            create: {
+                status: 400,
+                body: '{"kind":"Status","status":"Failure","reason":"Invalid","message":"Job.batch is invalid"}',
+            },
+        });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('Job.batch is invalid');
     });
 
     it('answers ok:false when the log answers nothing parseable', async () => {
@@ -1191,10 +1284,9 @@ describe('the worktree sync', () => {
         ).toBe(true);
     });
 
-    it('deletes its sync Job when the poll gives up and the sync fails', async () => {
+    it('deletes its sync Job when the poll gives up and the sync throws', async () => {
         const { request, calls } = fakeRequest({ job: { status: 500, body: 'nope' } });
-        const result = await runner(request).syncCheckout(repoJob);
-        expect(result.ok).toBe(false);
+        await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/answered 500/);
         expect(
             calls.some(
                 (call) =>
@@ -1425,10 +1517,10 @@ describe('the worktree reclaim', () => {
 
     it('releases the checkout claim even when the reclaim Job poll gives up', async () => {
         const { request, calls } = fakeRequest({ job: { status: 500, body: 'nope' } });
-        const result = await runner(request).reclaimWorktree(repoJob);
+        // The exhaustion is a throw, not a verdict: the loop's reclaim catch leaves the row to
+        // its lease, exactly as it does a thrown transport failure.
+        await expect(runner(request).reclaimWorktree(repoJob)).rejects.toThrow(/answered 500/);
 
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('500');
         // The failure arm takes the Job down Foreground BEFORE the release, so a mid-flight
         // removal pod never outlives the claim it runs under.
         const foregroundDelete = calls.findIndex(
@@ -1441,6 +1533,16 @@ describe('the worktree reclaim', () => {
         );
         expect(foregroundDelete).toBeGreaterThanOrEqual(0);
         expect(claimDelete).toBeGreaterThan(foregroundDelete);
+    });
+
+    // The reclaim Job's own POST, the same transient-400 rule its poll has (issue #308): the
+    // pre-handler answer throws into the loop's reclaim catch — leave to the lease — while a
+    // genuine Status refusal stays an ok:false answer.
+    it('leaves the reclaim to its lease when its Job POST answers the pre-handler 400', async () => {
+        const { request } = fakeRequest({ create: { status: 400, body: '400 Bad Request' } });
+        await expect(runner(request).reclaimWorktree(repoJob)).rejects.toThrow(
+            /creating the worktree reclaim job answered 400/
+        );
     });
 
     /*
@@ -6067,6 +6169,41 @@ describe('the kubernetes runner under opencode', () => {
             (c) => c.method === 'POST' && (c.body as { metadata?: { name?: string } })?.metadata?.name === ocreadName
         );
         expect(scrapePosts.length).toBe(3);
+    });
+
+    // The readout poll can now THROW (poll exhaustion is infrastructure, never a verdict) — and
+    // the scrape wraps that throw, because a completed run's verdict must never burn over its
+    // close-time read.
+    it('fails no verdict when the readout poll exhausts: the error rides readoutError instead', async () => {
+        const base = opencodeFake();
+        const request: K8sRequest = (method, path, body) =>
+            path === jobPath(namespace, ocreadName)
+                ? Promise.resolve({ status: 400, body: '400 Bad Request' })
+                : base.request(method, path, body);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
+
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome.sessionId).toBeUndefined();
+        expect(outcome.readoutError).toContain('in a row');
+    });
+
+    // The same guard one level down: a TRANSPORT rejection — the readout Job POST itself failing,
+    // on the kind of connection the issue's 400s live on — is also the read's failure, never the
+    // run's. (The runner Job's own POST rejecting is different: that run never started, and its
+    // throw is what hands the job back to its lease.)
+    it('fails no verdict when the readout Job POST rejects: the error rides readoutError instead', async () => {
+        const base = opencodeFake();
+        const request: K8sRequest = (method, path, body) =>
+            method === 'POST' &&
+            path === jobsPath(namespace) &&
+            (body as { metadata?: { name?: string } })?.metadata?.name === ocreadName
+                ? Promise.reject(new Error('the apiserver closed the connection'))
+                : base.request(method, path, body);
+        const outcome = await ocRunner(request).run(opencodeJob, null);
+
+        expect(outcome.exitCode).toBe(0);
+        expect(outcome.sessionId).toBeUndefined();
+        expect(outcome.readoutError).toContain('the apiserver closed the connection');
     });
 
     it('scrapes nothing for a claude-code run, whose session is known at spawn', async () => {
