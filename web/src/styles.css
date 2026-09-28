@@ -2003,9 +2003,14 @@
         margin-top: 8px;
     }
 
+    /* A field's visible label — with its glyph in the execution context. */
     .composer-label {
+        align-items: center;
         color: var(--ink-muted);
-        font-size: 12px;
+        display: inline-flex;
+        font-size: 13px;
+        font-weight: 500;
+        gap: 8px;
     }
 
     /* A declared parameter's text value — a real field, so unlike the composer's listbox
@@ -2025,18 +2030,135 @@
         margin-left: auto;
     }
 
-    /* On the composer page the textarea IS the pane — the issue asks for a big input, open by default —
-       so it gets the room a chat footer's one-liner does not need, and a bound so a wide window does
-       not stretch it into a banner. The detail view keeps the footer shape. */
-    .task-compose .composer {
+    /* The new-task page (issue 280): four numbered panels, stacked. `.composer` above is the detail
+       view's chat footer; the page variant drops its rule and spacing. */
+    .composer.task-compose {
         border-top: none;
-        margin-top: 12px;
-        max-width: 760px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        margin-top: 0;
         padding-top: 0;
     }
 
+    /* On the composer page the request IS the pane — a big input, open by default — so it gets
+       the room and the reading size a chat footer's one-liner does not need. */
     .task-compose .composer-input {
+        font-size: 15px;
+        line-height: 22px;
         min-height: 160px;
+    }
+
+    /* Wraps: on a phone the head's action drops below the title rather than squeezing it. */
+    .composer-section-head {
+        align-items: flex-start;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .composer-section-title {
+        display: flex;
+        flex: 1 1 200px;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    .composer-section-title h2 {
+        font-size: 15px;
+        line-height: 28px;
+        margin: 0;
+    }
+
+    /* The step disc: decoration beside the heading that carries the words. */
+    .composer-step {
+        align-items: center;
+        background: var(--accent);
+        border-radius: 50%;
+        color: var(--ink-inverse);
+        display: inline-flex;
+        flex: none;
+        font-size: 13px;
+        font-weight: 600;
+        height: 28px;
+        justify-content: center;
+        width: 28px;
+    }
+
+    .composer-example {
+        align-items: center;
+        display: inline-flex;
+        flex: none;
+        gap: 8px;
+    }
+
+    /* The request against the board's limit; the stop lamp once it is over. */
+    .composer-counter {
+        color: var(--ink-muted);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        margin: 4px 0 0;
+        text-align: right;
+    }
+
+    .composer-counter.is-over {
+        color: var(--lamp-stop);
+    }
+
+    /* `.panel p` spaces and caps prose; the page's small print and banner lines set their own —
+       the counter spans the textarea so it can sit at its right edge. */
+    .task-compose .composer-helper,
+    .task-compose .composer-counter,
+    .task-compose .banner-bad p,
+    .task-compose .banner-info p {
+        margin-bottom: 0;
+    }
+
+    .task-compose .composer-counter {
+        max-width: none;
+    }
+
+    .task-compose p.banner-title {
+        margin-bottom: 4px;
+    }
+
+    .composer-notices-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    .composer-notices-dismiss {
+        background: transparent;
+        border-color: transparent;
+        flex: none;
+        padding: 8px;
+    }
+
+    /* The composer's stand-in while the session is checked: static blocks, no shimmer. */
+    .composer-skeleton {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .composer-skeleton-block,
+    .composer-skeleton-line {
+        background: var(--surface-sunken);
+        border-radius: var(--radius-lg);
+    }
+
+    .composer-skeleton-block {
+        height: 160px;
+    }
+
+    .composer-skeleton-line {
+        height: 40px;
+        width: 50%;
     }
 
     /* The guided composer (issue 176, compacted by 228): label-above-control fields, the
@@ -2055,33 +2177,46 @@
         gap: 12px;
     }
 
-    /* The prompt stays the dominant element (issue 228): Repository, Executor and Workflow sit
-       directly beneath it as one wrapping row of small, content-sized controls instead of a
-       full-width grid — each item's own trigger already shows its selected value, so no separate
-       "Execution context" heading is needed. */
+    /* Section 2: Repository, Executor and Workflow — three columns on a wide screen, stacked
+       below it. Each column is a label over a full-width, framed selector. */
     .composer-context {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 16px;
-        margin-top: 8px;
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    @media (min-width: 1024px) {
+        .composer-context {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
     }
 
     .composer-context-item {
-        align-items: center;
-        display: inline-flex;
-        gap: 6px;
-        max-width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
         min-width: 0;
     }
 
+    .composer-context .select-trigger {
+        border-color: var(--line-strong);
+        width: 100%;
+    }
+
+    /* No executor, no launch: the trigger wears the stop lamp's edge beside the `banner-bad`. */
+    .composer-context .composer-trigger-missing {
+        border-color: var(--lamp-stop);
+    }
+
     /* Truncates inside the flex trigger, where plain text-overflow does not apply — the full
-       value stays reachable through this span's title, the opened listbox, and the preflight
+       value stays reachable through the trigger's title, the opened listbox, and the preflight
        sentence. */
     .composer-context-value {
         display: block;
-        max-width: min(24ch, 60vw);
+        flex: 1;
+        min-width: 0;
         overflow: hidden;
+        text-align: left;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
@@ -2089,8 +2224,8 @@
     /* The two default-workflow steps (issue 208), tucked behind a closed-by-default disclosure
        (issue 228) instead of two persistent rows — the summary alone carries the enabled count. */
     .composer-steps {
-        font-size: 12px;
-        margin-top: 8px;
+        font-size: 13px;
+        margin-top: 12px;
         max-width: 100%;
         width: fit-content;
     }
@@ -2102,13 +2237,13 @@
 
     .composer-helper {
         color: var(--ink-muted);
-        font-size: 12px;
+        font-size: 13px;
         margin: 0;
     }
 
     .composer-preflight {
         color: var(--ink-muted);
-        margin: 12px 0 0;
+        margin: 0 0 12px;
     }
 
     .composer-start {
@@ -2625,10 +2760,101 @@
         font-size: 12px;
     }
 
-    /* The repository setup page (issue 181, compacted by issue 223): a labeled search row above
-       the list, and the summary/list/detail stack that becomes master/detail beside itself once
-       a wide window can hold both — below 1100px the DOM order (summary, list, detail) is the
-       reading order. */
+    /* The repository setup page (issue 181, recomposed on concept 06 by issue 282): the header's
+       scope context, the four summary cards, a labeled search row, the selection bar, the
+       full-width table, and the selected repository's detail below it — the DOM order is the
+       reading order at every width. */
+    .repo-scope {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        padding: 12px 16px;
+    }
+
+    .repo-cards {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    @media (max-width: 900px) {
+        .repo-cards {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (max-width: 640px) {
+        .repo-cards {
+            grid-template-columns: minmax(0, 1fr);
+        }
+    }
+
+    /* Top-aligned, so the four labels share a line whatever a caption adds below its figure. */
+    .repo-card {
+        align-items: flex-start;
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        display: flex;
+        gap: 12px;
+        min-width: 0;
+        padding: 16px;
+    }
+
+    /* The card's glyph on its lamp's wash — decoration beside the words, never the message. */
+    .repo-card-disc {
+        align-items: center;
+        border-radius: 50%;
+        display: inline-flex;
+        flex: none;
+        height: 40px;
+        justify-content: center;
+        width: 40px;
+    }
+
+    .repo-card-disc-accent {
+        background: var(--accent-wash);
+        color: var(--accent);
+    }
+
+    .repo-card-disc-ok {
+        background: var(--ok-wash);
+        color: var(--lamp-run);
+    }
+
+    .repo-card-disc-warn {
+        background: var(--warn-wash);
+        color: var(--lamp-wait);
+    }
+
+    .repo-card-disc-bad {
+        background: var(--bad-wash);
+        color: var(--lamp-stop);
+    }
+
+    .repo-card-label,
+    .repo-card-caption {
+        color: var(--ink-muted);
+        font-size: 13px;
+        line-height: 18px;
+        margin: 0;
+    }
+
+    .repo-card-label {
+        font-weight: 500;
+    }
+
+    .repo-card-value {
+        font-size: 28px;
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        line-height: 34px;
+        margin: 0;
+    }
+
     .repo-search {
         align-items: center;
         display: flex;
@@ -2647,32 +2873,53 @@
         min-width: 12ch;
     }
 
-    /* The availability summary's one line of counts plus installation context (issue 223):
-       both spans wrap onto their own line rather than crowding together on narrow panels. */
-    .repo-summary {
+    /* The selection bar (concept 06): the count and ceiling sentence, and Save selection at the
+       trailing edge; it wraps under the sentence rather than squeezing the label. */
+    .repo-toolbar {
+        align-items: center;
+        border-top: 1px solid var(--line);
         display: flex;
         flex-wrap: wrap;
-        gap: 4px 16px;
+        gap: 12px;
+        justify-content: space-between;
+        margin: 12px 0;
+        padding-top: 12px;
     }
 
-    .repo-columns {
+    .repo-toolbar-count {
+        color: var(--ink-muted);
+        font-size: 13px;
+        margin: 0;
+    }
+
+    /* An unmeasured fact, in words: quieter than a measurement, never a zero. */
+    .repo-na {
+        color: var(--ink-muted);
+        font-family: var(--font-sans);
+        font-size: 13px;
+    }
+
+    /* The selected repository: checkout facts beside its environment scope and editor once the
+       width holds both, stacked (facts first) below that. */
+    .repo-detail-body {
         display: grid;
-        gap: 16px;
-        /* minmax(0, 1fr), not 1fr: the track's implicit minimum is the list table's min-content
-           (its cells are nowrap by design, scrolling inside the table wrap), which otherwise
-           widens the whole page on narrow screens — the same treatment the two-column layout
-           below already applies (issue 190). */
+        gap: 24px;
         grid-template-columns: minmax(0, 1fr);
     }
 
-    /* The list stays full width until a repository is actually opened — `has-detail` only
-       applies once `RepositoryConfigDetail` has something to render. Splitting unconditionally
-       reserved the detail column's share even when it was empty, which is what left Configure
-       clipped at ordinary desktop widths (issue 223). */
+    .repo-detail-body h3 {
+        margin: 0 0 8px;
+    }
+
+    /* The facts read label → value at every width, not spread across a stacked full row. */
+    .repo-detail-body .kv {
+        grid-template-columns: max-content minmax(0, 1fr);
+    }
+
     @media (min-width: 1100px) {
-        .repo-columns.has-detail {
+        .repo-detail-body {
             align-items: start;
-            grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+            grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
         }
     }
 
@@ -2717,7 +2964,7 @@
 
     table.repo-table th:nth-child(6),
     table.repo-table td:nth-child(6) {
-        width: 70px;
+        width: 110px;
     }
 
     /* Configure stays reachable without hunting for it: pinned to the wrap's trailing edge, with
@@ -2729,7 +2976,17 @@
         box-shadow: inset 1px 0 0 var(--line-strong);
         position: sticky;
         right: 0;
-        width: 96px;
+        width: 120px;
+    }
+
+    /* The configured row (concept 06's selected row): the accent wash, layered over the raised
+       fill on the sticky cell so scrolled content never shows through a translucent wash. */
+    table.repo-table tr.repo-row-configured td {
+        background: var(--accent-wash);
+    }
+
+    table.repo-table tr.repo-row-configured td:last-child {
+        background: linear-gradient(var(--accent-wash), var(--accent-wash)), var(--surface-raised);
     }
 
     /* Narrow widths stack rows as cards, mirroring the environment editor's pattern (issue 222):
@@ -2819,6 +3076,33 @@
         gap: 8px;
         justify-content: flex-end;
         margin-top: 16px;
+    }
+
+    /* The editor footer every settings panel ends with (issue 282): the dirty indicator on the
+       leading edge, Cancel and Save on the trailing one. */
+    .settings-actions {
+        align-items: center;
+        border-top: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: flex-end;
+        margin-top: 24px;
+        padding-top: 16px;
+    }
+
+    .settings-dirty {
+        color: var(--lamp-wait);
+        font-size: 13px;
+        line-height: 18px;
+        margin-right: auto;
+    }
+
+    /* Action words never wrap (acceptance at 1024px): a button grows, its label stays whole. */
+    .settings-actions button,
+    .repo-toolbar button,
+    .repo-table button {
+        white-space: nowrap;
     }
 
     /* The default-workflow settings panel's two switches and the composer's matching pair
@@ -4093,6 +4377,9 @@
         .inbox-footer button,
         .inbox-error button,
         .inbox-banner-body button,
+        .settings-actions button,
+        .composer-example,
+        .composer-notices-dismiss,
         .login-button,
         .onboarding-actions button {
             align-items: center;

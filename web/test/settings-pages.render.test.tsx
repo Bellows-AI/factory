@@ -212,6 +212,11 @@ describe('Settings workspace page', () => {
         expect(html).toContain('This deployment has no workspace root. Tasks cannot run until an operator sets');
         expect(html).toContain('ORG_WORKSPACE_ROOT');
         expect(html).not.toContain('Manage repository checkouts');
+        // A deliberate configuration, stated as the shared warn banner (issue 282) — never a
+        // button, because no member can set the root from here.
+        expect(html).toContain('class="banner-warn"');
+        expect(html).toContain('Workspace root not configured');
+        expect(html).not.toMatch(/banner-warn[\s\S]*<button/);
     });
 
     it('keeps the orphaned checkouts visible, named, and without a delete action', () => {
@@ -292,6 +297,8 @@ describe('Settings executors page', () => {
         expect(html).toContain('workspace setup</a> is complete.');
         expect(html).toContain('href="/settings/workspace"');
         expect(html).not.toContain('Add executor');
+        expect(html).toContain('class="banner-warn"');
+        expect(html).toContain('Workspace root not configured');
     });
 
     it('renders no list after a failed workspace read — the error is the whole story', () => {
@@ -327,6 +334,7 @@ describe('Settings workflows page', () => {
         expect(html.match(/<h1/g)?.length).toBe(1);
         expect(html).toContain('<h1>Workflows</h1>');
         expect(html).toContain('page-header-eyebrow');
+        expect(html).toContain('page-header-description');
         expect(html).toContain('status');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
@@ -346,20 +354,25 @@ describe('Settings repositories page', () => {
         // answered. "0 of 0 repositories enabled" would be two claims about two absent answers.
         const html = render('/settings/repos');
         expect(html).toContain('Choose which repositories are checked out for your workspace');
-        expect(html).not.toContain('repositories enabled');
+        // Every card is an unmeasured dash named Loading, never a zero (plan §2.6).
+        expect(html.match(/aria-label="Loading"/g)?.length).toBeGreaterThanOrEqual(4);
+        expect(html).not.toMatch(/repo-card-value">0</);
         expect(html).not.toContain('0 of 0');
         expect(html).not.toContain('No variables configured.');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
-    it('says the workspace root is missing, links to Workspace, and holds the save', () => {
+    it('warns that the workspace root is missing, links to Workspace, and holds the save', () => {
         // `root: null` is a deliberate configuration: availability and configuration stay
         // readable, but nothing may claim checkouts or save a selection into nothing.
         const html = render('/settings/repos', {
             workspace: { loading: false, data: { root: null, repos: [], orphaned: [], executors: [] } },
         });
-        expect(html).toContain('no workspace root');
+        expect(html).toContain('class="banner-warn"');
+        expect(html).toContain('Workspace root not configured');
+        expect(html).toContain('An operator must set <code>ORG_WORKSPACE_ROOT</code> on the deployment');
         expect(html).toContain('/settings/workspace');
+        expect(html).not.toContain('Configure workspace root');
         expect(html).toContain('disabled');
         expect(html).not.toContain('No variables configured.');
     });
@@ -370,7 +383,7 @@ describe('Settings repositories page', () => {
         });
         expect(html).toContain('The workspace request failed');
         expect(html).not.toContain('Not checked out');
-        expect(html).not.toContain('repositories enabled');
+        expect(html).not.toMatch(/repo-card-value">0</);
     });
 
     it('keeps no role-conditional sentence — the editor is every member\u2019s to edit (issue 180)', () => {
@@ -393,18 +406,19 @@ describe('Settings repositories page', () => {
 
     it('renders no configuration detail before a repository is chosen', () => {
         const html = render('/settings/repos');
-        expect(html).not.toContain('Environment for');
+        expect(html).not.toContain('Selected repository:');
         expect(html).not.toContain('Choose a repository…');
     });
 
-    it('keeps the list full width before a repository is configured — no split reserved for nothing', () => {
-        // has-detail is what turns the master/detail split on at ≥1100px (issue 223): reserving
-        // that column's width unconditionally is what left Configure clipped at ordinary desktop
-        // widths before this fix. Nothing here can click Configure (a static SSR render never
-        // fires effects or events), so this pins the cold-render case only.
+    it('states the scope context in the header: this member\u2019s workspace, in this organization', () => {
         const html = render('/settings/repos');
-        expect(html).toContain('class="repo-columns"');
-        expect(html).not.toContain('has-detail');
+        expect(html).toMatch(/class="page-header-meta"[\s\S]*<dt>Workspace<\/dt><dd>My workspace<\/dd>/);
+        expect(html).toMatch(/class="page-header-meta"[\s\S]*<dt>Organization<\/dt><dd>Bellows AI<\/dd>/);
+    });
+
+    it('keeps the selection table full width — no master/detail split', () => {
+        const html = render('/settings/repos');
+        expect(html).not.toContain('repo-columns');
     });
 });
 
@@ -442,7 +456,7 @@ describe('settings scope context (issue 182 invariants)', () => {
         // renders an empty draft before a repository is chosen.
         const html = render('/settings/repos', { env: { loading: false, data: envData } });
         expect(html).not.toContain('Choose a repository…');
-        expect(html).not.toContain('Environment for');
+        expect(html).not.toContain('Selected repository:');
         expect(html).not.toContain('Discard unsaved changes?');
     });
 });
@@ -469,9 +483,10 @@ describe('settings page headers', () => {
         expect(render('/settings/workspace')).not.toContain('<h2>Workspace</h2>');
         expect(render('/settings/executors')).not.toContain('<h2>Executors</h2>');
         expect(render('/settings/repos')).not.toContain('<h2>Repositories</h2>');
-        // The repositories page's inner headings name its two panels; neither restates the title.
-        expect(render('/settings/repos')).toContain('<h2>Availability</h2>');
-        expect(render('/settings/repos')).toContain('<h2>Repository list</h2>');
+        // The repositories page names its summary and its selection by label, not by a heading
+        // that would restate the title.
+        expect(render('/settings/repos')).toContain('aria-label="Selection summary"');
+        expect(render('/settings/repos')).toContain('aria-label="Repository selection"');
     });
 
     it('carries the workspace sentence in the header, and the checkout-management link in its actions', () => {

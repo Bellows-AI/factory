@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { DefaultWorkflowSaveResult, DefaultWorkflowSettings } from '../api/useDefaultWorkflowSettings.js';
+import { SettingsSaveActions } from '../components/SettingsSaveActions.js';
 import { useGuardedDraft } from '../components/UnsavedChangesDialog.js';
 import { isDirty } from './default-workflow-draft.js';
 import type { DefaultWorkflowDraft } from './default-workflow-draft.js';
@@ -75,14 +76,7 @@ export function DefaultWorkflowPanel({ initialSettings, onSave }: DefaultWorkflo
 
     return (
         <section className="panel">
-            <div className="panel-head">
-                <h2>Default workflow</h2>
-                <div className="panel-actions">
-                    <button type="button" className="primary" onClick={() => void save()} disabled={!canSave}>
-                        {saving ? 'Saving changes…' : 'Save changes'}
-                    </button>
-                </div>
-            </div>
+            <h2>Default workflow</h2>
             <p className="muted">Prompt → Gates → Publish, on every task that runs the default workflow.</p>
             {saveError ? (
                 <p className="status" role="alert">
@@ -113,6 +107,16 @@ export function DefaultWorkflowPanel({ initialSettings, onSave }: DefaultWorkflo
             <p className="muted">
                 Saved defaults apply to new task drafts; running tasks keep their launch configuration.
             </p>
+            <SettingsSaveActions
+                dirty={dirty}
+                saving={saving}
+                canSave={canSave}
+                onSave={() => void save()}
+                onCancel={() => {
+                    discard();
+                    clearConfirmation();
+                }}
+            />
         </section>
     );
 }

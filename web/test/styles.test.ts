@@ -319,6 +319,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             '.repo-search button',
             '.repo-table button',
             '.repo-save',
+            '.settings-actions button',
         ]) {
             expect(prelude.includes(selector), `${selector} in the 44px target list`).toBe(true);
         }

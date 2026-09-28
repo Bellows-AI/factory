@@ -3,13 +3,25 @@ import { Link } from 'react-router-dom';
 import type { InstallationRepo } from '../api/useRepos.js';
 import type { WorkspaceRepo } from '../api/useWorkspace.js';
 import { ConfigurationScope } from './ConfigurationScope.js';
+import { Icon } from './Icon.js';
+import type { IconName } from './Icon.js';
+import { KeyValues } from './KeyValues.js';
+import { WorkspaceRootBanner } from './WorkspaceRootBanner.js';
 import { bytes, commitDate } from '../format.js';
-import { canSelect, checkoutCell, checkoutText, MAX_SELECTED_REPOS, repoKey } from './repository-setup.js';
+import {
+    canSelect,
+    checkoutCell,
+    checkoutText,
+    MAX_SELECTED_REPOS,
+    NOT_AVAILABLE,
+    repoKey,
+} from './repository-setup.js';
 import type { SelectionCounts, SelectionSaveState, WorkspaceState } from './repository-setup.js';
 
 /**
- * The three presentational halves of the repository setup page (issue 181): the availability and
- * selection summary, the searchable list, and the per-repository configuration detail.
+ * The three presentational halves of the repository setup page (issue 181, recomposed on concept
+ * 06 by issue 282): the root-null banner and the four summary cards, the searchable selection
+ * table, and the selected repository's detail.
  *
  * All three are hooks-free and fetch-free by the PageHeader contract, so a static render is a
  * complete render. Every decision they draw — what is selected, what may save, what a checkout
@@ -18,9 +30,34 @@ import type { SelectionCounts, SelectionSaveState, WorkspaceState } from './repo
  * repository-setup.render.test.tsx.
  */
 
+/** A summary card's glyph: the section-header size, inside its 40px disc. */
+const CARD_ICON_SIZE = 24;
+
+/**
+ * A figure nothing measured yet: the dash is decoration, the label is what assistive tech reads —
+ * "Loading" while the poll is out, "Not available" once it failed. `role="img"` is what lets a
+ * span carry a name.
+ */
+function Unmeasured({ label }: { label: string }) {
+    return (
+        <span role="img" aria-label={label}>
+            —
+        </span>
+    );
+}
+
+/** An unmeasured table or detail fact, in words (plan §2.6: never `0`, never a bare dash). */
+function NotAvailable() {
+    return <span className="repo-na">{NOT_AVAILABLE}</span>;
+}
+
 export interface RepositorySetupSummaryProps {
-    /** Null while either the installation list or the workspace poll is still unresolved. */
+    /** Null while the workspace poll is still unresolved, or its first answer failed. */
     counts: SelectionCounts | null;
+    /** Whether the workspace poll is loading, answered or failed — names an unresolved card. */
+    workspaceState: WorkspaceState;
+    /** The installation list answered: only then is the available figure a fact. */
+    listLoaded: boolean;
     installation: { account: string | null; repositorySelection: 'all' | 'selected' | null } | null;
     cachedError: string | null;
     /** When the cached list was fetched — shown beside the cached warning, never faked. */
@@ -44,8 +81,77 @@ function installationNote(installation: RepositorySetupSummaryProps['installatio
     return `Installation: ${installation.account ?? 'GitHub App'}${scope}.`;
 }
 
+type CardTone = 'accent' | 'ok' | 'warn' | 'bad';
+
+/** One summary card: a toned glyph disc, the label, the figure, and its caption lines. */
+function SummaryCard({
+    icon,
+    tone,
+    label,
+    value,
+    captions = [],
+}: {
+    icon: IconName;
+    tone: CardTone;
+    label: string;
+    value: ReactNode;
+    /** One short phrase per line, so a narrow card never splits a phrase mid-way. */
+    captions?: string[];
+}) {
+    return (
+        <li className="repo-card">
+            <span className={`repo-card-disc repo-card-disc-${tone}`}>
+                <Icon name={icon} size={CARD_ICON_SIZE} />
+            </span>
+            <div>
+                <p className="repo-card-label">{label}</p>
+                <p className="repo-card-value">{value}</p>
+                {captions.map((caption) => (
+                    <p key={caption} className="repo-card-caption">
+                        {caption}
+                    </p>
+                ))}
+            </div>
+        </li>
+    );
+}
+
+/**
+ * The four cards, straight from `counts()` — chosen repositories only, so there is no "not
+ * checked out" figure to show; the root-null banner already says why nothing is.
+ */
+function SummaryCards({
+    counts,
+    workspaceState,
+    listLoaded,
+}: Pick<RepositorySetupSummaryProps, 'counts' | 'workspaceState' | 'listLoaded'>) {
+    const figure = (value: number | undefined) =>
+        value === undefined ? (
+            <Unmeasured label={workspaceState === 'error' ? NOT_AVAILABLE : 'Loading'} />
+        ) : (
+            String(value)
+        );
+    const allowed = `of ${MAX_SELECTED_REPOS} allowed`;
+    return (
+        <ul className="repo-cards" aria-label="Selection summary">
+            <SummaryCard
+                icon="repo"
+                tone="accent"
+                label="Selected"
+                value={figure(counts?.enabled)}
+                captions={counts && listLoaded ? [allowed, `${counts.available} available`] : [allowed]}
+            />
+            <SummaryCard icon="check-circle" tone="ok" label="Ready" value={figure(counts?.ready)} />
+            <SummaryCard icon="refresh" tone="warn" label="Setting up" value={figure(counts?.settingUp)} />
+            <SummaryCard icon="alert-circle" tone="bad" label="Failed" value={figure(counts?.failed)} />
+        </ul>
+    );
+}
+
 export function RepositorySetupSummary({
     counts,
+    workspaceState,
+    listLoaded,
     installation,
     cachedError,
     fetchedAt,
@@ -55,35 +161,23 @@ export function RepositorySetupSummary({
 }: RepositorySetupSummaryProps) {
     const note = installationNote(installation);
     return (
-        <section className="panel">
-            <div className="panel-head">
-                <h2>Availability</h2>
-            </div>
-            {listNotice ? <p className="status">{listNotice}</p> : null}
-            {counts || note ? (
-                <p className="repo-summary">
-                    {counts ? (
-                        <span>
-                            {counts.enabled} of {counts.available} repositories enabled · {counts.ready} ready ·{' '}
-                            {counts.settingUp} setting up · {counts.failed} failed
-                        </span>
-                    ) : null}
-                    {note ? <span className="muted">{note}</span> : null}
-                </p>
+        <>
+            {rootNull ? (
+                <WorkspaceRootBanner>
+                    An operator must set <code>ORG_WORKSPACE_ROOT</code> on the deployment. Until then, repositories are
+                    not checked out. <Link to="/settings/workspace">Learn about workspaces</Link>
+                </WorkspaceRootBanner>
             ) : null}
+            <SummaryCards counts={counts} workspaceState={workspaceState} listLoaded={listLoaded} />
+            {listNotice ? <p className="status">{listNotice}</p> : null}
+            {note ? <p className="muted">{note}</p> : null}
             {cachedError ? (
                 <p className="status">
                     Showing a cached list{fetchedAt ? ` from ${commitDate(fetchedAt)}` : ''}: {cachedError}
                 </p>
             ) : null}
-            {rootNull ? (
-                <p className="status">
-                    This deployment has no workspace root, so repositories are not checked out. An operator must set{' '}
-                    <code>ORG_WORKSPACE_ROOT</code> — see <Link to="/settings/workspace">Workspace</Link>.
-                </p>
-            ) : null}
             {staleError ? <p className="status">Checkout status is stale — {staleError}</p> : null}
-        </section>
+        </>
     );
 }
 
@@ -118,26 +212,27 @@ export interface RepositorySetupListProps {
 }
 
 /**
- * The save action itself, beside the "Repository list" heading in the list panel's `panel-head`
- * (the same beside-the-heading placement `EnvPanelBanner` uses for Save) rather than in a
- * separate Availability card. `primary` renders only while a dirty, unblocked selection is worth
- * prompting for — saving, blocked, clean and just-saved states stay quiet so the one loud action
- * on the page is loud only when there is something to act on.
+ * The selection bar above the table (concept 06): how many are selected against the ceiling, and
+ * the save. `primary` renders only while a dirty, unblocked selection is worth prompting for —
+ * saving, blocked, clean and just-saved states stay quiet so the one loud action on the page is
+ * loud only when there is something to act on. No count while the poll is out: the draft is
+ * empty for lack of an answer, not by choice.
  */
-function RepositorySaveButton({
+function RepositorySelectionBar({
+    chosen,
+    loadingCheckouts,
     dirty,
     saveState,
     saving,
     onSave,
-}: {
-    dirty: boolean;
-    saveState: SelectionSaveState;
-    saving: boolean;
-    onSave: () => void;
-}) {
+}: Pick<RepositorySetupListProps, 'chosen' | 'loadingCheckouts' | 'dirty' | 'saveState' | 'saving' | 'onSave'>) {
     const prominent = dirty && !saveState.disabled;
     return (
-        <div className="panel-actions">
+        <div className="repo-toolbar">
+            <p className="repo-toolbar-count">
+                {loadingCheckouts ? '' : `${chosen.size} selected · `}Selection limited to {MAX_SELECTED_REPOS}{' '}
+                repositories.
+            </p>
             <button
                 type="button"
                 className={prominent ? 'primary repo-save' : 'repo-save'}
@@ -145,14 +240,14 @@ function RepositorySaveButton({
                 disabled={saveState.disabled}
                 aria-describedby={saveState.reason ? 'repo-save-reason' : undefined}
             >
-                {saving ? 'Saving selection…' : 'Save repository selection'}
+                {saving ? 'Saving selection…' : 'Save selection'}
             </button>
         </div>
     );
 }
 
-/** The save action's status lines, under the list panel's head. Split out of
- * `RepositorySetupList` so its own line count does not add to that function's. */
+/** The save action's status lines, under the selection bar. Split out of `RepositorySetupList`
+ * so its own line count does not add to that function's. */
 function RepositorySaveStatus({
     dirty,
     saveState,
@@ -182,41 +277,28 @@ function RepositorySaveStatus({
  * `RepositorySetupList` so the table's map callback stays under the per-function line limit. */
 function RepositoryRow({
     repo,
-    chosen,
-    workspaceState,
-    rows,
-    loadingCheckouts,
-    rootNull,
-    saving,
+    list,
     atCeiling,
-    onToggle,
-    configured,
-    onConfigure,
 }: {
     repo: InstallationRepo;
-    chosen: ReadonlySet<string>;
-    workspaceState: WorkspaceState;
-    rows: ReadonlyMap<string, WorkspaceRepo | undefined>;
-    loadingCheckouts: boolean;
-    rootNull: boolean;
-    saving: boolean;
+    list: RepositorySetupListProps;
     atCeiling: boolean;
-    onToggle: (key: string) => void;
-    configured: string | null;
-    onConfigure: (key: string) => void;
 }) {
+    const { chosen, workspaceState, rows, loadingCheckouts, rootNull, saving, onToggle, configured, onConfigure } =
+        list;
     const key = repoKey(repo);
     const selected = chosen.has(key);
     const row = rows.get(key);
     const text = checkoutText(checkoutCell(selected, row, workspaceState));
+    const branch = row?.branch ?? repo.defaultBranch;
     return (
-        <tr>
+        <tr className={configured === key ? 'repo-row-configured' : undefined}>
             <td data-label="Enabled">
                 {/* While the workspace poll is unresolved the box is not shown at all: a
                     disabled unchecked box would still read as a selection fact, and there is
                     none yet. */}
                 {loadingCheckouts ? (
-                    '—'
+                    <Unmeasured label="Loading" />
                 ) : (
                     <input
                         type="checkbox"
@@ -232,9 +314,9 @@ function RepositoryRow({
                 {repo.private ? <span className="pill">private</span> : null}
             </td>
             <td data-label="Checkout status">{text}</td>
-            <td data-label="Branch">{row?.branch ?? repo.defaultBranch ?? '—'}</td>
-            <td data-label="Last commit">{row?.lastCommit ? commitDate(row.lastCommit.at) : '—'}</td>
-            <td data-label="Size">{bytes(row?.sizeBytes ?? null)}</td>
+            <td data-label="Branch">{branch ?? <NotAvailable />}</td>
+            <td data-label="Last commit">{row?.lastCommit ? commitDate(row.lastCommit.at) : <NotAvailable />}</td>
+            <td data-label="Size">{typeof row?.sizeBytes === 'number' ? bytes(row.sizeBytes) : <NotAvailable />}</td>
             <td>
                 <button type="button" aria-current={configured === key} onClick={() => onConfigure(key)}>
                     Configure
@@ -244,37 +326,57 @@ function RepositoryRow({
     );
 }
 
-export function RepositorySetupList({
-    repos,
-    shown,
-    search,
-    onSearch,
-    chosen,
-    onToggle,
-    workspaceState,
-    rows,
-    configured,
-    onConfigure,
-    loadingCheckouts,
-    rootNull,
-    saving,
+/** The list's empty postures: no match for the query, or an installation that reports nothing. */
+function RepositoryListEmpty({ loaded, repos, search }: { loaded: boolean; repos: number; search: string }) {
+    if (!loaded) return null;
+    if (repos) return <p className="status">No repositories match “{search}”</p>;
+    return (
+        <p className="status">
+            This GitHub App is not installed on any repositories yet. Ask an administrator to update the installation on
+            GitHub.
+        </p>
+    );
+}
+
+/** Selected keys GitHub stopped reporting: listed by name, each deselectable, never dropped. */
+function AbsentRepositories({
     absent,
+    saving,
     onDeselectAbsent,
-    loaded,
-    dirty,
-    saveState,
-    savedNote,
-    failure,
-    onSave,
-}: RepositorySetupListProps) {
+}: Pick<RepositorySetupListProps, 'absent' | 'saving' | 'onDeselectAbsent'>) {
+    if (!absent.length) return null;
+    return (
+        <>
+            <h3>No longer reported by GitHub</h3>
+            <p className="muted">
+                These repositories stay selected until you remove them — the save will not drop them silently.
+            </p>
+            <ul>
+                {absent.map((key) => (
+                    <li key={key}>
+                        {key}{' '}
+                        {/* A mid-save click would mutate the draft the request in flight no
+                            longer reflects — the same lock the rows above honor. */}
+                        <button
+                            type="button"
+                            aria-label={`Deselect ${key}`}
+                            disabled={saving}
+                            onClick={() => onDeselectAbsent(key)}
+                        >
+                            Deselect
+                        </button>
+                    </li>
+                ))}
+            </ul>
+        </>
+    );
+}
+
+export function RepositorySetupList(props: RepositorySetupListProps) {
+    const { repos, shown, search, onSearch, chosen, loaded, dirty, saveState, savedNote, failure } = props;
     const atCeiling = !canSelect(chosen);
     return (
-        <section className="panel">
-            <div className="panel-head">
-                <h2>Repository list</h2>
-                <RepositorySaveButton dirty={dirty} saveState={saveState} saving={saving} onSave={onSave} />
-            </div>
-            <RepositorySaveStatus dirty={dirty} saveState={saveState} savedNote={savedNote} failure={failure} />
+        <section className="panel" aria-label="Repository selection">
             <div className="repo-search">
                 <label htmlFor="repo-setup-search">Search repositories</label>
                 <input
@@ -290,8 +392,9 @@ export function RepositorySetupList({
                         Clear search
                     </button>
                 ) : null}
-                <span className="muted">Selections are limited to {MAX_SELECTED_REPOS} repositories.</span>
             </div>
+            <RepositorySelectionBar {...props} />
+            <RepositorySaveStatus dirty={dirty} saveState={saveState} savedNote={savedNote} failure={failure} />
             {shown.length ? (
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" aria-label="Repositories" tabIndex={0}>
@@ -311,57 +414,15 @@ export function RepositorySetupList({
                         </thead>
                         <tbody>
                             {shown.map((repo) => (
-                                <RepositoryRow
-                                    key={repoKey(repo)}
-                                    repo={repo}
-                                    chosen={chosen}
-                                    workspaceState={workspaceState}
-                                    rows={rows}
-                                    loadingCheckouts={loadingCheckouts}
-                                    rootNull={rootNull}
-                                    saving={saving}
-                                    atCeiling={atCeiling}
-                                    onToggle={onToggle}
-                                    configured={configured}
-                                    onConfigure={onConfigure}
-                                />
+                                <RepositoryRow key={repoKey(repo)} repo={repo} list={props} atCeiling={atCeiling} />
                             ))}
                         </tbody>
                     </table>
                 </section>
-            ) : loaded && repos.length ? (
-                <p className="status">No repositories match “{search}”</p>
-            ) : loaded ? (
-                <p className="status">
-                    This GitHub App is not installed on any repositories yet. Ask an administrator to update the
-                    installation on GitHub.
-                </p>
-            ) : null}
-            {absent.length ? (
-                <>
-                    <h3>No longer reported by GitHub</h3>
-                    <p className="muted">
-                        These repositories stay selected until you remove them — the save will not drop them silently.
-                    </p>
-                    <ul>
-                        {absent.map((key) => (
-                            <li key={key}>
-                                {key}{' '}
-                                {/* A mid-save click would mutate the draft the request in flight no
-                                    longer reflects — the same lock the rows above honor. */}
-                                <button
-                                    type="button"
-                                    aria-label={`Deselect ${key}`}
-                                    disabled={saving}
-                                    onClick={() => onDeselectAbsent(key)}
-                                >
-                                    Deselect
-                                </button>
-                            </li>
-                        ))}
-                    </ul>
-                </>
-            ) : null}
+            ) : (
+                <RepositoryListEmpty loaded={loaded} repos={repos.length} search={search} />
+            )}
+            <AbsentRepositories {...props} />
         </section>
     );
 }
@@ -371,29 +432,54 @@ export interface RepositoryConfigDetailProps {
     repo: { owner: string; name: string } | null;
     /** The repository's checkout status, as sentence text. */
     checkout: string;
-    /** Focus target for the narrow-widths handoff; the page moves focus, never the component. */
+    /** The workspace poll's row for it, when there is one: the source of the checkout facts. */
+    row: WorkspaceRepo | undefined;
+    /** The installation's default branch — the Branch fact before any checkout, as in the row. */
+    defaultBranch?: string | null;
+    /** Focus target for the configure handoff; the page moves focus, never the component. */
     headingRef?: RefObject<HTMLHeadingElement | null>;
     children?: ReactNode;
 }
 
 /**
- * The configuration detail: the repository's environment scope opened on the same page. The scope
- * truth — what it applies to, who may edit it, the precedence order — is the shared
- * ConfigurationScope (issue 180), the same copy every editor states; the mounted editor renders
- * as children, so a save's echoed rows and its confirmation survive. Configuration does not
- * require personal checkout enablement; the checkout status is context, not a gate.
+ * The selected repository's detail, below the table: its checkout facts beside the repository's
+ * environment scope. The scope truth — what it applies to, who may edit it, the precedence order
+ * — is the shared ConfigurationScope (issue 180), the same copy every editor states; the mounted
+ * editor renders as children, so a save's echoed rows and its confirmation survive. Configuration
+ * does not require personal checkout enablement; the checkout facts are context, not a gate.
  */
-export function RepositoryConfigDetail({ repo, checkout, headingRef, children }: RepositoryConfigDetailProps) {
+export function RepositoryConfigDetail({
+    repo,
+    checkout,
+    row,
+    defaultBranch = null,
+    headingRef,
+    children,
+}: RepositoryConfigDetailProps) {
     if (!repo) return null;
     const key = repoKey(repo);
     return (
-        <section className="panel">
+        <section className="panel repo-detail">
             <h2 ref={headingRef} tabIndex={-1}>
-                Environment for {key}
+                Selected repository: {key}
             </h2>
-            <ConfigurationScope scope="repository" repository={repo} />
-            <p className="muted">Checkout status: {checkout}</p>
-            {children}
+            <div className="repo-detail-body">
+                <div>
+                    <h3>Checkout</h3>
+                    <KeyValues
+                        pairs={[
+                            ['Checkout status', checkout],
+                            ['Branch', row?.branch ?? defaultBranch ?? <NotAvailable />],
+                            ['Last commit', row?.lastCommit ? commitDate(row.lastCommit.at) : <NotAvailable />],
+                            ['Size', typeof row?.sizeBytes === 'number' ? bytes(row.sizeBytes) : <NotAvailable />],
+                        ]}
+                    />
+                </div>
+                <div>
+                    <ConfigurationScope scope="repository" repository={repo} />
+                    {children}
+                </div>
+            </div>
         </section>
     );
 }

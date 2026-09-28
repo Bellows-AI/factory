@@ -5,8 +5,11 @@
  * function here is testable without a DOM, which is what lets the offline suite pin the launch
  * contract the board enforces.
  */
+import { COMMAND_LIMIT } from '@factory-ai/core';
 import type { DefaultWorkflowSteps } from './api/useDefaultWorkflowSettings.js';
 import type { QueueTaskInput } from './api/useTasks.js';
+import type { ComposerDraftInput } from './composer-draft.js';
+import { defaultExecutorName } from './workspace/executors.js';
 
 /**
  * One declared launch parameter of a workflow, as the list route serves it: the name the prompts
@@ -265,31 +268,82 @@ export function preflightSentence(input: {
     return `${where} ${who}${what}`;
 }
 
-/** The one reason Start is dark, in precedence order: in flight, executor, prompt, defaults, workflow params. */
-export type StartBlocker = 'in-flight' | 'missing-executor' | 'empty-prompt' | 'defaults-unresolved' | 'invalid-params';
+/** The one reason Start is dark, in precedence order: in flight, executor, prompt, length, workflow list, defaults, workflow params. */
+export type StartBlocker =
+    | 'in-flight'
+    | 'missing-executor'
+    | 'empty-prompt'
+    | 'too-long'
+    | 'workflow-loading'
+    | 'defaults-unresolved'
+    | 'invalid-params';
 
 /**
  * Why Start cannot start, or null when it can. The order is the message the member needs: an
  * in-flight queue must not be re-entered, a task cannot run without an executor profile, an empty
- * prompt is the missing task itself, an unresolved Default workflow choice comes next — launching
- * before the saved settings answer would silently omit the member's saved step pair from the
- * submitted JSON — and a named workflow's own field validation comes last. `defaultsUnresolved`
- * defaults to false: it means nothing beside a named custom workflow, which supplies its own
- * `paramsInvalid` instead.
+ * prompt is the missing task itself, a request over the board's command limit is refused before
+ * anything about its workflow matters. A named workflow whose list has not answered comes next —
+ * a restored draft can hold one, and until the list says what it declares, the params gate would
+ * pass vacuously and launch it without its values. An unresolved Default workflow choice follows
+ * — launching before the saved settings answer would silently omit the member's saved step pair
+ * from the submitted JSON — and a named workflow's own field validation comes last. The two
+ * unresolved flags default to false: each means nothing beside the other kind of workflow choice.
  */
 export function startBlocker(input: {
     sending: boolean;
     executorMissing: boolean;
     promptEmpty: boolean;
+    promptTooLong?: boolean;
+    workflowUnresolved?: boolean;
     defaultsUnresolved?: boolean;
     paramsInvalid: boolean;
 }): StartBlocker | null {
     if (input.sending) return 'in-flight';
     if (input.executorMissing) return 'missing-executor';
     if (input.promptEmpty) return 'empty-prompt';
+    if (input.promptTooLong) return 'too-long';
+    if (input.workflowUnresolved) return 'workflow-loading';
     if (input.defaultsUnresolved) return 'defaults-unresolved';
     if (input.paramsInvalid) return 'invalid-params';
     return null;
+}
+
+/**
+ * How a blocker is said: `bad` is the red banner, only for what the member must go and fix;
+ * `info` is the waiting banner; `quiet` is the status text beside Start — an empty prompt is where
+ * every task starts, so a fresh composer never opens red.
+ */
+export function blockerTone(blocker: StartBlocker | null): 'bad' | 'info' | 'quiet' | null {
+    switch (blocker) {
+        case 'missing-executor':
+        case 'invalid-params':
+        case 'too-long':
+            return 'bad';
+        case 'workflow-loading':
+        case 'defaults-unresolved':
+            return 'info';
+        case 'empty-prompt':
+        case 'in-flight':
+            return 'quiet';
+        default:
+            return null;
+    }
+}
+
+/** The grouping the counter reads in — fixed, so the copy never follows the browser's locale. */
+const COUNT_LOCALE = 'en-US';
+
+/** The board's command limit as the composer prints it: `16,384`. */
+export const COMMAND_LIMIT_TEXT = COMMAND_LIMIT.toLocaleString(COUNT_LOCALE);
+
+/** `1,234 / 16,384` — the request against the board's limit, in the UTF-16 units the board counts. */
+export function commandCount(draft: string): string {
+    return `${draft.length.toLocaleString(COUNT_LOCALE)} / ${COMMAND_LIMIT_TEXT}`;
+}
+
+/** Whether the board would refuse this request for its length alone. */
+export function commandTooLong(draft: string): boolean {
+    return draft.length > COMMAND_LIMIT;
 }
 
 /** One blur: the field's touched mark, set without disturbing its siblings. */
@@ -345,4 +399,84 @@ export function clampedWorkflow(workflow: string, workflows: readonly { name: st
         return workflow;
     }
     return '';
+}
+
+/** The workspace lists a composer draft is measured against. */
+interface DraftLists {
+    repos: readonly { owner: string; name: string }[] | null;
+    executors: readonly { name: string; isDefault?: boolean }[];
+}
+
+/**
+ * The composer's state at mount: the held draft exactly as it was saved, or the fresh shape the
+ * lists imply — default executor, first repository, no workflow. `workflowRepo` is the repository
+ * the workflow choice was made under; starting it equal to `repo` is what makes the repo-reset a
+ * no-op on mount, for a fresh composer and a restored one alike.
+ */
+export function initialComposerState(restored: ComposerDraftInput | null, lists: DraftLists): ComposerDraftInput {
+    if (restored !== null) return restored;
+    const repo = firstRepo(lists.repos);
+    return {
+        draft: '',
+        executor: defaultExecutorName(lists.executors),
+        repo,
+        repoTouched: false,
+        workflowRepo: repo,
+        ...freshWorkflowDraft(),
+    };
+}
+
+/**
+ * Whether the member has put anything into this composer that a fresh one would not hold — the
+ * test for keeping a draft at all, and for offering Discard. Touched marks are not input: they
+ * only say where the member has been. Nor are stored parameter values: they show only beside a
+ * chosen workflow, and a chosen workflow is already not fresh.
+ */
+export function draftIsFresh(state: ComposerDraftInput, lists: DraftLists): boolean {
+    const fresh = initialComposerState(null, lists);
+    return (
+        state.draft === fresh.draft &&
+        state.executor === fresh.executor &&
+        state.repo === fresh.repo &&
+        state.workflow === fresh.workflow &&
+        Object.keys(state.defaultStepOverrides).length === 0
+    );
+}
+
+/**
+ * What a restored draft lost while the member was away, in words — one sentence per choice that
+ * no longer exists. The composer's own clamps do the reselecting; this only says it happened, and
+ * never touches the request text. A deselected repository resets the workflow choice anyway, so
+ * the workflow is judged only under the repository it was chosen for, and only once its list has
+ * answered: null means "not yet" — the one verdict still waits on that list.
+ */
+export function restoredDraftNotices(
+    restored: ComposerDraftInput,
+    lists: DraftLists & {
+        repos: readonly { owner: string; name: string }[];
+        workflows: readonly { name: string }[] | null;
+    }
+): string[] | null {
+    const notices: string[] = [];
+    if (restored.executor !== '' && !lists.executors.some((executor) => executor.name === restored.executor)) {
+        const next = defaultExecutorName(lists.executors);
+        notices.push(
+            `Executor ‘${restored.executor}’ is no longer available — ${next === '' ? 'add one to continue' : `${next} selected`}.`
+        );
+    }
+    const repoKept =
+        restored.repo === '' || lists.repos.some(({ owner, name }) => `${owner}/${name}` === restored.repo);
+    if (!repoKept) {
+        const next = firstRepo(lists.repos);
+        notices.push(
+            `Repository ‘${restored.repo}’ is no longer selected — ${next === '' ? 'the task will run without a repository' : `${next} selected`}.`
+        );
+    }
+    if (repoKept && restored.workflow !== '') {
+        if (lists.workflows === null) return null;
+        if (clampedWorkflow(restored.workflow, lists.workflows) !== restored.workflow) {
+            notices.push(`Workflow ‘${restored.workflow}’ is no longer offered — Default workflow selected.`);
+        }
+    }
+    return notices;
 }
