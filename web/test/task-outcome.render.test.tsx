@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { FORBIDDEN, job, renderDetail } from './tasks-fixtures.js';
 
+/** The outcome rail's own markup — the main column below may repeat a word in its own voice. */
+const railOf = (html: string): string => html.slice(html.indexOf('task-outcome'), html.indexOf('task-main'));
+
 describe('TaskOutcome', () => {
     it('renders above the conversation in DOM order, as an expanded native disclosure', () => {
         const html = renderDetail({ jobs: [job()] });
@@ -45,9 +48,11 @@ describe('TaskOutcome', () => {
             ],
         });
         expect(html).toContain('Waiting for review');
-        // The outcome's own pill reads waiting, not the raw status — the per-run pill inside the
-        // conversation below is a different component and legitimately still says "queued".
-        expect(html).toContain('<span class="pill">Waiting for review</span>');
+        // The outcome's own pill is the header's: the shared label in its tone — the per-run pill
+        // inside the conversation below is a different component and legitimately says "queued".
+        expect(railOf(html)).toMatch(/<span class="pill pill-done task-pill-wait">.*Waiting for review/);
+        // The header's pill is the page's one live region; a second would announce every change twice.
+        expect(railOf(html)).not.toContain('aria-live');
         expect(html).toMatch(/no executor|not occupied/i);
         expect(html).toContain('Bellows is waiting for review');
         expect(html).not.toContain('Factory');
@@ -65,9 +70,13 @@ describe('TaskOutcome', () => {
                 }),
             ],
         });
-        expect(html).not.toContain('Waiting for review');
-        expect(html).not.toContain('no executor is occupied');
-        expect(html).toContain('done by kim');
+        const rail = railOf(html);
+        expect(rail).not.toContain('Waiting for review');
+        expect(rail).not.toContain('no executor is occupied');
+        expect(rail).toMatch(/<span class="pill pill-done task-pill-done">.*Done<\/span>/);
+        expect(rail).toContain('done by kim');
+        // No follow-up is offered on the closed task.
+        expect(html).not.toContain('<textarea');
     });
 
     it('shows the terminal wait reason once the review wait has ended, beside the ordinary result', () => {
@@ -81,8 +90,8 @@ describe('TaskOutcome', () => {
             ],
         });
         expect(html).toContain('exhausted');
-        // A terminal wait does not relabel the pill — the status/done rule alone decides that.
-        expect(html).toContain('<span class="pill">succeeded</span>');
+        // A terminal wait does not relabel the pill as waiting — its reason rides the label.
+        expect(railOf(html)).toContain('Succeeded · Needs review · exhausted');
     });
 
     it('renders no waiting copy at all for a thread that never entered a wait', () => {
@@ -325,5 +334,50 @@ describe('TaskOutcome — services and the placeholder sweep', () => {
             ],
         });
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
+    });
+});
+
+/**
+ * The failure's next step, in the rail — which a narrow screen reads before the conversation, so
+ * a failed task never leaves the reader without one (plan §2.4, §3.3).
+ */
+describe('TaskOutcome — next action on a failure', () => {
+    const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
+    const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'octo-reviewer', name: null, avatarUrl: null };
+    const viewer = { loading: false, id: me.id };
+    const failedGate = [{ name: 'lint', status: 'failed' as const, exitCode: 1, output: 'nope' }];
+
+    it('asks for another pass when the viewer may send one', () => {
+        for (const latest of [job({ status: 'failed', author: me }), job({ author: me, gates: failedGate })]) {
+            const rail = railOf(renderDetail({ jobs: [latest], viewer }));
+            expect(rail, latest.status).toContain('Next action');
+            expect(rail, latest.status).toContain('>Ask for another pass</button>');
+        }
+    });
+
+    it("explains another member's failure in the same words as the follow-up slot", () => {
+        const html = renderDetail({ jobs: [job({ status: 'failed', author: other })], viewer });
+        const sentence = 'Only octo-reviewer can continue this session. You can still mark it done.';
+        expect(railOf(html)).toContain(sentence);
+        expect(railOf(html)).not.toContain('Ask for another pass');
+        expect(html.match(new RegExp(sentence, 'g'))).toHaveLength(2);
+    });
+
+    it('says nothing while the session loads', () => {
+        const rail = railOf(
+            renderDetail({ jobs: [job({ status: 'failed', author: me })], viewer: { loading: true, id: null } })
+        );
+        expect(rail).not.toContain('Next action');
+    });
+
+    it('offers no next action on a success, a closed failure, or a failure parked on its review wait', () => {
+        const cases = [
+            job({ author: me }),
+            job({ status: 'failed', author: me, doneAt: '2026-09-01T13:00:00.000Z' }),
+            job({ status: 'failed', author: me, waitReason: 'review', waitingSince: '2026-09-01T12:30:00.000Z' }),
+        ];
+        for (const latest of cases) {
+            expect(railOf(renderDetail({ jobs: [latest], viewer })), latest.status).not.toContain('Next action');
+        }
     });
 });

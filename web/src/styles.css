@@ -1867,16 +1867,16 @@
 
     /* The tasks pages. */
 
-    /* The task detail page: one conversation and its outcome summary, fed by the newest run.
-       The DOM reads outcome first, conversation second; from 1024px the grid puts the
-       conversation in the dominant left column and the outcome in a bounded right one, and
-       below that the outcome stacks above the conversation — the same single disclosure
-       everywhere, only the grid changes. */
+    /* The task detail page: the outcome rail and the main column (conversation → run history →
+       verification → services → published work → follow-up), fed by the newest run. The DOM
+       reads the rail first; from 1024px the grid puts the main column on the left and the rail
+       in a 320px right one, and below that the rail is a two-column summary above the main
+       column — DOM order is visual order at every width, only the grid changes. */
     .task-layout {
         align-items: start;
         display: grid;
-        gap: 20px;
-        grid-template-areas: 'outcome' 'conversation';
+        gap: 24px;
+        grid-template-areas: 'outcome' 'main';
         grid-template-columns: 1fr;
     }
 
@@ -1884,16 +1884,143 @@
         grid-area: outcome;
     }
 
-    .task-conversation {
-        grid-area: conversation;
+    .task-main {
+        display: grid;
+        gap: 16px;
+        grid-area: main;
         min-width: 0;
     }
 
     @media (min-width: 1024px) {
         .task-layout {
-            grid-template-areas: 'conversation outcome';
+            grid-template-areas: 'main outcome';
             grid-template-columns: minmax(0, 1fr) 320px;
         }
+    }
+
+    /* The header's second line: #id · Opened … by (avatar) login · repo. */
+    .task-meta-line {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+    }
+
+    .task-opened-by {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .task-opened-by .avatar {
+        height: 20px;
+        line-height: 20px;
+        width: 20px;
+    }
+
+    /* Two status-table rows the pill tones do not carry alone: a review wait's edge, and the
+       done check in the run lamp's green. */
+    .task-pill-wait {
+        border: 1px solid var(--line-strong);
+    }
+
+    .task-pill-done > .icon {
+        color: var(--lamp-run);
+    }
+
+    /* What the primary action does and does not do — the row's last line, as wide as the controls
+       above it. `width: 0` keeps the sentence out of the row's intrinsic width (the header's
+       actions slot sizes to its content), and `min-width: 100%` then fills the row and wraps. */
+    .task-action-help {
+        font-size: 13px;
+        margin: 0;
+        min-width: 100%;
+        width: 0;
+    }
+
+    .task-closed {
+        margin: 0;
+    }
+
+    /* The run history: recorded stamps only, a quiet rail down the left. */
+    .task-history {
+        border-left: 1px solid var(--line);
+        display: grid;
+        gap: 12px;
+        list-style: none;
+        margin: 0 0 0 8px;
+        padding: 0 0 0 16px;
+    }
+
+    .task-history-item {
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+    }
+
+    .task-history-item time {
+        color: var(--ink-muted);
+        font-size: 13px;
+        white-space: nowrap;
+    }
+
+    /* The verification panel: a focus target, so the rail's "View checks" lands the caret here. */
+    .task-verification:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+    }
+
+    .task-verification-counts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0;
+    }
+
+    /* A gate's output: its own sunken mono well, lines kept whole and scrolled, not wrapped. */
+    .gate-output-wrap {
+        display: grid;
+        gap: 8px;
+        justify-items: end;
+        padding: 8px 12px 12px;
+    }
+
+    .gate-output-wrap > .run-well {
+        justify-self: stretch;
+        min-width: 0;
+    }
+
+    .chat-output.gate-output {
+        background: var(--surface-sunken);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 18px;
+        overflow: auto;
+        padding: 8px 12px;
+        white-space: pre;
+        word-break: normal;
+    }
+
+    .task-copy {
+        align-items: center;
+        display: inline-flex;
+        gap: 4px;
+        font-size: 13px;
+    }
+
+    /* The published branch: a mono chip beside its copy button. */
+    .task-branch {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        display: inline-flex;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        gap: 6px;
+        min-height: 28px;
+        overflow-wrap: anywhere;
+        padding: 0 8px;
     }
 
     /* The outcome's disclosure head: the native marker keeps signalling expandability (the
@@ -1908,12 +2035,32 @@
         margin: 0;
     }
 
+    /* Below 1024px the rail is a two-column summary above the main column; in the 320px rail —
+       and on a phone, where two key/value columns cannot hold a label — it is one column. */
     .task-outcome-body {
         border-top: 1px solid var(--line);
         display: grid;
-        gap: 14px;
-        margin-top: 10px;
-        padding-top: 10px;
+        gap: 16px;
+        grid-template-columns: 1fr;
+        margin-top: 12px;
+        padding-top: 12px;
+    }
+
+    .task-outcome-body > section {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    @media (min-width: 600px) {
+        .task-outcome-body {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (min-width: 1024px) {
+        .task-outcome-body {
+            grid-template-columns: 1fr;
+        }
     }
 
     .chat-exchange {
@@ -1966,18 +2113,7 @@
         outline-offset: 4px;
     }
 
-    /* The checks-and-publication region: a focus target so the outcome's "View checks in run N"
-       link lands keyboard focus here, not just the scroll position. */
-    .run-work {
-        margin-top: 10px;
-    }
-
-    .run-work:focus {
-        outline: 2px solid var(--accent);
-        outline-offset: 4px;
-    }
-
-    /* One run's publish line: the branch code-styled, the PR link beside it. */
+    /* The published-work line: the branch chip, its copy button, the PR link beside them. */
     .run-publish {
         align-items: center;
         display: flex;
@@ -2034,23 +2170,10 @@
         white-space: nowrap;
     }
 
-    /* The verification gates a run has run or is running — current/last only, never history. */
-
-    .chat-gates {
+    /* The verification gates the newest run has run or is running — current/last only. */
+    .chat-gate-list {
         border: 1px solid var(--line);
         border-radius: var(--radius-lg);
-        margin-bottom: 8px;
-    }
-
-    .chat-gates > summary {
-        cursor: pointer;
-        display: flex;
-        gap: 6px;
-        padding: 6px 10px;
-    }
-
-    .chat-gate-list {
-        border-top: 1px solid var(--line);
         list-style: none;
         margin: 0;
         padding: 0;
@@ -2066,13 +2189,6 @@
         gap: 8px;
         align-items: center;
         padding: 6px 10px;
-    }
-
-    .chat-gate-list .chat-output {
-        border: none;
-        border-radius: 0;
-        border-top: 1px solid var(--line);
-        max-height: 200px;
     }
 
     .chat-output {

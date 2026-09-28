@@ -3,6 +3,7 @@ import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js'
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import {
     closureOf,
+    followUpEligibility,
     gateCounts,
     issueUrl,
     newestTerminalExit,
@@ -369,5 +370,53 @@ describe('task outcome derivations — gates, issues and closure', () => {
         it('answers null while no run has settled', () => {
             expect(newestTerminalExit([followUp({ status: 'running' })])).toBeNull();
         });
+    });
+});
+
+describe('followUpEligibility', () => {
+    /**
+     * Who may continue a task (F3): the same null-safe author check the board makes on the row the
+     * follow-up is posted to, with the session's own loading state first so an author never
+     * flashes a refusal while `/api/auth/me` is still answering.
+     */
+    const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
+    const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'other', name: null, avatarUrl: null };
+    const viewer = (id: string | null, loading = false) => ({ loading, id });
+
+    it('offers your own finished task', () => {
+        expect(followUpEligibility(job({ author: me }), viewer(me.id))).toBe('eligible');
+    });
+
+    it("refuses another member's task", () => {
+        expect(followUpEligibility(job({ author: other }), viewer(me.id))).toBe('not-author');
+    });
+
+    it('refuses a null author to a signed-in viewer, and offers it to a null viewer', () => {
+        expect(followUpEligibility(job({ author: null }), viewer(me.id))).toBe('not-author');
+        expect(followUpEligibility(job({ author: null }), viewer(null))).toBe('eligible');
+    });
+
+    it('refuses an authored task to a viewer with no session', () => {
+        expect(followUpEligibility(job({ author: me }), viewer(null))).toBe('not-author');
+    });
+
+    it('names a sessionless run before the author check', () => {
+        expect(followUpEligibility(job({ author: other, sessionId: null }), viewer(me.id))).toBe('no-session');
+    });
+
+    it('names a closed task before the author check', () => {
+        const closed = job({ author: other, doneAt: '2026-09-01T12:05:00.000Z' });
+        expect(followUpEligibility(closed, viewer(me.id))).toBe('closed');
+    });
+
+    it('answers not-finished while the run can still move', () => {
+        for (const status of ['queued', 'running'] as const) {
+            expect(followUpEligibility(job({ author: me, status }), viewer(me.id))).toBe('not-finished');
+        }
+    });
+
+    it('answers pending while the session is loading, even on your own task', () => {
+        expect(followUpEligibility(job({ author: me }), viewer(null, true))).toBe('pending');
+        expect(followUpEligibility(job({ author: me, status: 'running' }), viewer(me.id, true))).toBe('pending');
     });
 });

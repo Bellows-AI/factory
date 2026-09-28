@@ -4,15 +4,23 @@ import postgres from 'postgres';
 import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { withExecutor } from './executor.js';
 import {
+    authoredBy,
     doneThread,
+    failedGateThread,
     followUpThread,
     missingSummaryThread,
+    multiFollowUpThread,
     nullAuthorThread,
+    otherAuthorThread,
+    parkedReviewWaitDoneThread,
+    parkedReviewWaitThread,
     publishedThread,
     routeThread,
     runningThread,
+    sessionAuthor,
     sessionlessThread,
     type ThreadJob,
+    unsafePrUrlThread,
 } from './fixtures/threads.js';
 
 const SHOTS = 'artifacts/ui';
@@ -96,24 +104,24 @@ test.describe('the task detail actions', () => {
         await queueTask(page, 'e2e — stop a queued task');
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
         await expect(header(page).getByRole('button', { name: 'More task actions' })).toBeVisible();
-        await expect(page.locator('.page-header-meta')).toContainText('queued');
+        await expect(page.locator('.page-header-meta')).toContainText('Queued');
         await page.screenshot({ path: `${SHOTS}/task-detail-queued.png`, fullPage: true });
 
         await header(page).getByRole('button', { name: 'Stop run' }).click();
-        await expect(page.locator('.page-header-meta')).toContainText('stopped', { timeout: 10_000 });
+        await expect(page.locator('.page-header-meta')).toContainText('Stopped · Needs review', { timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
 
         // Running: claimed the way a driver claims. The overflow is gone — a running member
-        // hides Remove — and stopping reads as a status, never a control.
+        // hides Remove — and stopping reads as a disabled, busy control.
         const runningId = await queueTask(page, 'e2e — stop a running task');
         const leaseToken = await claimQueued(page, runningId);
-        await expect(page.locator('.page-header-meta')).toContainText('running', { timeout: 10_000 });
+        await expect(page.locator('.page-header-meta')).toContainText('Running', { timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
         await expect(header(page).getByRole('button', { name: 'More task actions' })).toBeHidden();
         await page.screenshot({ path: `${SHOTS}/task-detail-running.png`, fullPage: true });
 
         await header(page).getByRole('button', { name: 'Stop run' }).click();
-        await expect(header(page).getByText('Stopping…')).toBeVisible({ timeout: 10_000 });
+        await expect(header(page).getByRole('button', { name: 'Stopping…' })).toBeDisabled({ timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeHidden();
         await page.screenshot({ path: `${SHOTS}/task-detail-stopping.png`, fullPage: true });
 
@@ -137,7 +145,8 @@ test.describe('the task detail actions', () => {
 
         await header(page).getByRole('button', { name: 'Mark done' }).click();
         // The stand-in account AUTH_MODE=none attributes every action to.
-        await expect(header(page).getByText('Done by __local__')).toBeVisible({ timeout: 10_000 });
+        await expect(header(page).getByText('Closed by __local__')).toBeVisible({ timeout: 10_000 });
+        await expect(page.locator('.page-header-meta')).toContainText('Done');
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeHidden();
         await expect(header(page).locator('button[disabled]')).toHaveCount(0);
         await page.screenshot({ path: `${SHOTS}/task-detail-done.png`, fullPage: true });
@@ -363,16 +372,19 @@ test.describe('the task detail page', () => {
         expect(await response.json()).toEqual({ jobs: nullAuthorThread });
     });
 
-    test('a finished thread reads request, response, checks, published work, metadata', async ({ page }) => {
+    test('a finished thread reads request, response, history, verification, published work', async ({ page }) => {
         const problems = watchConsole(page);
-        await routeThread(page, publishedThread);
+        await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
         await page.goto(`/tasks/${publishedThread[0]!.id}`);
 
-        // The reading order the page exists for: request, then response, then the run's work.
+        // The reading order the page exists for: request, then response, then the task's work.
         const conversation = page.locator('.task-conversation');
+        const main = page.locator('.task-main');
         await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
         await expect(conversation.getByText('Agent response', { exact: true })).toBeVisible();
-        await expect(conversation.getByText('Checks and published work', { exact: true })).toBeVisible();
+        await expect(main.getByRole('heading', { name: 'Run history' })).toBeVisible();
+        await expect(main.getByRole('heading', { name: 'Verification' })).toBeVisible();
+        await expect(main.getByRole('heading', { name: 'Published work' })).toBeVisible();
         await expect(conversation.getByText('fix #177 please')).toBeVisible();
         await expect(conversation.getByText('Rebuilt the task detail layout and outcome summary.')).toBeVisible();
 
@@ -387,34 +399,35 @@ test.describe('the task detail page', () => {
         // The links are references, not CTAs: the labeled rows carry just the numbers.
         await expect(page.locator('.task-outcome')).toContainText('#9');
         await expect(page.locator('.task-outcome')).toContainText('#177');
-        await expect(conversation).toContainText('Pull request #9');
+        await expect(page.locator('.task-published')).toContainText('Pull request #9');
+        await expect(page.locator('.task-published')).toContainText('fix/177');
         for (const token of FORBIDDEN) expect(await page.locator('body').innerText(), token).not.toContain(token);
 
-        // The outcome's checks link lands focus on the run's own verification region.
-        await page.getByRole('link', { name: 'View checks in run 1' }).click();
-        await expect(page.locator('#run-1-checks')).toBeFocused();
+        // The outcome's checks link lands focus on the verification panel itself.
+        await page.getByRole('link', { name: 'View checks' }).click();
+        await expect(page.locator('#task-verification')).toBeFocused();
 
         expect(problems).toEqual([]);
         await page.screenshot({ path: `${SHOTS}/task-detail-rich.png`, fullPage: true });
     });
 
-    test('a follow-up thread labels its runs and attaches work to each', async ({ page }) => {
+    test('a follow-up thread labels its runs, verifies the newest, and links the thread PR', async ({ page }) => {
         await routeThread(page, followUpThread);
         await page.goto(`/tasks/${followUpThread[1]!.id}`);
 
         const conversation = page.locator('.task-conversation');
         await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
         await expect(conversation.getByText('Follow-up', { exact: true })).toBeVisible();
-        // Gates ride the run that produced them: lint failed on run 2, not run 1.
-        await expect(page.locator('#run-2-checks')).toContainText('lint');
-        // The run's publication line has no label of its own, so the link says what it is.
-        await expect(page.locator('#run-1-checks')).toContainText('Pull request #1');
-        await expect(page.getByRole('link', { name: 'View checks in run 2' })).toBeVisible();
+        // Verification is the newest run's: lint failed on run 2.
+        await expect(page.locator('#task-verification')).toContainText('lint');
+        // The thread's publication came from run 1; the link says what it is.
+        await expect(page.locator('.task-published')).toContainText('Pull request #1');
+        await expect(page.getByRole('link', { name: 'View checks' })).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-thread.png`, fullPage: true });
     });
 
     test('a finished task without a captured response says so, and offers the composer', async ({ page }) => {
-        await routeThread(page, missingSummaryThread);
+        await routeThread(page, authoredBy(missingSummaryThread, await sessionAuthor(page)));
         await page.goto(`/tasks/${missingSummaryThread[0]!.id}`);
         await expect(page.getByText('finished without a captured agent response')).toBeVisible();
         await expect(page.getByText('Ask for a follow-up')).toBeVisible();
@@ -433,14 +446,14 @@ test.describe('the task detail page', () => {
         await expect(page.getByText('Ask for a follow-up')).not.toBeVisible();
     });
 
-    test('a failed send preserves the draft', async ({ page }) => {
-        await routeThread(page, missingSummaryThread);
+    test('a failed send preserves the draft, and says why inside the composer', async ({ page }) => {
+        await routeThread(page, authoredBy(missingSummaryThread, await sessionAuthor(page)));
         await page.route('**/api/jobs/*/follow-up', (route) => route.abort());
         await page.goto(`/tasks/${missingSummaryThread[0]!.id}`);
         const box = page.getByLabel('Ask for a follow-up');
         await box.fill('try again tomorrow');
         await page.getByRole('button', { name: 'Send follow-up' }).click();
-        await expect(page.locator('.status')).toBeVisible();
+        await expect(page.locator('.composer .status')).toBeVisible();
         await expect(box).toHaveValue('try again tomorrow');
     });
 
@@ -469,7 +482,7 @@ test.describe('the task detail page', () => {
 
     test('the detail renders at every target width without overflow', async ({ page }) => {
         test.setTimeout(60_000);
-        await routeThread(page, publishedThread);
+        await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 1000 });
@@ -482,17 +495,211 @@ test.describe('the task detail page', () => {
 
             const outcome = await page.locator('.task-outcome').boundingBox();
             const conversation = await page.locator('.task-conversation').boundingBox();
+            const railColumns = await page
+                .locator('.task-outcome-body')
+                .evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length);
             if (width < 1024) {
-                // The outcome sits above the conversation, one column, disclosure first.
+                // The outcome sits above the conversation, DOM order: a two-column summary, and
+                // one column on a phone, where two key/value columns cannot hold a label.
                 expect(outcome!.y + outcome!.height).toBeLessThanOrEqual(conversation!.y + 1);
+                expect(railColumns, `${width}px rail columns`).toBe(width < 600 ? 1 : 2);
             } else {
-                // The conversation owns the left column and stays the wider one; the outcome
-                // is bounded (its column is fixed, the conversation takes the rest).
+                // The main column owns the left and stays the wider one; the rail is 320px.
                 expect(conversation!.x).toBeLessThan(outcome!.x);
                 expect(conversation!.width).toBeGreaterThan(outcome!.width!);
-                expect(outcome!.width!).toBeLessThan(400);
+                expect(Math.round(outcome!.width!)).toBe(320);
+                expect(railColumns, `${width}px rail columns`).toBe(1);
             }
             await page.screenshot({ path: `${SHOTS}/task-detail-${width}.png`, fullPage: true });
         }
+    });
+
+    /** The inbox row the board would answer for `jobs`' thread — the root's identity, the head's state. */
+    const summaryOf = (jobs: readonly ThreadJob[]) => {
+        const root = jobs[0]!;
+        const head = jobs[jobs.length - 1]!;
+        return {
+            id: root.id,
+            command: root.command,
+            status: head.status,
+            cancelRequestedAt: head.cancelRequestedAt,
+            doneAt: head.doneAt,
+            repo: head.repo,
+            executor: head.executor,
+            author: root.author,
+            activity: null,
+            summary: head.summary,
+            waitReason: head.waitReason,
+            waitingSince: head.waitingSince,
+            waitTerminalReason: head.waitTerminalReason,
+            createdAt: root.createdAt,
+            activityAt: head.doneAt ?? head.finishedAt ?? head.createdAt,
+        };
+    };
+
+    test('a parked review wait offers Mark done, never Stop, and closing it reads Done everywhere', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        const me = await sessionAuthor(page);
+        await routeThread(page, authoredBy(parkedReviewWaitThread, me));
+        await page.goto(`/tasks/${parkedReviewWaitThread[0]!.id}`);
+
+        await expect(page.locator('.page-header-meta')).toContainText('Waiting for review');
+        await expect(header(page).getByRole('button', { name: 'Stop run' })).toHaveCount(0);
+        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
+        await expect(header(page)).toContainText('No executor is running. The workflow is waiting for review.');
+        await expect(header(page)).toContainText('Does not merge or close the pull request.');
+        await page.screenshot({ path: `${SHOTS}/task-detail-review-wait.png`, fullPage: true });
+
+        // The board stamps done and leaves the wait row open; the next poll carries both.
+        const done = authoredBy(parkedReviewWaitDoneThread, me);
+        await page.route('**/api/jobs/*/done', (route) => route.fulfill({ status: 200, json: {} }));
+        await routeThread(page, done);
+        await header(page).getByRole('button', { name: 'Mark done' }).click();
+
+        await expect(page.locator('.page-header-meta')).toContainText('Done', { timeout: 10_000 });
+        await expect(page.locator('.page-header-meta')).not.toContainText('Waiting for review');
+        await expect(page.locator('.task-outcome')).toContainText('Done');
+        await expect(page.locator('.task-outcome')).not.toContainText('Waiting for review');
+        await expect(header(page)).toContainText('Closed by');
+        await expect(page.locator('textarea')).toHaveCount(0);
+        await expect(page.getByText('can continue this session')).toHaveCount(0);
+        await page.screenshot({ path: `${SHOTS}/task-detail-review-wait-done.png`, fullPage: true });
+
+        // The inbox row and the sidebar read the same precedence off the board's summary row.
+        const row = summaryOf(done);
+        await page.route(/\/api\/tasks(\?|$)/, (route) =>
+            route.fulfill({
+                json: {
+                    navigation: { counts: { running: 0, review: 0, past: 1 }, running: [], review: [] },
+                    page: { items: [row], nextCursor: null },
+                },
+            })
+        );
+        await page.goto('/tasks?state=past');
+        await expect(page.locator('.inbox-row').first()).toContainText('Done');
+        await expect(page.locator('.inbox-row').first()).not.toContainText('Waiting for review');
+        await expect(page.locator('.sidenav-task', { hasText: row.command })).toHaveCount(0);
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('a failed gate opens only its own output, counts only what happened, and asks for another pass', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        await routeThread(page, authoredBy(failedGateThread, await sessionAuthor(page)));
+        const followUps: string[] = [];
+        page.on('request', (request) => {
+            if (request.url().endsWith('/follow-up')) followUps.push(request.url());
+        });
+        await page.goto(`/tasks/${failedGateThread[0]!.id}`);
+
+        await expect(page.locator('.page-header-meta')).toContainText('Failed · Needs review');
+        await expect(page.locator('.page-header-meta')).toContainText('Verification failed');
+
+        const verification = page.locator('#task-verification');
+        await expect(verification.locator('.task-verification-counts')).toHaveText('1 failed2 passed');
+        await expect(verification.locator('details', { hasText: 'lint' })).toHaveAttribute('open', '');
+        await expect(verification.locator('details', { hasText: 'build' })).not.toHaveAttribute('open');
+        await expect(verification.locator('details', { hasText: 'test' }).first()).not.toHaveAttribute('open');
+
+        // The one long unbroken line scrolls inside its own well, never the page.
+        const well = verification.getByLabel('Output of lint').locator('pre');
+        expect(await well.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+        await expect(verification.getByRole('button', { name: 'Copy output of lint' })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/task-detail-gate-failed.png`, fullPage: true });
+
+        // Ask for another pass lands the caret in the composer and sends nothing by itself — from
+        // the header and from the rail's next action alike.
+        await header(page).getByRole('button', { name: 'Ask for another pass' }).click();
+        await expect(page.getByLabel('Ask for a follow-up')).toBeFocused();
+        await page.locator('.task-outcome').getByRole('button', { name: 'Ask for another pass' }).click();
+        await expect(page.getByLabel('Ask for a follow-up')).toBeFocused();
+        expect(followUps).toEqual([]);
+
+        // Mark done and Remove both wait in the overflow.
+        await header(page).getByRole('button', { name: 'More task actions' }).click();
+        await expect(page.getByRole('menuitem', { name: 'Mark done' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Remove task' })).toBeVisible();
+        await page.keyboard.press('Escape');
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test("another member's task and a null-author task say who can continue, and keep Mark done", async ({ page }) => {
+        await routeThread(page, otherAuthorThread);
+        await page.goto(`/tasks/${otherAuthorThread[0]!.id}`);
+        await expect(
+            page.getByText('Only octo-reviewer can continue this session. You can still mark it done.')
+        ).toBeVisible();
+        await expect(page.locator('textarea')).toHaveCount(0);
+        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/task-detail-not-author.png`, fullPage: true });
+
+        await routeThread(page, nullAuthorThread);
+        await page.goto(`/tasks/${nullAuthorThread[0]!.id}`);
+        await expect(page.getByText('Only the task author can continue this session.')).toBeVisible();
+        await expect(page.locator('textarea')).toHaveCount(0);
+        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
+    });
+
+    test('a multi-follow-up thread lists every recorded fact and links the newest PR', async ({ page }) => {
+        await routeThread(page, multiFollowUpThread);
+        await page.goto(`/tasks/${multiFollowUpThread[0]!.id}`);
+        // Three runs, each created, started and finished — and nothing the board did not stamp.
+        await expect(page.locator('.task-history-item')).toHaveCount(9);
+        await expect(page.locator('.task-history')).not.toContainText('Implemented');
+        await expect(page.locator('.task-history')).not.toContainText('Published');
+        await expect(page.locator('.task-published')).toContainText('Pull request #21');
+        await expect(page.locator('.task-published')).toContainText('feat/export');
+        await page.screenshot({ path: `${SHOTS}/task-detail-multi-follow-up.png`, fullPage: true });
+    });
+
+    test('an unsafe PR url is never a link', async ({ page }) => {
+        await routeThread(page, unsafePrUrlThread);
+        await page.goto(`/tasks/${unsafePrUrlThread[0]!.id}`);
+        await expect(page.locator('.task-published')).toContainText('fix/odd');
+        await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
+        await expect(page.locator('.task-published a')).toHaveCount(0);
+    });
+
+    test('an action that resolves after navigating to another task is ignored', async ({ page }) => {
+        const problems = watchConsole(page);
+        const first = publishedThread;
+        const other = authoredBy(missingSummaryThread, await sessionAuthor(page));
+        // Every thread but the first answers as a different task — the inbox row clicked below.
+        await page.route('**/api/jobs/*/thread*', (route) =>
+            route.fulfill({ json: { jobs: route.request().url().includes(first[0]!.id) ? first : other } })
+        );
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        await page.route(`**/api/jobs/${first[0]!.id}/done`, async (route) => {
+            await held;
+            await route.fulfill({ status: 409, json: { error: 'Task is running', code: 'TASK_RUNNING' } });
+        });
+
+        await page.goto(`/tasks/${first[0]!.id}`);
+        await header(page).getByRole('button', { name: 'Mark done' }).click();
+        await expect(header(page).getByRole('button', { name: 'Marking done…' })).toBeDisabled();
+
+        // Client-side navigation, so the in-flight request outlives the task it was sent for.
+        await page.getByRole('link', { name: 'View all tasks' }).click();
+        await page.waitForURL(/\/tasks$/);
+        await page.locator('.inbox-row a').first().click();
+        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
+        await expect(page.getByRole('heading', { level: 1, name: 'seed task' })).toBeVisible();
+
+        const refused = page.waitForResponse(`**/api/jobs/${first[0]!.id}/done`);
+        release();
+        await refused;
+        await expect(page.getByText('Task is running')).toHaveCount(0);
+        await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeEnabled();
+        // The 409 is the spec's own doing; the browser logs the refused status itself.
+        const real = problems.filter(
+            (p) => p !== 'console: Failed to load resource: the server responded with a status of 409 (Conflict)'
+        );
+        expect(real.join('\n')).toBe('');
     });
 });
