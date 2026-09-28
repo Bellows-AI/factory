@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
+import { THEMES } from './screenshot-matrix.js';
 import { finishSignIn, throughSignIn } from './signin.js';
 
 /**
@@ -100,6 +101,22 @@ test('the gate holds a narrow phone inside the viewport, in both palettes (issue
         path: 'artifacts/ui/matrix/signin-gate_default_light_390.png',
         animations: 'disabled',
     });
+});
+
+test('a refused sign-in says why on the gate, in both palettes (issue 284)', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto('/?auth_error=denied');
+
+    await expect(gate(page)).toBeVisible();
+    await expect(gate(page).getByRole('alert')).toHaveText('Sign-in was cancelled.');
+    await expect(signIn(page)).toBeVisible();
+    for (const theme of THEMES) {
+        await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
+        await page.screenshot({
+            path: `artifacts/ui/matrix/signin-gate_denied_${theme}_1440.png`,
+            animations: 'disabled',
+        });
+    }
 });
 
 test('the document itself is served without authentication', async ({ page }) => {
@@ -215,6 +232,11 @@ test('a choice of nothing refuses Continue and says what is missing (issue 187)'
     const cont = page.getByRole('button', { name: 'Continue' });
     await expect(cont).toHaveAttribute('aria-disabled', 'true');
     await expect(page.getByText('Choose at least one organization to continue.')).toBeVisible();
+    // The visible reason is also the button's description (issue 284): a screen reader on the
+    // dead Continue hears why, not just that.
+    await expect(cont).toHaveAccessibleDescription('Choose at least one organization to continue.');
+    // And it looks blocked: aria-disabled carries the disabled-primary recipe, not the accent.
+    await expect(cont).toHaveCSS('cursor', 'not-allowed');
     // The attempted action is receivable — it cannot post, and the screen stands. Forced, because
     // Playwright's actionability check reads aria-disabled as disabled and would wait forever.
     await cont.click({ force: true });
@@ -223,6 +245,7 @@ test('a choice of nothing refuses Continue and says what is missing (issue 187)'
     // Choosing one organization re-enables the action and completes.
     await orgs.filter({ hasText: reported[0]!.account }).getByRole('checkbox').check();
     await expect(cont).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(cont).toHaveAccessibleDescription('');
     await cont.click();
     await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 });

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useSession } from '../api/useSession.js';
 import { PRODUCT_NAME } from '../brand.js';
+import { Icon } from './Icon.js';
 import { PublicPageHeader } from './PublicPageHeader.js';
 import { ThemeSelector } from './ThemeSelector.js';
 
@@ -14,6 +15,16 @@ const REASONS: Record<string, string> = {
         'This dashboard is organized by GitHub App installation, and none were found for your account. Install the App, then sign in again.',
     install_cancelled: 'You returned without installing the App. Install it, then sign in again.',
 };
+
+/** A sign-in problem — the session check failing, or the callback's reason — as the bad banner. */
+function LoginProblem({ message }: { message: string }) {
+    return (
+        <div className="banner-bad" role="alert">
+            <Icon name="alert-circle" size={24} />
+            <p>{message}</p>
+        </div>
+    );
+}
 
 /**
  * Stands between the dashboard and anyone who has not signed in.
@@ -47,21 +58,23 @@ export function LoginGate({ children }: { children: ReactNode }) {
                 absorbed it. */}
             <PublicPageHeader actions={<ThemeSelector />} />
             <main className="login-gate">
-                <h1>{PRODUCT_NAME}</h1>
-                {error ? (
-                    <p className="login-error">{error}</p>
-                ) : (
-                    <p>Sign in with GitHub. The organizations you can see are the App installations.</p>
-                )}
-                {reason ? <p className="login-error">{REASONS[reason] ?? 'Sign-in failed.'}</p> : null}
-                {/*
-                    A plain link, and it has to be. A `fetch` cannot follow a 302 to github.com, and a
-                    <form method="get"> is blocked outright by `form-action 'none'` in the CSP — which is
-                    worth keeping, so this stays an anchor.
-                */}
-                <a className="login-button" href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo)}`}>
-                    Sign in with GitHub
-                </a>
+                <div className="login-card">
+                    <h1>{PRODUCT_NAME}</h1>
+                    {error ? (
+                        <LoginProblem message={error} />
+                    ) : (
+                        <p>Sign in with GitHub. The organizations you can see are the App installations.</p>
+                    )}
+                    {reason ? <LoginProblem message={REASONS[reason] ?? 'Sign-in failed.'} /> : null}
+                    {/*
+                        A plain link, and it has to be. A `fetch` cannot follow a 302 to github.com, and a
+                        <form method="get"> is blocked outright by `form-action 'none'` in the CSP — which is
+                        worth keeping, so this stays an anchor.
+                    */}
+                    <a className="login-button" href={`/api/auth/github?returnTo=${encodeURIComponent(returnTo)}`}>
+                        Sign in with GitHub
+                    </a>
+                </div>
             </main>
         </>
     );

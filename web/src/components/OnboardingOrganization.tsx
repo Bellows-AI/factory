@@ -1,6 +1,7 @@
 import type { Ref } from 'react';
 import { PRODUCT_NAME } from '../brand.js';
 import { needsListing, type OrgDraft, type RepoMode } from '../onboarding.js';
+import { Icon } from './Icon.js';
 
 /** What the disclosure reads while collapsed: the org's repository mode, and the count only once
  * a listing is there to count. */
@@ -34,30 +35,36 @@ function RepositoryListingBody({
     onToggleRepo: (repo: string) => void;
 }) {
     if (draft.listing.kind === 'loading') return <p className="muted">Loading repositories…</p>;
+    // A failed read is an alert; an unavailable listing is information — the choice still
+    // completes — and neither reads like a missing choice (issue 284).
     if (draft.listing.kind === 'failed') {
         return (
-            <>
-                <p className="status" role="alert">
-                    Could not load the repositories for this organization.
-                </p>
-                <button type="button" onClick={onRetryListing}>
-                    Retry
-                </button>
-            </>
+            <div className="banner-bad" role="alert">
+                <Icon name="alert-circle" size={24} />
+                <div className="onboarding-banner-body">
+                    <p>Could not load the repositories for this organization.</p>
+                    <button type="button" onClick={onRetryListing}>
+                        Retry
+                    </button>
+                </div>
+            </div>
         );
     }
     if (draft.listing.kind === 'unavailable') {
         return (
-            <>
-                <p className="status">
-                    {draft.mode === 'all'
-                        ? `Repository choices are temporarily unavailable. ${PRODUCT_NAME} will track repositories this installation reports.`
-                        : 'Your existing specific selection is preserved, but it cannot be reviewed right now. Try again before changing repository scope.'}
-                </p>
-                <button type="button" onClick={onRetryListing}>
-                    Retry
-                </button>
-            </>
+            <div className="banner-info">
+                <Icon name="info" size={24} />
+                <div className="onboarding-banner-body">
+                    <p>
+                        {draft.mode === 'all'
+                            ? `Repository choices are temporarily unavailable. ${PRODUCT_NAME} will track repositories this installation reports.`
+                            : 'Your existing specific selection is preserved, but it cannot be reviewed right now. Try again before changing repository scope.'}
+                    </p>
+                    <button type="button" onClick={onRetryListing}>
+                        Retry
+                    </button>
+                </div>
+            </div>
         );
     }
     if (draft.listing.kind === 'ready') {
@@ -135,7 +142,7 @@ export function OnboardingOrganization({
                     </span>
                     {installation.account}
                 </label>
-                {requested ? <span className="onboarding-requested">Requested for this sign-in</span> : null}
+                {requested ? <span className="pill pill-accent">Requested for this sign-in</span> : null}
             </div>
             {selected ? (
                 <>
@@ -193,7 +200,7 @@ export function OnboardingOrganization({
                     {/* Outside the disclosure, so the reason stays visible with it collapsed —
                         the state table's "per-group reason remains visible". */}
                     {empty ? (
-                        <p className="status" id={reasonId}>
+                        <p className="onboarding-blocker" id={reasonId}>
                             Select at least one repository, switch to all repositories, or deselect this organization.
                         </p>
                     ) : null}

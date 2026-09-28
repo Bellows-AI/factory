@@ -14,9 +14,11 @@ import {
     withListing,
     withMode,
     withReconciled,
+    type OrgDraft,
     type PendingSignInPayload,
     type RepoListing,
 } from '../src/onboarding.js';
+import { OnboardingOrganization } from '../src/components/OnboardingOrganization.js';
 import { ThemeProvider } from '../src/theme.js';
 import { OnboardingPage, StartAgainPanel } from '../src/pages/OnboardingPage.js';
 
@@ -48,6 +50,18 @@ const pending: PendingSignInPayload = {
 /** Checked org checkboxes — org selection is a checkbox; mode choices are radios, counted apart. */
 const checkedBoxes = (html: string) => html.match(/type="checkbox"[^>]*checked=""/g)?.length ?? 0;
 const checkedRadios = (html: string) => html.match(/type="radio"[^>]*checked=""/g)?.length ?? 0;
+
+/** The Continue button's own opening tag. */
+const continueButton = (html: string) => /<button[^>]*class="primary"[^>]*>/.exec(html)?.[0] ?? '';
+
+/** The text of the element Continue's `aria-describedby` points at — the visible reason. */
+const reasonFor = (html: string) => {
+    const id = /aria-describedby="([^"]+)"/.exec(continueButton(html))?.[1];
+    expect(id, 'Continue carries no aria-describedby').toBeDefined();
+    const reason = new RegExp(`<p[^>]*id="${id}"[^>]*>([^<]*)</p>`).exec(html);
+    expect(reason, 'the described-by target is not rendered').not.toBeNull();
+    return reason![1];
+};
 
 describe('OnboardingPage', () => {
     it('renders the setup decision: brand, context, one h1, purpose, identity, and the orgs', () => {
@@ -171,6 +185,19 @@ describe('OnboardingPage explicit repository mode (issue 187)', () => {
         const html = renderPage({ payload: pending });
         expect(html).not.toContain('aria-disabled="true"');
         expect(html).toContain('Continue');
+        // A ready Continue has nothing to explain: no reason, no description pointing at one.
+        expect(continueButton(html)).not.toContain('aria-describedby');
+        expect(html).not.toContain('onboarding-blocker');
+    });
+
+    it('the disabled Continue is described by its visible reason (issue 284)', () => {
+        const html = renderPage({ payload: { ...pending, selected: [] } });
+        expect(reasonFor(html)).toBe('Choose at least one organization to continue.');
+    });
+
+    it('the requested organization is marked with an accent pill (issue 284)', () => {
+        const html = renderPage({ payload: { ...pending, org: '999999' } });
+        expect(html).toMatch(/<span class="pill pill-accent">Requested for this sign-in<\/span>/);
     });
 });
 
@@ -207,6 +234,8 @@ describe('OnboardingPage listings (issue 187)', () => {
         expect(html).not.toContain('acme/gone');
         expect(html).toContain('Select at least one repository, switch to all repositories, or deselect');
         expect(html).toContain('aria-disabled="true"');
+        // An empty specific choice is a different blocker from choosing nothing, and it names the org.
+        expect(reasonFor(html)).toBe('Choose at least one repository for acme, or switch it to all repositories.');
     });
 
     it('an unavailable listing never renders an empty checklist, in either mode', () => {
@@ -232,6 +261,50 @@ describe('OnboardingPage listings (issue 187)', () => {
         expect(html).toContain('Retry');
         // Nothing reviewable → nothing invalid: the payload still completes.
         expect(html).not.toContain('aria-disabled="true"');
+    });
+});
+
+describe('OnboardingOrganization states keep apart (issue 284)', () => {
+    const LISTING: RepoListing = { repos: ['acme/web'], source: 'app' };
+    const acme = { id: '999999', account: 'acme', tracked: ['acme/gone'] };
+    const renderOrg = (draft: OrgDraft) =>
+        renderToStaticMarkup(
+            <OnboardingOrganization
+                installation={acme}
+                index={0}
+                draft={draft}
+                selected
+                requested={false}
+                onToggleOrg={() => {}}
+                onModeChange={() => {}}
+                onToggleRepo={() => {}}
+                onOpenDetails={() => {}}
+                onRetryListing={() => {}}
+                orgRef={null}
+            />
+        );
+    const seeded = (listing?: RepoListing) =>
+        initialDrafts([acme], listing ? { [acme.id]: listing } : undefined).get(acme.id)!;
+
+    it('a failed listing is a bad-banner alert with its Retry', () => {
+        const html = renderOrg(withFailedListing(seeded()));
+        expect(html).toMatch(/<div class="banner-bad" role="alert">/);
+        expect(html).toContain('Could not load the repositories for this organization.');
+        expect(html).toContain('Retry');
+        expect(html).not.toContain('onboarding-blocker');
+    });
+
+    it('an unavailable listing is an info banner, not an alert and not a missing choice', () => {
+        const html = renderOrg(seeded({ repos: [], source: 'none' }));
+        expect(html).toContain('<div class="banner-info">');
+        expect(html).not.toContain('role="alert"');
+        expect(html).not.toContain('onboarding-blocker');
+    });
+
+    it('an empty specific choice is a missing-choice reason, never a banner', () => {
+        const html = renderOrg(seeded(LISTING));
+        expect(html).toMatch(/<p class="onboarding-blocker" id="onboarding-repo-reason-0">Select at least one/);
+        expect(html).not.toContain('banner-');
     });
 });
 
