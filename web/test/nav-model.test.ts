@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_PREVIEW, NAV_ITEMS, SETTINGS_SECTIONS, ariaCurrentFor, countLabel, preview } from '../src/nav-model.js';
-import type { TaskSummary } from '../src/api/useTasks.js';
+import {
+    MAX_PREVIEW,
+    NAV_ITEMS,
+    SETTINGS_SECTIONS,
+    ariaCurrentFor,
+    countLabel,
+    navCount,
+    preview,
+} from '../src/nav-model.js';
+import type { TaskNavigation, TaskSummary } from '../src/api/useTasks.js';
 
 const entry = (id: string): TaskSummary => ({
     id,
@@ -21,41 +29,48 @@ const entry = (id: string): TaskSummary => ({
 });
 
 describe('nav model', () => {
-    it('is the one route array the shell navigates by', () => {
-        expect(NAV_ITEMS.map((item) => [item.to, item.label, item.end ?? false])).toEqual([
-            ['/', 'Dashboard', true],
+    it('is the one route array the shell navigates by, each item with its glyph', () => {
+        expect(NAV_ITEMS.map((item) => [item.to, item.label, item.end ?? false, item.icon])).toEqual([
+            ['/', 'Dashboard', true, 'home'],
             // Observe → act → configure (#159): the report, then the work, then the configuration.
-            ['/tasks', 'Tasks', false],
-            ['/settings', 'Settings', false],
+            ['/tasks', 'Tasks', false, 'list'],
+            ['/settings', 'Settings', false, 'settings'],
         ]);
     });
 
-    it('carries the Settings tree, in the order the sections ship', () => {
-        expect(SETTINGS_SECTIONS.map((item) => [item.to, item.label])).toEqual([
-            ['/settings/organization', 'Organization'],
-            ['/settings/workspace', 'Workspace'],
-            ['/settings/repos', 'Repositories'],
-            ['/settings/executors', 'Executors'],
-            ['/settings/workflows', 'Workflows'],
+    it('carries the Settings tree, Overview first, in the order the sections ship', () => {
+        expect(SETTINGS_SECTIONS.map((item) => [item.to, item.label, item.end ?? false])).toEqual([
+            // The overview is end-matched, so it never stays lit on a section page (#274).
+            ['/settings', 'Overview', true],
+            ['/settings/organization', 'Organization', false],
+            ['/settings/workspace', 'Workspace', false],
+            ['/settings/repos', 'Repositories', false],
+            ['/settings/executors', 'Executors', false],
+            ['/settings/workflows', 'Workflows', false],
         ]);
     });
 
-    it('keeps the parent at /settings as the overview, with no duplicate child (#180)', () => {
-        // /settings IS a page now — the configuration overview. The parent link is its address,
-        // so the tree must not also grow an "Overview" child.
-        expect(NAV_ITEMS.some((item) => item.to === '/settings')).toBe(true);
-        expect(SETTINGS_SECTIONS.some((item) => item.to === '/settings')).toBe(false);
-        const EXPECTED_SETTINGS_SECTION_COUNT = 5;
-        expect(SETTINGS_SECTIONS).toHaveLength(EXPECTED_SETTINGS_SECTION_COUNT);
-    });
-
-    it('marks /settings as the page only on the overview itself (#180)', () => {
-        expect(ariaCurrentFor({ to: '/settings', label: 'Settings' }, '/settings')).toBe('page');
-        // On a section page the parent is open but explicitly not the current page.
-        expect(ariaCurrentFor({ to: '/settings', label: 'Settings' }, '/settings/workspace')).toBe('false');
+    it('never lets the parent Settings link claim the page — the Overview child owns it (#274)', () => {
+        expect(ariaCurrentFor({ to: '/settings', label: 'Settings' })).toBe('false');
         // Every other item lets the router decide.
-        expect(ariaCurrentFor({ to: '/', label: 'Dashboard' }, '/settings')).toBeUndefined();
-        expect(ariaCurrentFor({ to: '/tasks', label: 'Tasks' }, '/tasks')).toBeUndefined();
+        expect(ariaCurrentFor({ to: '/', label: 'Dashboard' })).toBeUndefined();
+        expect(ariaCurrentFor({ to: '/tasks', label: 'Tasks' })).toBeUndefined();
+    });
+
+    it('counts the review queue on the Tasks item only, and only when there is one', () => {
+        const REVIEW_COUNT = 12;
+        const RUNNING_COUNT = 3;
+        const counts = (review: number): TaskNavigation => ({
+            counts: { running: RUNNING_COUNT, review, past: 0 },
+            running: [],
+            review: [],
+        });
+        const [dashboard, tasks, settings] = NAV_ITEMS;
+        expect(navCount(tasks!, counts(REVIEW_COUNT))).toBe(REVIEW_COUNT);
+        expect(navCount(tasks!, counts(0))).toBeNull();
+        expect(navCount(tasks!, null)).toBeNull();
+        expect(navCount(dashboard!, counts(REVIEW_COUNT))).toBeNull();
+        expect(navCount(settings!, counts(REVIEW_COUNT))).toBeNull();
     });
 
     it('previews at most five entries, keeping the section order', () => {

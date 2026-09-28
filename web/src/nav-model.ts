@@ -1,4 +1,5 @@
-import type { TaskSummary } from './api/useTasks.js';
+import type { TaskNavigation, TaskSummary } from './api/useTasks.js';
+import type { IconName } from './components/Icon.js';
 
 /**
  * The navigation model, and the only route array in the app.
@@ -16,15 +17,24 @@ export interface NavItem {
     readonly end?: boolean;
 }
 
+/** A top-level item: the section tree's rows carry no glyph, the primary column's do (issue 274). */
+export interface PrimaryNavItem extends NavItem {
+    readonly icon: IconName;
+}
+
 /** Observe → act → configure, in that order — the report, then the work, then the configuration. */
-export const NAV_ITEMS: readonly NavItem[] = [
-    { to: '/', label: 'Dashboard', end: true },
-    { to: '/tasks', label: 'Tasks' },
-    { to: '/settings', label: 'Settings' },
+export const NAV_ITEMS: readonly PrimaryNavItem[] = [
+    { to: '/', label: 'Dashboard', end: true, icon: 'home' },
+    { to: '/tasks', label: 'Tasks', icon: 'list' },
+    { to: '/settings', label: 'Settings', icon: 'settings' },
 ];
 
-/** The Settings tree's sections, in the issue's order. Static — no data behind them. */
+/**
+ * The Settings tree's sections, in the issue's order. Static — no data behind them. Overview is
+ * the `/settings` page itself, end-matched so it never stays lit on a section page (issue 274).
+ */
 export const SETTINGS_SECTIONS: readonly NavItem[] = [
+    { to: '/settings', label: 'Overview', end: true },
     { to: '/settings/organization', label: 'Organization' },
     { to: '/settings/workspace', label: 'Workspace' },
     { to: '/settings/repos', label: 'Repositories' },
@@ -34,13 +44,23 @@ export const SETTINGS_SECTIONS: readonly NavItem[] = [
 
 /**
  * The tree's `aria-current` rule, shared by every renderer of `NAV_ITEMS` (issue 160 keeps the
- * drawer from forking it): a tree marks ONE address as the page — on a section page the parent
- * `/settings` link is open and lit but explicitly NOT the current page, so it says `false`
- * instead of claiming the marker; every other item lets the router decide.
+ * drawer from forking it): a tree marks ONE address as the page. The parent `/settings` link is
+ * open and lit anywhere in the settings area but is never the current page — on `/settings` the
+ * Overview child owns the marker (issue 274) — so it says `false` instead of claiming it; every other
+ * item lets the router decide.
  */
-export function ariaCurrentFor(item: NavItem, pathname: string): 'page' | 'false' | undefined {
-    if (item.to !== '/settings') return undefined;
-    return pathname === '/settings' ? 'page' : 'false';
+export function ariaCurrentFor(item: NavItem): 'false' | undefined {
+    return item.to === '/settings' ? 'false' : undefined;
+}
+
+/**
+ * The count a primary item carries as a pill (issue 274): the review queue — the member's turn — on
+ * Tasks, and nothing anywhere else. Null when there is nothing to show: no navigation (off
+ * `/tasks*`, where the poll does not run) or an empty queue.
+ */
+export function navCount(item: NavItem, navigation: TaskNavigation | null): number | null {
+    if (item.to !== '/tasks' || navigation === null || navigation.counts.review === 0) return null;
+    return navigation.counts.review;
 }
 
 /** A navigation preview never renders more than this many rows, whatever the poll returned. */
@@ -52,8 +72,9 @@ export function preview(entries: readonly TaskSummary[]): readonly TaskSummary[]
 }
 
 /**
- * A count as a sentence, for the drawer's task badges (issue 160): a bare number next to a
- * colored dot says nothing to a screen reader, so the kind travels with the number. Not a live
+ * A count as a sentence, for the drawer's task badges (issue 160) and the Tasks pill's name
+ * (issue 274): a bare number next to a colored dot says nothing to a screen reader, so the kind
+ * travels with the number. Not a live
  * region — the counts are polled, and a polite announcement per poll is noise, not information.
  */
 export function countLabel(kind: 'running' | 'review' | 'past', n: number): string {

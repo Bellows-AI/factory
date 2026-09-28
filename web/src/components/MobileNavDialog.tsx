@@ -63,7 +63,7 @@ export function MobileNavDialog({
                         <ul className="sidenav-items">
                             {NAV_ITEMS.map((item) => (
                                 <li key={item.to}>
-                                    <NavItemLink item={item} pathname={pathname} onNavigate={onNavigate} />
+                                    <NavItemLink item={item} onNavigate={onNavigate} />
                                 </li>
                             ))}
                             {onSettings ? <SettingsSectionItems onNavigate={onNavigate} /> : null}

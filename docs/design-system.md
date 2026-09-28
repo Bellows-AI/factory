@@ -257,13 +257,13 @@ whose region rule used to follow it — `settings-toggle`'s `display: flex` and
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Shell | `shell`, `shell-main` | The two-column frame: a 240px sticky sidenav that scrolls within `100dvh`, and the content track |
+| Shell | `shell`, `shell-main` | The two-column frame: a 224px sticky sidenav that scrolls within `100dvh`, and the content track |
 | Page | `page` | The routed page's content container, carried by the shell's one `main` region (`#main-content`, the skip link's target): 1400px cap, `min-width: 0` — a class, not a `main` selector, so a dialog never inherits page chrome |
 | Skip link | `skip-link` | The off-screen "Skip to main content" anchor that slides in on `:focus-visible`, the first focusable element on every page |
-| Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-sublink`, `sidenav-subitems` | The nav column; `sidenav-link.is-active` marks the page, `sidenav-sublink.is-active` the settings section |
-| Sidenav task tree | `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav; the title alone clips |
+| Sidenav | `sidenav`, `sidenav-brand`, `sidenav-items`, `sidenav-link`, `sidenav-count`, `sidenav-sublink`, `sidenav-subitems` | The nav column (issue 274). `sidenav-brand` is the text wordmark (15px/600, 0.12em) on the app bar's 56px line. `sidenav-link` is 40px tall, 6px radius, 12px padding, a 20px glyph (`home`/`list`/`settings`) before the label; muted at rest, `--surface-strong` fill with `--ink` text on hover and when `.is-active`, and only the active item's glyph takes `--accent`. `sidenav-count` is the Tasks item's review-count pill (`--surface-strong`, 12px/600, tabular-nums), hidden at 0 and off `/tasks*`; it is `aria-hidden` and the link's `aria-label` speaks it ("Tasks, 12 tasks need review"). `sidenav-sublink.is-active` marks the settings section; the Settings tree opens with Overview (`/settings`, end-matched), which owns `aria-current="page"` there — the parent Settings link is lit but always `aria-current="false"` |
+| Sidenav task tree | `sidenav-preview`, `sidenav-task`, `sidenav-task-title`, `sidenav-task-summary`, `sidenav-task-author`, `sidenav-newtask`, `sidenav-section`, `sidenav-empty` | Task rows under the nav, 13px; the title alone clips. The whole preview is one `<details open className="sidenav-preview">` whose `<summary>` is `sidenav-section` (the count line, 12px/600 muted, native marker); its open state is SideNav's local state, never stored. An organization with no tasks gets the plain `sidenav-empty` sentence and no disclosure |
 | Status dots | `sidenav-dot`, `sidenav-dot-running`, `sidenav-dot-stopping`, `sidenav-dot-paused`, `sidenav-dot-failed`, `sidenav-dot-done`, `sidenav-dot-review` | Task state as one painted pixel, a lookup on `taskTone`; running/stopping breathe (halo via `lamp-glow`); review (a success the user has not closed) is `--accent` |
-| App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: sticky, raised, no `h1`; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
+| App bar | `appbar`, `appbar-trigger`, `appbar-brand`, `appbar-org`, `appbar-actions` | The global chrome row: 56px, sticky, `--surface` with a `--line` bottom edge, no `h1`; one appearance control (`ThemeSelector`), no second toggle; org selector and account menu end-aligned. The trigger (`aria-controls="mobile-nav"`) and the brand reveal at ≤900px, where the org moves into the drawer |
 | Page header | `page-header`, `page-header-eyebrow`, `page-header-leading`, `page-header-description`, `page-header-meta`, `page-header-actions` | The routed page's one `h1` and its slots: eyebrow, title + description lead, meta and actions trail (issue 159) |
 
 `PageHeader` is the page-heading primitive and the one-`h1` rule's enforcer (issue 159): every
@@ -362,7 +362,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Dialog | `dialog`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI dialog shell every dialog renders into: the layer carries the z-index policy (dialogs 40, popovers 30), the backdrop div uses `--overlay`, the positioner centers the panel. `dialog` is the panel itself — raised, the `--line-strong` edge, 8px radius, the popovers' shadow, 24px padding, 560px at most, its own scroll inside the viewport, full width with 16px padding at ≤640px; a dialog's own class (`picker`, `task-remove`, `unsaved`, `range-dialog`) only narrows it |
-| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `mobile-nav-org` | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the picker's `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link`/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
+| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `mobile-nav-org` | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the picker's `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link` (glyphs included, never the count pill)/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
 
 #### Icons
 
@@ -490,10 +490,10 @@ Helpers with no markup: `env-raw.ts` is the `.env` raw-editor parser the env pan
 | `AppBar.tsx` | appbar, appearance, org, user-menu-button |
 | `AppShell.tsx` | shell, page, skip-link, appbar, mobile-nav |
 | `DraftReturnBanner.tsx` | banner-info |
-| `Icon.tsx` | icon — the foundation glyph set (below); no caller yet, the lanes consume it |
+| `Icon.tsx` | icon — the foundation glyph set (below); `NavItems.tsx` draws the nav glyphs, the lanes consume the rest |
 | `KeyValues.tsx` | kv |
 | `MobileNavDialog.tsx` | mobile-nav, sidenav, org |
-| `NavItems.tsx` | sidenav — the nav links both `SideNav.tsx` and `MobileNavDialog.tsx` render |
+| `NavItems.tsx` | sidenav, sidenav-count, icon — the nav links both `SideNav.tsx` and `MobileNavDialog.tsx` render |
 | `OrgSelector.tsx` | org, selector |
 | `PageHeader.tsx` | page-header |
 | `RelativeTime.tsx` | none — renders a `<time>` element only |

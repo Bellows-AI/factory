@@ -69,6 +69,17 @@ describe('AppShell', () => {
         expect(html.indexOf('appbar-trigger')).toBeLessThan(html.indexOf('appbar-actions'));
     });
 
+    it('draws the nav glyphs, carries one appearance control, and no count pill off the tasks area', () => {
+        // #274: the one appearance control is the existing ThemeSelector — no second toggle — and
+        // the review pill needs the tasks poll, which does not run on the dashboard.
+        const html = renderShell('/');
+        const nav = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'));
+        const NAV_ITEM_COUNT = 3;
+        expect(nav.match(/class="icon"/g) ?? []).toHaveLength(NAV_ITEM_COUNT);
+        expect(html).not.toContain('sidenav-count');
+        expect(html.match(/class="theme-field"/g) ?? []).toHaveLength(1);
+    });
+
     it('publishes the session check as loading, and mounts the draft store above the page', () => {
         let shell: ShellContext | null = null;
         let store: ComposerDraftStore | null = null;

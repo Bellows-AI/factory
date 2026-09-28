@@ -17,14 +17,31 @@ interface BiomeResult {
     stderr: string;
 }
 
+// A `biome check` is the suite's heaviest kind of spawn: most of its time is the up-front project
+// scan, which alone can exceed the shared 30s budget under a full run's contention whatever the
+// path argument (measured: ~29s for driver/src on an idle 5-core runner). Every check spawn gets
+// its own longer allowance rather than raising the global one for every other, far lighter test.
+const BIOME_CHECK_TIMEOUT_MS = 120_000;
+
 // Asynchronous on purpose, never spawnSync: a tree-wide pass takes over a minute on a contended
 // box, and blocking the worker's event loop that long times out every vitest RPC in flight
 // ("Timeout calling onTaskUpdate" — birpc's fixed 60s). Every test still passes, but the run
 // reports unhandled errors and exits 1. Output is collected unbounded, so a tree-wide format
 // drift's per-file diff reaches the failure message whole.
+//
+// Its own process group, killed whole at the check budget: `bin/biome` is a node wrapper around
+// the native binary, so killing the wrapper alone leaves the native check running — an orphan
+// that eats the CPU every later test in the run needs.
 const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}): Promise<BiomeResult> =>
     new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [biomeBin(), ...args], { cwd: options.cwd ?? root });
+        const child = spawn(process.execPath, [biomeBin(), ...args], { cwd: options.cwd ?? root, detached: true });
+        const deadline = setTimeout(() => {
+            try {
+                process.kill(-child.pid!, 'SIGKILL');
+            } catch {
+                // Already gone.
+            }
+        }, BIOME_CHECK_TIMEOUT_MS);
         let stdout = '';
         let stderr = '';
         child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
@@ -34,7 +51,10 @@ const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}
             stderr += chunk;
         });
         child.on('error', reject);
-        child.on('close', (status) => resolve({ status, stdout, stderr }));
+        child.on('close', (status) => {
+            clearTimeout(deadline);
+            resolve({ status, stdout, stderr });
+        });
         child.stdin.end(options.input);
     });
 
@@ -86,18 +106,22 @@ describe('biome', () => {
      * the suite's heaviest single operation — running a second one here timed out under the
      * contention of a full run while passing in isolation.
      */
-    it('runs every plugin without a compile error', async () => {
-        const result = await runBiome(['check', 'driver/src', '--reporter=json', '--max-diagnostics=2000']);
-        expect(result.stdout, `biome printed no JSON report:\n${result.stderr}`).not.toBe('');
-        const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
-        const errored = (report.diagnostics ?? []).filter(
-            (d) => d.category === 'plugin' && /errored:/.test(d.message ?? '')
-        );
-        expect(
-            errored.map((d) => d.message),
-            'a lint plugin failed to compile'
-        ).toEqual([]);
-    });
+    it(
+        'runs every plugin without a compile error',
+        async () => {
+            const result = await runBiome(['check', 'driver/src', '--reporter=json', '--max-diagnostics=2000']);
+            expect(result.stdout, `biome printed no JSON report:\n${result.stderr}`).not.toBe('');
+            const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
+            const errored = (report.diagnostics ?? []).filter(
+                (d) => d.category === 'plugin' && /errored:/.test(d.message ?? '')
+            );
+            expect(
+                errored.map((d) => d.message),
+                'a lint plugin failed to compile'
+            ).toEqual([]);
+        },
+        BIOME_CHECK_TIMEOUT_MS
+    );
 
     it('exposes the lint and format scripts and an exact-pinned biome devDependency', () => {
         const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -119,11 +143,6 @@ describe('biome', () => {
         expect(`${result.stdout}${result.stderr}`).not.toBe('');
     });
 
-    // A tree-wide `biome check` is the suite's heaviest single spawn — it alone can take longer
-    // than the file's default budget under the contention the shared testTimeout already absorbs
-    // for everything else (vitest.config.ts), so it gets its own longer allowance rather than
-    // raising the global one for every other, far lighter test.
-    const BIOME_CHECK_TIMEOUT_MS = 120_000;
     it(
         'passes biome check on the repository',
         async () => {

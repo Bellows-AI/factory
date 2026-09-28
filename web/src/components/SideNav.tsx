@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import type { TaskNavigation, TaskSummary } from '../api/useTasks.js';
 import { PRODUCT_NAME } from '../brand.js';
-import { NAV_ITEMS } from '../nav-model.js';
-import { sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree.js';
+import { NAV_ITEMS, navCount } from '../nav-model.js';
+import { type SidenavPreview, sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree.js';
 import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
 
 /**
@@ -26,6 +27,11 @@ import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
  *
  * The one non-task row is the New task link, pinned above the preview rows: it opens the composer
  * (`/tasks/new`) and is not a task, so the ordering can never slide a fresh task above it.
+ *
+ * The whole preview is one disclosure (issue 274) whose summary is the count line, open by default. Its
+ * open state is held here, in SideNav, which the shell keeps mounted — so a collapse survives
+ * in-app navigation — and nowhere else: no storage, a reload opens it again. The Tasks item itself
+ * carries the review count as a pill, spoken through the link's name (see `NavItemLink`).
  *
  * `onNavigate` (issue 160) fires on every link activation so the mobile drawer can close itself
  * after navigation. On desktop the drawer is closed and the call is a no-op, so the persistent
@@ -72,14 +78,55 @@ function TaskRow({ task, onNavigate }: { task: TaskSummary; onNavigate?: (() => 
     );
 }
 
-/** The org-wide counts as one compact line, zero-valued clauses omitted. */
+/** The org-wide counts as one compact line, zero-valued clauses omitted — the preview's summary. */
 function CountLine({ navigation }: { navigation: TaskNavigation }) {
     const { running, review } = navigation.counts;
     const clauses: string[] = [];
     if (running > 0) clauses.push(`Running (${running})`);
     if (review > 0) clauses.push(`Need review (${review})`);
-    if (clauses.length === 0) return <p className="sidenav-section">All caught up</p>;
-    return <p className="sidenav-section">{clauses.join(' · ')}</p>;
+    return (
+        <summary className="sidenav-section">{clauses.length === 0 ? 'All caught up' : clauses.join(' · ')}</summary>
+    );
+}
+
+/** The task preview under the Tasks item: one disclosure, or a sentence when there is nothing yet. */
+function TaskPreview({
+    navigation,
+    preview,
+    open,
+    onToggle,
+    onNavigate,
+}: {
+    navigation: TaskNavigation;
+    preview: SidenavPreview;
+    open: boolean;
+    onToggle: (open: boolean) => void;
+    onNavigate?: (() => void) | undefined;
+}) {
+    const { running, review, past } = navigation.counts;
+    // Nothing to collapse, so no disclosure.
+    if (running === 0 && review === 0 && past === 0) return <p className="sidenav-empty">No tasks yet</p>;
+    return (
+        <details className="sidenav-preview" open={open} onToggle={(event) => onToggle(event.currentTarget.open)}>
+            <CountLine navigation={navigation} />
+            <NewTaskLink onNavigate={onNavigate} />
+            <ul className="sidenav-subitems">
+                {preview.rows.map((task) => (
+                    <TaskRow key={task.id} task={task} onNavigate={onNavigate} />
+                ))}
+            </ul>
+            {preview.moreReview > 0 ? (
+                // Plain links, not NavLinks: they are actions into filtered views, not addresses,
+                // so none of them claims aria-current.
+                <Link to="/tasks?state=review" className="sidenav-sublink" onClick={onNavigate}>
+                    +{preview.moreReview} more need review
+                </Link>
+            ) : null}
+            <Link to="/tasks" className="sidenav-sublink" onClick={onNavigate}>
+                View all tasks
+            </Link>
+        </details>
+    );
 }
 
 export function SideNav({
@@ -97,6 +144,7 @@ export function SideNav({
     const openTask = pathname.match(/^\/tasks\/([^/]+)/)?.[1] ?? null;
     const activeId = openTask === 'new' ? null : openTask;
     const preview = sidenavPreview(navigation, activeId);
+    const [previewOpen, setPreviewOpen] = useState(true);
 
     return (
         <nav className="sidenav" aria-label="Primary">
@@ -104,38 +152,20 @@ export function SideNav({
             <ul className="sidenav-items">
                 {NAV_ITEMS.map((item) => (
                     <li key={item.to}>
-                        <NavItemLink item={item} pathname={pathname} onNavigate={onNavigate} />
+                        <NavItemLink item={item} count={navCount(item, navigation)} onNavigate={onNavigate} />
                         {item.to === '/settings' && onSettings ? (
                             <ul className="sidenav-subitems">
                                 <SettingsSectionItems onNavigate={onNavigate} />
                             </ul>
                         ) : null}
                         {item.to === '/tasks' && navigation !== null ? (
-                            navigation.counts.running === 0 &&
-                            navigation.counts.review === 0 &&
-                            navigation.counts.past === 0 ? (
-                                <p className="sidenav-empty">No tasks yet</p>
-                            ) : (
-                                <>
-                                    <CountLine navigation={navigation} />
-                                    <NewTaskLink onNavigate={onNavigate} />
-                                    <ul className="sidenav-subitems">
-                                        {preview.rows.map((task) => (
-                                            <TaskRow key={task.id} task={task} onNavigate={onNavigate} />
-                                        ))}
-                                    </ul>
-                                    {preview.moreReview > 0 ? (
-                                        // Plain links, not NavLinks: they are actions into filtered
-                                        // views, not addresses, so none of them claims aria-current.
-                                        <Link to="/tasks?state=review" className="sidenav-sublink" onClick={onNavigate}>
-                                            +{preview.moreReview} more need review
-                                        </Link>
-                                    ) : null}
-                                    <Link to="/tasks" className="sidenav-sublink" onClick={onNavigate}>
-                                        View all tasks
-                                    </Link>
-                                </>
-                            )
+                            <TaskPreview
+                                navigation={navigation}
+                                preview={preview}
+                                open={previewOpen}
+                                onToggle={setPreviewOpen}
+                                onNavigate={onNavigate}
+                            />
                         ) : null}
                     </li>
                 ))}

@@ -3,6 +3,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { SideNav } from '../src/components/SideNav.js';
 import type { TaskNavigation, TaskSummary } from '../src/api/useTasks.js';
+import { Icon } from '../src/components/Icon.js';
+import { NAV_ICON_SIZE } from '../src/components/NavItems.js';
 
 /**
  * `MemoryRouter` rather than a browser router: this suite has no DOM, and a router that reads
@@ -16,6 +18,14 @@ const render = (path: string, navigation: TaskNavigation | null = null) =>
             <SideNav navigation={navigation} />
         </MemoryRouter>
     );
+
+/** The one `<a …>…</a>` whose text contains `label` — attribute order is React's, not the test's. */
+function anchorWith(html: string, label: string): string {
+    const anchors = html.match(/<a [^>]*>.*?<\/a>/g) ?? [];
+    const found = anchors.find((a) => a.replace(/<[^>]*>/g, '').includes(label));
+    if (found === undefined) throw new Error(`no link labelled ${label}`);
+    return found;
+}
 
 let seq = 0;
 const UUID_SUFFIX_WIDTH = 12;
@@ -109,15 +119,43 @@ describe('SideNav', () => {
         expect(render('/settings/workspace')).toContain('aria-current="page"');
     });
 
-    it('marks exactly the parent Settings link on the overview itself (#180)', () => {
-        // /settings is a real page now: the parent is current, no section is, and the tree still
-        // expands so every section is one click away.
+    it('on /settings the Overview child is the one page, and the parent is only lit (#274)', () => {
         const html = render('/settings');
         expect(html.match(/aria-current="page"/g) ?? []).toHaveLength(1);
-        expect(html).toContain('sidenav-link is-active');
-        expect(html).not.toContain('sidenav-sublink is-active');
+        const overview = anchorWith(html, 'Overview');
+        expect(overview).toContain('sidenav-sublink is-active');
+        expect(overview).toContain('aria-current="page"');
+        const parent = anchorWith(html, 'Settings');
+        expect(parent).toContain('sidenav-link is-active');
+        expect(parent).toContain('aria-current="false"');
+        // The tree still expands, so every section is one click away.
         expect(html).toContain('href="/settings/organization"');
         expect(html).toContain('href="/settings/executors"');
+    });
+
+    it('renders Overview first in the Settings tree, and only inside settings', () => {
+        const inside = render('/settings/workspace');
+        const overview = inside.indexOf('>Overview</a>');
+        expect(overview).toBeGreaterThan(-1);
+        expect(overview).toBeLessThan(inside.indexOf('href="/settings/organization"'));
+        // End-matched: a section page does not light the overview.
+        expect(anchorWith(inside, 'Overview')).not.toContain('is-active');
+        expect(render('/')).not.toContain('Overview');
+    });
+
+    it('draws the home, list and settings glyphs at nav size, each ahead of its label', () => {
+        const html = render('/');
+        let from = 0;
+        for (const [name, label] of [
+            ['home', 'Dashboard'],
+            ['list', 'Tasks'],
+            ['settings', 'Settings'],
+        ] as const) {
+            const glyph = html.indexOf(renderToStaticMarkup(<Icon name={name} size={NAV_ICON_SIZE} />), from);
+            expect(glyph).toBeGreaterThan(-1);
+            expect(glyph).toBeLessThan(html.indexOf(label, glyph));
+            from = glyph + 1;
+        }
     });
 
     it('marks the current section visually on both levels, but only the leaf as the page', () => {
@@ -165,6 +203,33 @@ describe('SideNav task preview', () => {
         const empty = render('/tasks', navigation([], []));
         expect(empty).toContain('No tasks yet');
         expect(empty).not.toContain('New task');
+        // Nothing to collapse, so no disclosure either.
+        expect(empty).not.toContain('<details');
+    });
+
+    it('wraps the whole preview in one open disclosure whose summary is the count line', () => {
+        const REVIEW_COUNT = 9;
+        const html = render(
+            '/tasks',
+            navigation([summary(running())], [summary(), summary()], { running: 1, review: REVIEW_COUNT, past: 0 })
+        );
+        expect(html.match(/<details/g) ?? []).toHaveLength(1);
+        expect(html).toMatch(/<details[^>]*class="sidenav-preview"[^>]*>/);
+        expect(html).toMatch(/<details[^>]*open=""/);
+        expect(html).toContain('<summary class="sidenav-section">Running (1) · Need review (9)</summary>');
+        const start = html.indexOf('<details');
+        const end = html.indexOf('</details>');
+        for (const inside of ['<summary', 'New task', 'sidenav-task-title', 'more need review', 'View all tasks']) {
+            const at = html.indexOf(inside);
+            expect(at).toBeGreaterThan(start);
+            expect(at).toBeLessThan(end);
+        }
+    });
+
+    it('summarizes a past-only organization as all caught up', () => {
+        const PAST_COUNT = 3;
+        const html = render('/tasks', navigation([], [], { running: 0, review: 0, past: PAST_COUNT }));
+        expect(html).toContain('<summary class="sidenav-section">All caught up</summary>');
     });
 
     it('holds five rows hard: running first, then the newest needs-review, never past', () => {
@@ -263,6 +328,40 @@ describe('SideNav task preview', () => {
         expect(html).not.toContain('sidenav-subitems');
         expect(html).not.toContain('sidenav-section');
         expect(html).not.toContain('No tasks yet');
+        expect(html).not.toContain('<details');
+    });
+});
+
+describe('SideNav review-count pill', () => {
+    it('shows the review count in an aria-hidden pill and speaks it in the Tasks link name', () => {
+        const REVIEW_COUNT = 12;
+        const html = render(
+            '/tasks',
+            navigation([summary(running())], [], { running: 1, review: REVIEW_COUNT, past: 0 })
+        );
+        expect(html.match(/sidenav-count/g) ?? []).toHaveLength(1);
+        expect(html).toContain('<span class="sidenav-count" aria-hidden="true">12</span>');
+        const tasks = anchorWith(html, 'Tasks');
+        expect(tasks).toContain('aria-label="Tasks, 12 tasks need review"');
+        expect(tasks).toContain('sidenav-count');
+    });
+
+    it('speaks a single review task in the singular', () => {
+        const html = render('/tasks', navigation([], [summary()]));
+        expect(html).toContain('aria-label="Tasks, 1 task needs review"');
+    });
+
+    it('hides the pill, and the extra name, at zero and with no navigation', () => {
+        const RUNNING_COUNT = 2;
+        const zero = render(
+            '/tasks',
+            navigation([summary(running())], [], { running: RUNNING_COUNT, review: 0, past: 0 })
+        );
+        const none = render('/', null);
+        for (const html of [zero, none]) {
+            expect(html).not.toContain('sidenav-count');
+            expect(html).not.toContain('aria-label="Tasks');
+        }
     });
 });
 

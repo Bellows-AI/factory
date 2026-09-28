@@ -222,14 +222,20 @@ test.describe('the desktop shell', () => {
         }
     });
 
-    test('the persistent nav holds 240px and the app bar sticks without an h1', async ({ page }) => {
+    test('the persistent nav holds 224px and the 56px app bar sticks without an h1', async ({ page }) => {
         await page.goto('/');
         const nav = page.locator('nav[aria-label="Primary"]');
         await expect(nav).toBeVisible();
-        expect((await nav.boundingBox())?.width).toBe(240);
+        expect((await nav.boundingBox())?.width).toBe(224);
+        // Every primary item is the 40px row (issue 274), glyph included.
+        for (const link of await nav.locator('.sidenav-link').all()) {
+            expect((await link.boundingBox())?.height).toBe(40);
+            await expect(link.locator('.icon')).toHaveCount(1);
+        }
 
         const bar = page.locator('.appbar');
         await expect(bar).toBeVisible();
+        expect((await bar.boundingBox())?.height).toBe(56);
         expect(await bar.locator('h1').count()).toBe(0);
 
         // Scroll the tallest page to the bottom: the bar must still sit at the top edge.
@@ -274,6 +280,87 @@ test.describe('the desktop shell', () => {
             counts.some((count) => count > 5),
             `one section counts past the cap: ${headers.join(', ')}`
         ).toBe(true);
+    });
+
+    test('keyboard alone reaches Tasks, reads its review count, and folds the preview', async ({ page }) => {
+        await page.goto('/');
+        await page.locator('.skip-link').waitFor({ state: 'attached' });
+        const tasks = page.locator('.sidenav-link', { hasText: 'Tasks' });
+        // Tab from the top until the Tasks link holds focus, bounded so a lost focus order fails
+        // here rather than looping.
+        for (let i = 0; i < 10; i += 1) {
+            await page.keyboard.press('Tab');
+            if (await tasks.evaluate((el) => el === document.activeElement)) break;
+        }
+        await expect(tasks).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL('/tasks');
+        await expect(tasks).toHaveAttribute('aria-current', 'page');
+
+        // The seed leaves tasks awaiting review: the pill shows the number, the name speaks it.
+        const summary = page.locator('summary.sidenav-section');
+        await expect(summary).toContainText(/Need review \(\d+\)/);
+        // textContent, not innerText: the summary is uppercased by CSS.
+        const review = Number((await summary.textContent())!.match(/Need review \((\d+)\)/)![1]);
+        await expect(tasks.locator('.sidenav-count')).toHaveText(String(review));
+        await expect(tasks.locator('.sidenav-count')).toHaveAttribute('aria-hidden', 'true');
+        await expect(tasks).toHaveAttribute(
+            'aria-label',
+            `Tasks, ${review} task${review === 1 ? ' needs' : 's need'} review`
+        );
+
+        // The summary is a keyboard control: Enter folds the preview and unfolds it again.
+        const preview = page.locator('details.sidenav-preview');
+        await summary.focus();
+        await page.keyboard.press('Enter');
+        await expect(preview).not.toHaveAttribute('open', '');
+        await expect(page.locator('.sidenav-task').first()).toBeHidden();
+        await page.keyboard.press('Enter');
+        await expect(preview).toHaveAttribute('open', '');
+        await expect(page.locator('.sidenav-task').first()).toBeVisible();
+    });
+
+    test('on /settings the Overview item is the one current page', async ({ page }) => {
+        const nav = page.locator('nav[aria-label="Primary"]');
+        const settings = nav.locator('.sidenav-link', { hasText: 'Settings' });
+        for (const [path, label] of [
+            ['/settings', 'Overview'],
+            ['/settings/workspace', 'Workspace'],
+        ] as const) {
+            await page.goto(path);
+            const current = nav.locator('[aria-current="page"]');
+            await expect(current).toHaveCount(1);
+            await expect(current).toHaveText(label);
+            await expect(settings).toHaveAttribute('aria-current', 'false');
+            await expect(settings).toHaveClass(/is-active/);
+        }
+    });
+
+    test('shell screenshots at 1440, 1024 and 390 in both themes', async ({ page }) => {
+        for (const width of [1440, 1024, 390] as const) {
+            await page.setViewportSize({ width, height: 900 });
+            for (const theme of ['dark', 'light'] as const) {
+                // The System preference follows the emulated scheme, and survives each goto.
+                await page.emulateMedia({ colorScheme: theme });
+                await page.goto('/tasks');
+                await settle(page, '/tasks');
+                if (width > 900) await expect(page.locator('.sidenav-count')).toBeVisible();
+                await page.screenshot({ path: `${SHOTS}/shell-${theme}-${width}.png` });
+                if (width > 900) continue;
+                // At 390 the drawer is the navigation: open it on /settings, where the Overview
+                // item is the current page, and capture the restyled panel.
+                await page.goto('/settings');
+                await page.locator('.appbar-trigger').click();
+                const panel = page.locator('.mobile-nav');
+                await expect(panel).toBeVisible();
+                await expect(panel.locator('.sidenav-link .icon')).toHaveCount(3);
+                await expect(panel.locator('[aria-current="page"]')).toHaveText('Overview');
+                await expect(panel.locator('.sidenav-count')).toHaveCount(0);
+                await page.screenshot({ path: `${SHOTS}/drawer-settings-${theme}-${width}.png` });
+                await page.keyboard.press('Escape');
+                await expect(panel).toHaveCount(0);
+            }
+        }
     });
 });
 

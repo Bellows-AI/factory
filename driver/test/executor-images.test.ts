@@ -283,7 +283,8 @@ interface Sandbox {
 // A PATH-shimmed directory with a stub for each image's CLI name, plus the env the
 // entrypoints expect: WORKDIR must exist (they exit 2 otherwise), HOME and CLAUDE_CONFIG_DIR
 // point at the sandbox, and the container-only blocks — /opt/claude-home seeding, the OTEL
-// rewrites — are all skipped because their guards are absent locally.
+// rewrites — are all skipped: the sandbox carries its own settings.json and none of the
+// CONTAINER_GUARD_NAMES, so their guards stay false even when the suite runs inside a runner.
 const EXECUTABLE_MODE = 0o755;
 
 const makeSandbox = (): Sandbox => {
