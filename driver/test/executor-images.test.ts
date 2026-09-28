@@ -259,12 +259,13 @@ cat > "$STUB_DIR/acli-stdin"
 exit "\${ACLI_STATUS:-0}"
 `;
 const ATLASSIAN_NAMES = ['ATLASSIAN_SITE', 'ATLASSIAN_EMAIL', 'ATLASSIAN_API_TOKEN'];
-/**
- * The names the driver hands a real runner. When this suite itself runs inside one, inheriting
- * them points the entrypoint at the live session: the transcript dir replaces the sandbox's
- * CLAUDE_CONFIG_DIR, and the other two patch the runner's own settings files.
- */
-const RUNNER_ONLY_NAMES = ['FACTORY_TRANSCRIPT_DIR', 'CLAUDE_CODE_CONFIG_CONTENT', 'OTEL_EXPORTER_OTLP_ENDPOINT'];
+const CONTAINER_GUARD_NAMES = [
+    'FACTORY_TRANSCRIPT_DIR',
+    'CLAUDE_CODE_CONFIG_CONTENT',
+    'OTEL_EXPORTER_OTLP_ENDPOINT',
+    'XDG_DATA_HOME',
+    'DEFAULT_BRANCH',
+];
 const EXIT_TIMEOUT_MS = 10_000;
 const STARTED_TIMEOUT_MS = 5_000;
 /** The stub CLI's own chosen exit status, for the "re-raises it" assertion. */
@@ -283,7 +284,7 @@ interface Sandbox {
 // entrypoints expect: WORKDIR must exist (they exit 2 otherwise), HOME and CLAUDE_CONFIG_DIR
 // point at the sandbox, and the container-only blocks — /opt/claude-home seeding, the OTEL
 // rewrites — are all skipped: the sandbox carries its own settings.json and none of the
-// runner-only names, so their guards stay false even when the suite runs inside a runner.
+// CONTAINER_GUARD_NAMES, so their guards stay false even when the suite runs inside a runner.
 const EXECUTABLE_MODE = 0o755;
 
 const makeSandbox = (): Sandbox => {
@@ -300,9 +301,14 @@ const makeSandbox = (): Sandbox => {
     writeFileSync(join(bin, 'acli'), ACLI_STUB);
     chmodSync(join(bin, 'acli'), EXECUTABLE_MODE);
     const inherited = { ...process.env };
-    for (const name of [...ATLASSIAN_NAMES, ...RUNNER_ONLY_NAMES]) delete inherited[name];
-    // The seed guard: a runner image bakes /opt/claude-home, and a sandbox with no settings.json
-    // would be seeded from it — replacing the .claude.json a test just wrote.
+    for (const name of ATLASSIAN_NAMES) delete inherited[name];
+    // The container-only guards are absent on a dev host but present when the suite itself runs
+    // inside an executor (a board task): inherited, they would move CLAUDE_CONFIG_DIR onto the
+    // real transcript store and patch its settings. A test that wants one passes it explicitly.
+    for (const name of CONTAINER_GUARD_NAMES) delete inherited[name];
+    // Same story for the /opt/claude-home seed, which is keyed on the filesystem: a present
+    // settings.json marks the config dir as already seeded, so the seed never overwrites the
+    // .claude.json a test planted.
     writeFileSync(join(root, 'settings.json'), '{}\n');
     return {
         bin,

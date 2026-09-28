@@ -8,7 +8,7 @@ import { beginGates, releaseGateSession, runDeclaredGates } from './loop-gates.j
 import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-attempt.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
-import type { PublishResult, SyncResult } from './publish.js';
+import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 
@@ -111,6 +111,20 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | nu
     }
     const synced = syncedOut.value;
     if (!synced.ok) {
+        if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
+            /*
+             * Lock contention on the shared checkout (issue #307) is infrastructure, not a
+             * verdict: the script already waited out the checkout's sync lock and retried the
+             * fetch, so reporting `failed` here would spend the RUN on what a re-claim spends
+             * an attempt on. The claim goes back to the board — the lease expires and the job
+             * is offered again, exactly like a sync that threw — and maxAttempts governs. The
+             * kubernetes checkout claim was already released inside syncCheckout before it
+             * answered, the same discipline the ordinary sync-failure report below relies on.
+             */
+            await settle();
+            log(`job ${job.id}: checkout sync was lock-blocked, leaving it to the lease: ${synced.reason}`);
+            return STOOD_DOWN;
+        }
         await settle();
         log(`job ${job.id}: checkout sync failed: ${synced.reason}`);
         await report(rt, job, {

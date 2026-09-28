@@ -1588,6 +1588,27 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // Issue #307: lock contention on the shared checkout is infrastructure, not a verdict. The
+    // script's marker (`transient worktree sync:` — a wait-out on the checkout's sync lock, or a
+    // fetch that kept losing the refs' locks to a concurrent git) sends the claim back to the
+    // board instead of failing the run: an attempt is spent at the next claim, so maxAttempts
+    // governs. The non-transient refusal below keeps reporting `failed`.
+    it('leaves a job to its lease when the sync reports a transient lock failure', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok(), {
+            sync: {
+                ok: false,
+                reason:
+                    'transient worktree sync: the checkout lock /workspaces/bellows/x/factory/.git/factory-sync.lock ' +
+                    'is still held after 120000ms — a concurrent sync of this clone is running; the claim should be retried',
+            },
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toEqual([]);
+    });
+
     /*
      * After a kubernetes syncCheckout, the runner HOLDS the checkout claim; the loop's terminal
      * pre-run refusals complete the job failed WITHOUT runner.run, so run()'s finally — the

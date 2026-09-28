@@ -11,11 +11,11 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const biomeBin = () =>
     join(dirname(createRequire(import.meta.url).resolve('@biomejs/biome/package.json')), 'bin', 'biome');
 
-// A tree-wide format drift prints a diff per file; the 1 MiB default would overflow
-// exactly when the failure message matters most.
-const BYTES_PER_KIB = 1024;
-const SPAWN_MAX_BUFFER_MIB = 16;
-const SPAWN_MAX_BUFFER_BYTES = SPAWN_MAX_BUFFER_MIB * BYTES_PER_KIB * BYTES_PER_KIB;
+interface BiomeResult {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+}
 
 // A `biome check` is the suite's heaviest kind of spawn: most of its time is the up-front project
 // scan, which alone can exceed the shared 30s budget under a full run's contention whatever the
@@ -23,56 +23,35 @@ const SPAWN_MAX_BUFFER_BYTES = SPAWN_MAX_BUFFER_MIB * BYTES_PER_KIB * BYTES_PER_
 // its own longer allowance rather than raising the global one for every other, far lighter test.
 const BIOME_CHECK_TIMEOUT_MS = 120_000;
 
-interface BiomeResult {
-    status: number | null;
-    stdout: string;
-    stderr: string;
-}
-
-/**
- * Asynchronous on purpose. A tree-wide check can run past a minute under a full run's contention,
- * and `spawnSync` would hold the vitest worker's event loop for all of it: the worker then cannot
- * answer the runner's RPC, and the run fails on "Timeout calling onTaskUpdate" unhandled errors
- * even when every assertion passes.
- *
- * Its own process group, killed whole at the test's budget: `bin/biome` is a node wrapper around
- * the native binary, so killing the wrapper alone leaves the native check running — an orphan
- * that eats the CPU every later test in the run needs.
- */
+// Asynchronous on purpose, never spawnSync: a tree-wide pass takes over a minute on a contended
+// box, and blocking the worker's event loop that long times out every vitest RPC in flight
+// ("Timeout calling onTaskUpdate" — birpc's fixed 60s). Every test still passes, but the run
+// reports unhandled errors and exits 1. Output is collected unbounded, so a tree-wide format
+// drift's per-file diff reaches the failure message whole.
+//
+// Its own process group, killed whole at the check budget: `bin/biome` is a node wrapper around
+// the native binary, so killing the wrapper alone leaves the native check running — an orphan
+// that eats the CPU every later test in the run needs.
 const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}): Promise<BiomeResult> =>
     new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [biomeBin(), ...args], { cwd: options.cwd ?? root, detached: true });
-        const killGroup = () => {
+        const deadline = setTimeout(() => {
             try {
                 process.kill(-child.pid!, 'SIGKILL');
             } catch {
                 // Already gone.
             }
-        };
-        const deadline = setTimeout(killGroup, BIOME_CHECK_TIMEOUT_MS);
+        }, BIOME_CHECK_TIMEOUT_MS);
         let stdout = '';
         let stderr = '';
-        const collect = (append: (chunk: string) => void) => (chunk: Buffer) => {
-            append(chunk.toString('utf8'));
-            if (stdout.length + stderr.length > SPAWN_MAX_BUFFER_BYTES) {
-                killGroup();
-                reject(new Error(`biome printed more than ${SPAWN_MAX_BUFFER_MIB} MiB`));
-            }
-        };
-        child.stdout.on(
-            'data',
-            collect((chunk) => {
-                stdout += chunk;
-            })
-        );
-        child.stderr.on(
-            'data',
-            collect((chunk) => {
-                stderr += chunk;
-            })
-        );
-        child.once('error', reject);
-        child.once('close', (status) => {
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+            stdout += chunk;
+        });
+        child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+            stderr += chunk;
+        });
+        child.on('error', reject);
+        child.on('close', (status) => {
             clearTimeout(deadline);
             resolve({ status, stdout, stderr });
         });

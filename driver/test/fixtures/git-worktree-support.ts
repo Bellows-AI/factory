@@ -87,6 +87,8 @@ export interface WorktreeFixture {
     branch: () => string;
     work: () => string;
     bare: () => string;
+    /** The env a sync of `root` runs under — the base suites overlay (PATH shims, knobs) on it. */
+    syncEnv: (root?: string) => Record<string, string>;
     sync: (root?: string) => { ok: boolean; reason: string | null };
     /** The restore mode a continuation claim gets (RESTORE=1): no fetch, no rebase. */
     restore: (root?: string) => { ok: boolean; reason: string | null };
@@ -108,20 +110,16 @@ export function setupWorktreeFixture(): WorktreeFixture {
     let work: string;
     let bare: string;
 
-    const sync = (root = ROOT): { ok: boolean; reason: string | null } =>
-        runScript({
-            REPO: clone,
-            WORKTREE: join(dir, 'bellows', USER, '.worktrees', root),
-            BRANCH: `factory/${root}`,
-        });
+    const syncEnv = (root = ROOT): Record<string, string> => ({
+        REPO: clone,
+        WORKTREE: join(dir, 'bellows', USER, '.worktrees', root),
+        BRANCH: `factory/${root}`,
+    });
+
+    const sync = (root = ROOT): { ok: boolean; reason: string | null } => runScript(syncEnv(root));
 
     const restore = (root = ROOT): { ok: boolean; reason: string | null } =>
-        runScript({
-            REPO: clone,
-            WORKTREE: join(dir, 'bellows', USER, '.worktrees', root),
-            BRANCH: `factory/${root}`,
-            RESTORE: '1',
-        });
+        runScript({ ...syncEnv(root), RESTORE: '1' });
 
     const pushToOrigin = (file: string, content: string, message: string): void => {
         writeFileSync(join(work, file), content);
@@ -162,6 +160,7 @@ export function setupWorktreeFixture(): WorktreeFixture {
         branch: () => branch,
         work: () => work,
         bare: () => bare,
+        syncEnv,
         sync,
         restore,
         pushToOrigin,

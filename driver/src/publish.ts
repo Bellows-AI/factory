@@ -128,6 +128,20 @@ export interface SyncResult {
     reason: string | null;
 }
 
+/**
+ * The marker the worktree sync script (scripts/git-worktree.cjs) puts on a refusal that is lock
+ * contention on the shared checkout (issue #307): a wait-out on the checkout's `factory-sync.lock`
+ * until its wait bound, or a fetch that kept losing the refs' locks to a concurrent git past its
+ * retries. Both are transient by nature — a re-claim starts the same sync over, usually against
+ * refs that are current by then — so the loop reads this as infrastructure and leaves the job to
+ * its lease, spending an attempt at the next claim, never as a verdict on the command. Anchored
+ * at the head ON PURPOSE: ordinary refusal reasons splice raw git stderr, whose conflicting file
+ * paths are member-controlled content, and an unanchored match would misroute a terminal
+ * conflict into the retry path. The literal lives in the script too (a .cjs cannot import it),
+ * which is why docker.test.ts pins the marker's presence in the shipped bytes.
+ */
+export const TRANSIENT_SYNC_REASON = /^transient worktree sync:/;
+
 /** What the terminal reclaim answers: ok, whether anything was removed, or the reason it did not. */
 export interface ReclaimResult {
     ok: boolean;

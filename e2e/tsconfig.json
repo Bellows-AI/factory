@@ -3,7 +3,8 @@
     "compilerOptions": {
         "composite": false,
         "noEmit": true,
-        "lib": ["ES2023", "DOM", "DOM.Iterable"]
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx"
     },
-    "include": ["**/*.ts", "../playwright.config.ts"]
+    "include": ["**/*.ts", "**/*.tsx", "../playwright.config.ts"]
 }
