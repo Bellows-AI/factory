@@ -2,10 +2,16 @@ import { useState } from 'react';
 import { inputTokens, type TelemetryStats } from '@factory-ai/core';
 import type { TelemetryMeta } from '../api/useStats.js';
 import { BarChart } from '../charts/BarChart.js';
+import { PAD } from '../charts/scale.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
 
-/** One bucket: the compact treatment keeps a real bar — never one bar stretched across a 900px plot. */
+/** One bucket: the compact treatment keeps a real bar — never one bar stretched across the full plot. */
 const COMPACT = { width: 480, height: 200 };
+/** The main chart's plot height, excluding the axis padding. */
+const MAIN_PLOT_HEIGHT = 360;
+/** The full-width chart: 1120 is roughly the panel's content box at 1440 (sidebar, page and panel
+ * padding removed), so the SVG draws near 1:1 there and the plot reads at its 360px. */
+const MAIN = { width: 1120, height: MAIN_PLOT_HEIGHT + PAD.top + PAD.bottom };
 /** Where `MM-DD` starts within a `YYYY-MM-DD` bucket start — the axis label drops the year. */
 const MONTH_DAY_START_INDEX = 5;
 /** The X-axis's target label count — roughly one label every N/12 bars, whatever N is. */
@@ -33,7 +39,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
         ? 'Input and output tokens by day; sessions use the right axis.'
         : 'Input and output tokens by ISO week; sessions use the right axis.';
     const hasPartial = points.some((p) => p.partial);
-    const dims = points.length === 1 ? COMPACT : { width: 900, height: 280 };
+    const dims = points.length === 1 ? COMPACT : MAIN;
 
     return (
         <TelemetryFrame title="AI token usage" meta={meta}>

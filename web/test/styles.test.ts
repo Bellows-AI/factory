@@ -278,14 +278,26 @@ describe('the stylesheet', () => {
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
 
-    it('stacks each Token usage measure in its own column so figures never collide (#246)', () => {
-        // .usage-measure had no display rule of its own, so its figure/label/cache lines were
-        // inline elements that flowed onto one line and wrapped wherever they happened to break
-        // — the bug #246 reported. This pins the fix so it cannot silently regress.
+    it('lays each metric card out as a 40px icon disc beside its figure (issue 283)', () => {
         const css = stripComments(shippedCss());
-        const body = rules(css).find(([prelude]) => prelude.trim() === '.usage-measure')?.[1] ?? '';
-        expect(body).toMatch(/display:\s*flex/);
-        expect(body).toMatch(/flex-direction:\s*column/);
+        const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
+        expect(body('.usage-group')).toMatch(/flex-direction:\s*row/);
+        expect(body('.usage-disc')).toMatch(/width:\s*40px/);
+        expect(body('.usage-disc')).toMatch(/height:\s*40px/);
+        expect(body('.usage-disc')).toMatch(/border-radius:\s*50%/);
+        expect(body('.usage-caption')).toMatch(/font-size:\s*13px/);
+        // The six-measure grid is gone with its rules.
+        expect(rules(css).some(([prelude]) => /\.usage-(measure|tokens)\b/.test(prelude))).toBe(false);
+    });
+
+    it('sets Usage by user and Recent tasks side by side only from 1200px (issue 283)', () => {
+        const css = stripComments(shippedCss());
+        const wide = css.slice(css.indexOf('@media (min-width: 1200px)'));
+        expect(wide).toMatch(/^@media \(min-width: 1200px\)\s*\{\s*\.two-up\s*\{[^}]*grid-auto-flow:\s*column/);
+        // Stacked, the one track is capped at the container: a bare implicit track sizes to the
+        // widest table and overflows a phone.
+        const stacked = rules(css).find(([prelude]) => prelude.trim() === '.two-up')?.[1] ?? '';
+        expect(stacked).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\)/);
     });
 });
 

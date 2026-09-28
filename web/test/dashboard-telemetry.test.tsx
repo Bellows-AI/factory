@@ -169,11 +169,11 @@ describe('describeRepos', () => {
 describe('page header', () => {
     it('renders exactly one h1 from the header primitive, naming the page and its repos', () => {
         const html = render(READY);
-        // The page's one h1 is the header's (issue 159); the telemetry chrome rides in its slots.
+        // The page's one h1 is the header's (issue 159); the freshness stamp moved into the toolbar.
         expect(html.match(/<h1/g)?.length).toBe(1);
         expect(html).toContain('<h1>Usage overview</h1>');
         expect(html).toContain('page-header-description');
-        expect(html).toContain('page-header-meta');
+        expect(html).not.toContain('page-header-meta');
         expect(html).not.toContain('page-header-actions');
         expect(html).toContain('bellows.ai');
         expect(html).not.toContain('AI usage telemetry');
@@ -190,11 +190,47 @@ describe('page header', () => {
 });
 
 describe('analytics toolbar', () => {
-    it('labels the Range, Scope and Repositories groups in one compact row', () => {
+    /** The toolbar panel's own markup, up to the rendered-data summary that follows it. */
+    const toolbar = (html: string) =>
+        html.slice(html.indexOf('class="analytics-toolbar"'), html.indexOf('class="analytics-summary"'));
+
+    it('labels Range and Scope and shows repository coverage as plain text with a dot', () => {
+        const html = toolbar(render(READY));
+        expect(html).toContain('>Range<');
+        expect(html).toContain('>Scope<');
+        // Read-only coverage, exact count: one repo renders as the singular — text, not a selector.
+        const coverage = html.slice(html.indexOf('class="toolbar-coverage"'));
+        expect(coverage.slice(0, coverage.indexOf('</p>'))).toContain('1 repository');
+        expect(coverage.slice(0, coverage.indexOf('</p>'))).not.toContain('<button');
+        expect(html).toContain('toolbar-coverage-dot');
+        expect(html).not.toContain('>Repositories</legend>');
+    });
+
+    it('shows no coverage dot while coverage is unknown', () => {
+        const html = toolbar(render(null));
+        expect(html).toContain('class="toolbar-coverage"');
+        expect(html).toContain('—');
+        expect(html).not.toContain('toolbar-coverage-dot');
+    });
+
+    it('carries the freshness stamp inside the toolbar panel, with a decorative refresh glyph', () => {
+        const html = toolbar(render(READY));
+        const stamp = html.slice(html.indexOf('class="updated-at"'));
+        expect(stamp).toContain('dateTime="2026-08-21T12:00:00.000Z"');
+        const beforeText = stamp.slice(0, stamp.indexOf('Updated'));
+        expect(beforeText).toContain('<svg class="icon"');
+        expect(beforeText).toContain('aria-hidden="true"');
+        // A glyph for the automatic poll, never a Refresh control.
+        expect(html).not.toContain('Refresh');
+        expect(toolbar(render(null))).toContain('Not updated yet');
+    });
+
+    it('renders the rendered-data summary after the toolbar panel, not inside it', () => {
         const html = render(READY);
-        for (const label of ['Range', 'Scope', 'Repositories']) expect(html).toContain(label);
-        // Read-only coverage, exact count: one repo renders as the singular.
-        expect(html).toContain('1 repository');
+        expect(toolbar(html)).not.toContain('Aug 14–21 · Organization · 1 repository');
+        // The panel closes before the summary opens: the sentence sits under the bar, not in it.
+        expect(toolbar(html).endsWith('</div><p ')).toBe(true);
+        expect(html).toContain('<p class="analytics-summary" aria-live="polite">');
     });
 
     it('renders a read-only Organization scope in open mode, never a dead Scope dropdown', () => {
@@ -294,6 +330,22 @@ describe('the shared state model', () => {
         expect(render(null)).toContain('Task board');
         expect(render(READY)).toContain('Task board');
         expect(render(EMPTY)).toContain('Task board');
+    });
+
+    it('pairs Usage by user and Recent tasks in the two-up grid when ready', () => {
+        const html = render(READY);
+        const pair = html.slice(html.indexOf('class="two-up"'));
+        expect(pair).toContain('Usage by user');
+        expect(pair.indexOf('Usage by user')).toBeLessThan(pair.indexOf('Recent tasks'));
+    });
+
+    it('keeps Recent tasks in the two-up grid, alone, whenever Usage by user is absent', () => {
+        for (const data of [null, EMPTY, DISABLED]) {
+            const html = render(data);
+            const pair = html.slice(html.indexOf('class="two-up"'));
+            expect(pair).toContain('Recent tasks');
+            expect(pair).not.toContain('Usage by user');
+        }
     });
 
     it('renders the full telemetry page when the selection is ready', () => {

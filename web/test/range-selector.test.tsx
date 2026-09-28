@@ -111,6 +111,14 @@ describe('RangeSelector', () => {
         expect(html).not.toContain('range-option');
     });
 
+    it('leads the Range trigger with the decorative calendar glyph', () => {
+        const html = render({ ...DEFAULT_RANGE, preset: 'month' });
+        const trigger = html.slice(html.indexOf('id="range-select"'), html.indexOf('</button>'));
+        expect(trigger).toContain('<svg class="icon"');
+        expect(trigger).toContain('aria-hidden="true"');
+        expect(trigger.indexOf('<svg')).toBeLessThan(trigger.indexOf('30 days'));
+    });
+
     it('keeps the custom dates out of the toolbar row entirely', () => {
         const html = render({ preset: 'custom', from: '', to: '' });
         expect(html).not.toContain('type="date"');

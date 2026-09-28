@@ -4,6 +4,21 @@ import { DataTable } from '../components/DataTable.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import type { Job } from '../api/useJobs.js';
 import { tokens, wallClock } from '../format.js';
+import { type TaskTone, taskStatusLabel, taskTone } from '../task-tree.js';
+
+/** Each tone's status pill (plan §1.2): accent is the user's turn, bad a failure, ok a live run,
+ * done parked or finished — the label carries the meaning, the tone only reinforces it. */
+const STATUS_PILL: Record<TaskTone, string> = {
+    none: 'pill',
+    queued: 'pill pill-done',
+    running: 'pill pill-ok',
+    stopping: 'pill pill-done',
+    waiting: 'pill pill-done',
+    review: 'pill pill-accent',
+    failed: 'pill pill-bad',
+    stopped: 'pill pill-done',
+    done: 'pill pill-done',
+};
 
 /** The task's one-line identity: the root command's first non-empty line — the agent's closing
  * summary is outcome text, not task identity. Truncation is visual (a two-line clamp), not a
@@ -24,7 +39,12 @@ const columns = (now: Date | undefined): DataTableColumn<Job>[] => [
         ),
         sortValue: (job) => title(job),
     },
-    { key: 'status', label: 'Status', cell: (job) => job.status, sortValue: (job) => job.status },
+    {
+        key: 'status',
+        label: 'Status',
+        cell: (job) => <span className={STATUS_PILL[taskTone(job)]}>{taskStatusLabel(job)}</span>,
+        sortValue: (job) => taskStatusLabel(job),
+    },
     {
         key: 'author',
         label: 'Author',
@@ -65,7 +85,7 @@ const columns = (now: Date | undefined): DataTableColumn<Job>[] => [
 ];
 
 /**
- * The board's recently completed tasks, newest first — the Task board section of the dashboard.
+ * The board's recently completed tasks, newest first — the dashboard's Recent tasks, marked Task board.
  * This is the board's own audit rows, not the telemetry above: it counts only runs the board
  * ran, it is never filtered by the analytics range or scope, and it says so. The list is
  * bounded at the source — the hook asks the server for eight grouped task rows — and a failed
@@ -74,11 +94,12 @@ const columns = (now: Date | undefined): DataTableColumn<Job>[] => [
  */
 export function RecentTasksPanel({ jobs, error, now }: { jobs: Job[] | null; error: string | null; now?: Date }) {
     return (
-        <section className="panel">
-            <h2 id="task-board-heading">Task board</h2>
-            <p className="muted">
-                Latest finished tasks from the board; analytics range and scope do not filter this list.
-            </p>
+        <section className="panel recent-tasks">
+            <div className="recent-tasks-head">
+                <h2 id="task-board-heading">Recent tasks</h2>
+                <span className="pill pill-done">Task board</span>
+            </div>
+            <p className="muted">Not affected by range or scope</p>
             {error !== null ? <p className="alert">The board could not be read — {error}.</p> : null}
             {jobs === null ? (
                 error === null ? (

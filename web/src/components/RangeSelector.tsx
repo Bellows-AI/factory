@@ -10,6 +10,7 @@ import {
     ListboxOptions,
 } from '@headlessui/react';
 import { useState } from 'react';
+import { Icon } from './Icon.js';
 import { useDownwardAnchor } from '../anchor.js';
 import { rangeText, requestedRange } from '../dashboardSummary.js';
 
@@ -231,6 +232,7 @@ export function RangeSelector({
                 }}
             >
                 <ListboxButton id={RANGE_BUTTON_ID} ref={setReference} className="select-trigger">
+                    <Icon name="calendar" />
                     {rangeLabel(range, now)}
                 </ListboxButton>
                 <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">

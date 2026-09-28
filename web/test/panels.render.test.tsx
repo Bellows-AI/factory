@@ -11,6 +11,7 @@ import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
 import { pct, tokens } from '../src/format.js';
 import { PAD } from '../src/charts/scale.js';
+import { Icon, type IconName } from '../src/components/Icon.js';
 import type { TaskUsageStats } from '@factory-ai/core';
 
 /**
@@ -192,39 +193,80 @@ describe('telemetry panels render', () => {
 });
 
 describe('telemetry panels render — usage summary panel', () => {
-    it('renders four groups and six measures, hierarchy first', () => {
+    /** One metric card's markup, from its disc to the next card. */
+    const card = (html: string, label: string): string => {
+        const at = html.indexOf(`>${label}</span>`);
+        const start = html.lastIndexOf('class="usage-group"', at);
+        const end = html.indexOf('class="usage-group"', at);
+        return html.slice(start, end === -1 ? undefined : end);
+    };
+
+    it('renders four metric cards in order: Sessions, Tokens, Active time, Edit acceptance', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
-        // Four visual groups, six measures: Sessions and Token usage lead, then the two
-        // supporting effectiveness measures. DOM order IS the reading order at every width.
-        for (const label of ['Sessions', 'Token usage', 'Active time', 'Edit acceptance']) {
-            expect(html).toContain(label);
-        }
-        expect(html.indexOf('Sessions')).toBeLessThan(html.indexOf('Token usage'));
-        expect(html.indexOf('Token usage')).toBeLessThan(html.indexOf('Active time'));
-        expect(html.indexOf('Active time')).toBeLessThan(html.indexOf('Edit acceptance'));
+        // DOM order IS the reading order at every width.
+        expect(html.match(/class="usage-group"/g)).toHaveLength(4);
+        expect(html.match(/class="usage-disc/g)).toHaveLength(4);
+        const labels = ['Sessions', 'Total input tokens', 'Active time', 'Edit acceptance'].map((label) =>
+            html.indexOf(`>${label}</span>`)
+        );
+        expect(labels.every((at) => at !== -1)).toBe(true);
+        expect([...labels].sort((x, y) => x - y)).toEqual(labels);
     });
 
-    it('renders total input, cache hit rate and output as separate measures with their own values', () => {
+    it('gives each card its glyph in a disc, edit acceptance on the ok wash', () => {
+        const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
+        const glyphs: [string, IconName][] = [
+            ['Sessions', 'users'],
+            ['Total input tokens', 'layers'],
+            ['Active time', 'clock'],
+            ['Edit acceptance', 'check'],
+        ];
+        for (const [label, name] of glyphs) {
+            expect(card(html, label)).toContain(renderToStaticMarkup(<Icon name={name} size={24} />));
+        }
+        expect(html.match(/usage-disc usage-disc-ok/g)).toHaveLength(1);
+        expect(card(html, 'Edit acceptance')).toContain('usage-disc usage-disc-ok');
+    });
+
+    it('headlines total input, with output, cache hit rate and the three input parts beneath', () => {
         const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
         const t = telemetry.totals.tokens;
         const { total, cacheHitRatio } = inputTokens(t);
-        expect(html).toContain('>Total input</');
-        expect(html).toContain('>Cache hit rate</');
-        expect(html).toContain('>Output</');
-        // Total input is every prompt token — uncached + cache read + cache write — never output.
+        // Total input is every prompt token — uncached + cache read + cache write — never output:
+        // the four token types are never summed into one figure (docs/metrics.md).
         expect(total).toBe((t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheCreation ?? 0));
-        expect(html).toContain(`>${tokens(total)}<`);
-        expect(html).toContain(`>${pct(cacheHitRatio)}<`);
-        expect(html).toContain(`>${tokens(t.output)}<`);
-        // The three parts sit under Total input, and Output carries none of them.
-        const inputMeasure = html.slice(html.indexOf('>Total input</'), html.indexOf('>Cache hit rate</'));
-        expect(inputMeasure).toContain(`${tokens(t.input)} uncached`);
-        expect(inputMeasure).toContain('read from cache');
-        expect(inputMeasure).toContain('written to cache');
-        const outputMeasure = html.slice(html.indexOf('>Output</'));
-        expect(outputMeasure).not.toContain('uncached');
-        expect(outputMeasure).not.toContain('read from cache');
-        expect(outputMeasure).not.toContain('written to cache');
+        const tokensCard = card(html, 'Total input tokens');
+        expect(tokensCard).toContain(`<strong>${tokens(total)}</strong>`);
+        expect(tokensCard).toContain(`${tokens(t.output)} output`);
+        expect(tokensCard).toContain(`${pct(cacheHitRatio)} cache hit rate`);
+        expect(tokensCard).toContain(`${tokens(t.input)} uncached`);
+        expect(tokensCard).toContain('read from cache');
+        expect(tokensCard).toContain('written to cache');
+    });
+
+    it('names each unmeasured token part rather than zeroing it', () => {
+        const unmeasured: TelemetryStats = {
+            ...telemetry,
+            totals: {
+                ...telemetry.totals,
+                tokens: { input: null, output: null, cacheRead: null, cacheCreation: null },
+            },
+        };
+        const tokensCard = card(
+            renderToStaticMarkup(<UsageSummaryPanel telemetry={unmeasured} meta={meta()} />),
+            'Total input tokens'
+        );
+        expect(tokensCard).toContain('<strong>—</strong>');
+        expect(tokensCard).toContain('Output not measured');
+        expect(tokensCard).toContain('Cache hit rate not measured');
+        expect(tokensCard).toContain('Uncached not measured');
+        expect(tokensCard).toContain('Cache read not measured');
+        expect(tokensCard).toContain('Cache write not measured');
+    });
+
+    it('carries no trend, comparison or cost', () => {
+        const html = renderToStaticMarkup(<UsageSummaryPanel telemetry={telemetry} meta={meta()} />);
+        expect(html).not.toMatch(/↑|↓|vs\.? previous|trend|estimated cost|\$/i);
     });
 
     it('carries the required supporting copy for every group', () => {
@@ -511,6 +553,13 @@ describe('token usage series granularity', () => {
         expect(Math.max(...widths)).toBeLessThanOrEqual((width - PAD.left - PAD.right) / QUARTER_PLOT_DIVISOR);
         expect(html).toMatch(/aria-label="[^"]*Total input 12,345/);
         expect(html).toContain('The hatched bucket is a partial period.');
+    });
+
+    it('draws the multi-bucket chart with a 360px plot', () => {
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
+        const [, , height] = html.match(/viewBox="0 0 (\d+) (\d+)"/)!.map(Number);
+        const MAIN_PLOT_HEIGHT = 360;
+        expect(height! - PAD.top - PAD.bottom).toBe(MAIN_PLOT_HEIGHT);
     });
 
     it('keeps the x-axis legible at 92 daily points', () => {
