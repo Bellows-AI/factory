@@ -57,12 +57,44 @@ const render = (jobs: Job[] | null, error: string | null) =>
     );
 
 describe('the task board section', () => {
-    it('carries the Task board heading and the one-sentence scope note', () => {
+    it('heads the section Recent tasks with a Task board pill and the range/scope caption', () => {
         const html = render([job({})], null);
-        expect(html).toContain('Task board');
-        expect(html).toContain('Latest finished tasks from the board; analytics range and scope do not filter this');
-        // The old multi-sentence explanation is gone.
-        expect(html).not.toContain('closing words');
+        expect(html).toContain('<h2 id="task-board-heading">Recent tasks</h2>');
+        expect(html).toContain('<span class="pill pill-done">Task board</span>');
+        expect(html).toContain('Not affected by range or scope');
+        // The old sentence is gone.
+        expect(html).not.toContain('Latest finished tasks from the board');
+    });
+
+    it.each([
+        ['succeeded', {}, 'pill pill-accent', 'Succeeded · Needs review'],
+        ['failed', { status: 'failed' }, 'pill pill-bad', 'Failed · Needs review'],
+        ['dead', { status: 'dead' }, 'pill pill-bad', 'Failed · Needs review'],
+        ['stopped', { status: 'stopped' }, 'pill pill-done', 'Stopped · Needs review'],
+        ['marked done', { doneAt: '2026-08-21T13:50:00.000Z' }, 'pill pill-done', 'Done'],
+        [
+            'an open review wait',
+            { waitReason: 'review', waitingSince: '2026-08-21T13:40:00.000Z' },
+            'pill pill-done',
+            'Waiting for review',
+        ],
+        [
+            'an exhausted review wait',
+            { waitReason: 'review', waitingSince: '2026-08-21T13:40:00.000Z', waitTerminalReason: 'exhausted' },
+            'pill pill-accent',
+            'Succeeded · Needs review · exhausted',
+        ],
+    ] as [string, Partial<Job>, string, string][])(
+        'renders %s as the taskStatusLabel in its taskTone pill',
+        (_name, over, pill, label) => {
+            const html = render([job(over)], null);
+            expect(html).toContain(`<span class="${pill}">${label}</span>`);
+        }
+    );
+
+    it('never renders the raw job status', () => {
+        const html = render([job({})], null);
+        expect(html).not.toMatch(/>succeeded</);
     });
 
     it('titles the row from the root command and links it to the task page', () => {

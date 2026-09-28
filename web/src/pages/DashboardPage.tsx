@@ -5,7 +5,7 @@ import { useCompletedJobs } from '../api/useCompletedJobs.js';
 import { AnalyticsToolbar } from '../components/AnalyticsToolbar.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { StatusBanner } from '../components/StatusBanner.js';
-import { describeRepos, relativeTime, timestamp } from '../format.js';
+import { describeRepos } from '../format.js';
 import { UsageSummaryPanel } from '../panels/UsageSummaryPanel.js';
 import { ByUserPanel } from '../panels/ByUserPanel.js';
 import { RecentTasksPanel } from '../panels/RecentTasksPanel.js';
@@ -23,29 +23,10 @@ import {
 import type { RangeSelection, ScopeSelection } from '../components/RangeSelector.js';
 
 /**
- * The header's freshness stamp: the last successful response's timestamp — not the wall clock,
- * not the telemetry store's inner timestamp — with the precise stamp revealed on hover and
- * keyboard focus. Split out of `DashboardPage` so the header's ternary does not add to the
- * page's own cognitive complexity.
- */
-function DashboardFreshness({ data, now }: { data: StatsPayload | null; now: Date }) {
-    if (!data) return <span className="muted">Not updated yet</span>;
-    return (
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: this focusable wrapper is the keyboard path to the revealed timestamp — the stamp must reach keyboard focus, and there is no interactive element to host it on
-        <span tabIndex={0} className="updated-at" title={timestamp(data.meta.fetchedAt)}>
-            Updated {relativeTime(data.meta.fetchedAt, now)}
-            <time className="updated-at-full" dateTime={data.meta.fetchedAt}>
-                {timestamp(data.meta.fetchedAt)}
-            </time>
-        </span>
-    );
-}
-
-/**
  * The rendered-data sentence, speaking for the PAYLOAD. When the requested selection has moved
  * on from what rendered, the sentence keeps describing the visible figures and appends where the
  * next read is heading — the request state is never the headline. Split out of `DashboardPage`
- * for the same reason as `DashboardFreshness`.
+ * so the page's own cognitive complexity stays low.
  */
 function dashboardSummary(
     data: StatsPayload | null,
@@ -62,7 +43,7 @@ function dashboardSummary(
  * The telemetry panels, by the page-level analytics state: the full summary, the one empty
  * state (with per-task usage kept when the board measured tasks the telemetry window cannot
  * see), or nothing while telemetry itself is down. Split out of `DashboardPage` for the same
- * reason as `DashboardFreshness`.
+ * reason as `dashboardSummary`. Usage by user is not here: it pairs with Recent tasks below.
  */
 function AnalyticsPanels({ data, state }: { data: StatsPayload; state: AnalyticsState }) {
     if (!data.telemetry) return null;
@@ -72,7 +53,6 @@ function AnalyticsPanels({ data, state }: { data: StatsPayload; state: Analytics
                 <UsageSummaryPanel telemetry={data.telemetry} meta={data.meta} />
                 <TokenUsagePanel telemetry={data.telemetry} meta={data.meta.telemetry} />
                 <TaskUsagePanel tasks={data.tasks} meta={data.meta.telemetry} />
-                <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
             </>
         );
     }
@@ -93,10 +73,10 @@ function AnalyticsPanels({ data, state }: { data: StatsPayload; state: Analytics
 const CLOCK_TICK_MS = 60_000;
 
 /**
- * The dashboard. The page header owns the telemetry chrome — exact repo coverage and the
- * freshness stamp — because those describe THIS page's figures, not the app; the app bar stays
- * chrome-only. The analytics toolbar carries the labeled Range / Scope / Repositories groups and
- * the rendered-data summary. The scope toggle renders ONLY when the session reports a signed-in
+ * The dashboard. The page header names the exact repos the figures combine, because that
+ * describes THIS page's figures, not the app; the app bar stays chrome-only. The analytics
+ * toolbar panel carries Range, Scope, the repository coverage and the freshness stamp, with the
+ * rendered-data summary beneath it. The scope toggle renders ONLY when the session reports a signed-in
  * MEMBER: under AUTH_MODE=none there is no "me" — the session hook still resolves the
  * deployment's `__local__` stand-in, and a toggle for it would advertise a filter the server
  * answers with SCOPE_REQUIRES_USER. `session.mode` is the tell; open mode gets the read-only
@@ -130,11 +110,7 @@ export function DashboardPage() {
             {/* One h1, from the page header primitive (issue 159), carrying the page's name and
                 — once something has rendered — the exact repos the figures combine. Coverage
                 stays visible, not tooltip-buried. */}
-            <PageHeader
-                title="Usage overview"
-                description={data ? describeRepos(data.meta.repos) : undefined}
-                meta={<DashboardFreshness data={data} now={now} />}
-            />
+            <PageHeader title="Usage overview" description={data ? describeRepos(data.meta.repos) : undefined} />
             <div className="dashboard-controls">
                 <AnalyticsToolbar
                     range={range}
@@ -142,7 +118,8 @@ export function DashboardPage() {
                     scope={scope}
                     onScopeChange={setScope}
                     hasPersonalScope={session?.mode === 'github'}
-                    repoFilter={data ? data.meta.telemetry.repoFilter : null}
+                    data={data}
+                    now={now}
                     summary={summary}
                 />
             </div>
@@ -155,11 +132,16 @@ export function DashboardPage() {
                 now={now}
             />
             {data && state !== null ? <AnalyticsPanels data={data} state={state} /> : null}
-            {/* Outside the stats branch on purpose: completed jobs poll their own endpoint,
-                    so the recent-tasks view is exactly the degraded-mode surface when the
-                    statistics read is cold or failing — hiding it behind `data` would hide it
-                    in the one state it exists for. */}
-            <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
+            {/* Side by side at ≥1200px, stacked below. Recent tasks sits outside the stats branch
+                on purpose: completed jobs poll their own endpoint, so it is exactly the
+                degraded-mode surface when the statistics read is cold or failing — hiding it
+                behind `data` would hide it in the one state it exists for. */}
+            <div className="two-up">
+                {data?.telemetry && state === 'ready' ? (
+                    <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                ) : null}
+                <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
+            </div>
         </>
     );
 }
