@@ -21,7 +21,9 @@ interface BiomeResult {
 // scan, which alone can exceed the shared 30s budget under a full run's contention whatever the
 // path argument (measured: ~29s for driver/src on an idle 5-core runner). Every check spawn gets
 // its own longer allowance rather than raising the global one for every other, far lighter test.
-const BIOME_CHECK_TIMEOUT_MS = 120_000;
+// 120s was not enough: a gate run on a loaded runner pod took ~250s end to end (usual ~120s) and
+// the tree-wide pass alone ran past 120s, while the same tree passed in the next run.
+const BIOME_CHECK_TIMEOUT_MS = 300_000;
 
 // Asynchronous on purpose, never spawnSync: a tree-wide pass takes over a minute on a contended
 // box, and blocking the worker's event loop that long times out every vitest RPC in flight

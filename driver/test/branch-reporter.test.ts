@@ -97,10 +97,15 @@ const NODE_ARGS = ['--disable-warning=ExperimentalWarning'];
  * RUNNER_LEASE_TOKEN too. Every child here starts from this scrubbed copy (a test's explicit env
  * still wins), so the reporter under test exercises discovery, and the attempt-pair test sees a
  * genuinely bare environment, unless a test hands an id on purpose.
+ *
+ * The reporter gives each `git` call 1s and gives up silently past it, which a contended full
+ * run exceeds: the child exits 0 having sent nothing, and the test reads zero requests. The
+ * suite widens the budget; the silent give-up itself is the contract, not the flake.
  */
+const GIT_TIMEOUT_MS = '30000';
 const OUTER_ENV: Record<string, string> = (() => {
     const { BELLOWS_SESSION_ID: _session, RUNNER_JOB_ID: _job, RUNNER_LEASE_TOKEN: _lease, ...rest } = process.env;
-    return rest;
+    return { ...rest, BRANCH_REPORTER_GIT_TIMEOUT_MS: GIT_TIMEOUT_MS } as Record<string, string>;
 })();
 
 const run = (

@@ -23,6 +23,8 @@
  *                        otherwise discovers the id live from opencode's session database.
  *   WORKDIR              the checkout to sample. Defaults to the current directory.
  *   XDG_DATA_HOME        where opencode keeps its session database (opencode/opencode.db).
+ *   BRANCH_REPORTER_GIT_TIMEOUT_MS  per-`git` call budget, default 1000. Only the tests set it: a
+ *                        contended suite runs `git` slower than a live run ever should.
  *
  * `--once` takes a single sample and exits; the entrypoint runs it once more after the CLI
  * closes, so a run's last branch state is reported even when the CLI exits the moment the
@@ -38,6 +40,7 @@ const AGENT = 'claude-code';
 const REQUEST_TIMEOUT_MS = 2_000;
 const SAMPLE_INTERVAL_MS = 20_000;
 const DISCOVER_INTERVAL_MS = 2_000;
+const GIT_TIMEOUT_MS = Number(process.env.BRANCH_REPORTER_GIT_TIMEOUT_MS) || 1_000;
 
 const ENDPOINT = (process.env.FACTORY_STATS_URL ?? '').trim();
 const CWD = process.env.WORKDIR ?? process.cwd();
@@ -47,7 +50,7 @@ function git(args) {
         return execFileSync('git', args, {
             cwd: CWD,
             encoding: 'utf8',
-            timeout: 1000,
+            timeout: GIT_TIMEOUT_MS,
             stdio: ['ignore', 'pipe', 'ignore'],
         }).trim();
     } catch {
