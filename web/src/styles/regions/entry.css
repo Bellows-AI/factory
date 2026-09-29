@@ -448,11 +448,21 @@
     /* ── entry touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .login-button,
-        .onboarding-actions button {
+        .onboarding-actions button,
+        .token-create input,
+        .token-create button,
+        .onboarding-org-summary {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* A disclosure summary keeps its native marker only under `list-item` (issue 287), so it
+           centers its line in the 44px box instead of taking the list's inline-flex. */
+        .onboarding-org-summary {
+            align-content: center;
+            display: list-item;
         }
 
         /* Continue keeps its region's floor, so the busy label swap never resizes it. */

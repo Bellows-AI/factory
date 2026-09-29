@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
-import { noHorizontalOverflow } from './viewport.js';
+import { routeLongTasks } from './fixtures/tasks.js';
+import { seededTaskId } from './routes.js';
+import { controlsOutsideViewport, NAMED_SCROLL_REGIONS, noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -10,10 +12,10 @@ const SHOTS = 'artifacts/ui';
  * management, the skip link, and the shapes every routed page must agree on. Runs on the open
  * board (AUTH_MODE=none, seeded offline server) like the dashboard check beside it.
  *
- * The closeout audit (issue 190) lives here too: the overflow sentinel now walks every primary
- * route at every supported width, narrow-phone toolbar wrap and named scroll regions are pinned,
- * 200% zoom gets the same sentinel, and the route/state/theme/width screenshot matrix is
- * captured for inspection.
+ * The closeout audit (issue 190) lives here too: narrow-phone toolbar wrap and named scroll
+ * regions are pinned, and 200% zoom gets the overflow sentinel. The per-route overflow sentinel
+ * and the route/state/theme/width screenshot matrix moved to matrix.spec.ts (issue 287), which
+ * walks them in both themes.
  *
  * The task inbox's own cases (issue 279) close the file: count-card links, chip removal with
  * Back/reload, poll-stable depth and focus, the pill under long content, and its screenshots.
@@ -33,17 +35,9 @@ const PAGES: ReadonlyArray<[string, string]> = [
     ['/account', 'page-account'],
 ];
 
-/** The routes the overflow matrix walks: every shell page plus, at run time, a task detail. */
+/** The routes the named-scroll-region and zoom audits walk: every shell page plus, at run time, a
+    task detail. */
 const MATRIX_ROUTES: ReadonlyArray<string> = PAGES.map(([path]) => path);
-
-/** The widths the closeout matrix captures. 1024 has no unique shell state, so it stays
-    sentinel-only. */
-const MATRIX_WIDTHS = [1440, 768, 390, 320] as const;
-
-/** The elements allowed to scroll horizontally, by the design system's own account of them:
-    the table wrap, the chart frame, the log wells, the picker list, and text entry. Anything
-    else the audit catches is an unnamed scroll region — a defect, not a fact of the page. */
-const NAMED_SCROLL_REGIONS = '.table-wrap, .chart-wrap, .chat-output, .run-well, .picker-list';
 
 /** Waits for the route's data anchor, so a measurement reads the settled layout and not the
     shell the SPA paints first. Each mapped route waits for content that only exists once its
@@ -71,42 +65,7 @@ async function settle(page: Page, path: string): Promise<void> {
 
 /** The matrix's route list with a live task detail appended. */
 async function matrixRoutes(page: Page): Promise<string[]> {
-    return [...MATRIX_ROUTES, `/tasks/${await someTaskId(page)}`];
-}
-
-async function someTaskId(page: Page): Promise<string> {
-    // Any thread root: the detail route is the same view whatever the id.
-    const body = (await page.request.get('/api/jobs?limit=200').then((r) => r.json())) as {
-        jobs: Array<{ id: string; followUpTo: string | null }>;
-    };
-    const roots = body.jobs.filter((job) => job.followUpTo === null);
-    expect(roots.length, 'the seed leaves at least one task').toBeGreaterThan(0);
-    return roots[0]!.id;
-}
-
-/** Every rendered control sits inside the viewport. Content inside a named scroll region is
-    exempt — a scrolled-off table column is the design, a scrolled-off action is not. */
-async function controlsInsideViewport(page: Page, width: number): Promise<void> {
-    const outside = await page.evaluate(
-        ({ vw, regions }) => {
-            const out: string[] = [];
-            for (const el of document.querySelectorAll<HTMLElement>(
-                'main button, main a, main input, main select, main textarea, .appbar button, .appbar a'
-            )) {
-                if (el.offsetWidth === 0) continue;
-                if (el.closest(regions)) continue;
-                const box = el.getBoundingClientRect();
-                if (box.left < -1 || box.right > vw + 1) {
-                    out.push(
-                        `${el.tagName.toLowerCase()}.${el.className} at ${Math.round(box.left)}..${Math.round(box.right)}`
-                    );
-                }
-            }
-            return out;
-        },
-        { vw: width, regions: NAMED_SCROLL_REGIONS }
-    );
-    expect(outside, 'controls pushed outside the viewport').toEqual([]);
+    return [...MATRIX_ROUTES, `/tasks/${await seededTaskId(page)}`];
 }
 
 test.describe('appearance', () => {
@@ -207,7 +166,7 @@ test.describe('the desktop shell', () => {
     });
 
     test('every routed page answers with one main region and at most one h1', async ({ page }) => {
-        const id = await someTaskId(page);
+        const id = await seededTaskId(page);
         for (const [path, name] of [...PAGES, [`/tasks/${id}`, 'page-task-detail'] as [string, string]]) {
             await page.goto(path);
             await expect(page.locator('main#main-content'), path).toHaveCount(1);
@@ -365,28 +324,6 @@ test.describe('the desktop shell', () => {
 });
 
 test.describe('the responsive shell', () => {
-    for (const width of [320, 360, 768, 1024, 1440]) {
-        test(`no page-level horizontal overflow at ${width}px`, async ({ page }) => {
-            await page.setViewportSize({ width, height: 1000 });
-            for (const path of await matrixRoutes(page)) {
-                await page.goto(path);
-                await settle(page, path);
-                // Polled, not slept: the claim is about the settled layout.
-                await expect
-                    .poll(() =>
-                        page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
-                    )
-                    .toBeLessThanOrEqual(0);
-                await expect
-                    .poll(() => page.evaluate(() => document.body.scrollWidth - document.body.clientWidth))
-                    .toBeLessThanOrEqual(0);
-            }
-            if (width === 360 || width === 768) {
-                await page.screenshot({ path: `${SHOTS}/responsive-${width}.png`, fullPage: true });
-            }
-        });
-    }
-
     test('the skip link is the first stop and never steals focus', async ({ page }) => {
         await page.goto('/');
         const skip = page.locator('.skip-link');
@@ -534,14 +471,14 @@ test.describe('the responsive shell', () => {
             // Groups wrap as units: the wrap is the mechanism that keeps actions on-screen,
             // so it is asserted where the reachability below could otherwise pass by luck.
             await expect(controls).toHaveCSS('flex-wrap', 'wrap');
-            await controlsInsideViewport(page, width);
+            expect(await controlsOutsideViewport(page, width), 'controls pushed outside the viewport').toEqual([]);
 
             await page.goto('/tasks');
             await settle(page, '/tasks');
             const filters = page.locator('.inbox-filters');
             await expect(filters).toBeVisible();
             await expect(filters).toHaveCSS('flex-wrap', 'wrap');
-            await controlsInsideViewport(page, width);
+            expect(await controlsOutsideViewport(page, width), 'controls pushed outside the viewport').toEqual([]);
         });
     }
 
@@ -622,30 +559,6 @@ test.describe('the visual regression matrix', () => {
     const themeAttr = (page: Page, theme: 'dark' | 'light') =>
         page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
 
-    const shotName = (path: string, theme: string, width: number) => {
-        const slug = path === '/' ? 'dashboard' : path.slice(1).replaceAll('/', '-');
-        return `${SHOTS}/matrix/${slug}_default_${theme}_${width}.png`;
-    };
-
-    for (const width of MATRIX_WIDTHS) {
-        for (const theme of ['dark', 'light'] as const) {
-            test(`captures every primary route — ${theme} at ${width}`, async ({ page }) => {
-                test.slow();
-                await page.setViewportSize({ width, height: width <= 390 ? 844 : 1000 });
-                for (const path of await matrixRoutes(page)) {
-                    await page.goto(path);
-                    await settle(page, path);
-                    await themeAttr(page, theme);
-                    await page.screenshot({
-                        path: shotName(path, theme, width),
-                        fullPage: true,
-                        animations: 'disabled',
-                    });
-                }
-            });
-        }
-    }
-
     test('captures the drawer open on a narrow phone', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto('/tasks');
@@ -681,7 +594,7 @@ test.describe('the visual regression matrix', () => {
     });
 
     test('captures the remove dialog open on a narrow phone', async ({ page }) => {
-        const taskId = await someTaskId(page);
+        const taskId = await seededTaskId(page);
         await page.setViewportSize({ width: 390, height: 844 });
         await page.goto(`/tasks/${taskId}`);
         await settle(page, `/tasks/${taskId}`);
@@ -792,16 +705,7 @@ test.describe('the task inbox (issue 279)', () => {
     });
 
     test('a long title or repository never hides the state pill', async ({ page }) => {
-        const long = 'refactor-'.repeat(20);
-        await page.route('**/api/tasks*', async (route) => {
-            const response = await route.fetch();
-            const body = (await response.json()) as { page: { items: Array<{ command: string; repo: string }> } };
-            for (const item of body.page.items.slice(0, 2)) {
-                item.command = `${long}${long}`;
-                item.repo = `acme/${long}`;
-            }
-            await route.fulfill({ response, json: body });
-        });
+        await routeLongTasks(page);
         for (const width of [1440, 1024, 390] as const) {
             await page.setViewportSize({ width, height: 900 });
             await page.goto('/tasks');

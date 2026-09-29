@@ -583,11 +583,19 @@
     @media (max-width: 900px) {
         .range-draft input,
         .range-draft-actions button,
-        .legend-button {
+        .legend-button,
+        .chart-disclosure summary {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* A disclosure summary keeps its native marker only under `list-item` (issue 287), so it
+           centers its line in the 44px box instead of taking the list's inline-flex. */
+        .chart-disclosure summary {
+            align-content: center;
+            display: list-item;
         }
     }
 }
