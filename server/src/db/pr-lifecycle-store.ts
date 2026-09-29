@@ -64,8 +64,18 @@ export interface PrLifecycleStore {
     finishWait(root: string, reason: string, terminalReason?: string, exec?: PrExec): Promise<boolean>;
     /** Ends the wait as cancelled. Idempotent, like `finishWait`. */
     cancelWait(root: string, reason: string, terminalReason?: string, exec?: PrExec): Promise<boolean>;
-    /** Cancels every open wait of a thread — the task-stop / task-remove sweep. Returns the count. */
-    cancelWaitsForRoot(root: string, terminalReason?: string, exec?: PrExec): Promise<number>;
+    /**
+     * Cancels every open wait of a thread — the task-stop / task-remove sweep, and issue #328's
+     * user wait-cancel (which names its reason `cancelled by user` and passes the acting caller).
+     * `cancelledBy` is stamped on the surviving wait rows with the same first-writer coalesce as
+     * the 025 actors; null (an anonymous caller) writes null. Returns the count.
+     */
+    cancelWaitsForRoot(
+        root: string,
+        terminalReason?: string,
+        exec?: PrExec,
+        cancelledBy?: string | null
+    ): Promise<number>;
     /** Cancels every open wait addressed to a repository's PR — the PR-close/merge sweep. Returns the count. */
     cancelForRepoPr(repo: string, prNumber: number, terminalReason?: string, exec?: PrExec): Promise<number>;
     /**
@@ -244,12 +254,13 @@ export function createPrLifecycleStore({
             return rows[0] !== undefined;
         },
 
-        async cancelWaitsForRoot(root, terminalReason, exec) {
+        async cancelWaitsForRoot(root, terminalReason, exec, cancelledBy) {
             await gate();
             const rows = await conn(exec)<{ root_job_id: string }[]>`
                 update workflow_wait set
                     cancelled_at = coalesce(cancelled_at, now()),
-                    terminal_reason = coalesce(terminal_reason, ${terminalReason ?? null})
+                    terminal_reason = coalesce(terminal_reason, ${terminalReason ?? null}),
+                    cancelled_by = coalesce(cancelled_by, ${cancelledBy ?? null})
                 where org_id = ${orgId} and root_job_id = ${root}
                   and completed_at is null and cancelled_at is null
                 returning root_job_id

@@ -391,6 +391,25 @@ export function validatePublication(
 
 export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
 
+/** The refusal answers both wait-control verbs (issue #328) share; the ok paths differ per route. */
+export type WaitControlRefusal = 'missing' | 'forbidden' | 'no_wait';
+
+export function waitControlRefusal(reply: FastifyReply, reason: WaitControlRefusal) {
+    switch (reason) {
+        case 'missing':
+            return notFoundJob(reply);
+        case 'forbidden':
+            return reply.code(HTTP_FORBIDDEN).send({
+                error: 'Only the account that queued the task can control its wait',
+                code: ERROR_CODES.FORBIDDEN,
+            });
+        case 'no_wait':
+            return reply
+                .code(HTTP_CONFLICT)
+                .send({ error: 'The task has no open wait', code: ERROR_CODES.NO_OPEN_WAIT });
+    }
+}
+
 export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
     switch (reason) {
         case 'missing':

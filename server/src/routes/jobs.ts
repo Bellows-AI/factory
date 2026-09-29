@@ -26,6 +26,8 @@ import {
     handleRetry,
     handleStop,
     handleThread,
+    handleWaitCancel,
+    handleWaitPoke,
 } from './job-handlers-actions.js';
 import { BODY_LIMIT, CONTROL_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -100,6 +102,16 @@ export const jobRoutes =
         // still exists. Person-gated like done, beside which it is registered.
         app.post('/api/jobs/:id/reopen', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReopen(orgs, request, reply)
+        );
+        // Both control a thread parked on a durable PR wait (issue #328) — person's actions on a
+        // wait no worker holds a lease on, so no token and the actor off the session, exactly as
+        // stop/done/remove take them. The store author-scopes both and answers the no-open-wait
+        // conflict the issue mandates.
+        app.post('/api/jobs/:id/wait/cancel', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleWaitCancel(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/wait/poke', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleWaitPoke(orgs, request, reply)
         );
         app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReclaimsClaim(orgs, firstReclaimClaim, request, reply)

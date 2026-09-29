@@ -463,6 +463,32 @@ export type RemoveResult =
     | 'conflict';
 
 /**
+ * What a user wait-cancel (issue #328) did.
+ *
+ * - `ok`        the thread's open wait was cancelled — reason `cancelled by user`, the acting
+ *               caller stamped beside it; a parked round is permanently unwakeable and a woken
+ *               continuation is settled by the claim's cancellation fence.
+ * - `missing`   no such job in this organization.
+ * - `no_wait`   the thread has no OPEN wait — it never parked, or the wait already ended. The
+ *               route says 409: a cancel that changed nothing has no wait to name.
+ * - `forbidden` the thread was queued by a different account (author-scoped like the follow-up:
+ *               the woken continuation runs in the author's worktree).
+ */
+export type CancelWaitResult = { result: 'ok' } | 'missing' | 'no_wait' | 'forbidden';
+
+/**
+ * What a user poke (issue #328) did: the parked round's wake transaction, run now.
+ *
+ * - `ok`        the poke ran; `woken` says whether a round was actually woken — false is an
+ *               honest answer for nothing parked, a round already woken, or an active member,
+ *               and inserts nothing (a replay costs nothing and wakes nothing).
+ * - `missing`   no such job in this organization.
+ * - `no_wait`   the thread has no OPEN wait — nothing to evaluate, the route says 409.
+ * - `forbidden` the thread was queued by a different account.
+ */
+export type PokeWaitResult = { result: 'ok'; woken: boolean } | 'missing' | 'no_wait' | 'forbidden';
+
+/**
  * What a reopen did.
  *
  * - `ok`          the thread's done stamp is cleared and any queued worktree reclaim withdrawn —
@@ -632,6 +658,32 @@ export interface JobStore {
      * removed_by on job would be written and immediately deleted.
      */
     removeThread(id: string, removedBy: string | null): Promise<RemoveResult>;
+    /**
+     * The user's wait-cancel (issue #328): ends the thread's open durable PR wait with reason
+     * `cancelled by user`, so a thread parked past a missed webhook can be closed out by hand.
+     * Takes no lease — a wait holds no runner. Cancel ends the WAIT, never a running turn (stop
+     * is for turns); a continuation already woken and claimed is settled by the claim's
+     * cancellation fence, exactly as a PR close would.
+     *
+     * `cancelledBy` is the authenticated caller's id, passed by the route — recorded on the wait
+     * row (045) with the same first-writer coalesce as the 025 actors, and used for the
+     * author-scoping check. `id` may be ANY member of the thread: the wait belongs to the root.
+     */
+    cancelWait(id: string, cancelledBy: string | null): Promise<CancelWaitResult>;
+    /**
+     * The user's poke (issue #328): re-evaluates the thread's parked PR wait NOW — the wake
+     * transaction the sweep runs, minus the pending gate, because the board has no other GitHub
+     * input than webhooks and the motivating case is one that never arrived. The woken
+     * continuation's own claim-time pre-helper re-fetches the PR state (a false wake costs a
+     * helper container and a re-park, never an agent turn — the wait node's generous wake bound
+     * absorbs those). `woken: false` on nothing parked, an already-woken round or an active
+     * member; a poke folded nothing (delivery_count 0) is the audit signature of a user wake.
+     *
+     * `pokedBy` is the authenticated caller's id, used for the author-scoping check — the poke
+     * queues a continuation that runs in the author's worktree under the author's executor.
+     * `id` may be ANY member of the thread.
+     */
+    pokeWait(id: string, pokedBy: string | null): Promise<PokeWaitResult>;
     /**
      * The user's reopening of a done task (issue #327): clears the done stamp on EVERY member of
      * the thread and withdraws a queued task_reclaim row, so a task closed by mistake can be
@@ -1027,7 +1079,12 @@ export interface JobStorePrs {
      * missing wait is left alone.
      */
     finishWait(root: string, reason: string, terminalReason?: string, exec?: Sql | TransactionSql): Promise<boolean>;
-    cancelWaitsForRoot(root: string, terminalReason?: string, exec?: Sql | TransactionSql): Promise<number>;
+    cancelWaitsForRoot(
+        root: string,
+        terminalReason?: string,
+        exec?: Sql | TransactionSql,
+        cancelledBy?: string | null
+    ): Promise<number>;
     /**
      * Enters (or re-enters) a durable wait for a workflow-block runtime boundary (issue #231) —
      * the transition's park, in the same transaction as the verdict that triggered it.
