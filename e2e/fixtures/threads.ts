@@ -538,3 +538,64 @@ export const unsafePrUrlThread = thread([
         output: 'pushed\n[driver] published fix/odd — javascript:alert(1)',
     }),
 ]);
+
+/** The parked task's first state, before it parked: the same id, still running, no wait yet. */
+export const parkedReviewWaitRunningThread = thread([
+    {
+        ...parkedRoot,
+        status: 'running',
+        summary: null,
+        output: 'reading src/retry.ts',
+        gates: null,
+        runtime: liveRuntime('→ Edit src/retry.ts', '2026-09-01T12:10:00.000Z'),
+        ...unfinished,
+    },
+]);
+
+/** `parkedReviewWaitThread` after Mark done, keeping its id so one task can be followed through
+ *  every state — `parkedReviewWaitDoneThread` is the same state under an id of its own. */
+export const parkedReviewWaitMarkedDoneThread = thread(
+    [{ ...parkedRoot, doneAt: '2026-09-01T13:00:00.000Z', doneBy: LOCAL_AUTHOR }],
+    OPEN_REVIEW_WAIT
+);
+
+/** `failedGateThread` after its author asked for another pass: the follow-up is queued on the
+ *  root's session and repo, which is what the board gives a follow-up. */
+export const failedGateFollowUpThread = thread([
+    failedGateThread[0]!,
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000125',
+        command: 'fix the lint failures and keep the stricter rules',
+        status: 'queued',
+        attempts: 0,
+        claimedBy: null,
+        repo: REPO,
+        sessionId: failedGateThread[0]!.sessionId,
+        createdAt: '2026-09-01T12:40:00.000Z',
+        startedAt: null,
+        ...unfinished,
+    }),
+]);
+
+/** The inbox row the board would answer for `jobs`' thread — the root's identity, the head's state. */
+export function taskSummaryOf(jobs: readonly ThreadJob[]) {
+    const root = jobs[0]!;
+    const head = jobs[jobs.length - 1]!;
+    return {
+        id: root.id,
+        command: root.command,
+        status: head.status,
+        cancelRequestedAt: head.cancelRequestedAt,
+        doneAt: head.doneAt,
+        repo: head.repo,
+        executor: head.executor,
+        author: root.author,
+        activity: null,
+        summary: head.summary,
+        waitReason: head.waitReason,
+        waitingSince: head.waitingSince,
+        waitTerminalReason: head.waitTerminalReason,
+        createdAt: root.createdAt,
+        activityAt: head.doneAt ?? head.finishedAt ?? head.createdAt,
+    };
+}
