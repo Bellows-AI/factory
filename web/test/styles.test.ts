@@ -219,6 +219,9 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.env-raw input',
         '.env-raw select',
         '.env-raw button',
+        '.picker-advanced > summary',
+        '.picker-field-actions button',
+        '.picker-actions button',
     ],
     'styles/regions/dashboard.css': [
         '.range-draft input',
@@ -452,6 +455,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
             ['styles/regions/dashboard.css', ['.chart-disclosure summary']],
             ['styles/regions/task-detail.css', ['.task-outcome > summary', '.run-output > summary']],
             ['styles/regions/entry.css', ['.onboarding-org-summary']],
+            ['styles/regions/settings.css', ['.picker-advanced > summary']],
         ] as const) {
             expect(restored(rel, [...selectors], /display:\s*list-item/), `${selectors} keep list-item`).toBe(true);
         }

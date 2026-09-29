@@ -1,23 +1,37 @@
 import { describe, expect, it } from 'vitest';
-import { EXECUTOR_TYPES } from '@factory-ai/core';
+import { CLAUDE_CODE, EXECUTOR_TYPES, OPENCODE, RUNNER_MANAGED_KEYS } from '@factory-ai/core';
 import {
     EXECUTOR_TYPE_META,
     GATE_FIX_ROUNDS_HELP,
     MAX_CONFIG_BYTES,
     MAX_GATE_FIX_ROUNDS,
+    NO_CHANGES_REASON,
     REQUIRED_FIELDS,
+    SAVE_HINTS,
     defaultExecutorName,
+    executorDraftChanges,
+    executorEditorView,
+    executorSavedMessage,
     executorTypeLabel,
+    formatConfig,
+    initialExecutorDraft,
+    locateJsonError,
     mergeExecutors,
-    validateExecutorConfig,
-    validateExecutorPayload,
+    parseExecutorConfig,
+    readModel,
+    runnerManagedSettings,
+    saveUnavailableReason,
+    tokenizeJson,
+    validateExecutorDraft,
+    validateExecutorName,
     validateGateFixRounds,
     withDefault,
+    withModel,
+    type ExecutorDraft,
     type ExecutorRow,
     type ValidExecutor,
 } from '../src/workspace/executors.js';
 
-const valid = () => validateExecutorConfig('{ "model": "sonnet" }', 'main', 'claude-code', '3');
 const validRow = (): ExecutorRow => ({
     name: 'main',
     type: 'claude-code',
@@ -26,112 +40,406 @@ const validRow = (): ExecutorRow => ({
     gateFixRounds: 3,
 });
 
-describe('validateExecutorPayload', () => {
-    // The dialog's live textarea error is the payload's — parse, object, per-type fields, size —
-    // and never the name's: a blank name must not arrive as the config field's problem.
-    it('accepts a JSON object regardless of the name', () => {
-        expect(validateExecutorPayload('{ "model": "sonnet" }', 'claude-code')).toEqual({
+describe('parseExecutorConfig', () => {
+    it('reads blank text as the inherited configuration, {}', () => {
+        // Name and agent alone are enough to save: the member never has to type {} (#261).
+        expect(parseExecutorConfig('')).toEqual({ ok: true, value: {} });
+        expect(parseExecutorConfig('  \n ')).toEqual({ ok: true, value: {} });
+    });
+
+    it('accepts a JSON object and keeps every key', () => {
+        expect(parseExecutorConfig('{ "model": "sonnet", "custom": { "a": [1] } }')).toEqual({
             ok: true,
-            value: { model: 'sonnet' },
+            value: { model: 'sonnet', custom: { a: [1] } },
         });
     });
 
-    it('rejects paste that is not JSON, an empty paste, or a non-object', () => {
-        expect(validateExecutorPayload('{ model: }', 'claude-code').ok).toBe(false);
-        expect(validateExecutorPayload('   ', 'claude-code').ok).toBe(false);
-        expect(validateExecutorPayload('[]', 'opencode').ok).toBe(false);
-        expect(validateExecutorPayload('null', 'opencode').ok).toBe(false);
+    it('rejects a JSON array or scalar — an object is the contract', () => {
+        for (const raw of ['[]', '7', '"text"', 'null']) {
+            const result = parseExecutorConfig(raw);
+            expect(result.ok, raw).toBe(false);
+            if (!result.ok) expect(result.error).toMatch(/must be a JSON object/);
+        }
     });
 
-    it('rejects a payload over the size limit', () => {
-        const big = JSON.stringify({ padding: 'x'.repeat(MAX_CONFIG_BYTES) });
-        expect(validateExecutorPayload(big, 'claude-code').ok).toBe(false);
+    it('rejects a config over the size limit, and accepts one exactly at it', () => {
+        const wrap = (length: number) => `{"p":"${'x'.repeat(length)}"}`;
+        const overhead = wrap(0).length;
+        expect(parseExecutorConfig(wrap(MAX_CONFIG_BYTES - overhead)).ok).toBe(true);
+        const over = parseExecutorConfig(wrap(MAX_CONFIG_BYTES - overhead + 1));
+        expect(over.ok).toBe(false);
+        if (!over.ok) expect(over.error).toMatch(/32 KiB/);
     });
 
-    it('stays name-agnostic: "{}" with no name anywhere is a valid payload', () => {
-        const result = validateExecutorPayload('{}', 'opencode');
-        expect(result).toEqual({ ok: true, value: {} });
+    it('says where the JSON broke when the engine reports it', () => {
+        const result = parseExecutorConfig('{\n  "a": 1,\n}');
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+            expect(result.line).toBe(3);
+            expect(result.column).toBe(1);
+            expect(result.error).toMatch(/^Not valid JSON at line 3, column 1: /);
+            // The engine noise is stripped from the reason: no repeated position in the sentence.
+            expect(result.error).not.toMatch(/position/);
+        }
+    });
+
+    it('still explains a parse failure that carries no location', () => {
+        const result = parseExecutorConfig('{ "a":');
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error).toMatch(/^Not valid JSON/);
     });
 });
 
-describe('validateExecutorConfig', () => {
-    it('accepts a plain object with a name and a known type', () => {
-        expect(valid()).toEqual({
-            ok: true,
-            value: { name: 'main', type: 'claude-code', config: { model: 'sonnet' }, gateFixRounds: 3 },
+describe('locateJsonError', () => {
+    it('reads the V8 line/column suffix', () => {
+        expect(locateJsonError('x', 'Unexpected token } in JSON at position 9 (line 2 column 5)')).toEqual({
+            line: 2,
+            column: 5,
         });
     });
 
-    it('trims the name it keeps', () => {
-        const result = validateExecutorConfig('{}', '  main  ', 'claude-code', '3');
-        expect(result.ok && result.value.name).toBe('main');
+    it('converts a bare V8 position against the text', () => {
+        expect(locateJsonError('{\n "a" x', 'Unexpected token x in JSON at position 7')).toEqual({
+            line: 2,
+            column: 6,
+        });
     });
 
-    it('rejects paste that is not JSON, with the parser said so', () => {
-        const result = validateExecutorConfig('{ model: sonnet }', 'main', 'claude-code', '3');
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.error).toMatch(/Not valid JSON/);
+    it('reads the Firefox wording', () => {
+        expect(locateJsonError('x', 'JSON.parse: expected property name at line 1 column 3 of the JSON data')).toEqual({
+            line: 1,
+            column: 3,
+        });
     });
 
-    it('rejects an empty paste', () => {
-        expect(validateExecutorConfig('   ', 'main', 'claude-code', '3').ok).toBe(false);
+    it('answers null when the message carries no location', () => {
+        expect(locateJsonError('x', "JSON Parse error: Expected '}'")).toBeNull();
+    });
+});
+
+describe('readModel / withModel', () => {
+    it('reads a missing model as the runner default, a string as custom, anything else as unsupported', () => {
+        expect(readModel({})).toEqual({ kind: 'default' });
+        expect(readModel({ model: 'sonnet' })).toEqual({ kind: 'custom', model: 'sonnet' });
+        expect(readModel({ model: 5 })).toEqual({ kind: 'unsupported' });
+        expect(readModel({ model: {} })).toEqual({ kind: 'unsupported' });
     });
 
-    it('rejects a JSON array or scalar as the config', () => {
-        // An object is the contract; an array would pass a naive `typeof === 'object'` check.
-        expect(validateExecutorConfig('[]', 'main', 'claude-code', '3').ok).toBe(false);
-        expect(validateExecutorConfig('7', 'main', 'claude-code', '3').ok).toBe(false);
-        expect(validateExecutorConfig('"text"', 'main', 'claude-code', '3').ok).toBe(false);
-        expect(validateExecutorConfig('null', 'main', 'claude-code', '3').ok).toBe(false);
+    it('sets a model, replacing it in place and keeping every other key and its order', () => {
+        expect(withModel({}, 'sonnet')).toEqual({ model: 'sonnet' });
+        const next = withModel({ a: 1, model: 'x', b: { deep: [true] } }, 'y');
+        expect(Object.keys(next)).toEqual(['a', 'model', 'b']);
+        expect(next).toEqual({ a: 1, model: 'y', b: { deep: [true] } });
     });
 
-    it('rejects a blank, slashed, or dash-leading name', () => {
-        for (const name of ['', '  ', 'a/b', 'a\\b', '-x', '.hidden']) {
-            const result = validateExecutorConfig('{}', name, 'claude-code', '3');
-            expect(result.ok, name).toBe(false);
+    it('deletes the model for the runner default, never touching the rest', () => {
+        expect(withModel({ a: 1, model: 'x' }, null)).toEqual({ a: 1 });
+    });
+});
+
+describe('formatConfig', () => {
+    it('pretty-prints valid text without losing unknown keys', () => {
+        expect(formatConfig('{"a":1,"nested":{"b":[2]}}')).toBe(
+            '{\n  "a": 1,\n  "nested": {\n    "b": [\n      2\n    ]\n  }\n}'
+        );
+    });
+
+    it('answers null for text that does not parse', () => {
+        expect(formatConfig('{ a: }')).toBeNull();
+    });
+});
+
+describe('runnerManagedSettings', () => {
+    it('names the Claude Code keys the board strips and the telemetry env the runner overrides', () => {
+        const config = {
+            model: 'sonnet',
+            hooks: {},
+            enabledPlugins: {},
+            extraKnownMarketplaces: {},
+            env: { FOO: '1', CLAUDE_CODE_ENABLE_TELEMETRY: '0', OTEL_EXPORTER_OTLP_ENDPOINT: 'x' },
+        };
+        expect(runnerManagedSettings(CLAUDE_CODE, config)).toEqual([
+            'hooks',
+            'enabledPlugins',
+            'extraKnownMarketplaces',
+            'env.CLAUDE_CODE_ENABLE_TELEMETRY',
+            'env.OTEL_EXPORTER_OTLP_ENDPOINT',
+        ]);
+    });
+
+    it('names only permission for OpenCode', () => {
+        expect(runnerManagedSettings(OPENCODE, { permission: {}, hooks: {}, env: { OTEL_X: '1' } })).toEqual([
+            'permission',
+        ]);
+    });
+
+    it('is the same list the claim strips', () => {
+        for (const type of EXECUTOR_TYPES) {
+            const config = Object.fromEntries(RUNNER_MANAGED_KEYS[type].map((key) => [key, {}]));
+            expect(runnerManagedSettings(type, config)).toEqual([...RUNNER_MANAGED_KEYS[type]]);
         }
     });
 
-    it('enforces the per-type required fields', () => {
-        // Empty today — the contract is raw JSON until a consumer defines the fields — but the
-        // mechanism is asserted so adding a requirement actually bites.
-        expect(REQUIRED_FIELDS['claude-code']).toEqual([]);
+    it('names key paths only — a credential value never appears', () => {
+        const secret = 'sk-live-planted-secret';
+        const found = runnerManagedSettings(CLAUDE_CODE, { hooks: secret, env: { OTEL_TOKEN: secret } });
+        expect(found.join(' ')).not.toContain(secret);
+    });
+});
+
+describe('validateExecutorName', () => {
+    const existing = [validRow(), { ...validRow(), name: 'review' }];
+
+    it('rejects a blank, slashed, or dash/dot-leading name', () => {
+        for (const name of ['', '  ', 'a/b', 'a\\b', '-x', '.hidden']) {
+            expect(validateExecutorName(name, [], null), name).not.toBeNull();
+        }
     });
 
-    it('rejects a config over the size limit', () => {
-        const big = JSON.stringify({ padding: 'x'.repeat(MAX_CONFIG_BYTES) });
-        expect(validateExecutorConfig(big, 'main', 'claude-code', '3').ok).toBe(false);
+    it('rejects a duplicate of another row, but not the row being edited', () => {
+        expect(validateExecutorName('review', existing, null)).toMatch(/already exists/);
+        expect(validateExecutorName(' review ', existing, 'main')).toMatch(/already exists/);
+        expect(validateExecutorName('main', existing, 'main')).toBeNull();
+        expect(validateExecutorName('Code review', existing, null)).toBeNull();
+    });
+});
+
+describe('initialExecutorDraft', () => {
+    it('opens an add blank, on the first agent, with every agent inheriting', () => {
+        const draft = initialExecutorDraft(undefined);
+        expect(draft.name).toBe('');
+        expect(draft.type).toBe(EXECUTOR_TYPES[0]);
+        for (const type of EXECUTOR_TYPES) {
+            expect(draft.configs[type]).toBe('{}');
+            expect(draft.customModel[type]).toBe(false);
+        }
+        expect(draft.gateFixRounds).toBe('');
     });
 
-    it('covers every executor type in REQUIRED_FIELDS', () => {
+    it('seeds an edit from the row, on its own agent only', () => {
+        const row: ExecutorRow = {
+            name: 'oc',
+            type: OPENCODE,
+            config: { model: 'anthropic/x', extra: 1 },
+            isDefault: true,
+            gateFixRounds: 2,
+        };
+        const draft = initialExecutorDraft(row);
+        expect(draft.type).toBe(OPENCODE);
+        expect(JSON.parse(draft.configs[OPENCODE])).toEqual(row.config);
+        expect(draft.configs[CLAUDE_CODE]).toBe('{}');
+        expect(draft.customModel[OPENCODE]).toBe(true);
+        expect(draft.customModel[CLAUDE_CODE]).toBe(false);
+        expect(draft.gateFixRounds).toBe('2');
+    });
+});
+
+describe('validateExecutorDraft', () => {
+    const draft = (patch: Partial<ExecutorDraft> = {}): ExecutorDraft => ({
+        ...initialExecutorDraft(undefined),
+        name: 'Code review',
+        ...patch,
+    });
+
+    it('saves a name and an agent alone as the inherited configuration', () => {
+        expect(validateExecutorDraft(draft(), [], null)).toEqual({
+            ok: true,
+            value: { name: 'Code review', type: CLAUDE_CODE, config: {}, gateFixRounds: 3 },
+        });
+    });
+
+    it('carries only the active agent’s configuration', () => {
+        const base = draft();
+        const result = validateExecutorDraft(
+            { ...base, type: OPENCODE, configs: { [CLAUDE_CODE]: '{"a":1}', [OPENCODE]: '{"b":2}' } },
+            [],
+            null
+        );
+        expect(result.ok && result.value.config).toEqual({ b: 2 });
+    });
+
+    it('attributes each failure to its field', () => {
+        const cases: [ExecutorDraft, string][] = [
+            [draft({ name: '' }), 'name'],
+            [draft({ name: 'main' }), 'name'],
+            [draft({ configs: { [CLAUDE_CODE]: '{ a: }', [OPENCODE]: '{}' } }), 'config'],
+            [draft({ configs: { [CLAUDE_CODE]: '{"model":5}', [OPENCODE]: '{}' } }), 'model'],
+            [draft({ customModel: { [CLAUDE_CODE]: true, [OPENCODE]: false } }), 'model'],
+            [draft({ gateFixRounds: '11' }), 'rounds'],
+        ];
+        for (const [input, field] of cases) {
+            const result = validateExecutorDraft(input, [validRow()], null);
+            expect(result.ok, field).toBe(false);
+            if (!result.ok) expect(result.field).toBe(field);
+        }
+    });
+
+    it('covers every executor type in REQUIRED_FIELDS, requiring nothing today', () => {
         // The exhaustiveness guard: a new EXECUTOR_TYPES entry must declare its requirements,
         // even if the answer is "none", or this record stops compiling.
-        for (const type of EXECUTOR_TYPES) expect(type in REQUIRED_FIELDS).toBe(true);
+        for (const type of EXECUTOR_TYPES) expect(REQUIRED_FIELDS[type]).toEqual([]);
     });
 
-    it('accepts an opencode executor with a plain object config', () => {
-        const result = validateExecutorConfig('{ "model": "x" }', 'main', 'opencode', '3');
-        expect(result).toEqual({
-            ok: true,
-            value: { name: 'main', type: 'opencode', config: { model: 'x' }, gateFixRounds: 3 },
-        });
-    });
-
-    it('requires no config fields for opencode either', () => {
-        // Same raw-JSON contract as claude-code: field rules wait for a consumer that can be
-        // wrong about them.
-        expect(REQUIRED_FIELDS.opencode).toEqual([]);
-    });
-
-    it('carries the parsed gate-fix round limit', () => {
-        const result = validateExecutorConfig('{}', 'main', 'claude-code', '7');
+    it('trims the name it keeps and carries the parsed round limit', () => {
+        const result = validateExecutorDraft(draft({ name: '  main  ', gateFixRounds: '7' }), [], null);
+        expect(result.ok && result.value.name).toBe('main');
         expect(result.ok && result.value.gateFixRounds).toBe(7);
     });
+});
 
-    it('rejects a round limit the field validator refused', () => {
-        for (const raw of ['11', '-1', '2.5', 'three']) {
-            expect(validateExecutorConfig('{}', 'main', 'claude-code', raw).ok, raw).toBe(false);
+describe('executorDraftChanges', () => {
+    const row: ExecutorRow = { ...validRow(), config: { model: 'sonnet', keep: 1 } };
+    const baseline = initialExecutorDraft(row);
+
+    it('reports an untouched edit as unchanged', () => {
+        expect(executorDraftChanges(baseline, baseline)).toEqual({ payloadChanged: false, anyChanged: false });
+    });
+
+    it('does not count formatting alone as a saveable change', () => {
+        const next = { ...baseline, configs: { ...baseline.configs, [CLAUDE_CODE]: '{"keep":1,"model":"sonnet"}' } };
+        expect(executorDraftChanges(baseline, next).payloadChanged).toBe(false);
+        expect(executorDraftChanges(baseline, next).anyChanged).toBe(true);
+    });
+
+    it('counts a rename, a type switch and a rounds edit as saveable', () => {
+        expect(executorDraftChanges(baseline, { ...baseline, name: 'other' }).payloadChanged).toBe(true);
+        expect(executorDraftChanges(baseline, { ...baseline, type: OPENCODE }).payloadChanged).toBe(true);
+        expect(executorDraftChanges(baseline, { ...baseline, gateFixRounds: '4' }).payloadChanged).toBe(true);
+    });
+
+    it('counts an edit to the other agent’s draft as unsaved work, not a saveable change', () => {
+        const next = { ...baseline, configs: { ...baseline.configs, [OPENCODE]: '{"model":"a/b"}' } };
+        expect(executorDraftChanges(baseline, next)).toEqual({ payloadChanged: false, anyChanged: true });
+    });
+
+    it('treats an invalid draft as changed', () => {
+        const next = { ...baseline, configs: { ...baseline.configs, [CLAUDE_CODE]: '{' } };
+        expect(executorDraftChanges(baseline, next).payloadChanged).toBe(true);
+    });
+});
+
+describe('executorEditorView', () => {
+    const view = (draft: ExecutorDraft, nameTouched = false) =>
+        executorEditorView({
+            draft,
+            baseline: initialExecutorDraft(undefined),
+            existing: [validRow()],
+            editing: null,
+            nameTouched,
+        });
+
+    it('holds a blank name back until the field has been left, but still explains the disabled save', () => {
+        const blank = initialExecutorDraft(undefined);
+        expect(view(blank).nameError).toBeNull();
+        expect(view(blank).unavailable).toBe(SAVE_HINTS.name);
+        expect(view(blank, true).nameError).toBe('Give the executor a name.');
+    });
+
+    it('shows a duplicate beside the name before any save', () => {
+        expect(view({ ...initialExecutorDraft(undefined), name: 'main' }).nameError).toMatch(/already exists/);
+    });
+
+    it('reports an unparseable configuration as the JSON’s error, never the model’s', () => {
+        const draft = {
+            ...initialExecutorDraft(undefined),
+            name: 'x',
+            configs: { [CLAUDE_CODE]: '{', [OPENCODE]: '{}' },
+        };
+        const result = view(draft);
+        expect(result.parsed.ok).toBe(false);
+        expect(result.jsonError).toMatch(/^Not valid JSON/);
+        expect(result.modelError).toBeNull();
+        expect(result.managed).toEqual([]);
+    });
+
+    it('reads a non-text model as unsupported, and names runner-managed keys', () => {
+        const draft = {
+            ...initialExecutorDraft(undefined),
+            name: 'x',
+            configs: { [CLAUDE_CODE]: '{"model":5,"hooks":{}}', [OPENCODE]: '{}' },
+        };
+        const result = view(draft);
+        expect(result.modelUnsupported).toBe(true);
+        expect(result.modelError).toBeNull();
+        expect(result.managed).toEqual(['hooks']);
+        expect(result.unavailable).toBe(SAVE_HINTS.model);
+    });
+});
+
+describe('saveUnavailableReason', () => {
+    const ok = { ok: true as const, value: { name: 'x', type: CLAUDE_CODE, config: {}, gateFixRounds: 3 } };
+
+    it('points an invalid draft at its field, without repeating the error shown beside it', () => {
+        for (const field of ['name', 'model', 'config', 'rounds'] as const) {
+            const hint = saveUnavailableReason({ ok: false, error: 'the field’s own error', field }, true, false);
+            expect(hint, field).toBe(SAVE_HINTS[field]);
+            expect(hint, field).not.toBe('the field’s own error');
         }
+        // What lives in the collapsed Advanced section says so, or the reader would not find it.
+        expect(SAVE_HINTS.config).toMatch(/Advanced configuration/);
+        expect(SAVE_HINTS.rounds).toMatch(/Advanced configuration/);
+    });
+
+    it('says an unchanged edit has nothing to save', () => {
+        expect(saveUnavailableReason(ok, false, true)).toBe(NO_CHANGES_REASON);
+    });
+
+    it('answers null when the draft can be saved', () => {
+        expect(saveUnavailableReason(ok, true, true)).toBeNull();
+        // An add is always a change: the list does not have the row yet.
+        expect(saveUnavailableReason(ok, false, false)).toBeNull();
+    });
+});
+
+describe('tokenizeJson', () => {
+    it('is lossless on valid, invalid and empty text', () => {
+        for (const text of ['', '{\n  "a": [1, true, null]\n}', '{ a: "unterminated', '  \t\n']) {
+            expect(
+                tokenizeJson(text)
+                    .map((token) => token.text)
+                    .join('')
+            ).toBe(text);
+        }
+    });
+
+    it('tells a key from a string value, and classifies numbers, literals and punctuation', () => {
+        const kinds = tokenizeJson('{"k": "v", "n": -1.5e3, "t": true, "z": null}')
+            .filter((token) => token.kind !== 'space')
+            .map((token) => `${token.kind}:${token.text}`);
+        expect(kinds).toEqual([
+            'punct:{',
+            'key:"k"',
+            'punct::',
+            'string:"v"',
+            'punct:,',
+            'key:"n"',
+            'punct::',
+            'number:-1.5e3',
+            'punct:,',
+            'key:"t"',
+            'punct::',
+            'literal:true',
+            'punct:,',
+            'key:"z"',
+            'punct::',
+            'literal:null',
+            'punct:}',
+        ]);
+    });
+
+    it('keeps an escaped quote inside its string', () => {
+        expect(tokenizeJson('"a\\"b"')).toEqual([{ kind: 'string', text: '"a\\"b"' }]);
+    });
+
+    it('marks what JSON cannot contain as invalid rather than dropping it', () => {
+        expect(tokenizeJson('{ a }').some((token) => token.kind === 'invalid' && token.text === 'a')).toBe(true);
+    });
+});
+
+describe('executorSavedMessage', () => {
+    it('announces an add and an edit differently', () => {
+        expect(executorSavedMessage('Code review', false)).toBe('Added executor “Code review”.');
+        expect(executorSavedMessage('Code review', true)).toBe('Saved changes to “Code review”.');
     });
 });
 
@@ -158,7 +466,7 @@ describe('validateGateFixRounds', () => {
 
 describe('EXECUTOR_TYPE_META', () => {
     // The exhaustiveness guard, same shape as the REQUIRED_FIELDS one: a new EXECUTOR_TYPES entry
-    // must declare its label, help and example, or this record stops compiling.
+    // must declare its label, helps and model example, or this record stops compiling.
     it('covers every executor type', () => {
         for (const type of EXECUTOR_TYPES) expect(type in EXECUTOR_TYPE_META).toBe(true);
     });
@@ -169,7 +477,8 @@ describe('EXECUTOR_TYPE_META', () => {
         expect(meta.configHelp).toMatch(/merged into the runner/);
         expect(meta.configHelp).toMatch(/hooks.*enabledPlugins.*extraKnownMarketplaces/);
         expect(meta.configHelp).toMatch(/CLAUDE_CODE_ENABLE_TELEMETRY.*OTEL_.*always wins/);
-        expect(JSON.parse(meta.example)).toEqual({});
+        expect(meta.modelExample).toBe('claude-sonnet-4-5');
+        expect(meta.modelHelp).toMatch(/alias/);
     });
 
     it('tells the opencode truth: the profile selects OpenCode and permission is ignored', () => {
@@ -178,12 +487,10 @@ describe('EXECUTOR_TYPE_META', () => {
         expect(meta.configHelp).toMatch(/Tasks using this executor run OpenCode/);
         expect(meta.configHelp).toMatch(/merged over its baked configuration/);
         expect(meta.configHelp).toMatch(/permission rules are ignored/);
-        // The example illustrates the keys that do apply, and carries nothing that looks like a
-        // live credential.
-        const example = JSON.parse(meta.example) as Record<string, unknown>;
-        expect(example).toHaveProperty('model');
-        expect(example).toHaveProperty('provider');
-        expect(meta.example).not.toMatch(/sk-[a-zA-Z0-9]{8,}/);
+        // OpenCode names a model by provider and model id; the example carries that shape and
+        // nothing that looks like a live credential.
+        expect(meta.modelExample).toMatch(/^[a-z-]+\/[a-z0-9.-]+$/);
+        expect(meta.modelHelp).toMatch(/provider/);
     });
 
     it('maps wire types to human labels and never undefined for an unknown one', () => {

@@ -26,3 +26,14 @@ export const DEFAULT_GATE_FIX_ROUNDS = 3;
 
 /** The upper bound any stored `gate_fix_rounds` may take, matching the review-reconcile block's 1-10. */
 export const MAX_GATE_FIX_ROUNDS = 10;
+
+/**
+ * The top-level config keys the board strips before a member's executor config reaches its runner
+ * (issue 183): claude-code's git guard hook and baked plugin install, opencode's permission fence.
+ * One list for the claim that strips them and the dialog that warns about them (#261), so the
+ * warning cannot promise a key the runner would honor or miss one it drops.
+ */
+export const RUNNER_MANAGED_KEYS: Record<ExecutorType, readonly string[]> = {
+    [CLAUDE_CODE]: ['hooks', 'enabledPlugins', 'extraKnownMarketplaces'],
+    [OPENCODE]: ['permission'],
+};

@@ -4,7 +4,26 @@ import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
 import { throughSignIn } from './signin.js';
 // The copy under assertion, imported from the module the app renders it from — see the note on
 // EXECUTOR_GUIDANCE in web/src/workspace/executors.ts for why these live in a React-free module.
-import { EXECUTOR_GUIDANCE, EXECUTOR_TYPE_META, TYPE_CONFIG_NOTE } from '../web/src/workspace/executors.js';
+import {
+    ADD_LABEL,
+    ADVANCED_LABEL,
+    AGENT_HELP,
+    CONFIG_JSON_LABEL,
+    EXECUTOR_GUIDANCE,
+    EXECUTOR_SCOPE,
+    EXECUTOR_TYPE_META,
+    executorSavedMessage,
+    FORMAT_JSON_LABEL,
+    INHERITED_NOTE,
+    MODEL_BLOCKED_NOTE,
+    MODEL_CUSTOM_LABEL,
+    MODEL_DEFAULT_LABEL,
+    NAME_HELP,
+    NO_CHANGES_REASON,
+    RUNNER_MANAGED_NOTE,
+    SAVE_HINTS,
+    SAVE_LABEL,
+} from '../web/src/workspace/executors.js';
 
 /**
  * The workspace section of Settings, the repositories section its selection moved to (#181), the
@@ -233,98 +252,213 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
     await page.screenshot({ path: `${SHOTS}/settings-repos-1024.png`, fullPage: true });
 });
 
-test('an executor is added through the dialog, with bad JSON refused in place', async ({ page }) => {
+/**
+ * The executor dialog, named by its title through aria-labelledby rather than a literal id: the
+ * dialog mints its ids with useId so two open dialogs cannot collide. Either title — the same
+ * dialog is "Add executor" from the header and "Edit executor" from a row.
+ */
+const executorDialog = (page: Page) => page.getByRole('dialog', { name: /^(Add|Edit) executor$/ });
+
+/** The paragraphs a field points at with aria-describedby — resolved live, since the ids are minted. */
+async function describedBy(scope: Locator, field: Locator): Promise<Locator> {
+    const ids = (await field.getAttribute('aria-describedby'))?.split(/\s+/).filter(Boolean) ?? [];
+    expect(ids.length, 'the field names no describedby target').toBeGreaterThan(0);
+    return scope.locator(ids.map((id) => `[id="${id}"]`).join(', '));
+}
+
+const executorsPanel = (page: Page) =>
+    page.locator('section.panel', { has: page.getByRole('heading', { name: 'My workspace' }) });
+
+/** One row's Edit, found by the row's name — other specs' rows may share the list. */
+const editButton = (page: Page, name: string) =>
+    executorsPanel(page).locator('tr').filter({ hasText: name }).getByRole('button', { name: 'Edit' });
+
+test('an executor is added through guided setup, with no JSON typed', async ({ page }) => {
     await signedIn(page);
     await page.goto('/settings/executors');
 
-    // The panel is scoped by its scope heading now — "My workspace" — with the guidance sentence
-    // that says what an executor decides for a task (#183). Asserted against the constant the
-    // panel renders, not a copy of it: this assertion held a sentence the product had stopped
-    // saying, and nothing noticed, because verify:ui needs Playwright and two databases to run.
-    const panel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'My workspace' }) });
+    // The page's scope sentence and the panel's guidance, asserted against the constants they
+    // render, not copies of them.
+    await expect(page.locator('.page-header-description')).toHaveText(EXECUTOR_SCOPE);
+    const panel = executorsPanel(page);
     await expect(panel).toContainText(EXECUTOR_GUIDANCE);
 
-    await page.getByRole('button', { name: 'Add executor' }).click();
-    // Named by its title through aria-labelledby, not by a literal id: the dialog mints its ids
-    // with useId so two open dialogs cannot collide, which means no id here is stable across a
-    // render. The accessible name and the describedby links are the contract worth selecting on —
-    // they are what a screen reader follows.
-    // Either title: the same dialog is "Add executor" opened from the panel and "Edit executor"
-    // opened from a row, and this spec drives both. The id-based selector this replaced matched
-    // them without saying so, which is how naming only the Add case slipped through.
-    const dialog = page.getByRole('dialog', { name: /^(Add|Edit) executor$/ });
-    const dialogPanel = dialog.locator('.picker');
-    await expect(dialogPanel).toBeVisible();
+    const add = page.getByRole('button', { name: ADD_LABEL });
+    await add.click();
+    const dialog = executorDialog(page);
+    await expect(dialog.locator('.picker')).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
 
-    /**
-     * The help a field points at with aria-describedby — resolved live, since the id is minted.
-     * The config textarea names two targets once its JSON fails to parse (help, then error), and
-     * the help is always first, so `.first()` is the help in both states.
-     */
-    const describedBy = async (field: Locator) => {
-        const ids = (await field.getAttribute('aria-describedby'))?.split(/\s+/).filter(Boolean) ?? [];
-        expect(ids.length, 'the field names no describedby target').toBeGreaterThan(0);
-        return dialog.locator(ids.map((id) => `[id="${id}"]`).join(', ')).first();
-    };
+    // Guided order, visible labels, each help wired to its field.
+    const name = dialog.getByLabel('Name', { exact: true });
+    const agent = dialog.getByLabel('Agent', { exact: true });
+    const modelGroup = dialog.getByRole('group', { name: 'Model' });
+    await expect(await describedBy(dialog, name)).toContainText(NAME_HELP);
+    await expect(await describedBy(dialog, agent)).toContainText(AGENT_HELP);
+    await expect(modelGroup.getByRole('radio', { name: MODEL_DEFAULT_LABEL })).toBeChecked();
+    await expect(dialog).toContainText(INHERITED_NOTE);
+    // Advanced is collapsed: no JSON is in front of the member.
+    await expect(dialog.getByRole('textbox', { name: CONFIG_JSON_LABEL })).toBeHidden();
 
-    const typeField = dialog.getByRole('combobox');
-    const configField = dialog.getByRole('textbox', { name: /config/i });
+    // Nothing typed yet: Save is unavailable, and the reason sits beside it.
+    const save = dialog.getByRole('button', { name: ADD_LABEL });
+    await expect(save).toBeDisabled();
+    await expect(await describedBy(dialog, save)).toHaveText(SAVE_HINTS.name);
+    await page.screenshot({ path: `${SHOTS}/settings-executor-guided.png` });
 
-    // Each field's help is the constant the dialog renders. What is under test here is the WIRING
-    // — that aria-describedby reaches the right paragraph, and that switching type swaps the
-    // config help — not the wording, which belongs to whoever edits the constant.
-    await expect(await describedBy(typeField)).toContainText(TYPE_CONFIG_NOTE);
-    await expect(await describedBy(configField)).toContainText(EXECUTOR_TYPE_META[CLAUDE_CODE].configHelp);
-    await page.screenshot({ path: `${SHOTS}/settings-executor-help.png` });
-
-    // Switching type swaps the help for the OpenCode one — the swap is the behavior under test,
-    // so the two helps must also differ, or this would still pass if the select stopped driving it.
-    await typeField.selectOption({ label: 'OpenCode' });
-    await expect(await describedBy(configField)).toContainText(EXECUTOR_TYPE_META[OPENCODE].configHelp);
-    expect(EXECUTOR_TYPE_META[OPENCODE].configHelp).not.toBe(EXECUTOR_TYPE_META[CLAUDE_CODE].configHelp);
-    await typeField.selectOption({ label: 'Claude Code' });
-
-    // Not valid JSON: the message appears under the field, Save stays disabled, and what was
-    // typed is still there — an error never costs the member their paste.
-    await dialog.getByPlaceholder('main').fill('main');
-    await dialog.locator('textarea').fill('{ model: }');
-    await expect(dialog.getByRole('button', { name: 'Add executor' })).toBeDisabled();
-    await expect(dialog.locator('textarea')).toHaveValue('{ model: }');
-    await expect(dialog.locator('textarea')).toHaveAttribute('aria-invalid', 'true');
-
-    // A name problem is not a config problem: with parseable JSON but no name, Save stays
-    // disabled and the textarea announces nothing — the error belongs to the name field.
-    await dialog.getByPlaceholder('main').fill('');
-    await dialog.locator('textarea').fill('{}');
-    await expect(dialog.getByRole('button', { name: 'Add executor' })).toBeDisabled();
-    await expect(dialog.locator('textarea')).not.toHaveAttribute('aria-invalid');
-
-    await dialog.getByPlaceholder('main').fill('main');
-    await dialog.getByRole('button', { name: 'Add executor' }).click();
+    await name.fill('main');
+    await expect(save).toBeEnabled();
+    await save.click();
     await expect(dialog).toHaveCount(0);
 
-    // Focus went back to the trigger the dialog opened from — the Dialog restores it on close,
-    // and the next keystroke must land where the member left it.
-    await expect(page.getByRole('button', { name: 'Add executor' })).toBeFocused();
-
-    // The row comes back through the poll, under its human label — and the first row is marked
-    // as the one the composer picks first: a fact about the draft, not a stored default.
+    // Focus went back to the trigger, and the save was announced in the page's status region.
+    await expect(add).toBeFocused();
+    await expect(page.getByRole('status').filter({ hasText: executorSavedMessage('main', false) })).toBeVisible();
     await expect(panel.getByText('main')).toBeVisible();
     await expect(panel.locator('.pill')).toHaveText('Claude Code');
-    await expect(panel).not.toContainText('No personal executors configured');
     await expect(panel.getByText('Selected first on new tasks')).toHaveCount(1);
 
-    // Editing is its own round trip: the save action reads "Save executor", and focus lands back
-    // on the row's Edit button, not wherever the DOM happens to leave it.
-    await panel.getByRole('button', { name: 'Edit' }).click();
-    await expect(dialogPanel).toBeVisible();
-    await dialog.locator('textarea').fill('{ "model": "opus" }');
-    await dialog.getByRole('button', { name: 'Save executor' }).click();
+    // A duplicate name is refused beside the Name field, before any save.
+    await add.click();
+    await name.fill('main');
+    await expect(dialog.getByText('An executor named "main" already exists.')).toBeVisible();
+    await expect(name).toHaveAttribute('aria-invalid', 'true');
+    await expect(save).toBeDisabled();
+
+    // Dirty dismissal asks first. Escape, then the safe answer, keeps every field.
+    await page.keyboard.press('Escape');
+    // The dialog role sits on the zero-height layer; its title is what is visible.
+    const confirm = page.getByRole('dialog', { name: 'Discard unsaved changes?' });
+    await expect(confirm.getByRole('heading', { name: 'Discard unsaved changes?' })).toBeVisible();
+    await confirm.getByRole('button', { name: 'Continue editing' }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect(name).toHaveValue('main');
+    // Cancel asks too; Discard changes closes, and focus returns to the trigger.
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await confirm.getByRole('button', { name: 'Discard changes' }).click();
     await expect(dialog).toHaveCount(0);
-    await expect(panel.getByRole('button', { name: 'Edit' })).toBeFocused();
+    await expect(add).toBeFocused();
+
+    // Edit: nothing changed, nothing to save.
+    await editButton(page, 'main').click();
+    const saveChanges = dialog.getByRole('button', { name: SAVE_LABEL });
+    await expect(saveChanges).toBeDisabled();
+    await expect(await describedBy(dialog, saveChanges)).toHaveText(NO_CHANGES_REASON);
+
+    // A custom model through the guided control is the configuration's `model`.
+    await modelGroup.getByRole('radio', { name: MODEL_CUSTOM_LABEL }).check();
+    await expect(saveChanges).toBeDisabled();
+    await modelGroup.getByRole('textbox', { name: MODEL_CUSTOM_LABEL }).fill('opus');
+    await dialog.getByText(ADVANCED_LABEL).click();
+    await expect(dialog.getByRole('textbox', { name: CONFIG_JSON_LABEL })).toHaveValue('{\n  "model": "opus"\n}');
+    await saveChanges.click();
+    await expect(dialog).toHaveCount(0);
+    await expect(editButton(page, 'main')).toBeFocused();
+    await expect(page.getByRole('status').filter({ hasText: executorSavedMessage('main', true) })).toBeVisible();
+
+    // Reopened with identical settings; a pristine Escape closes without asking.
+    await editButton(page, 'main').click();
+    await expect(modelGroup.getByRole('radio', { name: MODEL_CUSTOM_LABEL })).toBeChecked();
+    await expect(modelGroup.getByRole('textbox', { name: MODEL_CUSTOM_LABEL })).toHaveValue('opus');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
 
     await page.screenshot({ path: `${SHOTS}/settings-executors.png`, fullPage: true });
+});
+
+test('advanced editing is lossless, per agent, and survives a failed save', async ({ page }) => {
+    await signedIn(page);
+    await page.goto('/settings/executors');
+
+    await page.getByRole('button', { name: ADD_LABEL }).click();
+    const dialog = executorDialog(page);
+    await dialog.getByLabel('Name', { exact: true }).fill('advanced');
+    await dialog.getByText(ADVANCED_LABEL).click();
+    const json = dialog.getByRole('textbox', { name: CONFIG_JSON_LABEL });
+    const modelGroup = dialog.getByRole('group', { name: 'Model' });
+    const save = dialog.getByRole('button', { name: ADD_LABEL });
+    await expect(json).toHaveValue('{}');
+    await expect(await describedBy(dialog, json)).toContainText(EXECUTOR_TYPE_META[CLAUDE_CODE].configHelp);
+
+    // Enter carries the line's indent.
+    await json.fill('{\n  "a": 1\n}');
+    await json.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(10, 10));
+    await page.keyboard.press('Enter');
+    await expect(json).toHaveValue('{\n  "a": 1\n  \n}');
+
+    // Invalid JSON: marked, located, kept, and the guided model waits for it instead of
+    // overwriting it.
+    await json.fill('{ model: }');
+    await expect(json).toHaveAttribute('aria-invalid', 'true');
+    await expect(dialog.getByText(/^Not valid JSON at line 1, column 3: /)).toBeVisible();
+    await expect(json).toHaveValue('{ model: }');
+    await expect(modelGroup.getByRole('radio', { name: MODEL_DEFAULT_LABEL })).toBeDisabled();
+    await expect(modelGroup).toContainText(MODEL_BLOCKED_NOTE);
+    await expect(save).toBeDisabled();
+    await expect(await describedBy(dialog, save)).toHaveText(SAVE_HINTS.config);
+    await page.screenshot({ path: `${SHOTS}/settings-executor-advanced-invalid.png` });
+
+    // Tab leaves the editor rather than indenting inside it.
+    await json.focus();
+    await page.keyboard.press('Tab');
+    await expect(json).not.toBeFocused();
+
+    // Valid again: unknown keys stay, the runner-managed key is named, and the guided control
+    // reads the model back.
+    await json.fill('{"custom":1,"hooks":{},"model":"sonnet"}');
+    await expect(json).not.toHaveAttribute('aria-invalid');
+    await expect(dialog.locator('.picker-managed')).toContainText(RUNNER_MANAGED_NOTE);
+    await expect(dialog.locator('.picker-managed')).toContainText('hooks');
+    await expect(modelGroup.getByRole('textbox', { name: MODEL_CUSTOM_LABEL })).toHaveValue('sonnet');
+    await dialog.getByRole('button', { name: FORMAT_JSON_LABEL }).click();
+    await expect(json).toHaveValue('{\n  "custom": 1,\n  "hooks": {},\n  "model": "sonnet"\n}');
+    await modelGroup.getByRole('textbox', { name: MODEL_CUSTOM_LABEL }).fill('opus');
+    await expect(json).toHaveValue('{\n  "custom": 1,\n  "hooks": {},\n  "model": "opus"\n}');
+    await page.screenshot({ path: `${SHOTS}/settings-executor-advanced.png` });
+
+    // Each agent keeps its own draft: OpenCode starts inherited, and Claude Code's is waiting.
+    const agent = dialog.getByLabel('Agent', { exact: true });
+    await agent.selectOption({ label: 'OpenCode' });
+    await expect(modelGroup.getByRole('radio', { name: MODEL_DEFAULT_LABEL })).toBeChecked();
+    await expect(json).toHaveValue('{}');
+    await expect(await describedBy(dialog, json)).toContainText(EXECUTOR_TYPE_META[OPENCODE].configHelp);
+    await agent.selectOption({ label: 'Claude Code' });
+    await expect(modelGroup.getByRole('textbox', { name: MODEL_CUSTOM_LABEL })).toHaveValue('opus');
+    await expect(json).toHaveValue('{\n  "custom": 1,\n  "hooks": {},\n  "model": "opus"\n}');
+
+    // A failed save keeps every field and allows a retry.
+    let failNext = true;
+    await page.route('**/api/workspace/executors', async (route) => {
+        if (route.request().method() === 'PUT' && failNext) {
+            failNext = false;
+            await route.fulfill({ status: 500, json: { error: 'The board is unavailable' } });
+            return;
+        }
+        await route.fallback();
+    });
+    await save.click();
+    await expect(dialog.getByRole('alert')).toContainText('The board is unavailable');
+    await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('advanced');
+    await expect(json).toHaveValue('{\n  "custom": 1,\n  "hooks": {},\n  "model": "opus"\n}');
+    const put = page.waitForRequest(
+        (request) => request.method() === 'PUT' && request.url().endsWith('/api/workspace/executors')
+    );
+    await save.click();
+    const sent = (await put).postDataJSON() as { executors: { name: string; config: object; isDefault: boolean }[] };
+    await expect(dialog).toHaveCount(0);
+    expect(sent.executors.find((row) => row.name === 'advanced')).toMatchObject({
+        config: { custom: 1, hooks: {}, model: 'opus' },
+        isDefault: false,
+    });
+
+    // Reopened, the unknown key round-tripped through the server — by value: jsonb keeps its own
+    // key order, which is not a change.
+    await editButton(page, 'advanced').click();
+    await dialog.getByText(ADVANCED_LABEL).click();
+    await expect.poll(async () => JSON.parse(await json.inputValue())).toEqual({ custom: 1, hooks: {}, model: 'opus' });
+    await expect(dialog.getByRole('button', { name: SAVE_LABEL })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
 });
 
 test('the workspace section renders nothing malformed', async ({ page }) => {

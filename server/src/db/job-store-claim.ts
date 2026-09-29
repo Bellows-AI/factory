@@ -4,7 +4,7 @@
  * claim/ack pair. See docs/jobs.md for the lease protocol and docs/workflows.md for the publish flag.
  */
 
-import { CLAUDE_CODE, EXECUTOR_TYPES, type ExecutorType, OPENCODE } from '@factory-ai/core';
+import { CLAUDE_CODE, EXECUTOR_TYPES, type ExecutorType, OPENCODE, RUNNER_MANAGED_KEYS } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import { withMintedToken } from './job-store-org-resolvers.js';
@@ -330,22 +330,23 @@ export function mergeExecutorConfigEnv(
     if (member === null || member === undefined || typeof member !== 'object' || Array.isArray(member)) {
         return claimEnv;
     }
-    if (configured?.type === OPENCODE) {
-        // `permission` is the runner's fence, baked into the image and patched by its entrypoint
-        // — the one key the member does not get to set: a pasted `external_directory: allow`
-        // would open every member's tree to this run. Everything else travels verbatim.
-        const { permission: _fence, ...rest } = member;
-        return { ...(claimEnv ?? {}), OPENCODE_CONFIG_CONTENT: JSON.stringify(rest) };
-    }
-    if (configured?.type === CLAUDE_CODE) {
-        // `hooks`, `enabledPlugins` and `extraKnownMarketplaces` are the runner's fence: the git
-        // guard hook and the baked context-mode plugin install. A pasted `hooks` would silently
-        // drop the guard; a pasted plugin/marketplace pair would run code the image never
-        // installed. Everything else — model, env, permissions.allow — travels verbatim.
-        const { hooks: _hooks, enabledPlugins: _plugins, extraKnownMarketplaces: _markets, ...rest } = member;
-        return { ...(claimEnv ?? {}), CLAUDE_CODE_CONFIG_CONTENT: JSON.stringify(rest) };
-    }
-    return claimEnv;
+    // RUNNER_MANAGED_KEYS is the runner's fence per type, stripped before the config travels.
+    // opencode's `permission` is baked into the image and patched by its entrypoint — a pasted
+    // `external_directory: allow` would open every member's tree to this run. claude-code's `hooks`,
+    // `enabledPlugins` and `extraKnownMarketplaces` are the git guard hook and the baked
+    // context-mode plugin install: a pasted `hooks` would silently drop the guard; a pasted
+    // plugin/marketplace pair would run code the image never installed. Everything else — model,
+    // env, permissions.allow, provider — travels verbatim.
+    const envName =
+        configured?.type === OPENCODE
+            ? 'OPENCODE_CONFIG_CONTENT'
+            : configured?.type === CLAUDE_CODE
+              ? 'CLAUDE_CODE_CONFIG_CONTENT'
+              : null;
+    if (envName === null) return claimEnv;
+    const fenced = new Set(RUNNER_MANAGED_KEYS[configured!.type as ExecutorType]);
+    const rest = Object.fromEntries(Object.entries(member).filter(([key]) => !fenced.has(key)));
+    return { ...(claimEnv ?? {}), [envName]: JSON.stringify(rest) };
 }
 
 export async function resolveClaimExecutor(
