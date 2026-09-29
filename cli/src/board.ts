@@ -122,6 +122,15 @@ type Fetch = typeof globalThis.fetch;
 /** How much of a non-JSON error body is quoted before the message is cut off. */
 const ERROR_BODY_PREVIEW_LENGTH = 200;
 
+/**
+ * One job's route prefix, with the id ENCODED. The board validates ids as uuids, but routing
+ * happens first: an unencoded `a/../b` normalizes to another job's route before anyone looks at
+ * it, and a `?` in an id starts a query string. Encoding keeps a mistyped id a 404 about what was
+ * typed rather than an action against whatever it resolved to — and every path goes through here
+ * so none can be left out.
+ */
+const jobPath = (id: string): string => `/api/jobs/${encodeURIComponent(id)}`;
+
 /** A fetch that never got an answer — the board could not be reached at all. */
 function unreachable(url: string, error: unknown): BoardError {
     const reason = error instanceof Error ? error.message : String(error);
@@ -207,18 +216,18 @@ export function createBoardClient({
         },
 
         async getJob(id) {
-            return (await request(`/api/jobs/${id}`, { headers: authHeaders() })) as BoardJobRecord;
+            return (await request(`${jobPath(id)}`, { headers: authHeaders() })) as BoardJobRecord;
         },
 
         async waitForJob(id, timeoutSeconds) {
             // The wait is a parameter of the job read, not a route of its own — and only of the
             // job read: the thread read takes no wait parameters at all.
             const query = new URLSearchParams({ waitFor: 'terminal', timeout: String(timeoutSeconds) });
-            return (await request(`/api/jobs/${id}?${query}`, { headers: authHeaders() })) as BoardJobRecord;
+            return (await request(`${jobPath(id)}?${query}`, { headers: authHeaders() })) as BoardJobRecord;
         },
 
         async thread(id) {
-            const payload = (await request(`/api/jobs/${id}/thread`, { headers: authHeaders() })) as {
+            const payload = (await request(`${jobPath(id)}/thread`, { headers: authHeaders() })) as {
                 jobs: BoardJobRecord[];
             };
             return payload.jobs;
@@ -228,7 +237,7 @@ export function createBoardClient({
             // The command is the whole body: the repo, the executor and the session are copied
             // from the parent at insert, and sending them here would be a second opinion the
             // board does not ask for.
-            return (await request(`/api/jobs/${id}/follow-up`, {
+            return (await request(`${jobPath(id)}/follow-up`, {
                 method: 'POST',
                 headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
                 body: JSON.stringify({ command }),
@@ -237,15 +246,15 @@ export function createBoardClient({
 
         // The three actions take no body, so they send no content-type either.
         async stopJob(id) {
-            return (await request(`/api/jobs/${id}/stop`, { method: 'POST', headers: authHeaders() })) as JobStopped;
+            return (await request(`${jobPath(id)}/stop`, { method: 'POST', headers: authHeaders() })) as JobStopped;
         },
 
         async markDone(id) {
-            return (await request(`/api/jobs/${id}/done`, { method: 'POST', headers: authHeaders() })) as JobDone;
+            return (await request(`${jobPath(id)}/done`, { method: 'POST', headers: authHeaders() })) as JobDone;
         },
 
         async removeJob(id) {
-            return (await request(`/api/jobs/${id}/remove`, { method: 'POST', headers: authHeaders() })) as JobRemoved;
+            return (await request(`${jobPath(id)}/remove`, { method: 'POST', headers: authHeaders() })) as JobRemoved;
         },
     };
 }

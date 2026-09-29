@@ -140,6 +140,34 @@ describe('the board client', () => {
         expect(calls.map((call) => call.body)).toEqual([undefined, undefined, undefined]);
     });
 
+    it('encodes the id into every path, so a typo cannot become a different route', async () => {
+        // The board validates ids as uuids, but that happens after routing: `a/../b` normalizes
+        // to another job's route and `a?x` starts a query string. Encoding keeps a mistyped id a
+        // 404 about the id typed, rather than an action against whatever it normalized to.
+        const { calls, fetch } = recorder(() => json({ id: 'job-1' }));
+        const board = client(fetch);
+        const id = 'a/../b?x';
+
+        await board.getJob(id);
+        await board.waitForJob(id, 30);
+        await board.thread(id);
+        await board.followUp(id, 'again');
+        await board.stopJob(id);
+        await board.markDone(id);
+        await board.removeJob(id);
+
+        const encoded = 'a%2F..%2Fb%3Fx';
+        expect(calls.map((call) => call.url)).toEqual([
+            `http://board/api/jobs/${encoded}`,
+            `http://board/api/jobs/${encoded}?waitFor=terminal&timeout=30`,
+            `http://board/api/jobs/${encoded}/thread`,
+            `http://board/api/jobs/${encoded}/follow-up`,
+            `http://board/api/jobs/${encoded}/stop`,
+            `http://board/api/jobs/${encoded}/done`,
+            `http://board/api/jobs/${encoded}/remove`,
+        ]);
+    });
+
     it('turns a non-2xx {error, code} body into a BoardError carrying both', async () => {
         const { fetch } = recorder(() => json({ error: 'No such job', code: 'NOT_FOUND' }, 404));
 
