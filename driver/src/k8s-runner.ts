@@ -14,6 +14,8 @@ import type { OpencodeRunOutcome } from './close-read.js';
 import type { HelperPlan } from './helpers.js';
 import { runHelper } from './k8s-helper-runner.js';
 import {
+    claimName,
+    claimPath,
     deleteJob,
     deleteSecret,
     jobPodsPath,
@@ -51,13 +53,15 @@ import {
     answerPreview,
     expectOk,
     HTTP_ERROR_STATUS,
+    HTTP_OK_STATUS,
     livePod,
+    parse,
     parsePodMetrics,
     parseServicePods,
     refusal,
     wait,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
+import type { K8sClaim, K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { publishCheckout, publishFailed, repoPath, withPublishToken, worktreeDir } from './publish.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
@@ -372,10 +376,68 @@ async function syncCheckout(deps: K8sDeps, job: BoardJob): Promise<SyncResult> {
 }
 
 /**
+ * The checkout claim that held an acquire off, read for the refusal's report (issue #344): its
+ * name, the holder attempt the claim carries, and the apiserver's creation stamp. The loop logs
+ * these and — once the board proves the holder job gone — decides the reap. Undefined when the
+ * claim cannot be read (gone in between, refused, a transport blink): the refusal message the
+ * acquire threw already names what it knows, and this read only adds to it.
+ */
+async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['heldClaim']> {
+    let get: K8sResponse;
+    try {
+        get = await deps.request('GET', claimPath(deps.config.k8sNamespace, job));
+    } catch {
+        return undefined;
+    }
+    if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return undefined;
+    const claim = parse<K8sClaim>(get.body);
+    const created = claim.metadata?.creationTimestamp ? Date.parse(claim.metadata.creationTimestamp) : NaN;
+    return {
+        name: claimName(job),
+        attempt: claim.data?.attempt ?? null,
+        createdMs: Number.isFinite(created) ? created : null,
+    };
+}
+
+/**
+ * Deletes an orphaned checkout claim (issue #344): a claim whose holder job the board no longer
+ * knows as live, left behind by a driver that died holding it — the one leak the fence's
+ * release-by-next-claimant cannot heal, because no later claimant of that job ever comes. The
+ * DELETE carries the uid precondition, exactly like every claim release: if the object was
+ * replaced between this read and the delete — a live claimant's takeover — the precondition
+ * answers 409 and nothing of the newer claim is touched. Absent, unreadable or refused answers
+ * false: the caller retries on a later offer, and a false negative costs one more throttled log.
+ */
+async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob): Promise<boolean> {
+    const path = claimPath(deps.config.k8sNamespace, job);
+    let get: K8sResponse;
+    try {
+        get = await deps.request('GET', path);
+    } catch {
+        return false;
+    }
+    if (get.status < HTTP_OK_STATUS || get.status >= HTTP_ERROR_STATUS) return false;
+    const uid = parse<K8sClaim>(get.body).metadata?.uid;
+    if (!uid) return false;
+    try {
+        const del = await deps.request('DELETE', path, {
+            apiVersion: 'v1',
+            kind: 'DeleteOptions',
+            preconditions: { uid },
+        });
+        return del.status < HTTP_ERROR_STATUS;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * The terminal reclaim (issue #47), the kubernetes shape: the remove script as a Job over the
  * PVC, UNDER the checkout claim — the same `acquireClaim` protocol the sync and the runner use.
  * An acquire that answers 409 means a LIVE attempt holds the checkout, and the reclaim SKIPS:
- * costing the reclaim is fine by contract, costing a live run is not.
+ * costing the reclaim is fine by contract, costing a live run is not. The refusal carries the
+ * claim's identity (`heldClaim`) so the loop can name it, and reap it when the board proves the
+ * holder gone (issue #344).
  */
 async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult> {
     const clone = repoPath(deps.config, job);
@@ -386,7 +448,14 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
     } catch (e) {
         // A 409 the acquire could not resolve by takeover is a live attempt on the checkout
         // (acquireClaim says which and why in its message).
-        return { ok: false, removed: false, reason: `the checkout is held (${worktree}): ${(e as Error).message}` };
+        const refused: ReclaimResult = {
+            ok: false,
+            removed: false,
+            reason: `the checkout is held (${worktree}): ${(e as Error).message}`,
+        };
+        const claim = await heldClaim(deps, job);
+        if (claim) refused.heldClaim = claim;
+        return refused;
     }
     const takeReclaimJobDown = (): Promise<void> => deleteJob(deps, reclaimJobName(job), 'Foreground');
     try {
@@ -430,5 +499,8 @@ export function createKubernetesRunner(
         // run()'s finally never executes, and the claim the sync took would sit on the checkout
         // indefinitely. This hands it back the same ownership-checked way releaseClaim always does.
         releaseFence: (job: BoardJob) => releaseClaim(deps, job),
+        // The orphaned-claim reap (issue #344): uid-preconditioned, by the claim's derivable
+        // name — the fence's own GET/DELETE grants, nothing new.
+        reapOrphanedClaim: (job: BoardJob) => reapOrphanedClaim(deps, job),
     };
 }

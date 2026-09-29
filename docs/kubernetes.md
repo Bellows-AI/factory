@@ -195,7 +195,10 @@ a caller-minted nonce and is not derivable — it remains the stated residual, h
 than CPU, memory and disk. The checkout-claim ConfigMap is job-scoped, so it is deleted only when
 the job is
 provably GONE — a superseded attempt's group never touches it, because a live replacement holds
-it right now. No new verbs anywhere: `list` on pods/services is the fence's grant, `delete` on
+it right now. The reaper's scan discovers jobs through pods and Services, so a claim-only leak
+(a driver that died holding the claim, its fleet long since swept) is invisible to it; that
+shape is the reclaim loop's to clean, when the leaked holder's thread is later removed — the
+orphaned-claim proof and reap below (issue #344). No new verbs anywhere: `list` on pods/services is the fence's grant, `delete` on
 all four kinds is the chart's Role, and the admission policy already admits deletes of
 `factory.job`-labelled objects.
 
@@ -499,6 +502,22 @@ abandons the sync Job to its own cleanup instead: a failed sync releases itself 
 SUCCESSFUL one has nothing left live, so the loop chains the same `releaseFence` onto the
 sync's answer — until then the claim stays held, which is what keeps a replacement's sync off
 the tree this one may still be writing.
+
+**An unreadable sync/reclaim verdict names why it was unreadable (issue #344).** Both aux Jobs
+print one JSON line as their verdict, and every way that line can fail to arrive used to
+collapse into the bare `the worktree sync answered nothing readable` — with the Job reaped by
+`ttlSecondsAfterFinished` and its pod events expired before anyone looked, the cause was simply
+gone. The verdict reader now returns the cause beside the empty log, and the reported reason
+carries it: `…nothing readable: no live pod for factory-sync-… (2 listed, all terminating)`,
+`…: the pod list of … answered 500: …`, `…: the pod list of … could not be read: …`,
+`…: the log of <pod> answered 404: gone`, `…: the live pod of … has no name`,
+`…: the container printed nothing (pod …, phase Succeeded)`, or — a log that was read but is
+not the verdict line — `…: last log line "fatal: …"`. A container that never started keeps its
+older, stronger verdict (`the worktree sync container failed: StartError: …`), which is why the
+read checks the container status first. The docker runner folds the same detail into its twin
+(`…nothing readable: exit 0, last log line "…"`, or `exit 0, the container printed nothing` — a
+nonzero exit never reaches that arm, because it already reports the daemon's stderr as
+`container failed:`).
 The
 sync is the worktree script as an aux Job — the executor image (which carries node and git) over
 a read-WRITE PVC mount, the three paths the script needs as literal env, the claim env by a
@@ -533,8 +552,21 @@ root-scoped tree. The claim is taken before the reclaim Job is created and relea
 exit path, after a Foreground delete on the failure arms so a mid-flight removal pod never
 outlives the claim it runs under. An acquire that answers 409 — a live attempt holds the
 checkout, a follow-up mid-sync most likely — SKIPS the reclaim (`ok: false`, the held tree
-named): costing the reclaim is fine by contract, costing a live run is not. The same-driver
-half of that race is closed in the loop itself: an in-driver barrier keyed by the thread root
+named), and the refusal carries the claim's identity (`heldClaim`: the ConfigMap's name, the
+holder attempt it carries, and the apiserver's creation stamp), so the loop can name what held
+it off (issue #344). When the board's batched lease lookup (`POST /api/jobs/leases`, the
+reaper's own route) proves the holder job GONE — no row, or a terminal row, the reaper's
+`gone` vocabulary exactly — the claim is a leak from a driver that died holding it, the one
+shape the fence's release-by-next-claimant cannot heal because no later claimant ever comes:
+the loop has the runner DELETE it (uid-preconditioned, the exact incarnation the read named) and
+retries the removal once, logging one `orphaned checkout claim …` line with the claim name, the
+holder attempt and the claim's age. A live row or a refused lookup proves nothing and reaps
+nothing — the refusal is logged, throttled to state changes (see `docs/jobs.md`'s reclaim
+queue), and the next offer asks the board again. A verdict-time reclaim of the same root that
+is still in flight is the one live holder this path can race (a second done queued a row while
+the removal ran), and the loop's own barrier answers that: the orphan arm skips while the
+barrier holds, and the in-flight reclaim releases the claim itself when it settles. Age is only ever REPORTED here, never decided
+on, the fence's no-clock rule. The same-driver half of that race is closed in the loop itself: an in-driver barrier keyed by the thread root
 makes a follow-up claimed while a reclaim is in flight wait out the removal before its startup
 sync. Docker's documented bound is one driver per daemon, so the barrier is all docker needs;
 the claim is what makes the exclusion hold across drivers under kubernetes.
