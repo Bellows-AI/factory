@@ -1074,6 +1074,7 @@ is byte-shape identical to any gated publishing claim, so the existing claim/lea
 machinery runs it unchanged on both transports (docs/workflows.md, "The code-owned default
 workflow"). The round limit is the selected executor's configured option, frozen onto the thread
 at create; nothing in `driver/` grew a gate, a retry, or a config key for this.
+
 **One environment container per task worktree, a `docker exec` per gate.** The container
 (`factory-env-…`, labelled `factory.gates=<key>`) runs the declared image as a `sleep infinity`
 sleeper over the workspaces volume, working directory at the task worktree —
