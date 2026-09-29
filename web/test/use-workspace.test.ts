@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { listExecutorConfigs } from '../src/api/useWorkspace.js';
+import { listExecutorConfigs, payloadSettled, purgeOrphan } from '../src/api/useWorkspace.js';
 import * as useSession from '../src/api/useSession.js';
 
 /**
@@ -96,5 +96,59 @@ describe('listExecutorConfigs', () => {
     it('survives a network failure with an error result, not a throw', async () => {
         vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
         expect(await listExecutorConfigs()).toEqual({ ok: false, error: 'offline' });
+    });
+});
+
+describe('purgeOrphan', () => {
+    it('issues DELETE /api/workspace/repos/:owner/:name and accepts both success answers', async () => {
+        // 202: the removal child is running; 204: nothing to remove. Both are success — the poll
+        // decides what the member sees next.
+        const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 202 }));
+        vi.stubGlobal('fetch', fetch);
+        expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: true });
+        expect(fetch).toHaveBeenCalledWith('/api/workspace/repos/acme/gone', { method: 'DELETE' });
+
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+        expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: true });
+    });
+
+    it('surfaces a refusal\u2019s message and hands a 401 to the session gate', async () => {
+        vi.stubGlobal(
+            'fetch',
+            vi.fn().mockResolvedValue(
+                new Response(JSON.stringify({ error: '"acme/gone" has 2 unfinished tasks', code: 'TASKS_IN_FLIGHT' }), {
+                    status: 409,
+                    headers: { 'content-type': 'application/json' },
+                })
+            )
+        );
+        expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: false, error: '"acme/gone" has 2 unfinished tasks' });
+
+        const report = vi.spyOn(useSession, 'reportUnauthenticated').mockImplementation(() => {});
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+        expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: false, error: 'Your session expired' });
+        expect(report).toHaveBeenCalled();
+    });
+
+    it('survives a network failure with an error result, not a throw', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+        expect(await purgeOrphan('acme', 'gone')).toEqual({ ok: false, error: 'offline' });
+    });
+});
+
+describe('payloadSettled', () => {
+    const payload = (orphaned: { status: string }[]): Parameters<typeof payloadSettled>[0] => ({
+        root: '/workspaces',
+        repos: [],
+        orphaned: orphaned as never,
+        checkoutTotalBytes: null,
+        executors: [],
+    });
+
+    it('keeps polling while an orphan is being deleted — disappearance is the completion', () => {
+        expect(payloadSettled(payload([{ status: 'purging' }]))).toBe(false);
+        expect(payloadSettled(payload([{ status: 'queued' }, { status: 'failed' }]))).toBe(true);
+        // No payload is nothing to wait for — the hook's pre-existing contract.
+        expect(payloadSettled(null)).toBe(true);
     });
 });

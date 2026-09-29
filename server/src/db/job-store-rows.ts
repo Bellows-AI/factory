@@ -234,7 +234,7 @@ export async function insertWorkflowSuccessor(tx: TransactionSql, input: Workflo
 }
 
 /** Separates "no such job" from "the lease is not yours" once a guarded update matched nothing. */
-export async function exists(sql: Sql, orgId: string, id: string): Promise<boolean> {
+export async function exists(sql: Sql | TransactionSql, orgId: string, id: string): Promise<boolean> {
     const rows = await sql<{ id: string }[]>`select id from job where org_id = ${orgId} and id = ${id}`;
     return rows.length > 0;
 }

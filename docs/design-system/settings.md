@@ -27,7 +27,8 @@ contracts: [../design-system.md](../design-system.md).
 | `SettingsOverviewPage.tsx` | page-header, kv, panel, readiness, pill, pill-ok, pill-bad, pill-warn |
 | `SettingsRepositoriesPage.tsx` | page-header, repo-scope, kv, status, muted |
 | `SettingsWorkflowsPage.tsx` | page-header, status |
-| `SettingsWorkspacePage.tsx` | page-header, banner-warn (via `WorkspaceRootBanner`), scope-context, panel, status, muted |
+| `SettingsWorkspacePage.tsx` | page-header, banner-warn (via `WorkspaceRootBanner`), scope-context, panel, status, muted, chat-remove (via `OrphanDeleteDialog`) |
+| `OrphanDeleteDialog.tsx` | dialog, task-remove, status, chat-resume, chat-remove |
 | `RepositorySetup.tsx` | panel, icon, kv, table-wrap, data, pill, repo-cards, repo-card, repo-search, field, repo-toolbar, repo-table, repo-row-configured, repo-save, repo-na, repo-detail, repo-detail-body, scope-context, status, muted, primary |
 | `SettingsSaveActions.tsx` | settings-actions, settings-dirty, primary |
 | `WorkspaceRootBanner.tsx` | banner-warn, banner-title, icon |

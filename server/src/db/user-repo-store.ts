@@ -1,7 +1,7 @@
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { fullName, type Repo } from '../config.js';
 
-export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed';
+export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed' | 'purging';
 
 export interface UserRepo extends Repo {
     readonly status: CloneStatus;
@@ -10,7 +10,32 @@ export interface UserRepo extends Repo {
     readonly selectedAt: string;
     readonly startedAt: string | null;
     readonly readyAt: string | null;
+    /** When the deletion of this orphaned checkout was stamped. Null outside a purge. */
+    readonly purgeStartedAt: string | null;
 }
+
+/**
+ * Thrown by `select` when the selection would change a row stamped `purging` — a checkout whose
+ * deletion has started cannot be re-selected underneath it. The route answers
+ * 409 `PURGE_IN_PROGRESS`; the names are the offending checkouts.
+ */
+export class PurgeConflictError extends Error {
+    readonly names: string[];
+    constructor(names: string[]) {
+        super(`"${names.join(', ')}" is being deleted from disk — wait for the deletion to finish`);
+        this.name = 'PurgeConflictError';
+        this.names = names;
+    }
+}
+
+/** What `stampPurge` decided. Every refusal is the row's state under the lock, in one transaction. */
+export type PurgeStampResult =
+    | 'missing'
+    | { refused: 'selected' }
+    | { refused: 'cloning' }
+    | { refused: 'purging' }
+    | { refused: 'tasks'; count: number }
+    | { stamped: true };
 
 /** A row the queue has taken responsibility for, with the user it belongs to. */
 export interface PendingClone extends Repo {
@@ -33,6 +58,33 @@ export interface UserRepoStore {
     list(userId: string): Promise<UserRepo[]>;
     /** Everything this member deselected but that is still on disk. Nothing prunes them yet. */
     orphaned(userId: string): Promise<UserRepo[]>;
+
+    /**
+     * Stamps one deselected row `purging`, deciding every refusal under the row's lock, in one
+     * transaction (issue #92). The order matters: lock first, then deselection, clone status,
+     * blocking tasks — so a selection that commits first makes the deselection check fail, and a
+     * stamp that commits first is visible to every later select and task insert.
+     */
+    stampPurge(userId: string, repo: { owner: string; name: string }): Promise<PurgeStampResult>;
+
+    /**
+     * The purge's second transaction: deletes the row only if it is STILL deselected and STILL
+     * `purging` — a selection that slipped in behind the stamp's back re-queues the row, and this
+     * must refuse to delete it. False means nothing was deleted.
+     */
+    deletePurged(userId: string, repo: { owner: string; name: string }): Promise<boolean>;
+
+    /**
+     * A purge that could not finish (the removal child failed or timed out) lands the row back on
+     * `failed` with the reason: deselected, visible, retryable — the row outlives the directory.
+     */
+    markPurgeFailed(userId: string, repo: { owner: string; name: string }, error: string): Promise<void>;
+
+    /**
+     * Every `purging` row in this org with its member, for boot recovery: a restart orphans a row
+     * stamped mid-deletion, and recovery finishes each one before the routes accept anything.
+     */
+    listPurging(): Promise<(UserRepo & { userId: string })[]>;
 
     /**
      * Takes up to `limit` queued rows and marks them `cloning`, for this process to work on.
@@ -68,6 +120,7 @@ interface Row {
     selected_at: Date;
     started_at: Date | null;
     ready_at: Date | null;
+    purge_started_at: Date | null;
 }
 
 const toUserRepo = (row: Row): UserRepo => ({
@@ -79,6 +132,7 @@ const toUserRepo = (row: Row): UserRepo => ({
     selectedAt: row.selected_at.toISOString(),
     startedAt: row.started_at?.toISOString() ?? null,
     readyAt: row.ready_at?.toISOString() ?? null,
+    purgeStartedAt: row.purge_started_at?.toISOString() ?? null,
 });
 
 /** The organization is bound at construction: a constant for the life of the process, never a per-call parameter. */
@@ -95,6 +149,57 @@ export function createUserRepoStore({
         if (ready) await ready;
     };
 
+    /** The columns every read of this table selects. */
+    const COLUMNS = sql`
+        repo_owner, repo_name, status, error, attempts, selected_at, started_at, ready_at, purge_started_at
+    `;
+
+    /**
+     * The tasks that block a purge, counted for one member by the checkout's repo NAME: the
+     * directory is keyed by name (`user_repo_dir_uk`), so a task queued against `other/<name>`
+     * writes in the same checkout one queued against `<owner>/<name>` would. A thread blocks when
+     * it is not over — any member nonterminal, or no member marked done; command-only tasks (repo
+     * null) run in no checkout and never block. Threaded by root_job_id, the same key every thread
+     * read uses.
+     */
+    const blockingTaskCount = (tx: TransactionSql, userId: string, name: string) =>
+        tx<{ blocking: number }[]>`
+            select coalesce(sum(case when thread.moving or not thread.marked_done then thread.tasks else 0 end), 0)::int as blocking
+            from (
+                select root_job_id,
+                       count(*)::int as tasks,
+                       bool_or(status not in ('succeeded','failed','dead','stopped')) as moving,
+                       bool_or(done_at is not null) as marked_done
+                from job
+                where org_id = ${orgId}
+                  and created_by = ${userId}
+                  and repo is not null
+                  and split_part(repo, '/', 2) = ${name}
+                group by root_job_id
+            ) thread
+        `;
+
+    /**
+     * Every stampPurge refusal, decided about the row AS LOCKED. Null means nothing refused the
+     * stamp and the update may run.
+     */
+    const stampRefusal = async (
+        tx: TransactionSql,
+        userId: string,
+        repo: { owner: string; name: string },
+        row: { status: CloneStatus; deselected: boolean } | undefined
+    ): Promise<PurgeStampResult | null> => {
+        if (!row) return 'missing';
+        // A selected row is refused regardless of its clone status: deleting a checkout the
+        // member still uses is exactly what the confirmation exists to prevent.
+        if (!row.deselected) return { refused: 'selected' };
+        if (row.status === 'purging') return { refused: 'purging' };
+        if (row.status === 'cloning') return { refused: 'cloning' };
+        const [counted] = await blockingTaskCount(tx, userId, repo.name);
+        if ((counted?.blocking ?? 0) > 0) return { refused: 'tasks', count: counted?.blocking ?? 0 };
+        return null;
+    };
+
     return {
         async select(userId, repos) {
             await gate();
@@ -105,6 +210,30 @@ export function createUserRepoStore({
             const keys = repos.map(fullName);
 
             await sql.begin(async (tx) => {
+                // A checkout stamped `purging` cannot be re-selected underneath its deletion.
+                // Lock first, check second — the lock takes EVERY row the selection names, so a
+                // stamp that committed while this transaction waited is visible in the re-read
+                // (READ COMMITTED re-reads the newest committed row once the lock is granted); a
+                // select that commits first makes the stamp's own deselection check fail. Either
+                // order, exactly one of the two wins and the loser sees the winner's state. A
+                // WHERE status = 'purging' here would be the wrong shape: a row that only becomes
+                // purging in the other transaction's uncommitted write matches neither snapshot
+                // and slips through.
+                const names = repos.map((repo) => repo.name);
+                if (names.length) {
+                    const locked = await tx<{ repo_name: string; status: CloneStatus }[]>`
+                        select repo_name, status from user_repo
+                        where org_id = ${orgId} and user_id = ${userId}
+                          and repo_name = any(${names})
+                        order by repo_name
+                        for update
+                    `;
+                    const purging = locked
+                        .filter((row) => row.status === 'purging')
+                        .map((row) => row.repo_name)
+                        .sort();
+                    if (purging.length) throw new PurgeConflictError(purging);
+                }
                 if (repos.length) {
                     const rows = repos.map((repo) => ({
                         org_id: orgId,
@@ -138,7 +267,7 @@ export function createUserRepoStore({
         async list(userId) {
             await gate();
             const rows = await sql<Row[]>`
-                select repo_owner, repo_name, status, error, attempts, selected_at, started_at, ready_at
+                select ${COLUMNS}
                 from user_repo
                 where org_id = ${orgId} and user_id = ${userId} and deselected_at is null
                 order by repo_owner asc, repo_name asc
@@ -149,12 +278,70 @@ export function createUserRepoStore({
         async orphaned(userId) {
             await gate();
             const rows = await sql<Row[]>`
-                select repo_owner, repo_name, status, error, attempts, selected_at, started_at, ready_at
+                select ${COLUMNS}
                 from user_repo
                 where org_id = ${orgId} and user_id = ${userId} and deselected_at is not null
                 order by repo_owner asc, repo_name asc
             `;
             return rows.map(toUserRepo);
+        },
+
+        async stampPurge(userId, repo) {
+            await gate();
+            return sql.begin(async (tx) => {
+                // Lock first. Everything decided below is decided about the row AS LOCKED, so a
+                // concurrent selection, a second purge, or a task insert serializes behind this
+                // transaction instead of racing it.
+                const [row] = await tx<{ status: CloneStatus; deselected: boolean }[]>`
+                    select status, deselected_at is not null as deselected
+                    from user_repo
+                    where org_id = ${orgId} and user_id = ${userId}
+                      and repo_owner = ${repo.owner} and repo_name = ${repo.name}
+                    for update
+                `;
+                const refusal = await stampRefusal(tx, userId, repo, row);
+                if (refusal !== null) return refusal;
+
+                await tx`
+                    update user_repo set status = 'purging', purge_started_at = now(), error = null
+                    where org_id = ${orgId} and user_id = ${userId}
+                      and repo_owner = ${repo.owner} and repo_name = ${repo.name}
+                `;
+                return { stamped: true };
+            });
+        },
+
+        async deletePurged(userId, repo) {
+            await gate();
+            const rows = await sql`
+                delete from user_repo
+                where org_id = ${orgId} and user_id = ${userId}
+                  and repo_owner = ${repo.owner} and repo_name = ${repo.name}
+                  and deselected_at is not null and status = 'purging'
+                returning 1
+            `;
+            return rows.length > 0;
+        },
+
+        async markPurgeFailed(userId, repo, error) {
+            await gate();
+            await sql`
+                update user_repo set status = 'failed', error = ${error.slice(0, CLONE_ERROR_LIMIT)}
+                where org_id = ${orgId} and user_id = ${userId}
+                  and repo_owner = ${repo.owner} and repo_name = ${repo.name}
+                  and status = 'purging'
+            `;
+        },
+
+        async listPurging() {
+            await gate();
+            const rows = await sql<(Row & { user_id: string })[]>`
+                select user_id, ${COLUMNS}
+                from user_repo
+                where org_id = ${orgId} and status = 'purging'
+                order by purge_started_at asc
+            `;
+            return rows.map((row) => ({ userId: row.user_id, ...toUserRepo(row) }));
         },
 
         async claimPending(limit) {

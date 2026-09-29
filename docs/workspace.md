@@ -239,22 +239,68 @@ come and go with a PUT).
 
 ## Limitations
 
-- **Nothing prunes, and per-member checkouts multiply that by the number of members.** Deselecting a
-  repository frees nothing; `docker compose down -v` is the only reclaim. The reason has not changed
-  and is the reason nothing can be built here safely: this process cannot tell a stale clone from
-  one holding an agent's uncommitted work. The driver's task worktrees only LOOK like that — a
-  task the user closed or deleted does clean its tree up: when the whole thread is terminal AND
-  the user has marked it done (or removed it) the driver removes the per-thread worktree and
-  prunes its admin entry (issue #47, `docs/jobs.md`), keeping
-  the surviving `factory/<root>` branch so a follow-up can recreate the tree when its claim
-  restores. A thread that failed or finished without the done keeps its tree — the tree is what
-  its next turn continues from. What
-  still grows unbounded is the member CLONES, which hold the per-thread worktrees' branches; those
-  are invisible to the workspace page, which walks checkout directories only.
+- **Nothing prunes automatically, and per-member checkouts multiply that by the number of members.**
+  Deselecting a repository frees nothing by itself; what reclaims disk is the member's own manual
+  purge (below). The reason nothing is automatic has not changed and is the reason nothing can be
+  built here safely: this process cannot tell a stale clone from one holding an agent's uncommitted
+  work. The driver's task worktrees only LOOK like that — a task the user closed or deleted does
+  clean its tree up: when the whole thread is terminal AND the user has marked it done (or removed
+  it) the driver removes the per-thread worktree and prunes its admin entry (issue #47,
+  `docs/jobs.md`), keeping the surviving `factory/<root>` branch so a follow-up can recreate the
+  tree when its claim restores. A thread that failed or finished without the done keeps its tree —
+  the tree is what its next turn continues from. What still grows unbounded is the member CLONES,
+  which hold the per-thread worktrees' branches — which is exactly what the purge asks the member
+  to give up, by name, in its confirmation.
 - **What exists instead:** a per-member cap of 20 repositories, so one click cannot clone an entire
-  GitHub organization onto a shared volume; a reported `sizeBytes` per checkout; and an `orphaned`
-  list of deselected repositories that are still on disk, so growth is at least visible on the page
-  rather than only in `df`. That list is where a prune button would attach.
+  GitHub organization onto a shared volume; a reported `sizeBytes` per checkout; an `orphaned` list
+  of deselected repositories that are still on disk, with sizes; a per-member checkout total; and —
+  since #92 — the delete.
+
+## The manual purge (#92)
+
+- **One member, one orphan, deliberately.** `DELETE /api/workspace/repos/:owner/:name` removes the
+  row's `<root>/<orgId>/<userId>/<repo_name>` directory and then the row. The identity comes from
+  the authenticated caller and the stored row, never a client-supplied path — `workspaceDir`
+  asserts the uuid as always — and the sibling `.worktrees/` directory is never traversed. `202`
+  means a removal child is running; `204` means there was nothing to remove. The confirmation names
+  what is lost — uncommitted work, and the local `factory/<root>` branches a follow-up would have
+  reused — because this is the one deletion that can destroy agent work: a clone may hold
+  exactly that, and only the member can know.
+- **The refusal list is the safety list.** A selected row (whatever its clone status), a row still
+  owned by a clone (`cloning`), and a row with unfinished tasks cannot be purged. Tasks are counted
+  for this member by the checkout's repo NAME — the directory is keyed by name even when an old
+  task's `owner/name` differs — and a task blocks when its THREAD is not over: any member
+  nonterminal, or no member marked done. Command-only tasks run in no checkout and never block.
+  Each refusal is decided under the row's lock, in one transaction (`stampPurge`), which is what
+  makes the races unlosable: a selection that commits first makes the stamp's deselection check
+  fail; a stamp that commits first blocks re-selection (`409 PURGE_IN_PROGRESS`) and both
+  job-insert paths (below).
+- **The stamp is released only by an observed child exit.** After `purging` commits, the route
+  answers 202 and the directory comes down in a bounded child process (`rm -rf`, 60s, killed and
+  reaped on timeout) OUTSIDE any database transaction. The row is deleted in a second transaction
+  only if it is still deselected and still `purging` — and only once the child has exited. An
+  error lands the row deselected, `failed`, with the reason: visible and retryable, the row
+  outliving any partial directory. No DB compare-and-delete is trusted to protect against a
+  still-running filesystem deletion, and there is no in-process watchdog: a crash orphans the
+  stamp, and boot recovery finishes it.
+- **Boot recovery is the single-process assumption, extended.** 011's header already said a
+  `cloning` row is owned solely by a live in-process runner; 044 says the same of `purging`. At
+  boot, before the clone queue starts and before the runtime is served to any route — every
+  workspace mutation and task creation resolves its org through `orgs.for()`, which awaits the
+  build — each interrupted `purging` row is finished (residue removed, row deleted) or marked
+  `failed` with the reason.
+- **A missing directory is a successful cleanup.** A stale row whose tree is already gone is
+  deleted in line (204, no child spawned); the GET's orphan list simply does not show it, because
+  the list is about what is on disk — one stat per row, never a walk.
+- **The facts cache learns `invalidate` for exactly one caller.** For most of its life there was
+  no invalidate and the header said so; the purge is the one case where a cached measurement can
+  outlive its tree, and a re-selected repository reuses the path. Without it the new checkout
+  would briefly report its predecessor's size and commit.
+- **The driver's reclaim tolerates the purge.** A finished task's worktree reclaim may race a
+  purge that deleted the parent clone. `git-worktree-remove.cjs` settles the tree from what the
+  tree itself knows when REPO is absent — a task worktree's `.git` file names the clone's admin
+  dir, and only such a tree is removed; anything else keeps the refusal, and there is no prune
+  when there is no clone to prune into. Docker and kubernetes run the same script.
 - **Clones drift from their remotes**, because nothing fetches — but a task never works on the
   drift: the driver's startup sync creates the task worktree from `origin/<default>` fresh at
   each task's starting claim, which is why the drift is survivable at all. A claim that

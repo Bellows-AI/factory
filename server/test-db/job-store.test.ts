@@ -5,6 +5,16 @@ import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 
+/**
+ * A create whose refusal would be a broken setup, never a case under test: narrows the store's
+ * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
+ */
+const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
+    p.then((ref) => {
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        return ref;
+    });
+
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
@@ -45,7 +55,11 @@ beforeAll(async () => {
  * the authenticated caller rather than defaulting quietly; these cases are about leases, not
  * attribution, so they pass null explicitly. The attribution cases below pass a real account.
  */
-const queue = (command: string) => store.create(command, null, { repo: null, executor: null });
+const queue = async (command: string) => {
+    const ref = await store.create(command, null, { repo: null, executor: null });
+    if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+    return ref;
+};
 
 /**
  * Chains a follow-up that MUST be created. The refusal branches get their own dedicated cases
@@ -455,7 +469,7 @@ describe.skipIf(!enabled)('job store', () => {
     // list projection carries the vitals too, the one field `gates` stays spared from and
     // `output` stays spared from still.
     it('carries the runtime vitals on list rows, for the task tree summaries', async () => {
-        const { id } = await store.create('echo hi', null, { repo: 'owner/repo', executor: null });
+        const { id } = await mustCreate(store.create('echo hi', null, { repo: 'owner/repo', executor: null }));
         const claim = await store.claim('w1', LEASE_SECONDS);
         const vitals = {
             cpuPercent: 93,
@@ -639,7 +653,7 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     it('stores the repo and executor a job was queued with', async () => {
-        const labelled = await store.create('drive me', null, { repo: 'acme/web', executor: 'main' });
+        const labelled = await mustCreate(store.create('drive me', null, { repo: 'acme/web', executor: 'main' }));
         const unlabelled = await queue('echo hi');
 
         expect(await store.get(labelled.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
@@ -649,9 +663,9 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     it('lists only the requested repository, newest first', async () => {
-        await store.create('older web task', null, { repo: 'acme/web', executor: null });
-        await store.create('other repo', null, { repo: 'acme/api', executor: null });
-        await store.create('newer web task', null, { repo: 'acme/web', executor: null });
+        await mustCreate(store.create('older web task', null, { repo: 'acme/web', executor: null }));
+        await mustCreate(store.create('other repo', null, { repo: 'acme/api', executor: null }));
+        await mustCreate(store.create('newer web task', null, { repo: 'acme/web', executor: null }));
         await queue('no repo at all');
 
         const listed = await store.list({ repo: 'acme/web', limit: 50 });
@@ -661,8 +675,8 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     it('keeps another organization out of a repository filter', async () => {
-        const { id } = await store.create('echo hi', null, { repo: 'acme/web', executor: null });
-        await otherOrgStore.create('echo hi', null, { repo: 'acme/web', executor: null });
+        const { id } = await mustCreate(store.create('echo hi', null, { repo: 'acme/web', executor: null }));
+        await mustCreate(otherOrgStore.create('echo hi', null, { repo: 'acme/web', executor: null }));
 
         const listed = await store.list({ repo: 'acme/web', limit: 50 });
         expect(listed.map((job) => job.id)).toEqual([id]);

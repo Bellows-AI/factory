@@ -893,6 +893,21 @@ driver died before it could report. Since 016 the session id is whatever the exe
 claude uuid or an opencode `ses_…` — so every executor with a reported session can be followed up. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
 retried click answers the first verdict's instant rather than rewriting it.
 
+**Both insert paths take the author's checkout row's lock (issue #92).** Root creation and
+follow-up insertion check the AUTHOR's `user_repo` row for the task's repo NAME — by name, because
+the directory is keyed by name even when an old task's `owner/name` label differs — inside the
+same transaction as the job insert, `for update` BEFORE inserting. `purging` answers
+`409 PURGE_IN_PROGRESS`: a checkout that is being manually deleted must not have a task queued
+into it. The lock is the point, not a preflight query: an insert that commits before the purge's
+stamp is visible to the stamp's unfinished-task count (so the purge refuses with
+`TASKS_IN_FLIGHT`), and an insert that arrives after the stamp re-reads `purging` under READ
+COMMITTED once the lock is granted (so the insert refuses). An unlocked check would read a stale
+snapshot and lose the race in both directions. Absence of the row is no refusal — a job may be
+queued after the row is gone under the existing task contract (the rows come and go with a PUT);
+that does not guarantee its later claim will find a checkout. Command-only tasks and authorless
+rows are never guarded, and the workflow successor insert is not either: a purge requires the
+thread terminal and done, after which no successor is inserted.
+
 **The command is delivered on every claim, resume included.** There is no delivered-once rule: the
 runner plan both executors render from (`driver/src/runner-plan.ts`) appends `-p <command>` to every
 claude-code run, so a resumed claim carries its command exactly as a fresh one does
@@ -1280,7 +1295,12 @@ thread is terminal (`succeeded`/`failed`/`dead`) AND one member carries the user
 tasks UI marks the thread's head, so the column can sit on any member — one done is the THREAD's
 done). When it is true the completing attempt removes the
 tree via the worktree script run as the sync's twin — a throwaway `docker run` naming the clone
-and the tree, or a reclaim Job over the PVC whose name carries the lease token. The driver does
+and the tree, or a reclaim Job over the PVC whose name carries the lease token. The reclaim may
+race the member's manual purge of the checkout (issue #92, `docs/workspace.md`): the parent clone
+can be gone by the time the reclaim runs, and the script settles that from the tree's own `.git`
+— a worktree whose gitdir names the dead clone's admin dir is removed, anything else keeps the
+refusal, and there is no prune when there is no clone to prune into. One verdict, no retry loop:
+a failure is logged once and the `task_reclaim` lease does what it already does. The driver does
 not ask the board for the thread any more: an earlier shape read `GET /api/jobs/:id/thread`
 after the verdict, which put the whole thread's commands, output and session ids on a route the
 board secret could reach — audit data of jobs the driver never held — and computing the answer

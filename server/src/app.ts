@@ -6,7 +6,7 @@ import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { OrgRegistry } from './orgs.js';
-import { createFactsCache } from './workspace/facts.js';
+import { workspaceRoutes } from './routes/workspace.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -19,7 +19,6 @@ import { tokenRoutes } from './routes/tokens.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
 import { workflowSettingsRoutes } from './routes/workflow-settings.js';
-import { workspaceRoutes } from './routes/workspace.js';
 import type { TelemetryStore } from './telemetry/store.js';
 
 const HTTP_NOT_FOUND = 404;
@@ -153,15 +152,7 @@ export async function buildApp({
     // area of the API.
     await app.register(workflowSettingsRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
-    await app.register(
-        workspaceRoutes({
-            config,
-            orgs,
-            // One cache per app, not per request: the whole point of it is that a poll every
-            // two seconds does not become a `git log` and a directory walk every two seconds.
-            facts: createFactsCache(now),
-        })
-    );
+    await app.register(workspaceRoutes({ config, orgs }));
 
     if (config.webRoot) {
         const { default: fastifyStatic } = await import('@fastify/static');

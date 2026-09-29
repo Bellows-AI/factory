@@ -5,6 +5,16 @@ import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
 
+/**
+ * A create whose refusal would be a broken setup, never a case under test: narrows the store's
+ * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
+ */
+const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
+    p.then((ref) => {
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        return ref;
+    });
+
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
@@ -139,7 +149,7 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task: bound
     it("keeps another organization's tasks out", async () => {
         const LEASE_SECONDS = 300;
         const root = await craft({ status: 'succeeded', finishedMinutesAgo: 20 });
-        const other = await otherOrgStore.create('other org task', null, { repo: null, executor: null });
+        const other = await mustCreate(otherOrgStore.create('other org task', null, { repo: null, executor: null }));
         const claim = await otherOrgStore.claim('w1', LEASE_SECONDS);
         await otherOrgStore.complete(other.id, claim!.leaseToken, {
             status: 'succeeded',

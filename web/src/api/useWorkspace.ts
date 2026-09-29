@@ -3,7 +3,7 @@ import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import { JSON_HEADERS } from '@factory-ai/core';
 
-export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed';
+export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed' | 'purging';
 
 export interface WorkspaceRepo {
     owner: string;
@@ -19,6 +19,15 @@ export interface WorkspaceRepo {
      */
     branch: string | null;
     lastCommit: { sha: string; at: string; headline: string } | null;
+    sizeBytes: number | null;
+}
+
+/** A deselected checkout that is still on disk (issue #92): measurable, and manually deletable. */
+export interface OrphanedRepo {
+    owner: string;
+    name: string;
+    status: CloneStatus;
+    error: string | null;
     sizeBytes: number | null;
 }
 
@@ -45,8 +54,14 @@ export interface WorkspacePayload {
     /** Null when this deployment has no workspace root, which is a supported way to run. */
     root: string | null;
     repos: WorkspaceRepo[];
-    /** Deselected, still on disk. Nothing prunes them; showing them is what makes that visible. */
-    orphaned: { owner: string; name: string }[];
+    /** Deselected, still on disk. Now with sizes, and with a delete of one's own. */
+    orphaned: OrphanedRepo[];
+    /**
+     * The member's checkout usage: selected and orphaned clones summed. Null until every
+     * INCLUDED checkout has a measurement — a partial sum would read as the whole truth. The
+     * driver's `.worktrees/` and other workspace files are not checkouts and are not counted.
+     */
+    checkoutTotalBytes: number | null;
     executors: WorkspaceExecutor[];
 }
 
@@ -59,6 +74,8 @@ export interface UseWorkspace {
     saveExecutors: (
         executors: { name: string; type: string; config: object; isDefault: boolean; gateFixRounds: number }[]
     ) => Promise<string | null>;
+    /** Deletes ONE orphaned checkout from disk, after its confirmation (issue #92). */
+    purge: (owner: string, name: string) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
@@ -68,14 +85,22 @@ export interface UseWorkspace {
     refresh: () => void;
 }
 
-const settled = (data: WorkspacePayload | null): boolean =>
-    !data || data.repos.every((repo) => repo.status === 'ready' || repo.status === 'failed');
+/**
+ * Whether the poll can stand down: every repo settled AND no checkout being deleted. A `purging`
+ * orphan keeps the poll armed — the UI shows "Deleting…" until the row either comes back `failed`
+ * or disappears, and disappearance IS the completion.
+ */
+export const payloadSettled = (data: WorkspacePayload | null): boolean =>
+    !data ||
+    (data.repos.every((repo) => repo.status === 'ready' || repo.status === 'failed') &&
+        data.orphaned.every((orphan) => orphan.status !== 'purging'));
 
 const POLL_BACKOFF_FAST_WINDOW_MS = 60_000;
 const POLL_BACKOFF_FAST_DELAY_MS = 2_000;
 const POLL_BACKOFF_SLOW_WINDOW_MS = 300_000;
 const POLL_BACKOFF_SLOW_DELAY_MS = 5_000;
 const POLL_BACKOFF_MAX_DELAY_MS = 15_000;
+const HTTP_STATUS_NO_CONTENT = 204;
 
 /**
  * How long to wait before polling again, given how long we have been waiting already.
@@ -100,7 +125,7 @@ function scheduleNextPoll(
     waitingSince: { current: number | null },
     scheduleTimeout: (delay: number) => void
 ): void {
-    if (settled(body)) {
+    if (payloadSettled(body)) {
         waitingSince.current = null;
         return;
     }
@@ -152,6 +177,31 @@ export const listExecutorConfigs = async (): Promise<
             return { ok: false as const, error: 'Could not load the executors: unexpected response shape.' };
         }
         return { ok: true as const, executors: rows };
+    } catch (e) {
+        return { ok: false as const, error: (e as Error).message };
+    }
+};
+
+/**
+ * Deletes one orphaned checkout from disk (issue #92). 202 (removal running) and 204 (nothing to
+ * remove) are both success: the poll decides what the member sees — "Deleting…", the failure, or
+ * the row gone. A refusal (selected, still cloning, tasks in flight, already deleting) is the
+ * dialog's error message.
+ */
+export const purgeOrphan = async (
+    owner: string,
+    name: string
+): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+        const response = await fetch(`/api/workspace/repos/${owner}/${name}`, { method: 'DELETE' });
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+            reportUnauthenticated();
+            return { ok: false as const, error: 'Your session expired' };
+        }
+        if (!response.ok && response.status !== HTTP_STATUS_NO_CONTENT) {
+            return { ok: false as const, error: (await refusalOf(response, 'Could not delete the checkout')).error };
+        }
+        return { ok: true as const };
     } catch (e) {
         return { ok: false as const, error: (e as Error).message };
     }
@@ -294,5 +344,23 @@ export function useWorkspace(): UseWorkspace {
         [start]
     );
 
-    return { data, loading, error, saving, save, saveExecutors, listExecutorConfigs, refresh: start };
+    /**
+     * The manual purge. The answer is 202 or 204 and the row does the talking from here — the
+     * poll rides through `purging` ("Deleting…") to `failed` or disappearance, which is the
+     * completion the page shows.
+     */
+    const purge = useCallback(
+        async (owner: string, name: string): Promise<string | null> => {
+            const result = await purgeOrphan(owner, name);
+            if (result.ok) {
+                waitingSince.current = Date.now();
+                start();
+                return null;
+            }
+            return result.error;
+        },
+        [start]
+    );
+
+    return { data, loading, error, saving, save, saveExecutors, purge, listExecutorConfigs, refresh: start };
 }
