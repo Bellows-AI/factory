@@ -12,6 +12,7 @@ import {
     validatePublication,
     validateWaitQuery,
     validateWorkerField,
+    waitControlRefusal,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
@@ -136,6 +137,45 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
             .send({ error: 'The task is still running — stop it first', code: ERROR_CODES.TASK_RUNNING });
     }
     return reply.code(HTTP_OK).send({ id, removed: true });
+}
+
+// The user's wait-cancel (issue #328): ends the durable PR wait a thread is parked on, so a
+// missed webhook or a changed mind does not strand the thread forever. A person's action on a
+// wait no worker holds a lease on — no lease token, actor off the session like stop/done/remove.
+// Author-scoped in the store: the woken continuation would run in the author's worktree.
+export async function handleWaitCancel(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job wait-cancel failed'),
+        () => store.cancelWait(id, callerOf(request)?.user.id ?? null)
+    );
+    if (!result.ok) return reply;
+    // The string members are exactly the shared refusals; the object members differ per verb.
+    if (typeof result.value === 'string') return waitControlRefusal(reply, result.value);
+    return reply.code(HTTP_OK).send({ id, cancelled: true });
+}
+
+// The user's wait-poke (issue #328): re-evaluate the parked PR now — the wake transaction the
+// sweep runs, minus the pending gate, because webhooks are the board's only GitHub input and the
+// motivating case is one that never arrived. `woken: false` is an honest answer (nothing parked,
+// already woken, an active member), never an error.
+export async function handleWaitPoke(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job wait-poke failed'),
+        () => store.pokeWait(id, callerOf(request)?.user.id ?? null)
+    );
+    if (!result.ok) return reply;
+    if (typeof result.value === 'string') return waitControlRefusal(reply, result.value);
+    return reply.code(HTTP_OK).send({ id, woken: result.value.woken });
 }
 
 // The user's reopening of a done task (issue #327): done's inverse. Person-gated like done/remove

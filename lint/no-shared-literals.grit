@@ -58,6 +58,7 @@ or {
                 r"^['\"]JOBS_UNAVAILABLE['\"]$",
                 r"^['\"]LEASE_LOST['\"]$",
                 r"^['\"]NAME_TAKEN['\"]$",
+                r"^['\"]NO_OPEN_WAIT['\"]$",
                 r"^['\"]NO_PENDING['\"]$",
                 r"^['\"]NO_PUBLISH_PATH['\"]$",
                 r"^['\"]NO_SESSION['\"]$",

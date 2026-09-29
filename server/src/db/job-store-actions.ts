@@ -1,11 +1,12 @@
 /**
- * What members do to tasks: create, follow up, mark done, reopen, stop, suspend, remove — and the
- * reclaim a thread queues once its last member is done.
+ * What members do to tasks: create, follow up, mark done, reopen, stop, suspend, remove, control
+ * a parked PR wait (issue #328) — and the reclaim a thread queues once its last member is done.
  */
 
 import type { Sql, TransactionSql } from 'postgres';
 import { exists, workspacePathFor, hasRunningMember } from './job-store-rows.js';
 import type { JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
+import { wakeOneRound } from './workflow-blocks/runtime.js';
 
 export type CreateTarget = Parameters<JobStore['create']>[2];
 
@@ -477,6 +478,105 @@ export async function removeJobThread(
 
         return { result: 'ok', rootJobId, repo: root.repo, workspacePath };
     });
+}
+
+/**
+ * The shared preamble of both wait-control verbs (issue #328): resolve the named id to its
+ * thread root and check the caller may act on the thread. `id` may be any member — the wait
+ * belongs to the root, exactly as `removeThread` resolves. Author-scoped like the follow-up (the
+ * woken continuation runs in the author's worktree): only the account that queued the thread —
+ * or an anonymous caller on a thread with no author — gets past here.
+ */
+type ControlledRoot = { ok: true; root: string } | { ok: false; refusal: 'missing' | 'forbidden' };
+
+async function resolveControlledRoot(
+    sql: Sql,
+    orgId: string,
+    id: string,
+    caller: string | null
+): Promise<ControlledRoot> {
+    const [named] = await sql<{ root_job_id: string; created_by: string | null }[]>`
+        select root_job_id, created_by from job
+        where org_id = ${orgId} and id = ${id}
+    `;
+    if (!named) return { ok: false, refusal: 'missing' };
+    if (named.created_by !== caller) return { ok: false, refusal: 'forbidden' };
+    return { ok: true, root: named.root_job_id };
+}
+
+/**
+ * The user's wait-cancel (issue #328): `cancelWaitsForRoot` with the user reason and the acting
+ * caller, decided atomically enough — the update's `cancelled_at is null` predicate IS the
+ * no-open-wait answer, so a cancel racing itself answers `ok` exactly once and `no_wait` after.
+ * No advisory lock, exactly like `cancelForRepoPr`/`cancelWaitsForRoot` today: a cancel can land
+ * at any time, including between a wake committing and the continuation being claimed, and the
+ * claim-time cancellation fence is what makes cancellation win that race.
+ */
+export async function cancelThreadWait(
+    ctx: JobStoreContext,
+    id: string,
+    cancelledBy: string | null
+): ReturnType<JobStore['cancelWait']> {
+    const { sql, orgId, prs } = ctx;
+    const resolved = await resolveControlledRoot(sql, orgId, id, cancelledBy);
+    if (!resolved.ok) return resolved.refusal;
+    if (!prs) return 'no_wait';
+    const cancelled = await prs.cancelWaitsForRoot(resolved.root, 'cancelled by user', undefined, cancelledBy);
+    return cancelled > 0 ? { result: 'ok' } : 'no_wait';
+}
+
+/**
+ * The user's poke (issue #328): re-evaluate the parked PR now. The board's only GitHub input is
+ * webhook deliveries, so "re-evaluate" cannot mean fetching GitHub here — it means running the
+ * wake transaction (`wakeOneRound`) for the thread's parked rounds without the sweep's
+ * `pending > 0` gate: whatever IS folded is claimed honestly (a poke that folds nothing stamps
+ * `delivery_count = 0` — the audit signature of a user wake), and the continuation's own
+ * claim-time pre-helper is what actually re-fetches the PR state. Pre-reads run unlocked, exactly
+ * like the sweep's candidate list; `wakeOneRound` re-checks everything that matters under the
+ * thread's advisory lock, so two concurrent pokes wake a round exactly once.
+ */
+export async function pokeThreadWait(
+    ctx: JobStoreContext,
+    id: string,
+    pokedBy: string | null
+): ReturnType<JobStore['pokeWait']> {
+    const { sql, orgId, prs } = ctx;
+    const resolved = await resolveControlledRoot(sql, orgId, id, pokedBy);
+    if (!resolved.ok) return resolved.refusal;
+    if (!prs) return 'no_wait';
+    const root = resolved.root;
+
+    // The no-open-wait refusal first — the issue's one mandated 409: a thread that never parked,
+    // or whose wait already ended, has nothing to evaluate. Distinct from the `woken: false`
+    // answer an OPEN wait with nothing parked gets below (already woken, active member, done).
+    const [open] = await sql<{ one: number }[]>`
+        select 1 as one from workflow_wait
+        where org_id = ${orgId} and root_job_id = ${root}
+          and completed_at is null and cancelled_at is null
+    `;
+    if (!open) return 'no_wait';
+
+    // The same shape the sweep's candidate query takes, scoped to this thread: an open wait
+    // joined to its parked round. `woken: false` for none — nothing parked, or already woken.
+    const parked = await sql<{ workflow_node: string }[]>`
+        select r.workflow_node
+        from workflow_round r
+        join workflow_wait w
+          on w.org_id = r.org_id and w.root_job_id = r.root_job_id and w.reason = r.workflow_node
+        where r.org_id = ${orgId}
+          and r.root_job_id = ${root}
+          and r.woken_at is null
+          and w.completed_at is null and w.cancelled_at is null
+        order by r.parked_at
+    `;
+    if (parked.length === 0) return { result: 'ok', woken: false };
+
+    let woken = false;
+    for (const round of parked) {
+        const jobId = await wakeOneRound({ sql, orgId, prs }, root, round.workflow_node, false);
+        woken = woken || jobId !== null;
+    }
+    return { result: 'ok', woken };
 }
 
 /**

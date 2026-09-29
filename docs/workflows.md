@@ -260,10 +260,41 @@ cancellation win the race against a wake rather than the other way around. Ordin
 paths need no changes: a PR close arriving before any wake is simply never picked up by the sweep's
 "wait is open" predicate; stopping the QUEUED continuation (an ordinary `job` row once woken) already
 cancels the wait through the existing stop-settle path (`cancelWaitsForRoot`); removing the thread
-cancels the wait AND deletes its `workflow_round` rows in the same transaction. The one case this
-seam does not cover is stopping a thread that is parked and has NOT yet woken — there is no `job` row
-to address with `/stop` in that state, so cancelling before the first wake is `removeThread`'s job
-(which works regardless of park state) or `cancelForRepoPr`'s.
+cancels the wait AND deletes its `workflow_round` rows in the same transaction. The one case the
+seam above does not cover — a thread parked and NOT yet woken, with no `job` row to address with
+`/stop` — is exactly what issue #328's `wait/cancel` (below) closes for the user, beside
+`removeThread` (which works regardless of park state) and `cancelForRepoPr`'s.
+
+**The user's own two handles (issue #328): `POST /api/jobs/:id/wait/cancel` and
+`POST /api/jobs/:id/wait/poke`.** The webhook-only release paths above strand a thread whenever a
+delivery is missed, and give a client no way to stop waiting or force a round, so both verbs are
+open to people (no lease token — a wait holds no runner) on any member id of the thread (the wait
+belongs to the root, like every thread read), author-scoped like the follow-up — the woken
+continuation would run in the author's worktree under the author's executor — and both answer
+`409 NO_OPEN_WAIT` when the thread has no open wait (never parked, or already terminal): a cancel
+that changed nothing has no wait to name.
+
+Cancel is `cancelWaitsForRoot` with terminal reason `cancelled by user` (the lowercase family `pr
+closed`/`task stopped`/`task removed` joins) and the acting caller stamped `cancelled_by` on the
+wait row (045, 025's actor pattern with the same first-writer coalesce; recorded but served by no
+read, the `removed_by` precedent). It takes NO advisory lock, exactly like the two cancellation
+sweeps above: the claim-time cancellation fence is what makes a cancel racing a wake resolve
+correctly — a parked round becomes permanently unwakeable (`recordDelivery` answers `unmatched`),
+and a continuation already woken but unclaimed is settled `stopped` at claim.
+
+Poke runs `runtime.ts`'s `wakeOneRound` — the sweep's own per-candidate wake transaction, extracted
+and shared — for the thread's parked round(s) with `requirePending` false: the sweep's `pending > 0`
+gate is replaced by an open-wait re-check under the same per-root advisory lock, because
+"re-evaluate the PR now" cannot mean fetching GitHub at the board (webhooks are its only GitHub
+input) and the motivating case is precisely a webhook that never arrived. Whatever IS folded is
+claimed honestly — a poke that folds nothing stamps `delivery_count = 0` with a null cursor, which
+is why 045 relaxes 038's check to `>= 0` and why that zero is the audit signature of a user wake (a
+sweep wake always has `pending > 0`) — and the continuation's claim-time pre-helper is what
+actually re-fetches the PR state, so a false wake costs a helper container and a re-park (`wait`'s
+generous wake bound), never an agent turn. `woken: false` is an honest answer, never an error:
+nothing parked, the round already woken, or a member of the thread active — the poke queues nothing
+behind a live run, and two concurrent pokes wake a round exactly once through the same lock
+discipline the sweep and the claims share.
 
 ### The merge-conflict-autofix block
 
@@ -659,6 +690,7 @@ vocabulary is closed: anything else in `{{...}}` is refused at create.
 | Templates and the base `fix-issue` workflow | `server/src/db/workflow-templates.ts` |
 | Columns (027, 030, 033) and the freeze-at-create snapshot | `server/migrations/027_workflows.sql`, `server/migrations/030_workflow_params.sql`, `server/migrations/033_job_workflow_name.sql` |
 | The durable block-wait dispatcher: the allowlist, the park, the wake sweep, the cancellation fence (issue #231) | `server/src/db/workflow-blocks/runtime.ts` |
+| The shared per-round wake transaction (`requirePending` false is the poke, issue #328) | `server/src/db/workflow-blocks/runtime.ts` `wakeOneRound` |
 | The generic `finishWait` settle rule (issue #133) | `server/src/db/workflow-blocks/runtime-settle.ts` |
 | The parked continuation and its wake audit (issue #231) | `server/migrations/038_workflow_round.sql` |
 | The github-review-reconcile block's own driver helpers: the adapter scripts, the composed bodies, the registry entries (issue #133) | `driver/src/review-helpers.ts`, `driver/src/scripts/review-collect-probe-*.cjs`, `driver/src/scripts/review-reply-probe-*.cjs` |

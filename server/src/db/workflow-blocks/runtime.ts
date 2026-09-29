@@ -165,13 +165,121 @@ interface RoundRow {
 }
 
 /**
+ * The wake transaction one parked round runs, shared by the claim preamble's sweep and issue
+ * #328's user poke: takes the thread's per-root advisory lock — the same serialization point a
+ * claim and a transition already use — so a wake can never race a transition re-parking the same
+ * node, and two wakers can never double-wake one round: the second one's re-check under the lock
+ * finds `woken_at` already set and answers null.
+ *
+ * `requirePending` distinguishes the two callers. The sweep runs it `true`: a round whose wait
+ * has nothing folded is left parked (`claimReview` still reset its zero — harmless). The poke runs
+ * it `false` — that is the poke's whole point, force-evaluating a PR whose webhook was missed —
+ * and replaces the zero-pending bail with an open-wait re-check under the lock, since a wait
+ * cancelled or completed between the poke's unlocked pre-reads and this lock must not wake.
+ *
+ * Answers the inserted continuation's id, or null when the round was not woken (an active member
+ * re-checked under the lock, the round already gone/woken, the wait terminal under the lock).
+ */
+export async function wakeOneRound(
+    ctx: { sql: Sql; orgId: string; prs: JobStorePrs },
+    rootJobId: string,
+    workflowNode: string,
+    requirePending: boolean
+): Promise<string | null> {
+    const { sql, orgId, prs } = ctx;
+    return sql.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+
+        // Re-checked under the lock: the caller's candidate list ran unlocked, so a follow-up
+        // queued or the thread marked done between that read and this lock grant would
+        // otherwise slip past it. Best-effort, not a hard guarantee — neither writer takes
+        // this same advisory lock, so a write landing in the narrow window between this check
+        // and the insert below is still possible; `sameThreadRunning` (job-store-claim.ts) is
+        // what actually keeps two rows of one thread from running at once regardless.
+        const [active] = await tx<{ any: boolean }[]>`
+            select exists (
+                select 1 from job m
+                where m.org_id = ${orgId} and m.root_job_id = ${rootJobId}
+                  and (m.status in ('queued', 'running') or m.done_at is not null)
+            ) as any
+        `;
+        if (active?.any) return null;
+
+        const [round] = await tx<RoundRow[]>`
+            select workflow_node, command, session_id, job_repo, executor, parent_job_id
+            from workflow_round
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
+              and workflow_node = ${workflowNode} and woken_at is null
+            for update
+        `;
+        if (!round) return null;
+
+        if (requirePending) {
+            const claimed = await prs.claimReview(rootJobId, workflowNode, tx);
+            if (claimed.pending === 0) return null;
+            return insertWakeContinuation(tx, { orgId, rootJobId, workflowNode }, round, claimed);
+        }
+
+        // The poke's gate instead: the wait must still be OPEN under this lock — a cancel or a
+        // completion landing after the route's unlocked pre-read leaves a terminal wait, and
+        // claimReview would answer its {pending: 0} shape for it exactly like an empty one.
+        const [open] = await tx<{ one: number }[]>`
+            select 1 as one from workflow_wait
+            where org_id = ${orgId} and root_job_id = ${rootJobId} and reason = ${workflowNode}
+              and completed_at is null and cancelled_at is null
+        `;
+        if (!open) return null;
+        const claimed = await prs.claimReview(rootJobId, workflowNode, tx);
+        return insertWakeContinuation(tx, { orgId, rootJobId, workflowNode }, round, claimed);
+    });
+}
+
+/** The wake's insert half: the continuation job, then the round's audit stamps. */
+async function insertWakeContinuation(
+    tx: TransactionSql,
+    ctx: { orgId: string; rootJobId: string; workflowNode: string },
+    round: RoundRow,
+    claimed: { pending: number; lastDeliveryId: string | null }
+): Promise<string | null> {
+    const [root] = await tx<{ workflow_id: string | null; workflow_name: string | null; created_by: string | null }[]>`
+        select workflow_id, workflow_name, created_by from job
+        where org_id = ${ctx.orgId} and id = ${ctx.rootJobId}
+    `;
+    // Unreachable in practice — removeThread deletes the rounds with the thread — but the sweep
+    // has always skipped such a round rather than fail its whole batch, and stays that way.
+    if (!root) return null;
+
+    const jobId = await insertWorkflowSuccessor(tx, {
+        orgId: ctx.orgId,
+        command: round.command,
+        createdBy: root.created_by,
+        repo: round.job_repo,
+        executor: round.executor,
+        parentJobId: round.parent_job_id,
+        sessionId: round.session_id,
+        rootJobId: ctx.rootJobId,
+        workflowId: root.workflow_id,
+        workflowName: root.workflow_name,
+        workflowNode: ctx.workflowNode,
+    });
+
+    await tx`
+        update workflow_round set
+            woken_at = now(), job_id = ${jobId},
+            delivery_count = ${claimed.pending}, last_delivery_id = ${claimed.lastDeliveryId}
+        where org_id = ${ctx.orgId} and root_job_id = ${ctx.rootJobId}
+          and workflow_node = ${ctx.workflowNode} and woken_at is null
+    `;
+    return jobId;
+}
+
+/**
  * The claim preamble's wake sweep (`job-store-claim.ts`'s `claimJob`, before it looks for queued
  * work): claims every parked wait with pending review activity and makes exactly one continuation
- * job claimable for it. Each candidate wakes in its OWN transaction, under that thread's per-root
- * advisory lock — the same serialization point a claim and a transition already use — so a wake can
- * never race a transition re-parking the same node, and two sweepers (or a sweeper and a claim
- * re-checking after waking) can never double-wake one round: the second one's re-check under the
- * lock finds `woken_at` already set and does nothing.
+ * job claimable for it. Each candidate wakes in its OWN transaction via `wakeOneRound`, never
+ * inside the claim transaction that triggered the sweep — a wake that already committed must
+ * survive a later candidate's or the claim's own failure. The candidate list itself runs unlocked;
+ * `wakeOneRound` re-checks everything that matters under the lock.
  *
  * A thread with any active member (queued, running, or already marked done) is skipped — waking it
  * would either duplicate a live run's worktree or wake a thread nobody can act on again.
@@ -199,66 +307,7 @@ export async function sweepRuntimeWakes(ctx: { sql: Sql; orgId: string; prs: Job
     `;
 
     for (const candidate of candidates) {
-        await sql.begin(async (tx) => {
-            await tx`select pg_advisory_xact_lock(hashtextextended(${candidate.root_job_id}::text, 0))`;
-
-            // Re-checked under the lock: the candidate list above ran unlocked, so a follow-up
-            // queued or the thread marked done between that read and this lock grant would
-            // otherwise slip past it. Best-effort, not a hard guarantee — neither writer takes
-            // this same advisory lock, so a write landing in the narrow window between this check
-            // and the insert below is still possible; `sameThreadRunning` (job-store-claim.ts) is
-            // what actually keeps two rows of one thread from running at once regardless.
-            const [active] = await tx<{ any: boolean }[]>`
-                select exists (
-                    select 1 from job m
-                    where m.org_id = ${orgId} and m.root_job_id = ${candidate.root_job_id}
-                      and (m.status in ('queued', 'running') or m.done_at is not null)
-                ) as any
-            `;
-            if (active?.any) return;
-
-            const [round] = await tx<RoundRow[]>`
-                select workflow_node, command, session_id, job_repo, executor, parent_job_id
-                from workflow_round
-                where org_id = ${orgId} and root_job_id = ${candidate.root_job_id}
-                  and workflow_node = ${candidate.workflow_node} and woken_at is null
-                for update
-            `;
-            if (!round) return;
-
-            const claimed = await prs.claimReview(candidate.root_job_id, candidate.workflow_node, tx);
-            if (claimed.pending === 0) return;
-
-            const [root] = await tx<
-                { workflow_id: string | null; workflow_name: string | null; created_by: string | null }[]
-            >`
-                select workflow_id, workflow_name, created_by from job
-                where org_id = ${orgId} and id = ${candidate.root_job_id}
-            `;
-            if (!root) return;
-
-            const jobId = await insertWorkflowSuccessor(tx, {
-                orgId,
-                command: round.command,
-                createdBy: root.created_by,
-                repo: round.job_repo,
-                executor: round.executor,
-                parentJobId: round.parent_job_id,
-                sessionId: round.session_id,
-                rootJobId: candidate.root_job_id,
-                workflowId: root.workflow_id,
-                workflowName: root.workflow_name,
-                workflowNode: candidate.workflow_node,
-            });
-
-            await tx`
-                update workflow_round set
-                    woken_at = now(), job_id = ${jobId},
-                    delivery_count = ${claimed.pending}, last_delivery_id = ${claimed.lastDeliveryId}
-                where org_id = ${orgId} and root_job_id = ${candidate.root_job_id}
-                  and workflow_node = ${candidate.workflow_node} and woken_at is null
-            `;
-        });
+        await wakeOneRound({ sql, orgId, prs }, candidate.root_job_id, candidate.workflow_node, true);
     }
 }
 
