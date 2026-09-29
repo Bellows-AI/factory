@@ -158,6 +158,13 @@
         background: var(--surface-strong);
     }
 
+    /* Held down (issue 265): a press must look different from a hover, or a member cannot tell a
+       click landed until the work finishes. One step past the hover fill, instant, and outranked
+       by `:disabled` below so a dead button stays dead under the pointer. */
+    button:active:not(:disabled) {
+        background: var(--surface-pressed);
+    }
+
     button:disabled {
         background: transparent;
         color: var(--ink-muted);
@@ -181,6 +188,11 @@
         border-color: var(--accent-hover);
     }
 
+    button.primary:active:not(:disabled) {
+        background: var(--accent-pressed);
+        border-color: var(--accent-pressed);
+    }
+
     button.primary:disabled {
         background: var(--surface-strong);
         border-color: var(--surface-strong);
@@ -196,6 +208,14 @@
 
     button.danger:hover:not(:disabled) {
         background: var(--bad-wash);
+    }
+
+    /* The destructive press moves the EDGE, not the fill: a stronger wash under `--lamp-stop` text
+       drops below 4.5:1 (measured 4.38 at 18% against 4.68 at the hover's 14%), so the frame goes
+       to full strength instead and the wash stays exactly where contrast holds. */
+    button.danger:active:not(:disabled) {
+        background: var(--bad-wash);
+        border-color: var(--lamp-stop);
     }
 
     button.danger:disabled {
