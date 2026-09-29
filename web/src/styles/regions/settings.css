@@ -8,15 +8,169 @@
         margin-bottom: 8px;
     }
 
-    .picker-search {
-        align-items: center;
+    /* The executor editor (issue 261): each field is a column — label above, control, short help, and
+       the field's own error below it. The model choice is a fieldset whose legend wears the
+       label's type. */
+    .picker-field {
+        border: none;
         display: flex;
-        gap: 8px;
+        flex-direction: column;
+        gap: 4px;
         margin: 12px 0;
+        min-width: 0;
+        padding: 0;
     }
 
-    .picker-search input {
-        flex: 1;
+    .picker-field > label,
+    .picker-field > legend {
+        font-size: 13px;
+        font-weight: 600;
+        padding: 0;
+    }
+
+    .picker-help {
+        color: var(--ink-muted);
+        font-size: 13px;
+        margin: 0;
+    }
+
+    .picker-field-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    /* Advanced configuration: a native disclosure, collapsed until asked for. */
+    .picker-advanced {
+        border-top: 1px solid var(--line);
+        margin-top: 12px;
+        padding-top: 8px;
+    }
+
+    .picker-advanced > summary {
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 6px 0;
+    }
+
+    .picker-managed ul {
+        margin: 4px 0 0;
+        padding-left: 20px;
+    }
+
+    /* Why Save is unavailable, on the actions row's leading edge beside the disabled button. */
+    .picker-save-hint {
+        color: var(--ink-muted);
+        font-size: 13px;
+        margin: 0 auto 0 0;
+    }
+
+    /* The Advanced JSON editor: a line-number gutter beside a transparent textarea laid exactly
+       over its highlighted copy. Both layers share one font, size, line height, padding and tab
+       size, or the caret drifts off the painted text; the area is a bounded height and the
+       textarea is the one thing that scrolls. */
+    .json-editor {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-lg);
+        display: grid;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        grid-template-columns: auto minmax(0, 1fr);
+        height: 240px;
+        line-height: 20px;
+        overflow: hidden;
+    }
+
+    .json-editor:focus-within {
+        border-color: var(--accent);
+    }
+
+    .json-editor:has([aria-invalid='true']) {
+        border-color: var(--lamp-stop);
+    }
+
+    /* The painted layers never show scrollbars, but the textarea's take room where the platform
+       reserves it; the extra trailing padding lets the gutter and the highlight scroll as far as
+       the textarea does, so line numbers and paint stay on their lines at either end. */
+    .json-editor-gutter {
+        border-right: 1px solid var(--line);
+        color: var(--ink-muted);
+        overflow: hidden;
+        padding: 8px 8px 32px 12px;
+        text-align: right;
+        user-select: none;
+    }
+
+    .json-editor-gutter > span {
+        display: block;
+    }
+
+    .json-editor-area {
+        position: relative;
+    }
+
+    .json-editor-highlight,
+    .json-editor-input {
+        border: none;
+        font: inherit;
+        inset: 0;
+        margin: 0;
+        padding: 8px 12px;
+        position: absolute;
+        tab-size: 2;
+        white-space: pre;
+    }
+
+    .json-editor-highlight {
+        color: var(--ink);
+        overflow: hidden;
+        padding-bottom: 32px;
+        padding-right: 32px;
+        pointer-events: none;
+    }
+
+    .json-editor-input {
+        background: transparent;
+        caret-color: var(--ink);
+        color: transparent;
+        height: 100%;
+        overflow: auto;
+        resize: none;
+        width: 100%;
+    }
+
+    /* The global ring would draw inside the clipped frame; the frame's own accent edge is the
+       editor's focus indicator, as it is for every .field. */
+    .json-editor-input:focus-visible {
+        outline-offset: -2px;
+    }
+
+    .json-editor-input::selection {
+        background: var(--accent-wash);
+        color: transparent;
+    }
+
+    .json-token-key {
+        color: var(--accent);
+    }
+
+    .json-token-string {
+        color: var(--ink);
+    }
+
+    .json-token-number,
+    .json-token-literal {
+        color: var(--lamp-done);
+    }
+
+    .json-token-punct {
+        color: var(--ink-muted);
+    }
+
+    .json-token-invalid {
+        color: var(--lamp-stop);
+        text-decoration: underline wavy;
     }
 
     /* The repository setup page (issue 181, recomposed on concept 06 by issue 282): the header's
@@ -311,7 +465,9 @@
     }
 
     .picker-actions {
+        align-items: center;
         display: flex;
+        flex-wrap: wrap;
         gap: 8px;
         justify-content: flex-end;
         margin-top: 16px;
@@ -658,11 +814,19 @@
         .env-advanced-toggle,
         .env-raw input,
         .env-raw select,
-        .env-raw button {
+        .env-raw button,
+        .picker-advanced > summary,
+        .picker-field-actions button,
+        .picker-actions button {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* The Advanced summary keeps its native disclosure marker. */
+        .picker-advanced > summary {
+            display: list-item;
         }
 
         /* Two members whose own region rule used to follow the list keep that rule's value: a

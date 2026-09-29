@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
+import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { OrphanDeleteDialog } from '../components/OrphanDeleteDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
@@ -95,6 +96,7 @@ export function SettingsWorkspacePage() {
         return (
             <>
                 <PageHeader eyebrow="Settings" title="Workspace" />
+                <DraftReturnBanner />
                 <p className="status">Loading your workspace…</p>
             </>
         );
@@ -112,6 +114,9 @@ export function SettingsWorkspacePage() {
                     data && !noRoot ? <Link to="/settings/repos">Manage repository checkouts</Link> : undefined
                 }
             />
+            {/* The executor dialog's credentials detour lands here with the composer's return
+                forwarded (issue 261); the banner is the way back to the draft. */}
+            <DraftReturnBanner />
 
             {noRoot ? (
                 <WorkspaceRootBanner>

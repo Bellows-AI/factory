@@ -1,5 +1,6 @@
 import { CLAUDE_CODE } from '@factory-ai/core';
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { ADD_LABEL } from '../web/src/workspace/executors.js';
 
 /** The one executor the composer specs start tasks with. No driver runs here, so nothing resolves it. */
 export const E2E_EXECUTOR = {
@@ -32,6 +33,8 @@ export interface MockExecutor {
     type: string;
     createdAt: string;
     isDefault: boolean;
+    /** The gate-repair budget the dialog's config read requires on every row it opens with. */
+    gateFixRounds?: number;
     config: object;
 }
 
@@ -83,4 +86,17 @@ export function countLaunches(page: Page): { bodies: unknown[] } {
         }
     });
     return seen;
+}
+
+/**
+ * Add an executor the way a member does with no JSON at all (issue 261): open the dialog from the
+ * page header, type a name, keep the default agent and the runner's default model, and save —
+ * which saves the inherited configuration, `{}`.
+ */
+export async function addExecutorViaDialog(page: Page, name: string): Promise<void> {
+    await page.getByRole('button', { name: ADD_LABEL }).click();
+    const dialog = page.getByRole('dialog', { name: ADD_LABEL });
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await dialog.getByRole('button', { name: ADD_LABEL }).click();
+    await expect(dialog).toHaveCount(0);
 }

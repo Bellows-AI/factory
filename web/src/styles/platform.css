@@ -18,4 +18,10 @@
     :where(a, button, input, select, textarea, summary, .updated-at):focus-visible {
         outline-color: Highlight;
     }
+
+    /* The repaint forces the JSON editor's transparent textarea text visible, so its highlighted
+       copy underneath would double every character; the textarea alone is the editor there. */
+    .json-editor-highlight {
+        display: none;
+    }
 }

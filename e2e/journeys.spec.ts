@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { countLaunches, mockExecutors } from './executor.js';
+import { addExecutorViaDialog, countLaunches, mockExecutors } from './executor.js';
 import {
     authoredBy,
     failedGateFollowUpThread,
@@ -112,12 +112,7 @@ for (const theme of THEMES) {
         await banner.getByRole('link', { name: 'Add an executor in Settings' }).click();
         await expect(page).toHaveURL(/\/settings\/executors\?return=\/tasks\/new$/);
         await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
-        await page.getByRole('button', { name: 'Add executor' }).click();
-        const dialog = page.getByRole('dialog', { name: 'Add executor' });
-        await dialog.getByPlaceholder('main').fill('journey-executor');
-        await dialog.locator('textarea').fill('{}');
-        await dialog.getByRole('button', { name: 'Add executor' }).click();
-        await expect(dialog).toHaveCount(0);
+        await addExecutorViaDialog(page, 'journey-executor');
         await shoot(page, 'configure', 'settings-return', theme);
 
         await page.getByRole('link', { name: 'Back to new task' }).click();

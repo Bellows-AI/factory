@@ -12,6 +12,7 @@ import { SettingsRepositoriesPage } from '../src/pages/SettingsRepositoriesPage.
 import { SettingsWorkflowsPage } from '../src/pages/SettingsWorkflowsPage.js';
 import { SettingsWorkspacePage } from '../src/pages/SettingsWorkspacePage.js';
 import { orphanDeleteDialogBody, orphanDeleteDialogTitle } from '../src/components/OrphanDeleteDialog.js';
+import { EXECUTOR_SCOPE } from '../src/workspace/executors.js';
 
 /**
  * The pages of the settings tree, rendered through a real route tree so the layout's outlet
@@ -337,6 +338,13 @@ describe('Settings workspace page', () => {
         expect(html).toContain('No variables configured.');
     });
 
+    it('keeps the way back to a task draft on the executor dialog’s credentials detour', () => {
+        const html = render('/settings/workspace?return=/tasks/new', {
+            workspace: { loading: false, data: { root: '/workspaces', repos: [], orphaned: [], executors: [] } },
+        });
+        expect(html).toContain('You have a task draft in progress.');
+    });
+
     it('renders no editor after a failed environment read', () => {
         const html = render('/settings/workspace', {
             // The workspace poll must have settled for the page to reach its env section at all.
@@ -362,7 +370,7 @@ describe('Settings executors page', () => {
     it('says it is loading until the workspace poll answers, executors riding that poll', () => {
         const html = render('/settings/executors');
         expect(html).toContain('Loading your workspace…');
-        expect(html).toContain('Name the personal runner configuration offered when you start a task.');
+        expect(html).toContain(EXECUTOR_SCOPE);
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
@@ -386,6 +394,9 @@ describe('Settings executors page', () => {
         expect(html).toContain('<h2>My workspace</h2>');
         expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
         expect(html).toContain('Add executor');
+        // The save announcement's region is mounted before any save, so the sentence is heard
+        // when it arrives (issue 261).
+        expect(html).toMatch(/<p class="muted" role="status"><\/p>/);
     });
 
     it('refuses before any dialog when the deployment has no workspace root', () => {

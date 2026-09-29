@@ -154,25 +154,27 @@ own environment scope, and the `Still on disk` list of deselected but unpruned c
 
 ## Executors
 
-Settings → Executors shows the member's configured executors (moved off the workspace page by
-#150 — executors configure what a runner runs with and have nothing to do with checkouts). A row
-is the JSON a
-member pasted into the add dialog. The known types are `claude-code` and `opencode` (013 added the
-second; see [persistence.md](persistence.md) for the constraint-rewrite move adding the next one
-costs). The Tasks page lets a member stamp one of these names onto a job they queue, and the claim
-resolves that label against the author's rows at run time — the name is the join key, which is why
-it is never validated against the list when the task is queued (`job` is an audit record; the rows
-come and go with a PUT).
+Settings → Executors shows the member's configured executors (moved off the workspace page by #150 —
+executors configure what a runner runs with and have nothing to do with checkouts), under the scope
+sentence "Your saved agent settings for running tasks." A row is a name, an agent type and a
+configuration object — `{}` when the member set nothing, which inherits the deployment's runner
+configuration. The known types are `claude-code` and `opencode` (013 added the second; see
+[persistence.md](persistence.md) for the constraint-rewrite move adding the next one costs). The
+Tasks page lets a member stamp one of these names onto a job they queue, and the claim resolves that
+label against the author's rows at run time — the name is the join key, which is why it is never
+validated against the list when the task is queued (`job` is an audit record; the rows come and go
+with a PUT).
 
 - **Both `opencode` and `claude-code` config reach the run.** At claim, the job store reads the
   author's row of the stamped name (`configFor`) and hands the pasted config to the runner as a
-  claim-env value each CLI's entrypoint merges over its baked configuration — `OPENCODE_CONFIG_CONTENT`
-  for an opencode row (verified against the pinned runner image: baked plugins, instructions and
-  permission fence survive, member `model`/`provider`/`small_model` land), `CLAUDE_CODE_CONFIG_CONTENT`
-  for a claude-code row with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped (the
-  git guard hook and the baked context-mode plugin install). This is what makes the member's model
-  and provider choice authoritative; without a matching row the run falls back to the image's
-  default model.
+  claim-env value each CLI's entrypoint merges over its baked configuration —
+  `OPENCODE_CONFIG_CONTENT` for an opencode row (verified against the pinned runner image: baked
+  plugins, instructions and permission fence survive, member `model`/`provider`/`small_model` land),
+  `CLAUDE_CODE_CONFIG_CONTENT` for a claude-code row with `hooks`, `enabledPlugins` and
+  `extraKnownMarketplaces` stripped (the git guard hook and the baked context-mode plugin install).
+  Both strip lists are one constant, `RUNNER_MANAGED_KEYS` in `core/src/executors.ts`: the claim
+  strips by it and the dialog warns by it. This is what makes the member's model and provider choice
+  authoritative; without a matching row the run falls back to the image's default model.
 - **`permission` is stripped board-side, never honored from a paste.** The baked fence in the
   runner image (and the entrypoint's per-member `external_directory` patch) is the only authority
   on what a run may touch: a pasted `external_directory: "*": allow` would otherwise open every
@@ -182,16 +184,41 @@ come and go with a PUT).
   Code image and CLI; `opencode` selects OpenCode. A label matching no row — renamed, deleted or
   free text — is an unresolved selection, and the driver fails the task explicitly instead of
   guessing a runner.
+- **Guided setup is the default; JSON is Advanced (issue 261).** The dialog reads Name (shown in the
+  task picker), Agent (Claude Code / OpenCode), Model ("Use runner default", or a custom
+  identifier), then a collapsed **Advanced configuration** holding the JSON editor and the gate
+  repair rounds. A name and an agent save `{}`; the member never types it, and the note says that
+  saving checks the form only — not credentials, not whether the model exists. The Model control
+  is `config.model` and nothing else: it writes that one key into the configuration text, keeping
+  every other key and its order, and while the text does not parse (or `model` is not a string) the
+  control is disabled with a sentence pointing at the JSON — a guided value never silently
+  replaces a raw draft. Each agent keeps its own configuration text for the life of the dialog, so
+  switching agents neither reinterprets nor discards the other's. There is no model catalogue: the
+  help names each agent's identifier shape (`claude-sonnet-4-5` or an alias; `<provider>/<model>`
+  for OpenCode). The credentials sentence links to Workspace settings (the member's environment),
+  forwarding the composer's return param so the draft banner survives the detour.
 - **The dialog edits as well as adds, and validation is structural.** Each row carries an Edit
   action that reopens the dialog pre-filled with the row's type, name and config; a rename saves
-  under the new name and is matched against the old one. The contract is still "raw JSON the member
-  pastes"; the server checks it is an object with a known type, unique path-segment-safe names, at
-  most 10 per member, and the `user_executor` check constraint restates the type list at the row.
-  Field-level rules wait until a consumer exists that can be wrong about them — the opencode
-  consumer reads `model`, `small_model` and `provider` only by opencode's own merge semantics, not
-  by schema.
-- **Each row also carries the default workflow's gate-repair round limit (issue #49).** The
-  dialog's `gate repair rounds` field is a whole number 0..10 (042's check constraint restates the
+  under the new name and is matched against the old one. The server checks the config is an object
+  with a known type, unique path-segment-safe names, at most 10 per member, and the `user_executor`
+  check constraint restates the type list at the row. The dialog mirrors that client-side
+  (`web/src/workspace/executors.ts`): a JSON object under 32 KiB, parse errors with the engine's
+  line and column where it reports one, a name that is non-blank, slash-free, not `-`/`.`-leading
+  and not another row's — shown beside the field before Save — and a string `model`. Valid JSON is
+  not a tested configuration, and the help says so. Settings the runner will not honor (the
+  `RUNNER_MANAGED_KEYS` of the agent, plus Claude Code's `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*`
+  env) are listed by key path — never value — under the editor. Field-level rules beyond `model`
+  wait until a consumer exists that can be wrong about them — the opencode consumer reads `model`,
+  `small_model` and `provider` only by opencode's own merge semantics, not by schema.
+- **Saving is predictable.** The actions read "Add executor" / "Save changes"; a disabled Save says
+  why beside it, and an edit that changes nothing (formatting and key order included) stays
+  disabled with "No changes to save." A failed save keeps every field for a retry; a successful one
+  closes, restores focus to the trigger and is announced in the page's `role="status"` line. Adding
+  never flags the new row as the default. Cancel, Escape, the backdrop or the credentials link with
+  unsaved work raise the settings area's discard confirmation (`UnsavedChangesDialog`, nested
+  inside the executor dialog).
+- **Each row also carries the default workflow's gate-repair round limit (issue #49).** The dialog's
+  Advanced `Gate repair rounds` field is a whole number 0..10 (042's check constraint restates the
   bound at the row), `3` when left blank, `0` turning automatic gate repair off. `POST /api/jobs`
   reads the row the task's executor label names at launch and freezes the value onto the thread
   (docs/workflows.md), so editing it later changes later tasks, never a running one — and the task
@@ -212,15 +239,13 @@ come and go with a PUT).
   reviving it on another row — the flag lives on the row, not on a name. "Selected first on new
   tasks" is what the fallback still says; the flagged row says "Default — selected on new tasks"
   instead.
-- **The dialog says what each type's config does.** The claude-code help: merged into the
+- **The Advanced help says what each type's config does.** The claude-code help: merged into the
   runner's settings.json, with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped —
   everything else applies, except that the `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env values
   live in the image's managed settings (with the driver's `OTEL_EXPORTER_OTLP_ENDPOINT` patched in)
-  and always win over anything a member pastes. The opencode help: merged over the baked configuration by the
-  selected OpenCode runner — model and provider apply, permission rules ignored. A note under the
-  Type select says tasks using the executor run with that selected type; both
-  helps are tied to their fields with `aria-describedby`, and the actions read "Add executor" /
-  "Save executor".
+  and always win over anything a member sets. The opencode help: merged over the baked
+  configuration by the selected OpenCode runner — model and provider apply, permission rules
+  ignored. Every help is tied to its field with `aria-describedby`.
 - **Types are labelled for people, stored for machines.** List and dialog show "Claude Code" and
   "OpenCode"; the stored `type` stays the raw union value (`claude-code`, `opencode`).
 - **`config` is never echoed by the poll — one on-demand read excepted.** It may hold credentials

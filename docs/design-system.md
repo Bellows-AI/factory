@@ -259,7 +259,9 @@ the tables and keeps those sections.
   color sweeps.
 - **Forced colors.** Under `forced-colors: active` the system repaint carries the UI — tokens
   resolve, borders and fills survive. The one casualty is the accent ring, whose color is
-  pinned to the system highlight so keyboard focus stays visible.
+  pinned to the system highlight so keyboard focus stays visible. The executor dialog's JSON
+  editor (#261) hides its highlighted copy there, since the repaint forces the textarea's own
+  transparent text visible and the two layers would double every character.
 - **Deliberately decorative pairs.** Chart gridlines (`--chart-grid`, ~1.2–1.5:1) and the
   `--line`/`--line-strong` hairlines (~1.3–2.3:1) sit below the 3:1 boundary threshold on
   purpose: gridlines carry no data, and a hairline never carries meaning alone — grouping comes
