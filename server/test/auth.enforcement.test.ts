@@ -158,6 +158,10 @@ describe('the route table', () => {
         // removing the audit rows of jobs it never held would be the thread-read hole (#47) again.
         [`/api/jobs/${JOB_ID}/stop`, 'user'],
         [`/api/jobs/${JOB_ID}/remove`, 'user'],
+        // Both control a thread parked on a durable PR wait (issue #328) — person's actions on
+        // the wait a worker holds no lease on, so they fall through to `user` like the above.
+        [`/api/jobs/${JOB_ID}/wait/cancel`, 'user'],
+        [`/api/jobs/${JOB_ID}/wait/poke`, 'user'],
         ['/api/jobs/claim', 'worker'],
         // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, and
         // read-only — a worker token answers facts, it never moves rows.

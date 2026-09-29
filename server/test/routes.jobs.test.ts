@@ -9,9 +9,11 @@ import { validateWaitQuery } from '../src/routes/job-field-validation.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-types.js';
 import type {
+    CancelWaitResult,
     FollowUpRefusal,
     JobStore,
     LeaseResult,
+    PokeWaitResult,
     ReclaimClaim,
     RemoveResult,
     StopResult,
@@ -69,6 +71,8 @@ interface StoreStub extends JobStore {
     publishTokens: { id: string }[];
     stopped: { id: string; stoppedBy: string | null }[];
     removed: { id: string; removedBy: string | null }[];
+    cancelledWaits: { id: string; cancelledBy: string | null }[];
+    pokes: { id: string; pokedBy: string | null }[];
     reclaimClaims: { worker: string; leaseSeconds: number }[];
     reclaimAcks: { id: string; worker: string }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
@@ -102,6 +106,8 @@ function stubStore(
         suspendStatus?: JobStatus;
         stop?: StopResult;
         remove?: RemoveResult;
+        cancelWait?: CancelWaitResult;
+        pokeWait?: PokeWaitResult;
         reclaimClaim?: ReclaimClaim | null;
         ackReclaim?: 'ok' | 'lost' | 'missing';
         heartbeatCancelRequested?: boolean;
@@ -133,6 +139,8 @@ function stubStore(
         gatesReported: [],
         stopped: [],
         removed: [],
+        cancelledWaits: [],
+        pokes: [],
         reclaimClaims: [],
         reclaimAcks: [],
         leased: [],
@@ -187,6 +195,16 @@ function stubStore(
             boom();
             stub.removed.push({ id, removedBy: removedBy ?? null });
             return options.remove ?? { result: 'ok', rootJobId: ID, repo: null, workspacePath: null };
+        },
+        async cancelWait(id, cancelledBy) {
+            boom();
+            stub.cancelledWaits.push({ id, cancelledBy: cancelledBy ?? null });
+            return options.cancelWait ?? { result: 'ok' };
+        },
+        async pokeWait(id, pokedBy) {
+            boom();
+            stub.pokes.push({ id, pokedBy: pokedBy ?? null });
+            return options.pokeWait ?? { result: 'ok', woken: true };
         },
         async claimReclaim(worker, leaseSeconds) {
             boom();
@@ -1492,6 +1510,101 @@ describe('POST /api/jobs/:id/remove', () => {
     });
 });
 
+describe('POST /api/jobs/:id/wait/cancel', () => {
+    it('cancels the thread\u2019s open wait, recording the caller', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/wait/cancel`, {});
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, cancelled: true });
+        expect(store.cancelledWaits).toEqual([{ id: ID, cancelledBy: null }]);
+    });
+
+    it('answers 409 NO_OPEN_WAIT when the thread has no open wait', async () => {
+        const instance = await harnessWith(stubStore({ cancelWait: 'no_wait' }));
+        const response = await post(instance, `/api/jobs/${ID}/wait/cancel`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('NO_OPEN_WAIT');
+    });
+
+    it('answers 403 for a caller that is not the thread\u2019s author', async () => {
+        const instance = await harnessWith(stubStore({ cancelWait: 'forbidden' }));
+        const response = await post(instance, `/api/jobs/${ID}/wait/cancel`, {});
+        expect(response.statusCode).toBe(403);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ cancelWait: 'missing' }));
+        expect((await post(instance, `/api/jobs/${ID}/wait/cancel`, {})).statusCode).toBe(404);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/wait/cancel`, {});
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id', async () => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, '/api/jobs/nope/wait/cancel', {})).statusCode).toBe(400);
+    });
+});
+
+describe('POST /api/jobs/:id/wait/poke', () => {
+    it('reports a woken round', async () => {
+        const store = stubStore({ pokeWait: { result: 'ok', woken: true } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, woken: true });
+        expect(store.pokes).toEqual([{ id: ID, pokedBy: null }]);
+    });
+
+    it('reports woken: false when nothing was parked to wake', async () => {
+        const instance = await harnessWith(stubStore({ pokeWait: { result: 'ok', woken: false } }));
+        const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, woken: false });
+    });
+
+    it('answers 409 NO_OPEN_WAIT when the thread has no open wait', async () => {
+        const instance = await harnessWith(stubStore({ pokeWait: 'no_wait' }));
+        const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('NO_OPEN_WAIT');
+    });
+
+    it('answers 403 for a caller that is not the thread\u2019s author', async () => {
+        const instance = await harnessWith(stubStore({ pokeWait: 'forbidden' }));
+        const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
+        expect(response.statusCode).toBe(403);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ pokeWait: 'missing' }));
+        expect((await post(instance, `/api/jobs/${ID}/wait/poke`, {})).statusCode).toBe(404);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/wait/poke`, {});
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id', async () => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, '/api/jobs/nope/wait/poke', {})).statusCode).toBe(400);
+    });
+});
+
 describe('lifecycle actor attribution', () => {
     // Stop, done and remove are a person's verdict (docs/auth.md), and the actor comes off the
     // session — never a body — on the create route's exact rule. Without an auth store the actor
@@ -1558,6 +1671,24 @@ describe('lifecycle actor attribution', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.removed).toEqual([{ id: ID, removedBy: caller.user.id }]);
+    });
+
+    it('wait-cancel records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/wait/cancel`, cookie);
+
+        expect(response.statusCode).toBe(200);
+        expect(store.cancelledWaits).toEqual([{ id: ID, cancelledBy: caller.user.id }]);
+    });
+
+    it('wait-poke records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/wait/poke`, cookie);
+
+        expect(response.statusCode).toBe(200);
+        expect(store.pokes).toEqual([{ id: ID, pokedBy: caller.user.id }]);
     });
 });
 
