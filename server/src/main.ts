@@ -6,6 +6,7 @@ import { LOCAL_ORG_ID, resolveConfig, type GitHubConfig } from './config.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { createOrgRegistry } from './orgs.js';
+import { createFactsCache } from './workspace/facts.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
 
@@ -64,7 +65,10 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     // The workflow definitions (027) ride the same per-org runtimes: created with the org's id,
     // and the base `fix-issue` workflow seeds per org on first touch — idempotent, so a task
     // queued in the seeding's first seconds simply resolves no default yet.
-    const orgs = createOrgRegistry({ sql, ready, config, withStores: true });
+    //
+    // One facts cache per process, handed to every org runtime: a purge invalidates exactly the
+    // cache the workspace routes read, which is only true if there is one cache.
+    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, facts: createFactsCache() });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.

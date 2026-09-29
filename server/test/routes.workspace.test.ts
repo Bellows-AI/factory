@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
@@ -14,6 +14,8 @@ import {
     type MemoryUserRepoStore,
 } from './helpers.js';
 import { MAX_EXECUTORS_PER_USER } from '../src/routes/workspace.js';
+import { createFactsCache } from '../src/workspace/facts.js';
+import { createPurger, type Purger } from '../src/workspace/purge.js';
 
 /**
  * Offline: nothing here clones. `PUT` only writes rows and answers 202 — the clone happens in the
@@ -22,6 +24,7 @@ import { MAX_EXECUTORS_PER_USER } from '../src/routes/workspace.js';
 
 const HTTP_OK = 200;
 const HTTP_ACCEPTED = 202;
+const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_CONFLICT = 409;
@@ -46,15 +49,24 @@ const REPOS = [
     { owner: 'other-owner', name: 'api' },
 ];
 
-async function boot(options: { withRoot?: boolean } = {}) {
+async function boot(
+    options: {
+        withRoot?: boolean;
+        purger?: Purger;
+        facts?: ReturnType<typeof createFactsCache>;
+        store?: MemoryUserRepoStore;
+    } = {}
+) {
     const auth = memoryAuthStore();
     const caller = auth.seedMember('test-org', 'octocat');
     const executors = memoryUserExecutorStore();
     const h = await harness({
         auth,
-        userRepos: store,
+        userRepos: options.store ?? store,
         userExecutors: executors,
         repos: REPOS,
+        ...(options.purger ? { purger: options.purger } : {}),
+        ...(options.facts ? { facts: options.facts } : {}),
         config: {
             workspaceRoot: options.withRoot === false ? null : root,
             // github mode, so the cookie is what identifies the caller. Under `none` the resolver
@@ -98,7 +110,13 @@ describe('GET /api/workspace', () => {
         const response = await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
 
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(response.json()).toEqual({ root: null, repos: [], orphaned: [], executors: [] });
+        expect(response.json()).toEqual({
+            root: null,
+            repos: [],
+            orphaned: [],
+            executors: [],
+            checkoutTotalBytes: null,
+        });
     });
 
     it('needs a session', async () => {
@@ -134,16 +152,350 @@ describe('GET /api/workspace', () => {
     it('lists a deselected repo as orphaned rather than forgetting it', async () => {
         // Nothing prunes, so the row is the only record that the directory exists. Deleting it
         // would make unbounded disk growth invisible.
-        const { app, cookie } = await boot();
+        const { app, caller, cookie } = await boot();
         const put = (repos: unknown) =>
             app.inject({ method: 'PUT', url: '/api/workspace/repos', headers: { cookie }, payload: { repos } });
 
         await put([{ owner: 'acme', name: 'web' }]);
         await put([]);
+        // The row survives, whatever happened to the tree; the LIST shows what is on disk, so the
+        // checkout has to be there to be listed.
+        mkdirSync(join(root, 'test-org', caller.user.id, 'web'), { recursive: true });
 
         const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
         expect(body.repos).toEqual([]);
-        expect(body.orphaned).toEqual([{ owner: 'acme', name: 'web' }]);
+        expect(body.orphaned).toEqual([
+            expect.objectContaining({ owner: 'acme', name: 'web', status: 'queued', sizeBytes: null }),
+        ]);
+        // And the row itself is still there underneath.
+        expect((await store.orphaned(caller.user.id)).map((r) => r.name)).toEqual(['web']);
+    });
+});
+
+describe('GET /api/workspace: orphan sizes and the checkout total', () => {
+    const put = (app: FastifyInstance, cookie: string, repos: unknown) =>
+        app.inject({ method: 'PUT', url: '/api/workspace/repos', headers: { cookie }, payload: { repos } });
+
+    const settle = async () => {
+        for (let i = 0; i < 100; i += 1) await new Promise((r) => setTimeout(r, 5));
+    };
+
+    it('reports an orphan that exists on disk with a measured size, however it last cloned', async () => {
+        // A failed clone can still have left a tree; the orphan list is about what is ON DISK.
+        const { app, caller, cookie } = await boot();
+        await put(app, cookie, [{ owner: 'acme', name: 'web' }]);
+        await put(app, cookie, []);
+        const checkout = join(root, 'test-org', caller.user.id, 'web');
+        mkdirSync(checkout, { recursive: true });
+        writeFileSync(join(checkout, 'block'), 'x'.repeat(4096));
+
+        // First read schedules the walk (never awaited); the second reads what it measured.
+        await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
+        await settle();
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.orphaned).toHaveLength(1);
+        expect(body.orphaned[0]).toMatchObject({ owner: 'acme', name: 'web', sizeBytes: expect.any(Number) });
+        expect(body.orphaned[0].sizeBytes).toBeGreaterThan(0);
+    });
+
+    it('drops an orphan whose directory is gone, but keeps it deletable', async () => {
+        const { app, cookie } = await boot();
+        await put(app, cookie, [{ owner: 'acme', name: 'web' }]);
+        await put(app, cookie, []);
+
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        // The row exists; its directory never did (nothing cloned). A stat — never a walk — says so.
+        expect(body.orphaned).toEqual([]);
+    });
+
+    it('sums the checkout total only when every included checkout has a measurement', async () => {
+        const facts = createFactsCache();
+        const { app, caller, cookie } = await boot({ facts });
+        await put(app, cookie, [
+            { owner: 'acme', name: 'web' },
+            { owner: 'acme', name: 'api' },
+        ]);
+        await put(app, cookie, [{ owner: 'acme', name: 'web' }]);
+        const orphanA = join(root, 'test-org', caller.user.id, 'api');
+        mkdirSync(orphanA, { recursive: true });
+        writeFileSync(join(orphanA, 'block'), 'y'.repeat(2048));
+
+        // A read the instant the orphan appeared measures nothing yet: the total must be null
+        // rather than a partial sum that would read as the whole truth.
+        let body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.orphaned[0].sizeBytes).toBeNull();
+        expect(body.checkoutTotalBytes).toBeNull();
+
+        // Measured now: one included checkout, one measurement, one total.
+        await settle();
+        body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.checkoutTotalBytes).toBe(body.orphaned[0].sizeBytes);
+        expect(body.checkoutTotalBytes).toBeGreaterThan(0);
+
+        // A second orphan resets the total to null until ITS walk lands, then the total is the sum.
+        // Seeded at the store directly: `other` is not in the installation's list, and this test
+        // is about the total, not visibility.
+        const orphanB = join(root, 'test-org', caller.user.id, 'other');
+        mkdirSync(orphanB, { recursive: true });
+        writeFileSync(join(orphanB, 'block'), 'z'.repeat(1024));
+        await store.select(caller.user.id, [{ owner: 'acme', name: 'other' }]);
+        await store.select(caller.user.id, []);
+        body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.orphaned).toHaveLength(2);
+        expect(body.checkoutTotalBytes).toBeNull();
+
+        await settle();
+        body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.checkoutTotalBytes).toBe(
+            body.orphaned.reduce((sum: number, o: { sizeBytes: number | null }) => sum + (o.sizeBytes ?? 0), 0)
+        );
+        expect(body.checkoutTotalBytes).toBeGreaterThan(0);
+    });
+
+    it('counts a selected ready clone in the total once its walk lands', async () => {
+        // The total is the checkouts, selected and orphaned alike — this is the selected half,
+        // which only a `ready` row contributes (a queued row has no tree to measure).
+        const facts = createFactsCache();
+        const { app, caller, cookie } = await boot({ facts });
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        const checkout = join(root, 'test-org', caller.user.id, 'web');
+        mkdirSync(checkout, { recursive: true });
+        writeFileSync(join(checkout, 'block'), 'w'.repeat(2048));
+        // Promote the row to `ready` the way the queue would — the state whose directory is real.
+        await store.markReady(caller.user.id, { owner: 'acme', name: 'web' });
+
+        await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
+        await settle();
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.repos[0]).toMatchObject({ status: 'ready', sizeBytes: expect.any(Number) });
+        expect(body.checkoutTotalBytes).toBe(body.repos[0].sizeBytes);
+        expect(body.checkoutTotalBytes).toBeGreaterThan(0);
+    });
+
+    it('excludes a purging orphan from the total while still listing it', async () => {
+        const { app, caller, cookie } = await boot();
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        const checkout = join(root, 'test-org', caller.user.id, 'web');
+        mkdirSync(checkout, { recursive: true });
+        writeFileSync(join(checkout, 'block'), 'z'.repeat(1024));
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [] },
+        });
+
+        // A deletion stamped but not finished — the state the UI polls as "Deleting".
+        await store.stampPurge(caller.user.id, { owner: 'acme', name: 'web' });
+
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(body.orphaned[0]).toMatchObject({ name: 'web', status: 'purging' });
+        // A checkout being deleted is on its way out: it is not part of "what you use". Nothing
+        // else is included either, and an empty inclusion set is a measured zero.
+        expect(body.checkoutTotalBytes).toBe(0);
+    });
+});
+
+describe('DELETE /api/workspace/repos/:owner/:name', () => {
+    const del = (app: FastifyInstance, cookie: string, owner: string, name: string) =>
+        app.inject({ method: 'DELETE', url: `/api/workspace/repos/${owner}/${name}`, headers: { cookie } });
+
+    async function bootWithPurger() {
+        const facts = createFactsCache();
+        const purger = createPurger({ store, root, orgId: 'test-org', facts });
+        const booted = await boot({ purger, facts });
+        return { ...booted, purger };
+    }
+
+    const settlePurge = async (purger: Purger) => {
+        for (let i = 0; i < 100; i += 1) {
+            await purger.settle();
+            await new Promise((r) => setTimeout(r, 5));
+        }
+    };
+
+    it('answers 202, stamps the row purging, and removes the checkout in the background', async () => {
+        const { app, caller, cookie, purger } = await bootWithPurger();
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        const checkout = join(root, 'test-org', caller.user.id, 'web');
+        mkdirSync(checkout, { recursive: true });
+        writeFileSync(join(checkout, 'file.txt'), 'work\n');
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [] },
+        });
+
+        const response = await del(app, cookie, 'acme', 'web');
+        expect(response.statusCode).toBe(HTTP_ACCEPTED);
+        // Stamped: the row is the spinner, the directory is still coming down.
+        expect((await store.orphaned(caller.user.id))[0]?.status).toBe('purging');
+
+        await settlePurge(purger);
+        expect(existsSync(checkout)).toBe(false);
+        expect(await store.orphaned(caller.user.id)).toHaveLength(0);
+    });
+
+    it('answers 204 for a replay after the row is gone, touching no filesystem', async () => {
+        const { app, caller, cookie, purger } = await bootWithPurger();
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [] },
+        });
+        await del(app, cookie, 'acme', 'web');
+        await settlePurge(purger);
+
+        const response = await del(app, cookie, 'acme', 'web');
+        expect(response.statusCode).toBe(HTTP_NO_CONTENT);
+        expect(await store.orphaned(caller.user.id)).toHaveLength(0);
+    });
+
+    it('answers 204 for a row that never existed, and says nothing about other members', async () => {
+        const { app, cookie } = await bootWithPurger();
+        const response = await del(app, cookie, 'acme', 'no-such-repo');
+        expect(response.statusCode).toBe(HTTP_NO_CONTENT);
+    });
+
+    it('refuses a selected row, whatever its clone status', async () => {
+        const { app, cookie } = await bootWithPurger();
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+
+        const response = await del(app, cookie, 'acme', 'web');
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('REPO_SELECTED');
+        expect(store.rows().find((r) => r.name === 'web')?.deselected).toBe(false);
+    });
+
+    it('refuses a row a clone still owns', async () => {
+        const { app, cookie } = await bootWithPurger();
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        await store.claimPending(1);
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [] },
+        });
+
+        const response = await del(app, cookie, 'acme', 'web');
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('REPO_CLONING');
+    });
+
+    it('refuses a duplicate with PURGE_IN_PROGRESS', async () => {
+        const { app, caller, cookie } = await bootWithPurger();
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [] },
+        });
+        // Stamp by hand and hold it: the duplicate must meet the stamp, not the finished state.
+        mkdirSync(join(root, 'test-org', caller.user.id, 'web'), { recursive: true });
+        await store.stampPurge(caller.user.id, { owner: 'acme', name: 'web' });
+
+        const response = await del(app, cookie, 'acme', 'web');
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('PURGE_IN_PROGRESS');
+    });
+
+    it('refuses with TASKS_IN_FLIGHT and the count when unfinished tasks use the checkout', async () => {
+        const blocking = memoryUserRepoStore({ blockingTasks: () => 2 });
+        const facts = createFactsCache();
+        const purger = createPurger({ store: blocking, root, orgId: 'test-org', facts });
+        const { app, cookie } = await boot({ store: blocking, purger, facts });
+
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [{ owner: 'acme', name: 'web' }] },
+        });
+        await app.inject({
+            method: 'PUT',
+            url: '/api/workspace/repos',
+            headers: { cookie },
+            payload: { repos: [] },
+        });
+
+        const response = await del(app, cookie, 'acme', 'web');
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('TASKS_IN_FLIGHT');
+        expect(response.json().count).toBe(2);
+    });
+
+    it('refuses a segment that cannot be a directory name', async () => {
+        const { app, cookie } = await bootWithPurger();
+        // What routing lets through, the handler shape-checks.
+        for (const name of ['-x', '.']) {
+            const response = await del(app, cookie, 'acme', name);
+            expect(response.statusCode, name).toBe(HTTP_BAD_REQUEST);
+            expect(response.json().code, name).toBe('BAD_REPO_NAME');
+        }
+        // What routing refuses outright — a traversal-shaped URL never reaches a handler at all.
+        for (const [owner, name] of [
+            ['acme', 'a/b'],
+            ['..', 'web'],
+        ]) {
+            const response = await del(app, cookie, owner, name);
+            expect(response.statusCode, `${owner}/${name}`).toBe(404);
+        }
+        // And the purger was never asked about any of them.
+        expect(store.rows().filter((r) => r.status === 'purging')).toHaveLength(0);
+    });
+
+    it('needs a session', async () => {
+        const { app } = await bootWithPurger();
+        expect((await app.inject({ method: 'DELETE', url: '/api/workspace/repos/acme/web' })).statusCode).toBe(
+            HTTP_UNAUTHORIZED
+        );
+    });
+
+    it('answers 409 when workspaces are switched off', async () => {
+        const { app, cookie } = await boot({ withRoot: false });
+        const response = await del(app, cookie, 'acme', 'web');
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('WORKSPACE_DISABLED');
     });
 });
 
@@ -232,6 +584,21 @@ describe('PUT /api/workspace/repos', () => {
         expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('WORKSPACE_DISABLED');
         expect(store.rows()).toEqual([]);
+    });
+
+    it('refuses a selection that would change a purging row, leaving the selection untouched', async () => {
+        const { app, caller, cookie } = await boot();
+        await put(app, cookie, [{ owner: 'acme', name: 'web' }]);
+        await put(app, cookie, []);
+        mkdirSync(join(root, 'test-org', caller.user.id, 'web'), { recursive: true });
+        await store.stampPurge(caller.user.id, { owner: 'acme', name: 'web' });
+
+        const response = await put(app, cookie, [{ owner: 'acme', name: 'web' }]);
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('PURGE_IN_PROGRESS');
+        // The deletion is undisturbed: nothing was re-selected behind its back.
+        expect(await store.list(caller.user.id)).toHaveLength(0);
+        expect((await store.orphaned(caller.user.id))[0]?.status).toBe('purging');
     });
 
     it('needs a session', async () => {

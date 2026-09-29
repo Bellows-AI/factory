@@ -211,6 +211,11 @@ export function checkoutText(cell: CheckoutCell): string {
                     return 'Ready';
                 case 'failed':
                     return cell.error ? `Failed · ${cell.error}` : 'Failed';
+                // Unreachable for a selected row — the stamp requires deselection — but the type
+                // union is shared with the orphaned rows (issue #92), and a sentence beats a
+                // broken exhaustive return if the two states ever meet.
+                case 'purging':
+                    return 'Deleting';
             }
     }
 }

@@ -1,11 +1,13 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
+import { OrphanDeleteDialog } from '../components/OrphanDeleteDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import type { UseEnv } from '../api/useEnv.js';
-import type { WorkspacePayload } from '../api/useWorkspace.js';
+import type { OrphanedRepo, WorkspacePayload } from '../api/useWorkspace.js';
+import { bytes } from '../format.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /** The header's description: the checkout root once a poll has answered, or nothing — while
@@ -40,6 +42,18 @@ function WorkspaceEnvEditor({ env }: { env: UseEnv }) {
 }
 
 /**
+ * One orphaned row's state line: what the member needs to read before they decide anything. A
+ * deletion in flight is named ("Deleting…") because the poll can take a minute on a big tree; a
+ * failed clone's error is the row's own explanation; a missing measurement is an em dash, never
+ * `0 B` — the same null-means-unmeasured contract every size on these pages follows.
+ */
+function orphanStateLine(orphan: OrphanedRepo): ReactNode {
+    if (orphan.status === 'purging') return <span className="muted">Deleting…</span>;
+    if (orphan.status === 'failed' && orphan.error) return <span className="muted">{orphan.error}</span>;
+    return <span className="muted">no longer enabled; its checkout remains on disk.</span>;
+}
+
+/**
  * The Workspace section of the settings tree, simplified to what is personal (issue 181): the
  * workspace root, the member's own environment scope, and the orphaned checkouts still on disk.
  *
@@ -50,6 +64,26 @@ function WorkspaceEnvEditor({ env }: { env: UseEnv }) {
 export function SettingsWorkspacePage() {
     const { workspace, env } = useSettingsPage();
     const { data, loading, error } = workspace;
+    const { purge } = workspace;
+
+    // The delete confirmation's state: WHICH orphan was aimed at, the request in flight, and the
+    // board's refusal. One dialog for the page, opened by a row's Delete action.
+    const [aimedAt, setAimedAt] = useState<OrphanedRepo | null>(null);
+    const [purging, setPurging] = useState(false);
+    const [purgeError, setPurgeError] = useState<string | null>(null);
+
+    const confirmPurge = async () => {
+        if (!aimedAt) return;
+        setPurging(true);
+        setPurgeError(null);
+        const failure = await purge(aimedAt.owner, aimedAt.name);
+        setPurging(false);
+        if (failure !== null) {
+            setPurgeError(failure);
+            return;
+        }
+        setAimedAt(null);
+    };
 
     // A deliberate configuration, not a failure — hence the sentence rather than an error. It
     // takes the place of the checkout link only: the member's environment scope is unrelated to
@@ -100,21 +134,55 @@ export function SettingsWorkspacePage() {
                 </section>
             ) : null}
 
-            {/* Deselected repositories are still on disk: nothing prunes, and per-member
-                checkouts multiply that by the number of members. Listing them is what makes
-                the growth visible on the page rather than only in `df`. Nothing here deletes. */}
-            {data && data.orphaned.length ? (
+            {/* Deselected repositories are still on disk. Listing them with their sizes — and a
+                delete for exactly one of them, behind a confirmation that names what is lost —
+                is what makes the growth visible and reclaimable on the page rather than only in
+                `df`. The total is checkout usage only: the driver's `.worktrees/` and other
+                workspace files are not checkouts. Null renders as an em dash, never a partial
+                sum posing as the whole. */}
+            {data && !noRoot && data.orphaned.length ? (
                 <section className="panel">
                     <h2>Still on disk</h2>
-                    <p className="muted">Nothing removes these automatically — they may hold uncommitted work.</p>
+                    <p className="muted">
+                        Checkout usage: {bytes(data.checkoutTotalBytes)}. Nothing removes these automatically — they may
+                        hold uncommitted work.
+                    </p>
                     <ul>
-                        {data.orphaned.map((repo) => (
-                            <li key={`${repo.owner}/${repo.name}`}>
-                                {repo.owner}/{repo.name} — no longer enabled; its checkout remains on disk.
+                        {data.orphaned.map((orphan) => (
+                            <li key={`${orphan.owner}/${orphan.name}`}>
+                                {orphan.owner}/{orphan.name}
+                                <span className="muted">
+                                    {' '}
+                                    · {bytes(orphan.sizeBytes)} · {orphanStateLine(orphan)}
+                                </span>{' '}
+                                {orphan.status !== 'purging' ? (
+                                    <button
+                                        type="button"
+                                        className="chat-remove"
+                                        onClick={() => {
+                                            setPurgeError(null);
+                                            setAimedAt(orphan);
+                                        }}
+                                    >
+                                        Delete from disk
+                                    </button>
+                                ) : null}
                             </li>
                         ))}
                     </ul>
                 </section>
+            ) : null}
+
+            {aimedAt ? (
+                <OrphanDeleteDialog
+                    open
+                    owner={aimedAt.owner}
+                    name={aimedAt.name}
+                    purging={purging}
+                    error={purgeError}
+                    onClose={() => setAimedAt(null)}
+                    onConfirm={() => void confirmPurge()}
+                />
             ) : null}
 
             <ConfigurationScope scope="workspace" />

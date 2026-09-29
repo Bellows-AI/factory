@@ -1,4 +1,7 @@
-import type { CloneStatus, UserRepo, UserRepoStore } from '../src/db/user-repo-store.js';
+import { type CloneStatus, PurgeConflictError, type UserRepo, type UserRepoStore } from '../src/db/user-repo-store.js';
+
+/** How the memory double counts tasks blocking a purge. The SQL store reads the job table; this has none. */
+export type BlockingTasks = (userId: string, name: string) => number;
 
 export interface MemoryUserRepoStore extends UserRepoStore {
     /** Every row, deselected ones included, so a test can assert nothing was deleted. */
@@ -17,6 +20,7 @@ interface Row {
     selectedAt: string;
     startedAt: string | null;
     readyAt: string | null;
+    purgeStartedAt: string | null;
     deselectedAt: string | null;
 }
 
@@ -43,6 +47,7 @@ function applySelection(rows: Row[], at: () => string, userId: string, repo: { o
         selectedAt: at(),
         startedAt: null,
         readyAt: null,
+        purgeStartedAt: null,
         deselectedAt: null,
     });
 }
@@ -65,9 +70,13 @@ function markDropped(
  * An in-memory UserRepoStore: it keeps the offline suite a no-database suite while still
  * exercising the selection rules, the claim and the restart recovery. The SQL behind it is covered
  * by server/test-db, which needs a container.
+ *
+ * `blockingTasks` stands in for the job-table count behind `stampPurge`'s `tasks` refusal; the
+ * default counts nothing, which is what a member with no tasks is.
  */
-export function memoryUserRepoStore(): MemoryUserRepoStore {
+export function memoryUserRepoStore(options?: { blockingTasks?: BlockingTasks }): MemoryUserRepoStore {
     const rows: Row[] = [];
+    const blockingTasks = options?.blockingTasks ?? (() => 0);
     const at = () => new Date().toISOString();
     const find = (userId: string, repo: { owner: string; name: string }) =>
         rows.find((r) => r.userId === userId && r.owner === repo.owner && r.name === repo.name);
@@ -80,6 +89,7 @@ export function memoryUserRepoStore(): MemoryUserRepoStore {
         selectedAt: row.selectedAt,
         startedAt: row.startedAt,
         readyAt: row.readyAt,
+        purgeStartedAt: row.purgeStartedAt,
     });
 
     return {
@@ -98,6 +108,13 @@ export function memoryUserRepoStore(): MemoryUserRepoStore {
         },
 
         async select(userId, repos) {
+            // Same refusal the SQL store decides under its lock: a checkout stamped `purging`
+            // cannot be re-selected underneath its deletion.
+            const purging = repos
+                .filter((repo) => find(userId, repo)?.status === 'purging')
+                .map((repo) => repo.name)
+                .sort();
+            if (purging.length) throw new PurgeConflictError(purging);
             for (const repo of repos) applySelection(rows, at, userId, repo);
             markDropped(rows, at, userId, repos);
         },
@@ -108,6 +125,41 @@ export function memoryUserRepoStore(): MemoryUserRepoStore {
 
         async orphaned(userId) {
             return rows.filter((r) => r.userId === userId && r.deselectedAt !== null).map(view);
+        },
+
+        async stampPurge(userId, repo) {
+            const row = find(userId, repo);
+            if (!row) return 'missing';
+            if (row.deselectedAt === null) return { refused: 'selected' };
+            if (row.status === 'purging') return { refused: 'purging' };
+            if (row.status === 'cloning') return { refused: 'cloning' };
+            const count = blockingTasks(userId, repo.name);
+            if (count > 0) return { refused: 'tasks', count };
+            row.status = 'purging';
+            row.purgeStartedAt = at();
+            row.error = null;
+            return { stamped: true };
+        },
+
+        async deletePurged(userId, repo) {
+            const row = find(userId, repo);
+            if (!row || row.deselectedAt === null || row.status !== 'purging') return false;
+            rows.splice(rows.indexOf(row), 1);
+            return true;
+        },
+
+        async markPurgeFailed(userId, repo, error) {
+            const row = find(userId, repo);
+            if (!row || row.status !== 'purging') return;
+            row.status = 'failed';
+            row.error = error;
+        },
+
+        async listPurging() {
+            return rows
+                .filter((r) => r.status === 'purging')
+                .sort((a, b) => (a.purgeStartedAt ?? '').localeCompare(b.purgeStartedAt ?? ''))
+                .map((row) => ({ userId: row.userId, ...view(row) }));
         },
 
         async claimPending(limit) {

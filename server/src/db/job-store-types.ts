@@ -386,7 +386,7 @@ export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'los
  *                  parent's session, and a session resumes only in the checkout tree it ran in —
  *                  the author's; a member's command may only ever run in their own tree.
  */
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
 
 /**
  * What a stop request did.
@@ -492,7 +492,7 @@ export interface JobStore {
                 };
             } | null;
         }
-    ): Promise<{ id: string }>;
+    ): Promise<{ id: string } | 'purging'>;
     /**
      * Queues a follow-up on a finished task: a new job that inherits the parent's repo, executor
      * and — the thread's PRIMARY — session ids, linked through `followUpTo`. Atomic and

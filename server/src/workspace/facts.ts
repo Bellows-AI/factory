@@ -57,11 +57,24 @@ interface Entry {
 export interface FactsCache {
     /**
      * Never blocks and never throws. Schedules a refresh when what it has is stale.
-     *
-     * There is no `invalidate`: the route only asks about a checkout once it is `ready`, and a
-     * repository reaches `ready` exactly once, so a newly-cloned tree has no entry to be stale.
      */
     get(dir: string): CheckoutFacts;
+
+    /**
+     * Forgets one directory's facts, so a tree that is about to be deleted cannot lend them to
+     * whatever is re-cloned into its path.
+     *
+     * For most of this cache's life there was no invalidate, and the header here said so: the route
+     * only asked about a checkout once it was `ready`, a repository reached `ready` exactly once,
+     * and so no entry could ever go stale. The manual purge (issue #92) is the one caller that
+     * breaks that story — it deletes a tree whose measurements are sitting in this map, and a
+     * re-selected repository reuses the same path. Without this, the new checkout would briefly
+     * report its predecessor's size and commit.
+     *
+     * A refresh already in flight holds the old Entry object and writes its result there; deleting
+     * the map entry orphans that object, so the write lands on nothing anyone reads.
+     */
+    invalidate(dir: string): void;
 }
 
 async function readHead(dir: string): Promise<Pick<CheckoutFacts, 'branch' | 'lastCommit'>> {
@@ -146,6 +159,10 @@ export function createFactsCache(now: () => number = Date.now): FactsCache {
             }
             refresh(dir, entry);
             return entry.facts;
+        },
+
+        invalidate(dir) {
+            entries.delete(dir);
         },
     };
 }

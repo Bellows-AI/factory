@@ -26,6 +26,7 @@ const workspaceData = (over: Partial<WorkspacePayload> = {}): WorkspacePayload =
     root: '/workspaces/octocat',
     repos: [],
     orphaned: [],
+    checkoutTotalBytes: 0,
     executors: [],
     ...over,
 });
@@ -488,6 +489,7 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
                     root: '/workspaces/octocat',
                     repos: [repo({ name: 'web' })],
                     orphaned: [],
+                    checkoutTotalBytes: 0,
                     executors: [{ name: 'fast-box', type: 'claude', createdAt: '2026-01-01T00:00:00Z' }],
                 },
             },
@@ -510,7 +512,13 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         const answered = render({
             workspace: {
                 loading: false,
-                data: { root: '/workspaces/octocat', repos: [repo({ name: 'web' })], orphaned: [], executors: [] },
+                data: {
+                    root: '/workspaces/octocat',
+                    repos: [repo({ name: 'web' })],
+                    orphaned: [],
+                    checkoutTotalBytes: 0,
+                    executors: [],
+                },
             },
             env: { loading: false, data: emptyEnv },
         });
@@ -518,7 +526,10 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         expect(answered).toContain('<p class="readiness-status pill">No custom environment values</p>');
         expect(answered).toContain('<li class="readiness-item">');
         const rootless = render({
-            workspace: { loading: false, data: { root: null, repos: [], orphaned: [], executors: [] } },
+            workspace: {
+                loading: false,
+                data: { root: null, repos: [], orphaned: [], checkoutTotalBytes: 0, executors: [] },
+            },
             env: { loading: false, data: emptyEnv },
         });
         expect(rootless).toContain(
@@ -533,7 +544,7 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         const html = render({
             workspace: {
                 loading: false,
-                data: { root: null, repos: [], orphaned: [], executors: [] },
+                data: { root: null, repos: [], orphaned: [], checkoutTotalBytes: 0, executors: [] },
             },
             env: { loading: false, data: emptyEnv },
         });

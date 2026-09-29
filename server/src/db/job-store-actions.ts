@@ -9,44 +9,80 @@ import type { JobStore, JobStoreContext, JobStatus } from './job-store-types.js'
 
 export type CreateTarget = Parameters<JobStore['create']>[2];
 
+/**
+ * The author's checkout row, locked and checked, INSIDE the job-insert transaction (issue #92).
+ *
+ * A checkout stamped `purging` is coming off the disk; a task must not be queued into it. Taking
+ * the row's `for update` lock here — the same lock `stampPurge` holds — is what makes both orders
+ * safe: an insert that commits BEFORE the stamp is visible to the stamp's unfinished-task count
+ * (so the purge refuses), and an insert that arrives AFTER the stamp reads `purging` under READ
+ * COMMITTED once the lock is granted (so the insert refuses). An unlocked preflight query would
+ * be a stale-snapshot read that can race the stamp either way, which is why there isn't one.
+ *
+ * No row is no refusal: a job may be queued when the checkout row is already gone (the rows come
+ * and go with a PUT), under the existing task contract — the claim may later find no checkout.
+ * Command-only tasks (no repo) and authorless tasks run in no checkout and are never guarded.
+ */
+async function refuseIfCheckoutPurging(
+    tx: TransactionSql,
+    orgId: string,
+    createdBy: string | null,
+    repo: string | null
+): Promise<boolean> {
+    if (!createdBy || !repo) return false;
+    const name = repo.split('/')[1];
+    if (!name) return false;
+    const rows = await tx<{ status: string }[]>`
+        select status from user_repo
+        where org_id = ${orgId} and user_id = ${createdBy} and repo_name = ${name}
+        for update
+    `;
+    return rows[0]?.status === 'purging';
+}
+
 export async function createJobRow(
     ctx: JobStoreContext,
     command: string,
     createdBy: string | null,
     target: CreateTarget
-): Promise<{ id: string }> {
+): Promise<{ id: string } | 'purging'> {
     const { sql, orgId } = ctx;
-    // id and root_job_id are the SAME uuid, computed once in the select so the column can
-    // be not null from insert — the root's root is itself (022). The workflow triple rides
-    // the same insert when a workflow resolved: workflow_id names what the task walks (null
-    // for the code-owned default, issue #209 — it is never a row in `workflow`),
-    // workflow_name freezes the resolved record's NAME on the row (033), workflow_node is
-    // the entry the first run carries, the snapshot freezes the graph onto
-    // the root — where every transition decision reads it — and workflow_params freezes the
-    // validated launch values beside it (030). default_review_reconciliation/
-    // default_merge_conflict_autofix (039) and default_gate_fix_rounds (043) freeze the
-    // default workflow's launch-time options, root-only like the snapshot, and stay null on
-    // every other create — a named workflow, or the pre-209 workflow-less create this insert
-    // has always supported.
-    const rows = await sql<{ id: string }[]>`
-        insert into job (
-            org_id, command, created_by, repo, executor, id, root_job_id,
-            workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params,
-            default_review_reconciliation, default_merge_conflict_autofix, default_gate_fix_rounds
-        )
-        select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
-               ${target.workflow?.id ?? null},
-               ${target.workflow?.name ?? null},
-               ${target.workflow?.node ?? null},
-               ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
-               ${target.workflow ? sql.json(target.workflow.params as never) : null},
-               ${target.workflow?.defaultOptions?.reviewReconciliation ?? null},
-               ${target.workflow?.defaultOptions?.mergeConflictAutofix ?? null},
-               ${target.workflow?.defaultOptions?.gateFixRounds ?? null}
-        from (select gen_random_uuid() as x) s
-        returning id
-    `;
-    return { id: rows[0]!.id };
+    // One transaction: the checkout-row lock/check and the insert are decided together, which is
+    // the whole point — see refuseIfCheckoutPurging.
+    return sql.begin(async (tx) => {
+        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, target.repo)) return 'purging';
+        // id and root_job_id are the SAME uuid, computed once in the select so the column can
+        // be not null from insert — the root's root is itself (022). The workflow triple rides
+        // the same insert when a workflow resolved: workflow_id names what the task walks (null
+        // for the code-owned default, issue #209 — it is never a row in `workflow`),
+        // workflow_name freezes the resolved record's NAME on the row (033), workflow_node is
+        // the entry the first run carries, the snapshot freezes the graph onto
+        // the root — where every transition decision reads it — and workflow_params freezes the
+        // validated launch values beside it (030). default_review_reconciliation/
+        // default_merge_conflict_autofix (039) and default_gate_fix_rounds (043) freeze the
+        // default workflow's launch-time options, root-only like the snapshot, and stay null on
+        // every other create — a named workflow, or the pre-209 workflow-less create this insert
+        // has always supported.
+        const rows = await tx<{ id: string }[]>`
+            insert into job (
+                org_id, command, created_by, repo, executor, id, root_job_id,
+                workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params,
+                default_review_reconciliation, default_merge_conflict_autofix, default_gate_fix_rounds
+            )
+            select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
+                   ${target.workflow?.id ?? null},
+                   ${target.workflow?.name ?? null},
+                   ${target.workflow?.node ?? null},
+                   ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
+                   ${target.workflow ? sql.json(target.workflow.params as never) : null},
+                   ${target.workflow?.defaultOptions?.reviewReconciliation ?? null},
+                   ${target.workflow?.defaultOptions?.mergeConflictAutofix ?? null},
+                   ${target.workflow?.defaultOptions?.gateFixRounds ?? null}
+            from (select gen_random_uuid() as x) s
+            returning id
+        `;
+        return { id: rows[0]!.id };
+    });
 }
 
 /**
@@ -82,57 +118,84 @@ export interface FollowUpRowInput {
 export async function createFollowUpRow(
     sql: Sql,
     input: FollowUpRowInput
-): Promise<{ id: string } | 'missing' | 'task_done' | 'not_finished' | 'no_session' | 'forbidden'> {
+): Promise<{ id: string } | 'missing' | 'task_done' | 'not_finished' | 'no_session' | 'forbidden' | 'purging'> {
     const { orgId, parentId, command, createdBy } = input;
-    const rows = await sql<{ id: string }[]>`
-        with parent as (
-            select id, repo, executor, session_id, root_job_id, workflow_name
-            from job
-            where org_id = ${orgId} and id = ${parentId}
-              and status in ('succeeded','failed','dead','stopped')
-              and done_at is null
-              and session_id is not null
-              and created_by is not distinct from ${createdBy}
-            for update
-        ),
-        root as (
-            select root.id as root_id, root.workflow_snapshot as snapshot
-            from parent, job root
-            where root.org_id = ${orgId} and root.id = parent.root_job_id
-        ),
-        primary_session as (
-            select
-                case
-                    when root.snapshot is null then parent.session_id
-                    else (
-                        select r.session_id
-                        from job r
-                        where r.org_id = ${orgId} and r.root_job_id = root.root_id
-                          and r.session_id is not null
-                          and exists (
-                              select 1 from jsonb_array_elements(root.snapshot -> 'nodes') node
-                              where node->>'name' = r.workflow_node and node->>'session' = 'resume'
-                          )
-                        order by r.created_at, r.id
-                        limit 1
-                    )
-                end as session_id
-            from parent, root
-        )
-        insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_name)
-        select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.id,
-               coalesce(primary_session.session_id, parent.session_id),
-               parent.root_job_id, parent.workflow_name
-        from parent, root, primary_session
-        returning id
-    `;
-    if (rows[0]) return { id: rows[0]!.id };
-    // Nothing inserted — one of the five preconditions failed, and which one decides the answer
-    // the route turns into a status code. Forbidden is last: a sessionless parent answers the
-    // truer no_session whoever asks, and a parent with no author falls through the author check
-    // rather than refusing.
-    if (!(await exists(sql, orgId, parentId))) return 'missing';
-    const [parent] = await sql<
+    // One transaction for the checkout-row guard and the conditional insert, so a purge that
+    // commits between them cannot slip a follow-up into a checkout that is being deleted — the
+    // same lock both job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
+    return sql.begin(async (tx) => {
+        // The follow-up runs in the PARENT's repo's checkout, so the guard reads the parent's
+        // repo label (a finished parent's label never changes) and locks the author's checkout
+        // row before anything can be inserted.
+        const [label] = await tx<{ repo: string | null }[]>`
+            select repo from job where org_id = ${orgId} and id = ${parentId}
+        `;
+        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label?.repo ?? null)) return 'purging';
+        const rows = await tx<{ id: string }[]>`
+            with parent as (
+                select id, repo, executor, session_id, root_job_id, workflow_name
+                from job
+                where org_id = ${orgId} and id = ${parentId}
+                  and status in ('succeeded','failed','dead','stopped')
+                  and done_at is null
+                  and session_id is not null
+                  and created_by is not distinct from ${createdBy}
+                for update
+            ),
+            root as (
+                select root.id as root_id, root.workflow_snapshot as snapshot
+                from parent, job root
+                where root.org_id = ${orgId} and root.id = parent.root_job_id
+            ),
+            primary_session as (
+                select
+                    case
+                        when root.snapshot is null then parent.session_id
+                        else (
+                            select r.session_id
+                            from job r
+                            where r.org_id = ${orgId} and r.root_job_id = root.root_id
+                              and r.session_id is not null
+                              and exists (
+                                  select 1 from jsonb_array_elements(root.snapshot -> 'nodes') node
+                                  where node->>'name' = r.workflow_node and node->>'session' = 'resume'
+                              )
+                            order by r.created_at, r.id
+                            limit 1
+                        )
+                    end as session_id
+                from parent, root
+            )
+            insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_name)
+            select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.id,
+                   coalesce(primary_session.session_id, parent.session_id),
+                   parent.root_job_id, parent.workflow_name
+            from parent, root, primary_session
+            returning id
+        `;
+        if (rows[0]) return { id: rows[0]!.id };
+        // Nothing inserted — one of the five preconditions failed, and which one decides the answer
+        // the route turns into a status code. Forbidden is last: a sessionless parent answers the
+        // truer no_session whoever asks, and a parent with no author falls through the author check
+        // rather than refusing.
+        if (!(await exists(tx, orgId, parentId))) return 'missing';
+        return followUpRefusalOf(tx, orgId, parentId, createdBy);
+    });
+}
+
+/**
+ * Names the precondition the conditional insert failed on, for the row AS IT IS NOW — a parent
+ * that moved on between the CTE and this read can make the refusal name the newer state, and the
+ * retry then succeeds (the same honesty the original inline shape had, extracted so the function
+ * above stays readable).
+ */
+async function followUpRefusalOf(
+    tx: TransactionSql,
+    orgId: string,
+    parentId: string,
+    createdBy: string | null
+): Promise<'task_done' | 'not_finished' | 'no_session' | 'forbidden'> {
+    const [parent] = await tx<
         { status: JobStatus; done_at: Date | null; session_id: string | null; created_by: string | null }[]
     >`
         select status, done_at, session_id, created_by from job where org_id = ${orgId} and id = ${parentId}

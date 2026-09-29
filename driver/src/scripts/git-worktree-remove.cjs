@@ -30,6 +30,16 @@
 // A worktree prune always follows, so a stale admin entry can never hold the path hostage for
 // a follow-up that shows up later (a follow-up recreates the tree with `git worktree add` on
 // the surviving factory/<root> branch — losing the directory must not cost it its commits).
+//
+// THE PARENT CLONE MAY BE GONE (issue #92): the member's manual purge deletes the whole
+// checkout — clone, .worktrees sibling of the task tree included — while a finished task's
+// reclaim is still queued. Every git call above runs with cwd REPO, so without its own branch
+// the reclaim would fail forever on a tree the clone's death made it unable to even name. So
+// when REPO is absent the worktree side proves registration ITSELF: a task worktree's .git is
+// a file whose gitdir line points into the clone's admin dir (<repo>/.git/worktrees/...), and
+// only such a tree is removed. A .git pointing anywhere else is the same refusal as ever —
+// the clone being gone makes this tree nobody's registered worktree, which is a reason to be
+// MORE careful, not less. There is no prune when the clone is gone: nothing to prune into.
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 
@@ -40,8 +50,47 @@ const ERROR_MESSAGE_MAX_LENGTH = 300;
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
 const refused = (r) => ({ ok: false, reason: r });
 
+/**
+ * The clone is gone. Settle the tree from what the tree itself knows, and nothing else:
+ * a registered task worktree carries a .git FILE whose gitdir names this clone's admin dir.
+ */
+function reclaimWithoutClone(wtExists) {
+    if (!wtExists) return { ok: true, removed: false };
+    const dotGit = wt + '/.git';
+    if (fs.existsSync(dotGit)) {
+        // A task worktree's .git is a FILE (a pointer at the clone's admin dir). A .git
+        // DIRECTORY is a standalone repo parked at the path — somebody's git tree either way,
+        // and the same refusal as ever: the clone being gone is a reason to be more careful,
+        // not less. statSync keeps the EISDIR from becoming a generic crash verdict.
+        const honest =
+            fs.statSync(dotGit).isFile() &&
+            fs
+                .readFileSync(dotGit, 'utf8')
+                .split('\n')
+                .some((l) => {
+                    const gitdir = l.startsWith('gitdir: ') ? l.slice('gitdir: '.length).trim() : null;
+                    return gitdir !== null && gitdir.startsWith(repo + '/.git/worktrees/');
+                });
+        if (!honest) {
+            return refused(
+                'refusing to remove ' +
+                    wt +
+                    ': the path holds a git tree that is not a registered worktree of ' +
+                    repo +
+                    ' (whose clone is gone); remove it by hand if it is truly stale'
+            );
+        }
+        fs.rmSync(wt, { recursive: true, force: true });
+        return { ok: true, removed: true };
+    }
+    // The bare-leftover case, without the clone that would have pruned after it.
+    fs.rmSync(wt, { recursive: true, force: true });
+    return { ok: true, removed: true };
+}
+
 function reclaim() {
     const wtExists = fs.existsSync(wt);
+    if (!fs.existsSync(repo)) return reclaimWithoutClone(wtExists);
     const registered =
         wtExists &&
         git('worktree', 'list', '--porcelain')
