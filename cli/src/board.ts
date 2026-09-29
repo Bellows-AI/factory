@@ -1,8 +1,10 @@
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
 /**
- * The board client for the three person routes the CLI speaks to: `POST /api/jobs`,
- * `GET /api/jobs` and `GET /api/jobs/:id[/thread]`. A plain HTTP client that depends on nothing,
+ * The board client for the person routes the CLI speaks to: the two reads
+ * (`GET /api/jobs`, `GET /api/jobs/:id[/thread]`, the second doubling as the settle long-poll)
+ * and the five writes (`POST /api/jobs` and the `follow-up`, `stop`, `done` and `remove` actions
+ * on a job). A plain HTTP client that depends on nothing,
  * core included — the driver's rule and its reason apply word for word: this is a client of an
  * HTTP board, and importing the server's types would hand a process that needs only `fetch` the
  * whole server dependency tree, plus a build order.
@@ -55,6 +57,41 @@ export interface BoardJobRecord {
     output: string | null;
 }
 
+/**
+ * The 200/202 body of a stop. A queued row, or a running one whose lease already expired, is
+ * settled `stopped` on the spot; a running row under a live lease is only STAMPED — the worker
+ * settles it at its next heartbeat — and that answer carries `cancelRequestedAt` instead.
+ */
+export interface JobStopped {
+    id: string;
+    status: string;
+    cancelRequestedAt?: string | null;
+}
+
+/** The 200 body of a done: the run's own verdict is untouched, and `doneAt` is the user's. */
+export interface JobDone {
+    id: string;
+    status: string;
+    doneAt: string | null;
+}
+
+/** The 200 body of a remove. The whole thread is gone; there is nothing left to render. */
+export interface JobRemoved {
+    id: string;
+    removed: boolean;
+}
+
+/**
+ * The statuses a run never leaves. `done` is not among them — it is a person's verdict on a
+ * finished task, orthogonal to how the run ended (docs/jobs.md), and a task can be marked done
+ * only once its last run already reached one of these.
+ */
+export const TERMINAL_STATUSES: readonly string[] = ['succeeded', 'failed', 'dead', 'stopped'];
+
+export function isTerminal(status: string): boolean {
+    return TERMINAL_STATUSES.includes(status);
+}
+
 export interface BoardClient {
     createJob(input: {
         command: string;
@@ -67,7 +104,17 @@ export interface BoardClient {
         repo?: string | undefined;
     }): Promise<BoardJobRecord[]>;
     getJob(id: string): Promise<BoardJobRecord>;
+    /**
+     * One settle long-poll: the board holds the read until the thread's chain head is terminal or
+     * `timeoutSeconds` elapses, then answers the usual row either way. A timeout is an ordinary
+     * 200 with no marker of its own, so the caller decides from the row whether to re-issue.
+     */
+    waitForJob(id: string, timeoutSeconds: number): Promise<BoardJobRecord>;
     thread(id: string): Promise<BoardJobRecord[]>;
+    followUp(id: string, command: string): Promise<JobCreated>;
+    stopJob(id: string): Promise<JobStopped>;
+    markDone(id: string): Promise<JobDone>;
+    removeJob(id: string): Promise<JobRemoved>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -163,11 +210,42 @@ export function createBoardClient({
             return (await request(`/api/jobs/${id}`, { headers: authHeaders() })) as BoardJobRecord;
         },
 
+        async waitForJob(id, timeoutSeconds) {
+            // The wait is a parameter of the job read, not a route of its own — and only of the
+            // job read: the thread read takes no wait parameters at all.
+            const query = new URLSearchParams({ waitFor: 'terminal', timeout: String(timeoutSeconds) });
+            return (await request(`/api/jobs/${id}?${query}`, { headers: authHeaders() })) as BoardJobRecord;
+        },
+
         async thread(id) {
             const payload = (await request(`/api/jobs/${id}/thread`, { headers: authHeaders() })) as {
                 jobs: BoardJobRecord[];
             };
             return payload.jobs;
+        },
+
+        async followUp(id, command) {
+            // The command is the whole body: the repo, the executor and the session are copied
+            // from the parent at insert, and sending them here would be a second opinion the
+            // board does not ask for.
+            return (await request(`/api/jobs/${id}/follow-up`, {
+                method: 'POST',
+                headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                body: JSON.stringify({ command }),
+            })) as JobCreated;
+        },
+
+        // The three actions take no body, so they send no content-type either.
+        async stopJob(id) {
+            return (await request(`/api/jobs/${id}/stop`, { method: 'POST', headers: authHeaders() })) as JobStopped;
+        },
+
+        async markDone(id) {
+            return (await request(`/api/jobs/${id}/done`, { method: 'POST', headers: authHeaders() })) as JobDone;
+        },
+
+        async removeJob(id) {
+            return (await request(`/api/jobs/${id}/remove`, { method: 'POST', headers: authHeaders() })) as JobRemoved;
         },
     };
 }

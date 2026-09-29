@@ -86,6 +86,60 @@ describe('the board client', () => {
         expect(calls[1]!.headers.authorization).toBe('Bearer fat_abc');
     });
 
+    it('asks the settle long-poll for the seconds it was given, on the job read itself', async () => {
+        // `waitFor=terminal` is a parameter of GET /api/jobs/:id — there is no separate wait
+        // route, and the thread read takes no wait parameters at all.
+        const { calls, fetch } = recorder(() => json({ id: 'job-1', status: 'succeeded' }));
+
+        await client(fetch).waitForJob('job-1', 45);
+
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1?waitFor=terminal&timeout=45');
+        expect(calls[0]!.method).toBe('GET');
+        expect(calls[0]!.headers.authorization).toBe('Bearer fat_abc');
+    });
+
+    it('posts a follow-up with the command alone — repo, executor and session are inherited', async () => {
+        const { calls, fetch } = recorder(() => json({ id: 'job-2', status: 'queued' }, 201));
+
+        const created = await client(fetch).followUp('job-1', 'now add a test');
+
+        expect(created).toEqual({ id: 'job-2', status: 'queued' });
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/follow-up');
+        expect(calls[0]!.method).toBe('POST');
+        expect(calls[0]!.body).toEqual({ command: 'now add a test' });
+    });
+
+    it('posts the bodiless lifecycle actions and returns what each one answered', async () => {
+        const { calls, fetch } = recorder(
+            (index) =>
+                [
+                    json({ id: 'job-1', status: 'running', cancelRequestedAt: '2026-09-29T13:01:00.000Z' }, 202),
+                    json({ id: 'job-1', status: 'succeeded', doneAt: '2026-09-29T13:02:00.000Z' }),
+                    json({ id: 'job-1', removed: true }),
+                ][index]!
+        );
+        const board = client(fetch);
+
+        const stopped = await board.stopJob('job-1');
+        const done = await board.markDone('job-1');
+        const removed = await board.removeJob('job-1');
+
+        expect(stopped).toEqual({
+            id: 'job-1',
+            status: 'running',
+            cancelRequestedAt: '2026-09-29T13:01:00.000Z',
+        });
+        expect(done).toEqual({ id: 'job-1', status: 'succeeded', doneAt: '2026-09-29T13:02:00.000Z' });
+        expect(removed).toEqual({ id: 'job-1', removed: true });
+        expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+            'POST http://board/api/jobs/job-1/stop',
+            'POST http://board/api/jobs/job-1/done',
+            'POST http://board/api/jobs/job-1/remove',
+        ]);
+        // No body at all, so no content-type either: these three routes take none.
+        expect(calls.map((call) => call.body)).toEqual([undefined, undefined, undefined]);
+    });
+
     it('turns a non-2xx {error, code} body into a BoardError carrying both', async () => {
         const { fetch } = recorder(() => json({ error: 'No such job', code: 'NOT_FOUND' }, 404));
 
