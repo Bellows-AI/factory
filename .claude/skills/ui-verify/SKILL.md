@@ -46,10 +46,8 @@ Traces for failures are written next to them and open with
 Specs live in `e2e/`. `vitest.config.ts` lists its includes explicitly, so nothing in `e2e/`
 leaks into `npm test` — keep it that way; the default suite must stay offline and browser-free.
 
-Two things to know before adding assertions:
+One thing to know before adding assertions:
 
-- **`.cards` is not unique.** The headline cards and the AI usage panel both use it. Scope to
-  `.cards` `.first()`, as `usageCards()` does.
 - **A preset that resolves to the query already on screen does not refetch.** `useStats` keys on
   the query string, so clicking the active preset — or "Custom" before a date is entered — fires
   no request. Waiting on a response there hangs until the timeout.

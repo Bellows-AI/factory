@@ -13,7 +13,9 @@ floor, then the unlayered platform conditions. `web/test/styles.test.ts` reads a
 files as one style system and holds the lines: one deliberate import order with each construct in
 its own file, no color literal outside the two token blocks, every defined token used, every
 class the stylesheets define appears in this document or in the lane docs beside it (the
-inventory cannot silently rot).
+inventory cannot silently rot), and every defined class has a caller — a literal under `web/src`
+or the specimen spells it (a distinctively named rule cannot outlive its markup; a modifier named
+like a common word, `warn` or `bad`, is matched by any literal and still needs a reviewer's eye).
 
 ## File map and ownership
 
@@ -28,7 +30,7 @@ and this document.
 | `web/src/styles/fonts.css` | shared | The five self-hosted `@font-face` blocks (CSP: font-src 'self') |
 | `web/src/styles/tokens.css` | shared | Both `:root` token blocks and the `@theme` blocks — the only legal homes for color literals |
 | `web/src/styles/base.css` | shared | `@layer base`: the type scale, the bare content link, the 36px control floor |
-| `web/src/styles/primitives.css` | shared | `@utility lamp-glow` and the `@layer components` shared primitives — shell, sidenav, app bar, page header, panels, pills, banners, fields, buttons, selectors, dialogs, tables, charts |
+| `web/src/styles/primitives.css` | shared | `@utility lamp-glow` and the `@layer components` shared primitives — shell, sidenav, app bar, page header, panels, pills, banners, fields, buttons, selectors, dialogs, tables (chart marks live in the dashboard region) |
 | `web/src/styles/regions/<lane>.css` | the lane | One file per lane — `inbox`, `composer`, `task-detail`, `settings`, `dashboard`, `entry` — imported in the lanes' historical order; each ends with the lane's 44px touch-target segment |
 | `web/src/styles/touch-targets.css` | shared | The ≤900px 44px rule for the controls the whole shell owns; the components layer's last file, so it outranks every lane's own control rules at equal specificity |
 | `web/src/styles/platform.css` | shared | The unlayered `prefers-reduced-motion` and `forced-colors` overrides — outside every layer, so they outrank all of them |
@@ -203,7 +205,7 @@ three heading levels; the rest are the named primitives' own rules.
 | Supporting text | helpers, row summaries | 13 / 18 / 400, `--ink-muted` |
 | Rail eyebrow | `task-outcome-label` (and `run-label`) | 12 / 16 / 600, uppercase, 0.06em, `--ink-muted` |
 | Status pill | `pill` | 12 / 16 / 600 |
-| Metric value | `card strong`, `usage-group strong` | 28 / 34 / 600, tabular figures |
+| Metric value | `usage-group strong` | 28 / 34 / 600, tabular figures |
 
 ### Spacing, radius, sizes
 
@@ -317,10 +319,9 @@ buttons — siblings of the heading, never children of it. An empty slot renders
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Panel | `panel`, `panel-head`, `panel-actions` | The card a page section lives in; `+ warn` / `bad` tints the edge |
+| Panel | `panel`, `panel-head`, `panel-actions` | The card a page section lives in; `+ bad` tints the edge (a telemetry panel that failed to load) |
 | Status line | `status`, `alert`, `error`, `muted` | One-line state text; `muted` for secondary prose anywhere |
 | Badge | `badge`, `badge-warn` | Loud inline marker — reserved for synthetic data |
-| Limits | `limits` | The bulleted limitations list |
 | Halo | `lamp-glow` | The soft box-shadow halo in the lamp's own color (`currentColor`); worn by the breathing status dots |
 
 #### Controls
@@ -380,7 +381,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Org | `org-selector`, `org-select`, `select-trigger` | The organization switcher in the app bar, or in the navigation drawer at ≤900px (Headless UI Listbox) |
 | User menu | `select-trigger`, `user-menu-button`, `user-menu-login`, `user-menu-panel`, `popover`, `popover-separator` | The app bar's identity disclosure (Headless UI Menu): Account, a separator, then Sign out |
 | Avatar | `avatar`, `avatar-fallback`, `avatar-lg` | A 28px identity circle on `--surface-strong` (40px with `avatar-lg`); `-fallback` is the initials stand-in, 12px/600 `--ink` |
-| State marks | `active`, `is-active` | The active member of a toggle row or nav list |
+| State marks | `active`, `is-active` | The active member of a toggle row or nav list: `is-active` marks the current sidenav entry (link, sublink, task, new task) and inbox tab; `active` is the class React Router's `NavLink` adds, styled only in the user menu |
 | Keyboard mark | `kbd` (element) | The shortcut text beside the composer's launch button — documentation of the button, never an affordance: sunken, a `--line` edge, 4px radius, Plex Mono 12px, 24px tall |
 
 #### Data display
@@ -400,7 +401,7 @@ and switches immediately — no reload, no refetch, no transition, no sign-out c
 | Primitive | Classes | Use for |
 | --- | --- | --- |
 | Dialog | `dialog`, `dialog-layer`, `dialog-backdrop`, `dialog-position` | The Headless UI dialog shell every dialog renders into: the layer carries the z-index policy (dialogs 40, popovers 30), the backdrop div uses `--overlay`, the positioner centers the panel. `dialog` is the panel itself — raised, the `--line-strong` edge, 8px radius, the popovers' shadow, 24px padding, 560px at most, its own scroll inside the viewport, full width with 16px padding at ≤640px; a dialog's own class (`picker`, `task-remove`, `unsaved`, `range-dialog`) only narrows it |
-| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `mobile-nav-org` | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the picker's `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link` (glyphs included, never the count pill)/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
+| Drawer | `mobile-nav`, `mobile-nav-head`, `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count` (and the unstyled `mobile-nav-org` hook) | The ≤900px navigation drawer (issue 160), a Headless UI `Dialog` rendered into the shared `dialog-layer`/`dialog-backdrop`/`dialog-position` shell. Reuses `sidenav-link` (glyphs included, never the count pill)/`sidenav-sublink`/`sidenav-newtask` inside; counts are plain sentences, never live regions, and no task preview rows render here |
 
 #### Icons
 
@@ -428,6 +429,13 @@ headings are Barlow); `gate-passed`, `gate-failed`, `gate-running` (now `pill-ok
 the per-field skins of `composer-input`, `inbox-search input`/`select`, `repo-search input` and
 `picker-search input` (now `field`); and the per-dialog skins of `picker`, `task-remove`,
 `unsaved` and `range-dialog` (now `dialog`).
+
+The cleanup (#288) deleted what the redesign left without a caller, and the callers suite keeps
+it gone: `cards`/`card` and `Card.tsx` (the metric cards are `usage-group`); `HBarChart.tsx`,
+`Scatter.tsx` and their `dot`, `dot-warn`, `dot-bad` marks, `bar-warn` and `bar-bad`, and the
+`logScale` helper; `limits` and the `panel.warn` tint (a failed panel is `panel bad`);
+`picker-list`, `picker-option` and `picker-name` (the executor dialog is a form, not a
+list); and `chat-toggle`.
 
 ### Regions
 
@@ -477,18 +485,11 @@ Helpers with no markup: `env-raw.ts` is the `.env` raw-editor parser the env pan
 | `SettingsLayout.tsx` | none — renders the outlet |
 | `TasksLayout.tsx` | none — renders the shell, sidenav and outlet |
 
-### Regions
+Each lane's UI-unit rows live in its own doc, beside its primitives ([Regions](#regions),
+above).
 
-Each lane's UI-unit rows live in its own doc, beside its primitives — one per region file under
-`web/src/styles/regions/`, kept in `docs/design-system/`:
-
-- inbox — [design-system/inbox.md](design-system/inbox.md)
-- composer — [design-system/composer.md](design-system/composer.md)
-- task-detail — [design-system/task-detail.md](design-system/task-detail.md)
-- settings — [design-system/settings.md](design-system/settings.md)
-- dashboard — [design-system/dashboard.md](design-system/dashboard.md)
-- entry — [design-system/entry.md](design-system/entry.md)
-
-A class used but not defined here (`visually-hidden`, `token-once`) is a hook with no styles or a
-leftover — do not style it by inventing a rule without a row above.
+A class used in markup but defined by no stylesheet — `visually-hidden`, `token-once`,
+`mobile-nav-org`, and the section hooks panels carry beside `panel` (`task-follow-up`,
+`repo-detail`, `composer-section` and the like) — is a hook with no styles; do not style one by
+inventing a rule without a row in these documents.
 

@@ -10,7 +10,6 @@ contracts: [../design-system.md](../design-system.md).
 | --- | --- | --- |
 | Grid | `two-up` | Usage by user beside Recent tasks: side by side at ≥1200px, stacked below; a lone child (no telemetry to attribute) spans the full width |
 | Controls row | `dashboard-controls` | The dashboard's control row under the page header: the analytics toolbar, which moved here from the old global topbar (issues 160 and 159) |
-| Cards | `cards`, `card` | Numeric figure tiles inside a panel |
 | Analytics toolbar | `analytics-toolbar`, `toolbar-group`, `toolbar-label`, `toolbar-value`, `toolbar-coverage`, `toolbar-coverage-dot` | The dashboard's one 64px raised toolbar panel (#283): Range (calendar glyph) and Scope as visibly labeled groups — each a real `fieldset`/`legend`, the legend floated so it sits inline beside its control without stealing the trigger's accessible name — then the repository coverage as informational text with a `--lamp-run` dot (never a selector; no dot while coverage is unknown), then the freshness stamp at the far edge. Read-only values (open mode's Organization scope) stay sunken like the inputs they echo |
 | Range | `range-dialog`, `range-dialog-title`, `range-draft`, `range-draft-fields`, `range-draft-actions` | The Range group's one dropdown (issue 246): a `select-trigger`/`popover`/`popover-option` Listbox over the presets plus Custom; picking a preset commits it, picking Custom opens the `range-dialog` — a Headless UI Dialog in the shared `dialog` panel and shell — holding the draft form (`range-draft`, `range-draft-fields` for the two labeled date fields); Apply, Cancel and Clear are the only ways to commit or discard it |
 | Rendered-data summary | `analytics-summary` | The one-line payload sentence under the toolbar panel — mono, muted, a polite live region |
@@ -27,7 +26,7 @@ Charts:
 | --- | --- | --- |
 | Frame | `chart-wrap`, `chart` | The overflow scroll and the SVG itself |
 | Grid | `grid`, `grid-alt`, `tick`, `axis-label` | Gridlines (alt = dashed), ticks and labels — all `--ink-muted`/`--chart-grid` |
-| Marks | `bar` (+ `bar-primary`, `bar-ok`, `bar-warn`, `bar-bad`), `line`, `dot` (+ `dot-warn`, `dot-bad`) | Series fills; `dot` default is `--lamp-done` |
+| Marks | `bar` (+ `bar-primary`, `bar-ok`), `line` | Series fills: the total-input (`bar-primary`) and output (`bar-ok`) bars and the sessions line |
 | Partial | `bar-partial`, `bar-partial-hatch` | The hatch over a partial bucket (the current day/week), painted behind the bars — a non-color mark, grayscale-safe |
 | Bucket target | `bucket-hit` | The transparent rect over each bucket; one roving tab stop, accent edge on `:focus-visible` |
 | Tooltip | `chart-tooltip`, `chart-tooltip-box` | The active bucket's exact readout, rendered inside the SVG so it scales with it |
@@ -44,7 +43,6 @@ Charts:
 | `RangeSelector.tsx` | analytics toolbar, selector, range, dialog, primary, status, icon |
 | `ScopeToggle.tsx` | analytics toolbar, selector |
 | `DataTable.tsx` | table-wrap, data, sortable, th.asc, th.desc, align-end |
-| `Card.tsx` | card |
 | `TaskUsagePanel.tsx` | data, align-end, muted |
 | `ByUserPanel.tsx` | data, align-end, usage-track, usage-bar, task-avatar, by-user-user |
 | `RecentTasksPanel.tsx` | panel, recent-tasks, recent-tasks-head, pill, pill-ok, pill-bad, pill-done, pill-accent, alert, muted, data, task-title, task-avatar, by-user-user |
@@ -53,7 +51,5 @@ Charts:
 | `TelemetryFrame.tsx` | alert, badge |
 | `Axes.tsx` | grid, tick, axis-label |
 | `BarChart.tsx` | bar, line, bucket-hit, bar-partial, bar-partial-hatch, chart-tooltip, chart-tooltip-box, chart-empty |
-| `HBarChart.tsx` | bar |
-| `Scatter.tsx` | dot, axis-label |
 | `scale.ts` | helper — no markup |
 

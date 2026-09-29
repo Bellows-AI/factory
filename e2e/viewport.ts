@@ -1,9 +1,9 @@
 import { expect, type Page } from '@playwright/test';
 
 /** The elements allowed to scroll horizontally, by the design system's own account of them:
-    the table wrap, the chart frame, the log wells, the picker list, and text entry. Anything
+    the table wrap, the chart frame, the log wells, and text entry. Anything
     else an audit catches is an unnamed scroll region — a defect, not a fact of the page. */
-export const NAMED_SCROLL_REGIONS = '.table-wrap, .chart-wrap, .chat-output, .run-well, .picker-list';
+export const NAMED_SCROLL_REGIONS = '.table-wrap, .chart-wrap, .chat-output, .run-well';
 
 /** How far the page reaches past its viewport, in px: positive is page-level horizontal scroll.
     `inner` is the issue-287 contract (`scrollWidth <= innerWidth`); the client-width pair is the
