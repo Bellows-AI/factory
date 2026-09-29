@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import type { Board, BoardJob, HeartbeatVerdict, LeaseState, Reclaim, RuntimeReport } from '../src/board.js';
+import type {
+    Board,
+    BoardJob,
+    BoardLease,
+    HeartbeatVerdict,
+    LeaseState,
+    Reclaim,
+    RuntimeReport,
+} from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateServer } from '../src/gates.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
-import type { PublishResult, SyncResult } from '../src/publish.js';
+import type { PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
+import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
 import { newJobState, watchOutput } from '../src/loop-attempt.js';
 
@@ -56,6 +65,7 @@ interface BoardStub extends Board {
     publishTokenAsks: string[];
     reclaimGrants: Reclaim[];
     reclaimAcks: string[];
+    leaseLookups: string[][];
 }
 
 /**
@@ -82,6 +92,8 @@ function stubBoard(
         ackReclaimLease?: 'ok' | 'lost' | 'missing';
         failAckReclaim?: boolean;
         publishToken?: string | null;
+        /** The board's answer to `leases` — null models a refused lookup (issue #344). */
+        leaseRows?: BoardLease[] | null;
     } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -101,6 +113,12 @@ function stubBoard(
         publishTokenAsks: [],
         reclaimGrants: [],
         reclaimAcks: [],
+        leaseLookups: [],
+        async leases(ids) {
+            board.leaseLookups.push([...ids]);
+            if (options.leaseRows === undefined) return [];
+            return options.leaseRows;
+        },
         async suspend(claimed) {
             board.suspended.push(claimed.id);
             return 'held';
@@ -173,6 +191,10 @@ function stubRunner(
         sync?: SyncResult | null;
         syncError?: Error;
         reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null;
+        /** Answers popped per reclaimWorktree call, falling back to `reclaim` (issue #344). */
+        reclaimSequence?: ReclaimResult[];
+        /** The kubernetes orphan-claim reap; recorded in `reapAttempts` (issue #344). */
+        reapOrphanedClaim?: (job: BoardJob) => Promise<boolean>;
     } = {}
 ): Runner & {
     killed: string[];
@@ -182,10 +204,13 @@ function stubRunner(
     synced: BoardJob[];
     reclaimed: BoardJob[];
     servicesReleased: string[];
+    reapAttempts: BoardJob[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
+    const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
     const runner = {
         servicesReleased: [] as string[],
+        reapAttempts: [] as BoardJob[],
         async releaseServices(releasedJob: BoardJob) {
             runner.servicesReleased.push(releasedJob.id);
         },
@@ -226,8 +251,18 @@ function stubRunner(
         },
         async reclaimWorktree(reclaimedJob: BoardJob) {
             runner.reclaimed.push(reclaimedJob);
+            const next = reclaimQueue.shift();
+            if (next) return next;
             return reclaim ?? { ok: true, removed: true, reason: null };
         },
+        ...(options.reapOrphanedClaim
+            ? {
+                  reapOrphanedClaim: async (orphanJob: BoardJob) => {
+                      runner.reapAttempts.push(orphanJob);
+                      return options.reapOrphanedClaim?.(orphanJob) ?? false;
+                  },
+              }
+            : {}),
     };
     return runner;
 }
@@ -1593,6 +1628,267 @@ describe('the poll loop', () => {
         // and start() resolved, where before the fix the rejection ended the driver.
         expect(board.board.reclaimAcks).toEqual([]);
         expect(logs.some((m) => m.includes('leaving it to the lease'))).toBe(true);
+    });
+
+    /*
+     * The orphaned checkout claim (issue #344): a claim ConfigMap whose holder job the board no
+     * longer knows stood every reclaim of the removed thread down forever — nothing else can see
+     * a bare ConfigMap, so the reclaim loop is the only cleaner. The proof is the board's own
+     * lease lookup, never a clock; the reap is uid-preconditioned in the runner; and the failure
+     * lines throttle to state changes so a stuck row does not log an identical line every poll.
+     */
+    describe('an orphaned checkout claim', () => {
+        const rowId = '55555555-5555-4555-8555-555555555555';
+        const root = job(1).id;
+        const heldRow: Reclaim = {
+            id: rowId,
+            rootJobId: root,
+            repo: 'Bellows-AI/factory',
+            workspacePath: `bellows/${USER}`,
+            leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+        };
+        const heldClaim = {
+            name: `factory-job-${root}-claim`,
+            attempt: '3',
+            createdMs: Date.now() - 120_000,
+        };
+        const heldRefusal = (): ReclaimResult => ({
+            ok: false,
+            removed: false,
+            reason: `the checkout is held (/workspaces/bellows/${USER}/.worktrees/${root}): job ${root} stands down: the checkout claim is held by a newer attempt (3 >= 1)`,
+            heldClaim,
+        });
+
+        it('reaps an orphaned claim when the board no longer knows the holder job, then retries and acks', async () => {
+            const logs: string[] = [];
+            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow] });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [heldRefusal(), { ok: true, removed: true, reason: null }],
+                reapOrphanedClaim: async () => true,
+            });
+            const loop = createLoop({
+                board: board.board,
+                runner,
+                config: config(),
+                sleep,
+                log: (m) => logs.push(m),
+            });
+            board.attach(loop);
+
+            await loop.start();
+
+            // Proven against the board, then reaped, then the removal retried once — and the
+            // row acked, so the offer stops.
+            expect(board.board.leaseLookups).toEqual([[root]]);
+            expect(runner.reapAttempts.map((j) => j.id)).toEqual([root]);
+            expect(runner.reclaimed).toHaveLength(2);
+            expect(board.board.reclaimAcks).toEqual([rowId]);
+            const orphan = logs.find((m) => m.includes('orphaned'));
+            expect(orphan).toContain(heldClaim.name);
+            expect(orphan).toContain('attempt 3');
+            expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(false);
+        });
+
+        it('reaps when the holder row is terminal — no attempt can ever come', async () => {
+            const board = stubBoard([], {
+                idleBeforeStop: 1,
+                reclaims: [heldRow],
+                leaseRows: [{ id: root, status: 'succeeded', leaseToken: null }],
+            });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [heldRefusal(), { ok: true, removed: true, reason: null }],
+                reapOrphanedClaim: async () => true,
+            });
+            const loop = createLoop({ board: board.board, runner, config: config(), sleep, log: () => {} });
+            board.attach(loop);
+
+            await loop.start();
+
+            expect(runner.reapAttempts.map((j) => j.id)).toEqual([root]);
+            expect(board.board.reclaimAcks).toEqual([rowId]);
+        });
+
+        it('does not reap when the board still knows the holder job as live', async () => {
+            const logs: string[] = [];
+            const board = stubBoard([], {
+                idleBeforeStop: 1,
+                reclaims: [heldRow],
+                leaseRows: [{ id: root, status: 'running', leaseToken: null }],
+            });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [heldRefusal()],
+                reapOrphanedClaim: async () => true,
+            });
+            const loop = createLoop({
+                board: board.board,
+                runner,
+                config: config(),
+                sleep,
+                log: (m) => logs.push(m),
+            });
+            board.attach(loop);
+
+            await loop.start();
+
+            expect(runner.reapAttempts).toEqual([]);
+            expect(board.board.reclaimAcks).toEqual([]);
+            expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(true);
+        });
+
+        it('does not reap when the board cannot answer the lease lookup', async () => {
+            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow], leaseRows: null });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [heldRefusal()],
+                reapOrphanedClaim: async () => true,
+            });
+            const loop = createLoop({ board: board.board, runner, config: config(), sleep, log: () => {} });
+            board.attach(loop);
+
+            await loop.start();
+
+            expect(runner.reapAttempts).toEqual([]);
+            expect(board.board.reclaimAcks).toEqual([]);
+        });
+
+        it('answers false from the reap without orphan fanfare, leaving the throttled failure log', async () => {
+            const logs: string[] = [];
+            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow] });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [heldRefusal()],
+                reapOrphanedClaim: async () => false,
+            });
+            const loop = createLoop({
+                board: board.board,
+                runner,
+                config: config(),
+                sleep,
+                log: (m) => logs.push(m),
+            });
+            board.attach(loop);
+
+            await loop.start();
+
+            // The proof passed and the delete was attempted, but the claim did not go: no
+            // orphan line, no retry, no ack — the throttled refusal line is all this offer says.
+            expect(runner.reapAttempts.map((j) => j.id)).toEqual([root]);
+            expect(logs.some((m) => m.includes('orphaned'))).toBe(false);
+            expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(true);
+            expect(board.board.reclaimAcks).toEqual([]);
+        });
+
+        it('logs a changed age alone as no change, but a null age as unknown', async () => {
+            const logs: string[] = [];
+            const board = stubBoard([], { idleBeforeStop: 1, reclaims: [heldRow] });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [
+                    { ...heldRefusal(), heldClaim: { ...heldClaim, createdMs: null } },
+                    { ok: true, removed: true, reason: null },
+                ],
+                reapOrphanedClaim: async () => true,
+            });
+            const loop = createLoop({
+                board: board.board,
+                runner,
+                config: config(),
+                sleep,
+                log: (m) => logs.push(m),
+            });
+            board.attach(loop);
+
+            await loop.start();
+
+            const orphan = logs.find((m) => m.includes('orphaned'));
+            expect(orphan).toContain('age unknown');
+        });
+
+        it('skips the orphan arm while a verdict-time reclaim of the same root is in flight', async () => {
+            const logs: string[] = [];
+            // The loop's barrier: report() holds the root's claim for its whole removal, and a
+            // second done can queue a queue-row for the same root meanwhile — the one live
+            // holder the queue path must not reap out from under.
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [heldRefusal()],
+                reapOrphanedClaim: async () => {
+                    throw new Error('the reap must never be reached while the barrier holds');
+                },
+            });
+            const ctx: ReclaimContext = {
+                board: {
+                    leases: async () => {
+                        throw new Error('the lookup must never be reached while the barrier holds');
+                    },
+                    ackReclaim: async () => 'ok',
+                },
+                runner,
+                config: config(),
+                log: (m) => logs.push(m),
+                failureLog: new Map(),
+                inFlightReclaim: (candidate) => candidate === root,
+            };
+
+            await processReclaim(ctx, heldRow);
+
+            expect(runner.reapAttempts).toEqual([]);
+            expect(runner.reclaimed).toHaveLength(1);
+            expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(true);
+        });
+
+        it('clears the throttle entry on a settled row, so a later identical failure logs fresh', async () => {
+            const logs: string[] = [];
+            const refusal = heldRefusal();
+            const board = stubBoard([], { idleBeforeStop: 20, reclaims: [heldRow, heldRow, heldRow] });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [refusal, { ok: true, removed: true, reason: null }, refusal],
+            });
+            const loop = createLoop({
+                board: board.board,
+                runner,
+                config: config(),
+                sleep,
+                log: (m) => logs.push(m),
+            });
+            board.attach(loop);
+
+            await loop.start();
+
+            // refusal (logged) → settled, entry cleared → the SAME refusal logs again.
+            expect(logs.filter((m) => m.includes('could not be reclaimed'))).toHaveLength(2);
+            expect(board.board.reclaimAcks).toEqual([rowId]);
+        });
+
+        it('throttles identical reclaim failures to one log line until the reason changes', async () => {
+            const logs: string[] = [];
+            const same = heldRefusal();
+            const changed: ReclaimResult = {
+                ...same,
+                reason: 'the checkout is held (/workspaces/x): a different holder now',
+                heldClaim: { ...heldClaim, attempt: '4' },
+            };
+            // The same row, re-offered three times with the same refusal, then once more after
+            // the reason changed — five minutes a poll for a day, in the wild. (idleBeforeStop
+            // stays high: the job-claim loop's idle count stops the whole loop, drains included,
+            // and every row here must be offered before that.)
+            const board = stubBoard([], {
+                idleBeforeStop: 20,
+                reclaims: [heldRow, heldRow, heldRow, { ...heldRow, leaseExpiresAt: '2026-08-21T13:05:00.000Z' }],
+            });
+            const runner = stubRunner(async () => ok(), {
+                reclaimSequence: [same, same, same, changed],
+            });
+            const loop = createLoop({
+                board: board.board,
+                runner,
+                config: config(),
+                sleep,
+                log: (m) => logs.push(m),
+            });
+            board.attach(loop);
+
+            await loop.start();
+
+            const failures = logs.filter((m) => m.includes('could not be reclaimed'));
+            expect(failures).toHaveLength(2);
+        });
     });
 
     it('never runs more than the configured number at once', async () => {

@@ -76,6 +76,67 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
 }
 
 /**
+ * The settle long-poll's one check (issue #323): is the named job's thread settled? The predicate
+ * is `listTasksOf`'s terminal rule verbatim — the chain head (newest member, created then id) in
+ * `succeeded|failed|dead|stopped`, OR an open `workflow_wait` (036) on the thread: a wait row with
+ * no terminal reason yet, the open one preferred exactly as the task read prefers it. One indexed
+ * read; no row when the org holds no such job.
+ */
+export async function settleStateOf(ctx: JobStoreContext, id: string): Promise<{ settled: boolean } | null> {
+    const { sql, orgId } = ctx;
+    const rows = await sql<{ settled: boolean }[]>`
+        select (
+            head.status in ('succeeded', 'failed', 'dead', 'stopped')
+            or (wl.wait_reason is not null and wl.wait_terminal_reason is null)
+        ) as settled
+        from (select root_job_id from job where org_id = ${orgId} and id = ${id}) r
+        join lateral (
+            select h.status
+            from job h
+            where h.org_id = ${orgId} and h.root_job_id = r.root_job_id
+            order by h.created_at desc, h.id desc
+            limit 1
+        ) head on true
+        left join lateral (
+            select w.reason as wait_reason, w.terminal_reason as wait_terminal_reason
+            from workflow_wait w
+            where w.org_id = ${orgId} and w.root_job_id = r.root_job_id
+            order by (w.completed_at is null and w.cancelled_at is null) desc, w.active_at desc
+            limit 1
+        ) wl on true
+    `;
+    const row = rows[0];
+    return row ? { settled: row.settled } : null;
+}
+
+/** How often the settle long-poll re-reads the thread while it holds — cheap by design. */
+export const SETTLE_POLL_MS = 250;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The hold itself: check first (an already-settled thread answers without sleeping), then re-read
+ * every `SETTLE_POLL_MS` until the deadline. No connection is held between polls — one query per
+ * round, bounded by the timeout the route already capped. A job that vanishes mid-hold (a
+ * `removeThread` winning the race) answers null, never a stale settled.
+ */
+export async function waitForSettleOf(
+    ctx: JobStoreContext,
+    id: string,
+    timeoutMs: number
+): Promise<{ settled: boolean } | null> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const state = await settleStateOf(ctx, id);
+        if (state === null) return null;
+        if (state.settled) return { settled: true };
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return { settled: false };
+        await sleep(Math.min(SETTLE_POLL_MS, remaining));
+    }
+}
+
+/**
  * The orphan reaper's batched lease lookup (issue #301): status and CURRENT lease token for every
  * named id this org holds, nothing for the ids it does not. No author join and no audit columns —
  * the reaper needs three facts, and a worker credential must never pull more of a row than the

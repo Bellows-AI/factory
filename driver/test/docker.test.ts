@@ -3363,6 +3363,65 @@ describe('publishing the produced work', () => {
         expect(calls).toHaveLength(0);
     });
 
+    /*
+     * Issue #344's docker half: an unreadable sync/reclaim verdict names why — the exit code and
+     * the last stdout line, or the plain fact that nothing was printed. (A nonzero exit already
+     * lands in the `container failed:` arm with the daemon's stderr detail; a RESOLVED unreadable
+     * verdict is by construction an exit-0 container.)
+     */
+    it('names the last stdout line when the sync container answers nothing parseable', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint'))
+                return { stdout: 'fetching origin\nfatal: could not read from remote repository\n' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+        const result = await runner.syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: 'the worktree sync answered nothing readable: exit 0, last log line "fatal: could not read from remote repository"',
+        });
+    });
+
+    it('says the sync container printed nothing when its stdout is empty', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: '' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+        const result = await runner.syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: 'the worktree sync answered nothing readable: exit 0, the container printed nothing',
+        });
+    });
+
+    it('names why the reclaim verdict was unreadable', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run') return { stdout: 'rm: permission denied\n' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+        const result = await runner.reclaimWorktree(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            removed: false,
+            reason: 'the worktree reclaim answered nothing readable: exit 0, last log line "rm: permission denied"',
+        });
+    });
+
     it('answers the refusal verbatim when the reclaim script refuses', async () => {
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'run')

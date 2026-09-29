@@ -1,11 +1,11 @@
-import type { Board, BoardJob, LeaseState, Reclaim, ReclaimAck } from './board.js';
+import type { Board, BoardJob, LeaseState, Reclaim } from './board.js';
 import type { DriverConfig } from './config.js';
 import { workspacePathOf } from './claim.js';
 import type { Runner } from './runner.js';
-import type { ReclaimResult } from './publish.js';
 import { worktreeRelDir } from './publish.js';
 import type { GateStack, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
+import { processReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
 
 export interface Loop {
@@ -24,33 +24,6 @@ export interface LoopDeps {
 }
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/**
- * A `BoardJob` synthesised from a claimed reclaim row, for the same runner call a terminal
- * thread's report() uses: the thread's identity — its root id, repo label and workspace path — is
- * all the tree is filed under. The row's own id rides as the lease token, which is exactly what
- * makes the removal hold the checkout against a live attempt's startup sync under kubernetes (the
- * claim ConfigMap is keyed by the job id, and its holder data carries the lease token). No agent
- * is ever spawned for a reclaim, so it carries no executor selection worth naming and no prompt.
- */
-function reclaimJob(reclaim: Reclaim): BoardJob {
-    return {
-        id: reclaim.rootJobId,
-        command: '',
-        attempts: 1,
-        leaseToken: reclaim.id,
-        leaseExpiresAt: reclaim.leaseExpiresAt,
-        resumeSessionId: null,
-        followUp: false,
-        userId: null,
-        workspacePath: reclaim.workspacePath,
-        rootJobId: reclaim.rootJobId,
-        rootCommand: '',
-        repo: reclaim.repo,
-        executorType: CLAUDE_CODE,
-        masterPrompt: null,
-    };
-}
 
 /**
  * A claimed job this loop refuses to run as claimed — no workspace, no resolvable task worktree,
@@ -108,6 +81,19 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * which is what makes it mutually exclusive with a follow-up's claim-taking sync there.
      */
     const reclaims = new Map<string, Promise<void>>();
+
+    /*
+     * The last reclaim-failure line logged per thread root, keyed by root id (issue #344): a row
+     * the reclaim cannot settle is re-offered every lease expiry, and an orphaned checkout claim
+     * makes every one of those offers refuse identically — 109 identical lines in 24h in the wild.
+     * The digest of WHAT refused (the reason plus the held claim's name; deliberately not the
+     * claim's age, whose minute rollover is not a state change) is compared by `processReclaim`
+     * (loop-reclaim.ts): the first failure logs, and only a change to the digest logs again. A
+     * settled row clears its entry, so a later failure of the same thread logs fresh.
+     * Process-lifetime like the `reclaims` barrier above — a driver restart re-logs once per
+     * stuck root, which is the honest cost of forgetting.
+     */
+    const reclaimFailureLog = new Map<string, string>();
 
     /**
      * Everything a running attempt needs from this loop: the board and runner, the driver's own
@@ -172,51 +158,29 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
     }
 
     /**
-     * Removes one claimed reclaim row's tree and acks it, so the row stops being offered. The
-     * tree is reclaimed with the same runner call a terminal thread's report() uses, fed a job
-     * synthesised from the row: the thread's identity — its root id, repo label and workspace
-     * path — is all the tree is filed under. The row's own id rides as the lease token, which is
-     * exactly what makes the removal hold the checkout against a live attempt's startup sync
-     * under kubernetes (the claim ConfigMap is keyed by the job id, and its holder data carries
-     * the lease token).
-     *
-     * A removed thread has no follow-ups — every row was deleted — so there is no reclaim barrier
-     * entry to take here: nothing can claim that root again, and this loop's owns each root it is
-     * handed once. A refused tree or a throw — in the reclaim or its ack — simply skips the ack,
-     * and the row is offered again when its lease expires; a refused tree also stays on the disk,
-     * exactly as a refused terminal reclaim leaves it.
+     * The loop's own view of one claimed reclaim row: the queue worker of `loop-reclaim.ts` fed
+     * this loop's board, runner, config, logger, throttle state, and the in-flight barrier —
+     * a root with a verdict-time reclaim running holds its claim, and the orphan arm must not
+     * reap that one out from under it.
      */
-    async function processReclaim(reclaim: Reclaim): Promise<void> {
-        const removed = reclaimJob(reclaim);
-        let outcome: ReclaimResult;
-        try {
-            outcome = await runner.reclaimWorktree(removed);
-        } catch (e) {
-            log(`reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${(e as Error).message}`);
-            return;
-        }
-        if (!outcome.ok) {
-            log(`reclaim ${reclaim.id}: the task worktree could not be reclaimed: ${outcome.reason}`);
-            return;
-        }
-        let ack: ReclaimAck;
-        try {
-            ack = await board.ackReclaim(reclaim.id, config.worker);
-        } catch (e) {
-            log(`reclaim ${reclaim.id}: the ack threw, leaving it to the lease: ${(e as Error).message}`);
-            return;
-        }
-        if (ack === 'lost') {
-            log(`reclaim ${reclaim.id}: ack refused, the row is re-leased to another worker`);
-        } else if (ack === 'missing') {
-            log(`reclaim ${reclaim.id}: already acked elsewhere`);
-        }
+    function handleReclaim(reclaim: Reclaim): Promise<void> {
+        return processReclaim(
+            {
+                board,
+                runner,
+                config,
+                log,
+                failureLog: reclaimFailureLog,
+                inFlightReclaim: (root) => reclaims.has(root),
+            },
+            reclaim
+        );
     }
 
     /**
      * Drains the board's worktree-reclaim queue (issue #41), one row at a time: a Remove deleted
      * a thread, or a done landed on an already-terminal one, and this loop is the worker half of
-     * taking the tree down. Claim a row and hand it to `processReclaim`.
+     * taking the tree down. Claim a row and hand it to `handleReclaim`.
      */
     async function drainReclaims(): Promise<void> {
         while (running) {
@@ -232,7 +196,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
                 await sleep(config.pollMs);
                 continue;
             }
-            await processReclaim(reclaim);
+            await handleReclaim(reclaim);
         }
     }
 

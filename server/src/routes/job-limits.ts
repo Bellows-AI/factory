@@ -180,6 +180,15 @@ export const LIST_LIMIT_DEFAULT = 50;
 export const LIST_LIMIT_MAX = 200;
 
 /**
+ * The settle long-poll's timeout (issue #323), in seconds. `?waitFor=terminal` without a
+ * `timeout` waits the default — comfortably under the read timeout a typical proxy fronts
+ * the board with — and any ask over the cap is clamped to it, so one client cannot park a
+ * request on the board past what the route is allowed to hold.
+ */
+export const WAIT_TIMEOUT_DEFAULT_S = 30;
+export const WAIT_TIMEOUT_MAX_S = 60;
+
+/**
  * What an agent session id may look like. Not pinned to a uuid: claude-code's are, but opencode
  * mints its own (`ses_…`), and the board's job is to RECORD the session the run used, not to
  * second-guess a foreign CLI's id format. Still an opaque-token check, not free-form: the value

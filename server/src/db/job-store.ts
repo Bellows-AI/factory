@@ -24,7 +24,7 @@ import {
     removeJobThread,
 } from './job-store-actions.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
-import { threadOf, getJob, listJobs, listTasksOf, leasesOf } from './job-store-reads.js';
+import { threadOf, getJob, waitForSettleOf, listJobs, listTasksOf, leasesOf } from './job-store-reads.js';
 import {
     wallTickFragment,
     authorJoinFragment,
@@ -176,6 +176,11 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         async get(id) {
             await gate();
             return getJob(ctx, id);
+        },
+
+        async waitForSettle(id, timeoutMs) {
+            await gate();
+            return waitForSettleOf(ctx, id, timeoutMs);
         },
 
         async list(filter) {

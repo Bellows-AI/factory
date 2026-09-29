@@ -1009,6 +1009,19 @@ version field that binds the sort and every normalized filter — a cursor minte
 is refused (`400 BAD_CURSOR`) under another rather than silently answering page 2 of a different
 question. New runs landing between polls push rows forward without duplicating or skipping any.
 
+**The task read's `terminal` predicate is also the settle long-poll's (issue #323).**
+`GET /api/jobs/:id?waitFor=terminal&timeout=<s>` holds the request until a thread stops moving,
+and "stops moving" is the same rule the task read buckets by (the paragraph above): the chain
+head — the newest member, created-then-id — in `succeeded|failed|dead|stopped`, or an open PR
+wait (036) standing on the thread. The store half is `waitForSettle(id, timeoutMs)` in
+`job-store-reads.ts`: one indexed re-read every 250ms (the same single statement
+`settleStateOf` evaluates each round, no connection held between polls) until it reads settled
+or the deadline lands, `{ settled: false }` at the timeout — the client re-issues — and null
+without holding for an id the org does not hold. A client waiting on this read and the sidenav
+rendering the same thread can therefore never disagree about whether it is still moving; the
+route's parameter contract (the 60s cap, the two `BAD_*` refusals) is documented in
+[docs/api.md](docs/api.md).
+
 ## Stop and remove: winding a task down, and deleting it
 
 Two person-gated actions (session cookie, like `follow-up`/`done` — the board secret must never move a
@@ -1081,6 +1094,20 @@ removed task cannot be undeleted; the worktree removal is the last thing to land
 because the rows are already gone. A done on an already-terminal thread feeds the same queue (see
 the reclaim section below), so remove and done are the queue's two writers and the verdict-time
 reclaim is the third path, covering a done declared while a follow-up still moved.
+
+**A reclaim that cannot settle names why, once, until what refuses changes (issue #344).** The
+row is re-offered every lease expiry, so a refusal that will repeat identically — under
+kubernetes, an orphaned checkout claim whose holder job the board no longer knows: the driver
+that held it died, its thread was later removed, and nothing else can see a bare ConfigMap —
+used to log the same line every five minutes, forever (109 in 24h in the wild). The failure
+line now logs on the first refusal and on STATE CHANGES only: the digest is the refusal reason
+plus the held claim's name, a settled row clears its entry, and the claim's age is reported in
+the orphan line but never makes a "change". The orphan itself is proven against the board, in
+the reaper's own vocabulary: `POST /api/jobs/leases` answers the root row absent or terminal —
+no attempt of that thread exists or can ever come — and only then does the driver reap the
+claim (uid-preconditioned; `docs/kubernetes.md` has the full protocol) and retry the removal
+once, in the same drain. A live row or a refused lookup reaps nothing and logs throttled; age
+is never the decider, the fence's no-clock rule.
 
 ## Gates: verification checks declared by `.bellows.yaml`
 

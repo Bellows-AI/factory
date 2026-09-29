@@ -98,7 +98,7 @@ export const answerPreview = (status: number, body: string): string =>
 export const TIMEOUT_EXIT_CODE = 124;
 
 export interface K8sClaim {
-    metadata?: { uid?: string };
+    metadata?: { uid?: string; creationTimestamp?: string };
     data?: { holder?: string; attempt?: string };
 }
 
@@ -305,6 +305,7 @@ export interface K8sJobStatus {
 export interface K8sPod {
     metadata?: { name?: string; deletionTimestamp?: string };
     status?: {
+        phase?: string;
         containerStatuses?: {
             state?: {
                 terminated?: { exitCode?: number; reason?: string; message?: string };
@@ -322,9 +323,15 @@ export interface K8sPodList {
 /**
  * The one pod a job-name-scoped list names, skipping any mid-deletion — a re-claim's replaced
  * attempt can still list its predecessor's pod while it terminates, carrying the same label.
+ * The items-level form is what callers that already hold the parsed list use, so the
+ * terminating-skip rule has exactly one home.
  */
+export function livePodOfItems(items: K8sPod[]): K8sPod | undefined {
+    return items.find((item) => !item.metadata?.deletionTimestamp);
+}
+
 export function livePod(body: string): K8sPod | undefined {
-    return parse<K8sPodList>(body).items?.find((item) => !item.metadata?.deletionTimestamp);
+    return livePodOfItems(parse<K8sPodList>(body).items ?? []);
 }
 
 /**

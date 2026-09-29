@@ -693,7 +693,7 @@ const claimPathFor = (id: string): string => `${configmapsPath}/factory-job-${id
  * exactly the three apiserver properties the acquire/takeover/release protocol rests on.
  */
 const claimServer = () => {
-    const claims = new Map<string, { uid: string; holder: string; attempt: string }>();
+    const claims = new Map<string, { uid: string; holder: string; attempt: string; created: string }>();
     let uids = 0;
     return (method: K8sMethod, path: string, body: unknown): K8sResponse | undefined => {
         if (method === 'POST' && path === configmapsPath) {
@@ -704,6 +704,9 @@ const claimServer = () => {
                 uid: `claim-uid-${++uids}`,
                 holder: b.data?.holder ?? '',
                 attempt: b.data?.attempt ?? '',
+                // The apiserver stamps this on every object; the orphaned-claim readout (issue
+                // #344) reports the claim's age from it.
+                created: new Date().toISOString(),
             });
             return { status: 201, body: '{}' };
         }
@@ -715,7 +718,7 @@ const claimServer = () => {
                     ? {
                           status: 200,
                           body: JSON.stringify({
-                              metadata: { uid: claim.uid },
+                              metadata: { uid: claim.uid, creationTimestamp: claim.created },
                               data: { holder: claim.holder, attempt: claim.attempt },
                           }),
                       }
@@ -1029,7 +1032,125 @@ describe('the worktree sync', () => {
     it('answers ok:false when the log answers nothing parseable', async () => {
         const { request } = fakeRequest({ log: { status: 404, body: 'gone' } });
         const result = await runner(request).syncCheckout(repoJob);
-        expect(result).toEqual({ ok: false, reason: 'the worktree sync answered nothing readable' });
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: the log of ${podName} answered 404: gone`,
+        });
+    });
+
+    /*
+     * Issue #344: every empty-log cause used to collapse into the bare "answered nothing
+     * readable", and the sync Job — reaped by ttlSecondsAfterFinished — took its pod, events and
+     * logs with it before anyone looked. Each cause now names itself in the reason the job's
+     * output carries.
+     */
+    it('names an empty pod list when the sync log has no pod to read', async () => {
+        const { request } = fakeRequest({ pods: { status: 200, body: '{"items":[]}' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: no live pod for ${syncJobName(repoJob)} (none listed)`,
+        });
+    });
+
+    it('names all-terminating pods when the sync has no live pod', async () => {
+        const { request } = fakeRequest({
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        { metadata: { name: 'sync-pod-a', deletionTimestamp: '2026-09-29T00:00:00Z' } },
+                        { metadata: { name: 'sync-pod-b', deletionTimestamp: '2026-09-29T00:00:01Z' } },
+                    ],
+                }),
+            },
+        });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: no live pod for ${syncJobName(repoJob)} (2 listed, all terminating)`,
+        });
+    });
+
+    it('names the pod list refusal when the pod list answers an error status', async () => {
+        const { request } = fakeRequest({ pods: { status: 500, body: 'nope' } });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: the pod list of ${syncJobName(repoJob)} answered 500: nope`,
+        });
+    });
+
+    it('names the transport failure when the sync pod list GET throws', async () => {
+        const { request: base } = fakeRequest();
+        const request: K8sRequest = (method, path, body) => {
+            if (path?.startsWith(`/api/v1/namespaces/${namespace}/pods?`)) {
+                return Promise.reject(new Error('connection reset'));
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: the pod list of ${syncJobName(repoJob)} could not be read: connection reset`,
+        });
+    });
+
+    it('names the transport failure when the sync log GET throws', async () => {
+        const { request: base } = fakeRequest();
+        const request: K8sRequest = (method, path, body) => {
+            if (path?.includes('/log')) {
+                return Promise.reject(new Error('socket hung up'));
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: the log of ${podName} could not be read: socket hung up`,
+        });
+    });
+
+    it('names the live pod when it carries no name to read a log from', async () => {
+        const { request } = fakeRequest({
+            pods: {
+                status: 200,
+                body: JSON.stringify({ items: [{ metadata: {}, status: {} }] }),
+            },
+        });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: the live pod of ${syncJobName(repoJob)} has no name`,
+        });
+    });
+
+    it('names the last log line when the sync prints non-JSON', async () => {
+        const { request } = fakeRequest({
+            log: { status: 200, body: 'fetching origin\nfatal: could not read from remote repository\n' },
+        });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: 'the worktree sync answered nothing readable: last log line "fatal: could not read from remote repository"',
+        });
+    });
+
+    it('names the pod and its phase when the sync container printed nothing', async () => {
+        const { request } = fakeRequest({
+            log: { status: 200, body: '' },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [{ metadata: { name: podName }, status: { phase: 'Succeeded' } }],
+                }),
+            },
+        });
+        const result = await runner(request).syncCheckout(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            reason: `the worktree sync answered nothing readable: the container printed nothing (pod ${podName}, phase Succeeded)`,
+        });
     });
 
     it('names the kubelet’s reason when the sync container never started', async () => {
@@ -1620,6 +1741,137 @@ describe('the worktree reclaim', () => {
             ok: false,
             removed: false,
             reason: 'the worktree reclaim container failed: StartError: exec: "node": executable file not found in $PATH',
+        });
+    });
+
+    // Issue #344's reclaim twin: an unreadable reclaim verdict now names why, the same way the
+    // sync's does — the Job is reaped a tick later and nothing else records the cause.
+    it('folds the unreadable cause into the reclaim verdict', async () => {
+        const { request } = fakeRequest({ log: { status: 404, body: 'gone' } });
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result).toEqual({
+            ok: false,
+            removed: false,
+            reason: `the worktree reclaim answered nothing readable: the log of ${podName} answered 404: gone`,
+        });
+    });
+
+    /*
+     * Issue #344, the claim loop: a reclaim refused by the checkout claim used to leave only the
+     * transport's raw 409 header dump — no claim name, no holder, no age. The refusal now carries
+     * the claim's identity so the loop can name it — and, when the board proves the holder gone,
+     * reap it.
+     */
+    it('reports the held claim’s identity when the checkout is held', async () => {
+        const { request } = fakeRequest();
+        await request('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, attempt: '5' },
+        });
+
+        const result = await runner(request).reclaimWorktree(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(result.heldClaim).toEqual({
+            name: `factory-job-${repoJob.id}-claim`,
+            attempt: '5',
+            createdMs: expect.any(Number),
+        });
+    });
+
+    it('answers heldClaim undefined when the refusal was not the claim’s', async () => {
+        // A transport failure in the acquire is not a claim refusal — no claim to read, and the
+        // heldClaim read (which answers 404 here, nothing on the configmap path) stays undefined.
+        const { request: base } = fakeRequest();
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'POST' && path === configmapsPath) {
+                return Promise.reject(new Error('connection refused'));
+            }
+            return base(method, path, body);
+        };
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('the checkout is held');
+        expect(result.heldClaim).toBeUndefined();
+    });
+
+    it('reaps an orphaned checkout claim by uid precondition', async () => {
+        const { request, calls } = fakeRequest();
+        await request('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, attempt: '3' },
+        });
+
+        await expect(runner(request).reapOrphanedClaim?.(repoJob)).resolves.toBe(true);
+        // The delete names the exact incarnation it read — a claim replaced between the read and
+        // the delete (a live claimant's takeover) is never the one that goes.
+        const del = calls.find((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id));
+        expect((del?.body as { preconditions?: { uid?: string } } | undefined)?.preconditions?.uid).toMatch(
+            /^claim-uid-/
+        );
+        // Gone: the second read answers 404 and the reap answers false — there was nothing to reap.
+        await expect(runner(request).reapOrphanedClaim?.(repoJob)).resolves.toBe(false);
+    });
+
+    it('answers false and deletes nothing when the claim was replaced between the read and the delete', async () => {
+        const { request: base, calls } = fakeRequest();
+        await base('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, attempt: '3' },
+        });
+        // The read answers a stale incarnation: the claim was taken over (deleted and re-created
+        // under a new uid) between the proof and the reap.
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && path === claimPathFor(repoJob.id)) {
+                return base(method, path, body).then((res) => ({
+                    status: res.status,
+                    body: JSON.stringify({
+                        ...JSON.parse(res.body),
+                        metadata: { uid: 'claim-uid-stale-incarnation' },
+                    }),
+                }));
+            }
+            return base(method, path, body);
+        };
+
+        await expect(runner(request).reapOrphanedClaim?.(repoJob)).resolves.toBe(false);
+
+        // The precondition answered 409 and the live claim survives: the real object is still
+        // there for its holder's own release.
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id))).toBe(true);
+        await expect(runner(base).reapOrphanedClaim?.(repoJob)).resolves.toBe(true);
+    });
+
+    it('answers createdMs null when the claim carries no creation stamp', async () => {
+        const { request: base } = fakeRequest();
+        await base('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, attempt: '5' },
+        });
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && path === claimPathFor(repoJob.id)) {
+                return base(method, path, body).then((res) => {
+                    const parsed = JSON.parse(res.body) as { metadata: Record<string, unknown> };
+                    delete parsed.metadata.creationTimestamp;
+                    return { status: res.status, body: JSON.stringify(parsed) };
+                });
+            }
+            return base(method, path, body);
+        };
+
+        const result = await runner(request).reclaimWorktree(repoJob);
+        expect(result.heldClaim).toEqual({
+            name: `factory-job-${repoJob.id}-claim`,
+            attempt: '5',
+            createdMs: null,
         });
     });
 

@@ -273,7 +273,10 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob): Promise<Sync
         // docker knows, and the sync failed on every job while the compile and the flow
         // tests (which match argv by shape, not by head) stayed green.
         const out = await execDocker(syncCheckoutArgs(config, job, { clone, worktree, restore, envFile: file }));
-        return parseLastJsonLine<SyncResult>(out.stdout, () => syncUnreadable);
+        return parseLastJsonLine<SyncResult>(out.stdout, () => ({
+            ok: false,
+            reason: `${syncUnreadable.reason}: ${unreadableDockerDetail(out.stdout)}`,
+        }));
     } catch (e) {
         const detail = dockerErrorDetail(e);
         return {
@@ -283,6 +286,21 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob): Promise<Sync
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
     }
+}
+
+/**
+ * The unreadable-verdict detail the sync/reclaim callers fold into their reason (issue #344):
+ * what the container actually did, given the verdict line never arrived — the exit code and the
+ * last stdout line, preview-bounded, or the plain fact that it printed nothing. A nonzero exit
+ * never reaches here: execDocker rejects on it, and that arm reports the daemon's stderr detail
+ * as `container failed:` — so a RESOLVED unreadable verdict is by construction an exit-0
+ * container whose stdout was not the JSON line the readout parses.
+ */
+function unreadableDockerDetail(stdout: string): string {
+    const line = stdout.trim().split('\n').filter(Boolean).pop();
+    return line === undefined
+        ? 'exit 0, the container printed nothing'
+        : `exit 0, last log line ${JSON.stringify(line.slice(0, ERROR_DETAIL_MAX_CHARS))}`;
 }
 
 /*
@@ -312,7 +330,11 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
             '-e',
             gitWorktreeRemoveScript,
         ]);
-        return parseLastJsonLine<ReclaimResult>(out.stdout, () => reclaimUnreadable);
+        return parseLastJsonLine<ReclaimResult>(out.stdout, () => ({
+            ok: false,
+            removed: false,
+            reason: `${reclaimUnreadable.reason}: ${unreadableDockerDetail(out.stdout)}`,
+        }));
     } catch (e) {
         const detail = dockerErrorDetail(e);
         return {
