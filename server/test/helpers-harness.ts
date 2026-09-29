@@ -7,6 +7,8 @@ import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { WorkflowStore } from '../src/db/workflow-store.js';
 import type { UserRepoStore } from '../src/db/user-repo-store.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
+import { createFactsCache, type FactsCache } from '../src/workspace/facts.js';
+import type { Purger } from '../src/workspace/purge.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
@@ -32,6 +34,8 @@ export function staticRegistry(
         userExecutors?: OrgRuntime['userExecutors'];
         workflowDefaults?: OrgRuntime['workflowDefaults'];
         cloneQueue?: OrgRuntime['cloneQueue'];
+        purger?: OrgRuntime['purger'];
+        facts?: OrgRuntime['facts'];
         /** When set, `for()` answers null for every id not in it. */
         orgsFor?: readonly string[];
     } = {}
@@ -52,6 +56,11 @@ export function staticRegistry(
         userExecutors: parts.userExecutors,
         workflowDefaults: parts.workflowDefaults,
         cloneQueue: parts.cloneQueue,
+        purger: parts.purger,
+        // Default, not undefined: a runtime with stores but no cache would 503 every GET, and a
+        // cheap Map is not worth a per-test decision. A test that must SHARE the instance with
+        // its purger passes it here.
+        facts: parts.facts ?? createFactsCache(),
     };
     return {
         for: async (orgId) => (parts.orgsFor && !parts.orgsFor.includes(orgId) ? null : runtime),
@@ -75,6 +84,8 @@ export async function harness({
     installationListing,
     orgsFor,
     workflows,
+    purger,
+    facts,
 }: {
     config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
@@ -111,6 +122,10 @@ export async function harness({
     orgsFor?: readonly string[];
     /** Absent by default, which leaves the workflow routes answering 503. */
     workflows?: WorkflowStore;
+    /** Absent by default, which leaves the DELETE route answering 503 — inject one to test it. */
+    purger?: Purger;
+    /** The facts cache the runtime shares with the purger; defaults to buildApp's own. */
+    facts?: FactsCache;
 } = {}) {
     const config = testConfig(overrides);
     const telemetry = telemetryOption ?? stubTelemetryClient();
@@ -134,6 +149,8 @@ export async function harness({
         workflows,
         userRepos,
         userExecutors: executors,
+        purger,
+        facts,
         ...(orgsFor ? { orgsFor } : {}),
     });
     const app = await buildApp({

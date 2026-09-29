@@ -15,7 +15,8 @@
         .mobile-nav .sidenav-sublink,
         .mobile-nav .sidenav-newtask,
         .select-trigger,
-        .page-header-actions button {
+        .page-header-actions button,
+        table.data button {
             align-items: center;
             display: inline-flex;
             min-height: 44px;

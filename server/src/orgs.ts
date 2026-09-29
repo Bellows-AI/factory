@@ -21,6 +21,8 @@ import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
 import type { TelemetryClient } from './telemetry/client.js';
 import { createCloneQueue, type CloneQueue } from './workspace/queue.js';
+import { createPurger, type Purger } from './workspace/purge.js';
+import { createFactsCache, type FactsCache } from './workspace/facts.js';
 import { readGatesFile } from './workspace/bellows.js';
 
 /**
@@ -53,6 +55,13 @@ export interface OrgRuntime {
     /** A member's saved default-workflow switches (035). Present with the other stores. */
     workflowDefaults?: DefaultWorkflowSettingsStore | undefined;
     cloneQueue?: CloneQueue | undefined;
+    /** The manual purge (issue #92): one member's orphaned checkout, deleted deliberately. */
+    purger?: Purger | undefined;
+    /**
+     * The checkout facts cache, per org so the purger and the workspace routes share one instance:
+     * a deleted tree's cached size must not answer for whatever is re-cloned into its path.
+     */
+    facts?: FactsCache | undefined;
 }
 
 export interface OrgRegistry {
@@ -70,6 +79,12 @@ export interface OrgRegistryDeps {
     config: AppConfig;
     /** False in the route-test mode: the stats routes resolve, the stores stay unregistered. */
     withStores: boolean;
+    /**
+     * The checkout facts cache. One per process in the live server — main.ts builds it and hands
+     * the same instance to the registry and the app, because a purge must invalidate exactly the
+     * cache the routes read. Absent (route tests) each org builds its own.
+     */
+    facts?: FactsCache;
 }
 
 /** The per-org write-side stores, built only under `withStores` (#99's route-test bypass). */
@@ -79,12 +94,14 @@ function buildOrgStores({
     ready,
     config,
     tokens,
+    facts,
 }: {
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
     config: AppConfig;
     tokens: ReturnType<typeof installationTokenProvider> | undefined;
+    facts: FactsCache;
 }): {
     envVars: EnvVarStore;
     userExecutors: UserExecutorStore;
@@ -92,8 +109,10 @@ function buildOrgStores({
     workflowDefaults: DefaultWorkflowSettingsStore;
     prs: PrLifecycleStore;
     cloneQueue: CloneQueue | undefined;
+    purger: Purger | undefined;
     jobs: JobStore;
     workflows: WorkflowStore;
+    facts: FactsCache;
 } {
     const envVars = createEnvVarStore({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
@@ -108,6 +127,15 @@ function buildOrgStores({
               root: config.workspaceRoot,
               orgId,
               tokens,
+              log: (m) => console.log(`[workspace] ${m}`),
+          })
+        : undefined;
+    const purger = config.workspaceRoot
+        ? createPurger({
+              store: userRepos,
+              root: config.workspaceRoot,
+              orgId,
+              facts,
               log: (m) => console.log(`[workspace] ${m}`),
           })
         : undefined;
@@ -138,10 +166,47 @@ function buildOrgStores({
     });
     // Workflow definitions (027): the process a task walks, stored per scope inside this org.
     const workflows = createWorkflowStore({ sql, orgId, ready });
-    return { envVars, userExecutors, userRepos, workflowDefaults, prs, cloneQueue, jobs, workflows };
+    return { facts, envVars, userExecutors, userRepos, workflowDefaults, prs, cloneQueue, purger, jobs, workflows };
 }
 
-export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistryDeps): OrgRegistry {
+/**
+ * Attaches the write-side stores to a runtime and starts its background work, in the one order
+ * that matters: the base `fix-issue` workflow seeds (fired — no route on the read path needs it,
+ * and a task naming `fix-issue` in the seeding's first seconds simply refuses with
+ * UNKNOWN_WORKFLOW yet), THEN purge recovery is awaited (a row left `purging` is owned by a
+ * process that no longer exists, and every workspace mutation and task insert refuses or
+ * serializes behind a purging stamp — finishing each one here is what makes "boot recovery
+ * before accepting mutations" true rather than aspirational; the single-process assumption is
+ * 011's, extended by 044), THEN the clone queue starts (fired — recovering stranded clones is
+ * minutes of network).
+ */
+async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<typeof buildOrgStores>>): Promise<void> {
+    runtime.facts = stores.facts;
+    runtime.envVars = stores.envVars;
+    runtime.userExecutors = stores.userExecutors;
+    runtime.userRepos = stores.userRepos;
+    runtime.workflowDefaults = stores.workflowDefaults;
+    runtime.cloneQueue = stores.cloneQueue;
+    runtime.purger = stores.purger;
+    runtime.jobs = stores.jobs;
+    runtime.prs = stores.prs;
+    runtime.workflows = stores.workflows;
+    void stores.workflows.seedBase().catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
+    try {
+        await stores.purger?.recoverInterrupted();
+    } catch (e) {
+        console.error(`[workspace] purge recovery failed: ${(e as Error).message}`);
+    }
+    void stores.cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
+}
+
+export function createOrgRegistry({
+    sql,
+    ready,
+    config,
+    withStores,
+    facts: sharedFacts,
+}: OrgRegistryDeps): OrgRegistry {
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
     const build = async (orgId: string): Promise<OrgRuntime | null> => {
@@ -186,25 +251,12 @@ export function createOrgRegistry({ sql, ready, config, withStores }: OrgRegistr
         };
 
         if (withStores) {
-            const stores = buildOrgStores({ sql, orgId, ready, config, tokens });
-            runtime.envVars = stores.envVars;
-            runtime.userExecutors = stores.userExecutors;
-            runtime.userRepos = stores.userRepos;
-            runtime.workflowDefaults = stores.workflowDefaults;
-            runtime.cloneQueue = stores.cloneQueue;
-            runtime.jobs = stores.jobs;
-            runtime.prs = stores.prs;
-            runtime.workflows = stores.workflows;
-            // The base `fix-issue` workflow seeds here too — org-level, idempotent by name, fired
-            // with the same posture as the clone queue: not awaited, because no route on the read
-            // path needs it, and a task naming `fix-issue` in the seeding's first seconds simply
-            // refuses with UNKNOWN_WORKFLOW yet.
-            void stores.workflows
-                .seedBase()
-                .catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
-            // Fired, not awaited: recovering stranded clones is minutes of network no route on
-            // the read path needs. The org's queue only starts once — with the org's runtime.
-            void stores.cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
+            // Per org unless the process shares one (main.ts passes it): the cache is keyed by
+            // full path, so sharing is safe, and sharing is what lets a purge invalidate the
+            // instance the routes read.
+            const facts = sharedFacts ?? createFactsCache();
+            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, facts });
+            await attachOrgStores(runtime, stores);
         }
 
         return runtime;

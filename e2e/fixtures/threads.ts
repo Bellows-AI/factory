@@ -69,7 +69,7 @@ export interface ThreadJob {
     rootJobId: string;
     workflowNode: string | null;
     workflowName: string | null;
-    /** The root's frozen gate-repair round limit (043), as the thread read serves it. */
+    /** The default workflow's bounded gate-repair round limit (#49), null unless the task set one. */
     defaultGateFixRounds: number | null;
     doneAt: string | null;
     cancelRequestedAt: string | null;
@@ -627,3 +627,44 @@ export function taskSummaryOf(jobs: readonly ThreadJob[]) {
         activityAt: head.doneAt ?? head.finishedAt ?? head.createdAt,
     };
 }
+
+const LONG_REPO = `acme/${'very-long-repository-name-'.repeat(4)}`;
+const LONG_BRANCH = `fix/${'an-unbroken-branch-name-'.repeat(6)}`;
+
+/** Someone whose login and name never break — the byline must wrap or clip in its own row. */
+const LONG_AUTHOR: ThreadUser = {
+    id: 'cccccccc-0000-4000-8000-000000000003',
+    login: 'a-contributor-with-an-unbroken-login-'.repeat(2),
+    name: 'Averyveryverylongfirstnamewithoutanyspaces Andanequallylongsurname',
+    avatarUrl: null,
+};
+
+const longGate: ThreadGate = {
+    name: `integration-${'suite-'.repeat(12)}`,
+    status: 'failed',
+    exitCode: 1,
+    output: `FAIL:${'x'.repeat(2_000)}`,
+};
+
+/** Every string the detail page renders is one unbroken run (issue 287): command, repository,
+ *  author, summary, branch, gate name and a 2,000-character log line. The page must hold its
+ *  width and let the log scroll inside its own well. */
+export const longContentThread = thread([
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000126',
+        command: 'refactor-'.repeat(24),
+        status: 'failed',
+        exitCode: 1,
+        author: LONG_AUTHOR,
+        repo: LONG_REPO,
+        sessionId: 'bbbbbbbb-0000-4000-8000-000000000126',
+        summary: 'Unbroken'.repeat(30),
+        output: [
+            '0123456789'.repeat(200),
+            `[driver] published ${LONG_BRANCH} — https://github.com/${LONG_REPO}/pull/42`,
+            gateFailedLine(longGate),
+        ].join('\n'),
+        gates: [{ name: 'build', status: 'passed', exitCode: 0, output: 'built' }, longGate],
+        runtime: finishedRuntime('2026-09-01T12:29:00.000Z'),
+    }),
+]);

@@ -90,6 +90,27 @@ describe('createOrgRegistry', () => {
         expect(fullRuntime?.jobs).toBeDefined();
     });
 
+    it('wires the purge service and facts cache only under a workspace root, and shares the cache', async () => {
+        // The manual purge (issue #92) exists exactly when checkouts do, and its facts
+        // invalidation is only honest if the routes' cache and the purger's are the same instance.
+        const { sql } = fakeSql([
+            orgRows([{ id: LOCAL_ORG_ID, installation_id: null }]),
+            orgRows([{ id: LOCAL_ORG_ID, installation_id: null }]),
+        ]);
+        const withRoot: AppConfig = { ...config, workspaceRoot: '/tmp/factory-orgs-purge-test' };
+        const bare = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: false });
+        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config: withRoot, withStores: true });
+
+        const bareRuntime = await bare.for(LOCAL_ORG_ID);
+        expect(bareRuntime?.purger).toBeUndefined();
+        const fullRuntime = await full.for(LOCAL_ORG_ID);
+        expect(fullRuntime?.purger).toBeDefined();
+        expect(fullRuntime?.facts).toBeDefined();
+        // The fired queue start must not spin against the scripted sql — its claims would answer
+        // the org rows forever. Stopped before its first pass claims anything.
+        fullRuntime?.cloneQueue?.stop();
+    });
+
     it('lists the organizations and warms each runtime', async () => {
         const { sql, calls } = fakeSql([
             // list()

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { ConsoleMessage, Page } from '@playwright/test';
-import { countLaunches, E2E_EXECUTOR, mockExecutors, withExecutor } from './executor.js';
+import { ADD_LABEL } from '../web/src/workspace/executors.js';
+import { addExecutorViaDialog, countLaunches, E2E_EXECUTOR, mockExecutors, withExecutor } from './executor.js';
 import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
@@ -317,7 +318,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
     test('add an executor in Settings, come back, and launch once with everything restored', async ({ page }) => {
         const problems = watchConsole(page);
-        await mockExecutors(page, []);
+        const held = await mockExecutors(page, []);
         const launches = countLaunches(page);
         await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
@@ -336,12 +337,12 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
         await expect(page).toHaveURL(/\/settings\/executors\?return=\/tasks\/new$/);
         await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
-        await page.getByRole('button', { name: 'Add executor' }).click();
-        const dialog = page.getByRole('dialog', { name: 'Add executor' });
-        await dialog.getByPlaceholder('main').fill('fresh-executor');
-        await dialog.locator('textarea').fill('{}');
-        await dialog.getByRole('button', { name: 'Add executor' }).click();
-        await expect(dialog).toHaveCount(0);
+        // Guided setup: a name alone saves the inherited configuration — no JSON typed (issue 261).
+        await addExecutorViaDialog(page, 'fresh-executor');
+        expect(held.executors).toEqual([
+            expect.objectContaining({ name: 'fresh-executor', config: {}, isDefault: false }),
+        ]);
+        await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
         await page.getByRole('link', { name: 'Back to new task' }).click();
 
         // Everything as it was left, and the new executor chosen by the composer's own autoselect.
@@ -390,6 +391,49 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         expect(launches.bodies).toHaveLength(0);
     });
 
+    test('adding an executor from the composer detour keeps the existing default', async ({ page }) => {
+        // Creation alone never moves the default (issue 261): the whole-list PUT carries the
+        // flagged row through unchanged, and the new row arrives unflagged.
+        // The dialog's config read validates each row's shape, gate-repair budget included.
+        const held = await mockExecutors(page, [
+            { ...E2E_EXECUTOR, gateFixRounds: 3, config: { model: 'sonnet', keep: 1 } },
+        ]);
+        await page.goto('/settings/executors?return=/tasks/new');
+        await addExecutorViaDialog(page, 'second');
+        expect(held.executors).toEqual([
+            expect.objectContaining({ name: E2E_EXECUTOR.name, isDefault: true, config: { model: 'sonnet', keep: 1 } }),
+            expect.objectContaining({ name: 'second', isDefault: false, config: {} }),
+        ]);
+        await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
+        await page.getByRole('link', { name: 'Back to new task' }).click();
+        await expect(page.getByLabel('Executor')).toHaveText(E2E_EXECUTOR.name);
+    });
+
+    test('the executor dialog’s credentials detour asks before dropping typing, and keeps the way back', async ({
+        page,
+    }) => {
+        await mockExecutors(page, []);
+        await page.goto('/settings/executors?return=/tasks/new');
+        await page.getByRole('button', { name: ADD_LABEL }).click();
+        const dialog = page.getByRole('dialog', { name: 'Add executor' });
+        const link = dialog.getByRole('link', { name: 'Workspace settings' });
+        await expect(link).toHaveAttribute('href', '/settings/workspace?return=/tasks/new');
+
+        // Typing makes the dialog dirty: the backdrop asks first, and so does the link.
+        await dialog.getByLabel('Name', { exact: true }).fill('half-typed');
+        await page.mouse.click(5, 5);
+        const confirm = page.getByRole('dialog', { name: 'Discard unsaved changes?' });
+        await expect(confirm.getByRole('heading', { name: 'Discard unsaved changes?' })).toBeVisible();
+        await confirm.getByRole('button', { name: 'Continue editing' }).click();
+        await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('half-typed');
+        await link.click();
+        await expect(page).toHaveURL(/\/settings\/executors\?return=\/tasks\/new$/);
+        await confirm.getByRole('button', { name: 'Discard changes' }).click();
+
+        await expect(page).toHaveURL(/\/settings\/workspace\?return=\/tasks\/new$/);
+        await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
+    });
+
     test('an executor deleted while away is named in a notice, and the request text is kept', async ({ page }) => {
         const problems = watchConsole(page);
         const held = await mockExecutors(page, [
@@ -414,7 +458,16 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
         await expect(page).toHaveURL(/\/settings$/);
         held.executors = held.executors.filter((row) => row.name !== 'doomed');
+        // The clamp, and the notice that names it, are driven by the workspace answer — not by the
+        // return itself. Wait for the answer that has actually dropped the profile: on a slower
+        // board the first one back can still carry it, and asserting before it lands races (#289).
+        const withoutDoomed = page.waitForResponse(async (response) => {
+            if (new URL(response.url()).pathname !== '/api/workspace') return false;
+            const body = (await response.json().catch(() => null)) as { executors?: { name: string }[] } | null;
+            return body !== null && (body.executors ?? []).every((row) => row.name !== 'doomed');
+        });
         await page.goBack();
+        await withoutDoomed;
 
         const notice = page.locator('.composer-notices');
         await expect(notice).toContainText(`Executor ‘doomed’ is no longer available — ${E2E_EXECUTOR.name} selected.`);
@@ -478,7 +531,12 @@ test.describe('the draft survives the configuration detour (F1)', () => {
             const url = new URL(request.url());
             if (url.pathname === '/api/workflows') workflowContexts.push(url.searchParams.get('repo'));
         });
+        // The pending window only exists once the remounted poll has actually asked. Waiting for
+        // the request — which the route above holds — is what makes it deterministic; asserting
+        // the text straight after the return races a board that answers sooner (#289).
+        const polled = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/workspace');
         await page.goBack();
+        await polled;
         await expect(page.getByText('Loading your workspace…')).toBeVisible();
         releasePoll();
 

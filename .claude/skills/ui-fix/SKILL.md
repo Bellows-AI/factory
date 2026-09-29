@@ -65,9 +65,8 @@ commit.
   suite's existing style.
 - Anything visual, interactive or payload-shape-dependent → a spec in `e2e/`, matching
   `dashboard.spec.ts` conventions: role/aria locators, `watchConsole`, the forbidden-token sweep,
-  full-page screenshots. Mind its two documented traps: `.cards` is not unique (scope it, as
-  `usageCards` does), and a preset that resolves to the query already on screen never refetches —
-  waiting on that response hangs until the timeout.
+  full-page screenshots. Mind its documented trap: a preset that resolves to the query already on
+  screen never refetches — waiting on that response hangs until the timeout.
 - The area has no e2e coverage → write the baseline spec first: the states the area can be in, one
   interaction, a screenshot per state. Get the baseline green, then add the failing assertion on
   top. A red baseline means the spec is wrong, not the app.

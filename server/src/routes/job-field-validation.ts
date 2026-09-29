@@ -386,7 +386,7 @@ export function validatePublication(
     };
 }
 
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
 
 export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
     switch (reason) {
@@ -407,6 +407,11 @@ export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
                 'Only the account that queued the task can follow it up',
                 HTTP_FORBIDDEN
             );
+        case 'purging':
+            return reply.code(HTTP_CONFLICT).send({
+                error: "The task's checkout is being deleted from disk",
+                code: ERROR_CODES.PURGE_IN_PROGRESS,
+            });
     }
 }
 

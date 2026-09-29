@@ -6,6 +6,16 @@ import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 
+/**
+ * A create whose refusal would be a broken setup, never a case under test: narrows the store's
+ * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
+ */
+const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
+    p.then((ref) => {
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        return ref;
+    });
+
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
@@ -35,7 +45,11 @@ beforeAll(async () => {
  * the authenticated caller rather than defaulting quietly; these cases are about leases, not
  * attribution, so they pass null explicitly. The attribution cases below pass a real account.
  */
-const queue = (command: string) => store.create(command, null, { repo: null, executor: null });
+const queue = async (command: string) => {
+    const ref = await store.create(command, null, { repo: null, executor: null });
+    if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+    return ref;
+};
 describe.runIf(enabled)('attribution', () => {
     /**
      * A real account for created_by to point at. Written directly rather than through the auth
@@ -55,7 +69,7 @@ describe.runIf(enabled)('attribution', () => {
         const OCTOCAT_GITHUB_ID = 5001;
         const userId = await account(OCTOCAT_GITHUB_ID, 'octocat');
 
-        const { id } = await store.create('echo hi', userId, { repo: null, executor: null });
+        const { id } = await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
 
         expect((await store.get(id))?.createdBy).toBe(userId);
     });
@@ -63,7 +77,7 @@ describe.runIf(enabled)('attribution', () => {
     it('reports the author and their workspace to the worker that claims it', async () => {
         const OCTODOG_GITHUB_ID = 5002;
         const userId = await account(OCTODOG_GITHUB_ID, 'octodog');
-        await store.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
 
         const claim = await store.claim('driver-1', LEASE_SECONDS);
         // `userId` is still the seam the per-user credential work will read; `workspacePath` is
@@ -91,7 +105,7 @@ describe.runIf(enabled)('attribution', () => {
         const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
         const NOWHERE_GITHUB_ID = 5004;
         const userId = await account(NOWHERE_GITHUB_ID, 'nowhere');
-        await rootless.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(rootless.create('echo hi', userId, { repo: null, executor: null }));
 
         const claim = await rootless.claim('driver-1', LEASE_SECONDS);
         expect(claim?.userId).toBe(userId);
@@ -110,14 +124,14 @@ describe.runIf(enabled)('attribution', () => {
         ]);
         const envAware = createJobStore({ sql, orgId: ORG, env: envStore });
 
-        await envAware.create('echo hi', userId, { repo: 'Bellows-AI/bellows.ai', executor: null });
+        await mustCreate(envAware.create('echo hi', userId, { repo: 'Bellows-AI/bellows.ai', executor: null }));
         const claim = await envAware.claim('driver-1', LEASE_SECONDS);
         // Repo beats workspace beats org on the collision, and the secrets travel as values —
         // injection is what they are for.
         expect(claim?.env).toEqual({ CORE: 'repo-value', REPO_ONLY: 'repo-only-value' });
 
         // A job with no repo label gets org + workspace only.
-        await envAware.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(envAware.create('echo hi', userId, { repo: null, executor: null }));
         const second = await envAware.claim('driver-2', LEASE_SECONDS);
         expect(second?.env).toEqual({ CORE: 'workspace-value' });
     });
@@ -125,7 +139,7 @@ describe.runIf(enabled)('attribution', () => {
     it('carries no environment when the board was built without a resolver', async () => {
         const PLAIN_CAT_GITHUB_ID = 5006;
         const userId = await account(PLAIN_CAT_GITHUB_ID, 'plain-cat');
-        await store.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
         const claim = await store.claim('driver-1', LEASE_SECONDS);
         expect(claim?.env).toBeUndefined();
     });
@@ -149,7 +163,7 @@ describe.runIf(enabled)('attribution', () => {
                 },
             },
         });
-        await flaky.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(flaky.create('echo hi', userId, { repo: null, executor: null }));
 
         await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow('env store down');
 
@@ -183,7 +197,7 @@ describe.runIf(enabled)('attribution', () => {
             githubToken: { fresh: async () => 'ghs_example' },
         });
 
-        await minted.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(minted.create('echo hi', userId, { repo: null, executor: null }));
         const claim = await minted.claim('driver-1', LEASE_SECONDS);
         // The mint is the base layer: configured values ride above it.
         expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_example', CORE: 'org-value' });
@@ -204,7 +218,7 @@ describe.runIf(enabled)('attribution', () => {
             githubToken: { fresh: async () => 'ghs_example' },
         });
 
-        await minted.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(minted.create('echo hi', userId, { repo: null, executor: null }));
         const claim = await minted.claim('driver-1', LEASE_SECONDS);
         expect(claim?.env).toEqual({ GITHUB_TOKEN: 'operator-pat' });
     });
@@ -226,7 +240,7 @@ describe.runIf(enabled)('attribution', () => {
                 },
             },
         });
-        await flaky.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(flaky.create('echo hi', userId, { repo: null, executor: null }));
 
         await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow('mint down');
 
@@ -242,7 +256,7 @@ describe.runIf(enabled)('attribution', () => {
     it('mints the token even when the board has no env resolver', async () => {
         const userId = await account(mintedAccountId(), 'bare-mint');
         const bare = createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_example' } });
-        await bare.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(bare.create('echo hi', userId, { repo: null, executor: null }));
 
         const claim = await bare.claim('driver-1', LEASE_SECONDS);
         expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_example' });
@@ -264,12 +278,12 @@ describe.runIf(enabled)('attribution', () => {
             },
         });
 
-        await counting.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(counting.create('echo hi', userId, { repo: null, executor: null }));
         const first = await counting.claim('driver-1', LEASE_SECONDS);
         expect(first?.env).toEqual({ GITHUB_TOKEN: 'ghs_1' });
 
         // The first job holds a live lease, so the second claim takes the new one — and mints again.
-        await counting.create('echo hi', userId, { repo: null, executor: null });
+        await mustCreate(counting.create('echo hi', userId, { repo: null, executor: null }));
         const second = await counting.claim('driver-2', LEASE_SECONDS);
         expect(second?.env).toEqual({ GITHUB_TOKEN: 'ghs_2' });
     });
@@ -296,7 +310,7 @@ describe.runIf(enabled)('attribution', () => {
                 orgId: ORG,
                 githubToken: { fresh: async () => `ghs_publish_${++mints}` },
             });
-            await store.create('echo hi', userId, { repo: null, executor: null });
+            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
             const claim = await store.claim('driver-1', LEASE_SECONDS);
             expect(claim?.env).toEqual({ GITHUB_TOKEN: 'ghs_publish_1' });
 
@@ -315,7 +329,7 @@ describe.runIf(enabled)('attribution', () => {
                 env: envStore,
                 githubToken: { fresh: async () => `ghs_${++mints}` },
             });
-            await store.create('echo hi', userId, { repo: null, executor: null });
+            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
             const claim = await store.claim('driver-1', LEASE_SECONDS);
 
             const answer = await store.publishToken(claim!.id, claim!.leaseToken);
@@ -327,7 +341,7 @@ describe.runIf(enabled)('attribution', () => {
         it('answers null — nothing fresher than the claim env — with no provider and no configured value', async () => {
             const userId = await account(publishAccountId(), 'publish-bare');
             const store = createJobStore({ sql, orgId: ORG });
-            await store.create('echo hi', userId, { repo: null, executor: null });
+            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
             const claim = await store.claim('driver-1', LEASE_SECONDS);
 
             expect(await store.publishToken(claim!.id, claim!.leaseToken)).toEqual({ result: 'ok', token: null });
@@ -336,7 +350,7 @@ describe.runIf(enabled)('attribution', () => {
         it('is lease-guarded: a lost lease and a missing job are different answers', async () => {
             const userId = await account(publishAccountId(), 'publish-lease');
             const store = createJobStore({ sql, orgId: ORG, githubToken: { fresh: async () => 'ghs_x' } });
-            await store.create('echo hi', userId, { repo: null, executor: null });
+            await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
             const claim = await store.claim('driver-1', LEASE_SECONDS);
 
             expect(await store.publishToken(claim!.id, '33333333-3333-4333-8333-333333333333')).toEqual({
@@ -407,9 +421,9 @@ describe.runIf(enabled)('attribution', () => {
             ]);
             const store = configured();
 
-            await store.create('claude task', userId, { repo: null, executor: 'claude' });
-            await store.create('ghost task', userId, { repo: null, executor: 'deleted' });
-            await store.create('unlabelled task', userId, { repo: null, executor: null });
+            await mustCreate(store.create('claude task', userId, { repo: null, executor: 'claude' }));
+            await mustCreate(store.create('ghost task', userId, { repo: null, executor: 'deleted' }));
+            await mustCreate(store.create('unlabelled task', userId, { repo: null, executor: null }));
 
             // Each claim takes the oldest claimable row; three claims, three answers. A missing
             // selection is null rather than a Claude/OpenCode fallback for the driver to guess at.
@@ -442,7 +456,7 @@ describe.runIf(enabled)('attribution', () => {
             ]);
             const store = configured();
 
-            await store.create('claude task', userId, { repo: null, executor: 'claude' });
+            await mustCreate(store.create('claude task', userId, { repo: null, executor: 'claude' }));
 
             expect((await store.claim('driver-1', LEASE_SECONDS))?.env).toEqual({
                 CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
@@ -461,7 +475,7 @@ describe.runIf(enabled)('attribution', () => {
             await executors.replace(userId, [{ name: 'main', type: 'opencode', config: { model: 'fresh' } }]);
             const store = createJobStore({ sql, orgId: ORG, env: envStore, executorConfig: executors });
 
-            await store.create('echo hi', userId, { repo: null, executor: 'main' });
+            await mustCreate(store.create('echo hi', userId, { repo: null, executor: 'main' }));
             const claim = await store.claim('driver-1', LEASE_SECONDS);
 
             expect(claim?.env).toEqual({ OPENCODE_CONFIG_CONTENT: '{"model":"fresh"}' });
@@ -480,7 +494,7 @@ describe.runIf(enabled)('attribution', () => {
                     },
                 },
             });
-            await flaky.create('echo hi', userId, { repo: null, executor: 'main' });
+            await mustCreate(flaky.create('echo hi', userId, { repo: null, executor: 'main' }));
 
             await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow('executor store down');
 
@@ -496,7 +510,7 @@ describe.runIf(enabled)('attribution', () => {
         // they ran, on the one route that runs shell commands.
         const DEPARTING_GITHUB_ID = 5003;
         const userId = await account(DEPARTING_GITHUB_ID, 'departing');
-        const { id } = await store.create('echo hi', userId, { repo: null, executor: null });
+        const { id } = await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
 
         await sql`delete from app_user where id = ${userId}`;
 
@@ -515,7 +529,7 @@ describe.runIf(enabled)('attribution', () => {
          */
         const READING_CAT_GITHUB_ID = 5008;
         const userId = await account(READING_CAT_GITHUB_ID, 'reading-cat');
-        const { id } = await store.create('echo hi', userId, { repo: null, executor: null });
+        const { id } = await mustCreate(store.create('echo hi', userId, { repo: null, executor: null }));
 
         expect((await store.get(id))?.workspacePath).toBe(`${ORG}/${userId}`);
         expect((await store.thread(id))?.[0]?.workspacePath).toBe(`${ORG}/${userId}`);
@@ -538,7 +552,7 @@ describe.runIf(enabled)('attribution', () => {
         const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
         const UNREAD_CAT_GITHUB_ID = 5009;
         const userId = await account(UNREAD_CAT_GITHUB_ID, 'unread-cat');
-        const { id } = await rootless.create('echo hi', userId, { repo: null, executor: null });
+        const { id } = await mustCreate(rootless.create('echo hi', userId, { repo: null, executor: null }));
 
         expect((await rootless.get(id))?.workspacePath).toBeNull();
     });

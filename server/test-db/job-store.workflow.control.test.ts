@@ -7,6 +7,16 @@ import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { ParamValues, WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
 
+/**
+ * A create whose refusal would be a broken setup, never a case under test: narrows the store's
+ * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
+ */
+const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
+    p.then((ref) => {
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        return ref;
+    });
+
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
@@ -54,17 +64,19 @@ async function queueWorkflowJob(
 ): Promise<string> {
     const created = await workflows.create({ name, scope: { kind: 'org' }, definition, createdBy: null });
     expect(created).toHaveProperty('id');
-    const job = await store.create('fix the thing', null, {
-        repo: null,
-        executor: null,
-        workflow: {
-            id: (created as { id: string }).id,
-            name,
-            node: definition.entry,
-            snapshot: definition,
-            params,
-        },
-    });
+    const job = await mustCreate(
+        store.create('fix the thing', null, {
+            repo: null,
+            executor: null,
+            workflow: {
+                id: (created as { id: string }).id,
+                name,
+                node: definition.entry,
+                snapshot: definition,
+                params,
+            },
+        })
+    );
     return job.id;
 }
 
@@ -175,7 +187,7 @@ describe.skipIf(!enabled)('workflow execution: dead rows and stop', () => {
     });
 
     it('a workflow-less complete inserts nothing, threadDone answering exactly as before', async () => {
-        const job = await store.create('plain', null, { repo: null, executor: null });
+        const job = await mustCreate(store.create('plain', null, { repo: null, executor: null }));
         const claim = (await store.claim(WORKER, 60))!;
         const verdict = await store.complete(claim.id, claim.leaseToken, {
             status: 'succeeded',

@@ -313,43 +313,6 @@
         font-family: var(--font-sans);
     }
 
-    .cards {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-        gap: 12px;
-    }
-
-    .card {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        padding: 14px;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-    }
-
-    /* The card's gap is a 2px rhythm for figure + label; its paragraphs carry their own spacing,
-       which preflight took away with the UA sheet. */
-    .card p {
-        margin: 0 0 8px;
-    }
-
-    .card p:last-child {
-        margin-bottom: 0;
-    }
-
-    .card strong {
-        font-size: 28px;
-        font-weight: 600;
-        font-variant-numeric: tabular-nums;
-        line-height: 34px;
-    }
-
-    .card span {
-        font-size: 12px;
-    }
-
     .chart-wrap {
         overflow-x: auto;
         margin-bottom: 12px;
@@ -479,14 +442,6 @@
         fill: var(--lamp-run);
     }
 
-    .bar-warn {
-        fill: var(--lamp-wait);
-    }
-
-    .bar-bad {
-        fill: var(--lamp-stop);
-    }
-
     /* The partial bucket's hatch: a non-color mark the series still reads through, painted
        behind the bars over the bucket's full band. */
     .bar-partial {
@@ -535,19 +490,6 @@
         stroke-width: 1.5;
     }
 
-    .dot {
-        fill: var(--lamp-done);
-        fill-opacity: 0.8;
-    }
-
-    .dot-warn {
-        fill: var(--lamp-wait);
-    }
-
-    .dot-bad {
-        fill: var(--lamp-stop);
-    }
-
     /* The proportional New-tokens bar in the by-user table. The track is a sunken well, the fill
        the chart series blue; the width is decoration (aria-hidden in markup) — the cell's
        accessible name carries the exact figure. */
@@ -583,11 +525,19 @@
     @media (max-width: 900px) {
         .range-draft input,
         .range-draft-actions button,
-        .legend-button {
+        .legend-button,
+        .chart-disclosure summary {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* A disclosure summary keeps its native marker only under `list-item` (issue 287), so it
+           centers its line in the 44px box instead of taking the list's inline-flex. */
+        .chart-disclosure summary {
+            align-content: center;
+            display: list-item;
         }
     }
 }

@@ -9,6 +9,16 @@ import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
 
 /**
+ * A create whose refusal would be a broken setup, never a case under test: narrows the store's
+ * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
+ */
+const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
+    p.then((ref) => {
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        return ref;
+    });
+
+/**
  * Durable block waits against a real database (issue #231): a workflow transition into a node
  * carrying a private `runtime` descriptor parks in `workflow_round` instead of inserting a
  * runnable job, and the claim preamble's wake sweep is what turns folded GitHub deliveries into
@@ -60,11 +70,13 @@ async function queueWaitingThread(name: string): Promise<string> {
     // maybeRecordPublication cross-checks it (a payload may not claim a repo the board never gave
     // the job), so a real end-to-end park needs the label set, unlike helper-plans.test.ts's
     // repo: null fixture, which calls recordPublication directly and never goes through complete().
-    const job = await store.create('start the thread', null, {
-        repo: REPO,
-        executor: null,
-        workflow: { id: randomUUID(), name, node: waitingWorkflow.entry, snapshot: waitingWorkflow, params: {} },
-    });
+    const job = await mustCreate(
+        store.create('start the thread', null, {
+            repo: REPO,
+            executor: null,
+            workflow: { id: randomUUID(), name, node: waitingWorkflow.entry, snapshot: waitingWorkflow, params: {} },
+        })
+    );
     return job.id;
 }
 
@@ -146,11 +158,13 @@ describe.skipIf(!enabled)('durable block waits — parking the transition (issue
             nodes: [{ name: 'work', kind: 'agent', session: 'fresh', publish: true, prompt: 'work' }],
             edges: [],
         };
-        const job = await store.create('go', null, {
-            repo: null,
-            executor: null,
-            workflow: { id: randomUUID(), name: 'plain', node: plain.entry, snapshot: plain, params: {} },
-        });
+        const job = await mustCreate(
+            store.create('go', null, {
+                repo: null,
+                executor: null,
+                workflow: { id: randomUUID(), name: 'plain', node: plain.entry, snapshot: plain, params: {} },
+            })
+        );
         const claim = (await store.claim(WORKER, 60)) as Claim;
         expect(claim.id).toBe(job.id);
         await store.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });

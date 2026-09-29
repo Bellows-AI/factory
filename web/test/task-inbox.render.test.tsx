@@ -528,7 +528,13 @@ describe('TaskInboxPage filters', () => {
 
     it('offers the workspace repositories in the repo select, and keeps a vanished filter selectable', () => {
         const workspace = {
-            data: { root: null, repos: [{ owner: 'acme', name: 'web' }], orphaned: [], executors: [] },
+            data: {
+                root: null,
+                repos: [{ owner: 'acme', name: 'web' }],
+                orphaned: [],
+                checkoutTotalBytes: 0,
+                executors: [],
+            },
             loading: false,
             error: null,
             refresh: () => {},

@@ -23,3 +23,13 @@ export function DraftReturnBanner() {
         </p>
     );
 }
+
+/**
+ * A settings link that keeps the way back only when this page already has it — the executor
+ * dialog's detour to the environment editor (issue 261) forwards the composer's return, and a visit
+ * that did not come from the composer gains none.
+ */
+export function useDraftReturnHref(to: string): string {
+    const [params] = useSearchParams();
+    return params.get(RETURN_PARAM) === DRAFT_RETURN_PATH ? withDraftReturn(to) : to;
+}

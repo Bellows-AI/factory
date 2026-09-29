@@ -22,6 +22,7 @@ import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { UUID } from '../config.js';
 import {
+    HTTP_CONFLICT,
     HTTP_CREATED,
     HTTP_NO_CONTENT,
     HTTP_OK,
@@ -97,6 +98,14 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         () => store.create(command, createdBy, { repo, executor, ...(workflow ? { workflow } : {}) })
     );
     if (!created.ok) return reply;
+    // The author's checkout row was `purging` when the insert transaction took its lock (issue
+    // #92): a task cannot be queued into a checkout that is being deleted.
+    if (created.value === 'purging') {
+        return reply.code(HTTP_CONFLICT).send({
+            error: 'The checkout for this task is being deleted from disk',
+            code: ERROR_CODES.PURGE_IN_PROGRESS,
+        });
+    }
     return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
 }
 

@@ -76,7 +76,7 @@ function TokenCreateAndList({
 }) {
     return (
         <>
-            <p>
+            <p className="token-create">
                 <input
                     aria-label="Token label"
                     placeholder="what this token is for"

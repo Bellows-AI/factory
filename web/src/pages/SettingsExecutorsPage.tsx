@@ -6,7 +6,7 @@ import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
-import { EXECUTOR_GUIDANCE, withDefault } from '../workspace/executors.js';
+import { ADD_LABEL, EXECUTOR_GUIDANCE, EXECUTOR_SCOPE, withDefault } from '../workspace/executors.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
@@ -26,6 +26,9 @@ export function SettingsExecutorsPage() {
     const [executorDialog, setExecutorDialog] = useState<ExecutorDialogState | null>(null);
     const [executorList, setExecutorList] = useState<WorkspaceExecutorFull[]>([]);
     const [executorDialogError, setExecutorDialogError] = useState<string | null>(null);
+    // The save announcement (issue 261): one always-mounted status region, so a screen reader hears the
+    // sentence the moment it changes, and the next dialog open clears it.
+    const [savedMessage, setSavedMessage] = useState('');
 
     /**
      * The dialog opens only with the whole list in hand — configs included, one on-demand read —
@@ -34,6 +37,7 @@ export function SettingsExecutorsPage() {
      */
     const openExecutorDialog = async (editing: string | null) => {
         setExecutorDialogError(null);
+        setSavedMessage('');
         const result = await listExecutorConfigs();
         if (!result.ok) {
             setExecutorDialogError(result.error);
@@ -79,11 +83,7 @@ export function SettingsExecutorsPage() {
     if (loading && !data) {
         return (
             <>
-                <PageHeader
-                    eyebrow="Settings"
-                    title="Executors"
-                    description="Name the personal runner configuration offered when you start a task."
-                />
+                <PageHeader eyebrow="Settings" title="Executors" description={EXECUTOR_SCOPE} />
                 <DraftReturnBanner />
                 <p className="status">Loading your workspace…</p>
             </>
@@ -95,16 +95,19 @@ export function SettingsExecutorsPage() {
             <PageHeader
                 eyebrow="Settings"
                 title="Executors"
-                description="Name the personal runner configuration offered when you start a task."
+                description={EXECUTOR_SCOPE}
                 actions={
                     data && !noRoot ? (
                         <button type="button" className="primary" onClick={() => void openExecutorDialog(null)}>
-                            Add executor
+                            {ADD_LABEL}
                         </button>
                     ) : undefined
                 }
             />
             <DraftReturnBanner />
+            <p className="muted" role="status">
+                {savedMessage}
+            </p>
             {error ? <p className="status">{error}</p> : null}
 
             {/* Requiring `data` keeps the failed-poll state honest: with no response there is no
@@ -137,6 +140,7 @@ export function SettingsExecutorsPage() {
                 editing={executorDialog?.mode === 'edit' ? executorDialog.name : null}
                 onClose={() => setExecutorDialog(null)}
                 onSave={saveExecutors}
+                onSaved={setSavedMessage}
                 saving={saving}
             />
         </>

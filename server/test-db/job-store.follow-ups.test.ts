@@ -5,6 +5,16 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
 
+/**
+ * A create whose refusal would be a broken setup, never a case under test: narrows the store's
+ * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
+ */
+const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
+    p.then((ref) => {
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        return ref;
+    });
+
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
@@ -44,7 +54,11 @@ beforeAll(async () => {
  * the authenticated caller rather than defaulting quietly; these cases are about leases, not
  * attribution, so they pass null explicitly. The attribution cases below pass a real account.
  */
-const queue = (command: string) => store.create(command, null, { repo: null, executor: null });
+const queue = async (command: string) => {
+    const ref = await store.create(command, null, { repo: null, executor: null });
+    if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+    return ref;
+};
 
 /**
  * Chains a follow-up that MUST be created. The refusal branches get their own dedicated cases
@@ -80,7 +94,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         command: string,
         target: { repo: string | null; executor: string | null } = { repo: null, executor: null }
     ): Promise<string> => {
-        const { id } = await store.create(command, null, target);
+        const { id } = await mustCreate(store.create(command, null, target));
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, claim!.leaseToken, SESSION);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
@@ -106,7 +120,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // A stopped parent is a finished turn, not a dead end: the stop kept the session, so the
     // conversation continues from exactly where the user ended it.
     it('creates a follow-up on a task the user stopped', async () => {
-        const { id } = await store.create('drive me', null, { repo: null, executor: null });
+        const { id } = await mustCreate(store.create('drive me', null, { repo: null, executor: null }));
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, claim!.leaseToken, SESSION);
         await store.stop(id, null);
@@ -278,7 +292,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         const AUTHOR_B_GITHUB_ID = 6002;
         const authorA = await account(AUTHOR_A_GITHUB_ID, 'author-a');
         const authorB = await account(AUTHOR_B_GITHUB_ID, 'author-b');
-        const { id: parent } = await store.create('drive me', authorA, { repo: null, executor: null });
+        const { id: parent } = await mustCreate(store.create('drive me', authorA, { repo: null, executor: null }));
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.session(parent, claim!.leaseToken, SESSION);
         await store.complete(parent, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
@@ -374,7 +388,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
     // session, and the follow-up is the restart-with-a-new-prompt — the claim resumes exactly
     // the conversation the user ended.
     it('hands a follow-up claim of a stopped task the parent session and the command to deliver', async () => {
-        const { id: parent } = await store.create('drive me', null, { repo: null, executor: null });
+        const { id: parent } = await mustCreate(store.create('drive me', null, { repo: null, executor: null }));
         const parked = await store.claim('w1', LEASE_SECONDS);
         await store.session(parent, parked!.leaseToken, SESSION);
         await store.stop(parent, null);

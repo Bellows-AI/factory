@@ -90,6 +90,8 @@ function stubStore(
         job?: Job | null;
         thread?: Job[] | null;
         followUp?: FollowUpRefusal;
+        /** What the store answers a create with; 'purging' is the manual purge's refusal (#92). */
+        create?: 'purging';
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
         reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
         publish?: { result: 'ok'; token: string | null } | 'lost' | 'missing';
@@ -142,7 +144,7 @@ function stubStore(
             });
             if (target?.workflow) stub.workflowTargets.push(target.workflow);
             stub.commands.push(command);
-            return { id: ID };
+            return options.create ?? { id: ID };
         },
         async createFollowUp(parentId, command, createdBy) {
             boom();
@@ -323,6 +325,23 @@ describe('POST /api/jobs', () => {
         expect(response.statusCode).toBe(201);
         expect(response.json()).toEqual({ id: ID, status: 'queued' });
         expect(store.commands).toEqual(['claude -p "fix the build"']);
+    });
+
+    it('refuses with PURGE_IN_PROGRESS when the author\u2019s checkout row is being deleted', async () => {
+        // The manual purge (issue #92): the insert transaction takes the author's checkout row's
+        // lock and refuses when it reads `purging` — a task cannot be queued into a checkout that
+        // is coming off the disk.
+        const store = stubStore({ create: 'purging' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', {
+            command: 'claude -p "fix the build"',
+            repo: 'acme/web',
+            executor: 'main',
+        });
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('PURGE_IN_PROGRESS');
     });
 
     it.each([
@@ -1705,6 +1724,7 @@ describe('POST /api/jobs/:id/follow-up', () => {
         ['a parent that is still moving', 'not_finished', 'NOT_FINISHED'],
         ['a task the user has marked done', 'task_done', 'TASK_DONE'],
         ['a parent with no session to continue', 'no_session', 'NO_SESSION'],
+        ['a checkout that is being deleted', 'purging', 'PURGE_IN_PROGRESS'],
     ])('answers 409 for %s', async (_label, verdict, code) => {
         const instance = await harnessWith(stubStore({ followUp: verdict as FollowUpRefusal }));
         const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });

@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const webSrc = fileURLToPath(new URL('../src', import.meta.url));
@@ -120,6 +121,48 @@ const colorViolationsIn = (rel: string, text: string, spans: Array<[number, numb
     return violations;
 };
 
+/** Every class the stylesheet defines. The text before every opening brace is a selector
+ * prelude — collected at any depth, so a class defined only inside @media lands on the books
+ * like the rest. Custom utilities carry no leading dot in their prelude, so they are collected
+ * from their `@utility` line. */
+const definedClasses = (css: string): Set<string> => {
+    const defined = new Set<string>();
+    for (const prelude of css.matchAll(/([^{}]*)\{/g)) {
+        for (const match of prelude[1]!.matchAll(/\.([a-zA-Z][\w-]*)/g)) defined.add(match[1]!);
+    }
+    for (const match of css.matchAll(/@utility\s+([a-zA-Z][\w-]*)/g)) defined.add(match[1]!);
+    return defined;
+};
+
+/** Classes a library adds at runtime: React Router's NavLink appends `active` to a string
+ * className (`UserMenu.tsx`), so no literal in the tree spells it. */
+const LIBRARY_CLASSES = ['active'];
+/** The synthetic-data marker, reserved by the redesign ground rules whether or not a page
+ * currently renders it. */
+const RESERVED_CLASSES = ['badge-warn'];
+
+/** The class-shaped words a TS/TSX file spells in literals: every whitespace-separated token of
+ * each string and template fragment, read from the AST so comments and JSX text (prose) never
+ * count. A template fragment whose last token runs straight into `${` is also a prefix —
+ * `repo-card-disc-${tone}` is called when some literal spells the tone. */
+const literalClassTokens = (path: string, text: string): { tokens: Set<string>; prefixes: Set<string> } => {
+    const tokens = new Set<string>();
+    const prefixes = new Set<string>();
+    const kind = path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    const visit = (node: ts.Node) => {
+        if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateTail(node)) {
+            for (const token of node.text.split(/\s+/)) if (token) tokens.add(token);
+        } else if (ts.isTemplateHead(node) || ts.isTemplateMiddle(node)) {
+            const words = node.text.split(/\s+/);
+            for (const token of words) if (token) tokens.add(token);
+            if (words.at(-1)) prefixes.add(words.at(-1)!);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false, kind));
+    return { tokens, prefixes };
+};
+
 /** The compact-shell 44px floor is owned where the control is owned (#321): shared controls in
  * `styles/touch-targets.css` — the components layer's last file, so the floor still outranks
  * every equal-specificity rule — and each lane's controls in that lane's own trailing segment,
@@ -133,6 +176,7 @@ const SHARED_TOUCH_TARGETS = [
     '.mobile-nav .sidenav-newtask',
     '.select-trigger',
     '.page-header-actions button',
+    'table.data button',
 ];
 const LANE_TOUCH_TARGETS: Record<string, string[]> = {
     'styles/regions/inbox.css': [
@@ -153,7 +197,14 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.composer-example',
         '.composer-notices-dismiss',
     ],
-    'styles/regions/task-detail.css': ['.chat-resume', '.task-actions button', '.task-remove-actions button'],
+    'styles/regions/task-detail.css': [
+        '.chat-resume',
+        '.task-actions button',
+        '.task-remove-actions button',
+        '.task-outcome > summary',
+        '.run-output > summary',
+        '.chat-gate-list summary',
+    ],
     'styles/regions/settings.css': [
         '.env-tab',
         '.settings-toggle',
@@ -163,9 +214,28 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.repo-save',
         '.settings-actions button',
         '.unsaved-actions button',
+        '.env-add',
+        '.env-advanced-toggle',
+        '.env-raw input',
+        '.env-raw select',
+        '.env-raw button',
+        '.picker-advanced > summary',
+        '.picker-field-actions button',
+        '.picker-actions button',
     ],
-    'styles/regions/dashboard.css': ['.range-draft input', '.range-draft-actions button', '.legend-button'],
-    'styles/regions/entry.css': ['.login-button', '.onboarding-actions button'],
+    'styles/regions/dashboard.css': [
+        '.range-draft input',
+        '.range-draft-actions button',
+        '.legend-button',
+        '.chart-disclosure summary',
+    ],
+    'styles/regions/entry.css': [
+        '.login-button',
+        '.onboarding-actions button',
+        '.token-create input',
+        '.token-create button',
+        '.onboarding-org-summary',
+    ],
 };
 
 describe('the stylesheet', () => {
@@ -361,6 +431,40 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         }
     });
 
+    it('keeps each listed disclosure summary its native marker and each gate row a flex row (#287)', () => {
+        // A lane's 44px rule sets inline-flex, which drops a summary's disclosure marker and
+        // shrinks a gate row to its content; the same segment restores both, after the list.
+        const cssByRel = new Map(readShipped().map((f) => [f.rel, stripComments(f.text)] as const));
+        const restored = (rel: string, selectors: string[], declaration: RegExp) => {
+            const css = cssByRel.get(rel)!;
+            return blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, 'compact-shell media block never closes').some(
+                ([start, end]) => {
+                    const block = css.slice(start, end);
+                    const floor = block.search(/min-height:\s*44px/);
+                    return [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(
+                        (match) =>
+                            floor >= 0 &&
+                            match.index! > floor &&
+                            declaration.test(match[2]!) &&
+                            selectors.every((selector) => match[1]!.includes(selector))
+                    );
+                }
+            );
+        };
+        for (const [rel, selectors] of [
+            ['styles/regions/dashboard.css', ['.chart-disclosure summary']],
+            ['styles/regions/task-detail.css', ['.task-outcome > summary', '.run-output > summary']],
+            ['styles/regions/entry.css', ['.onboarding-org-summary']],
+            ['styles/regions/settings.css', ['.picker-advanced > summary']],
+        ] as const) {
+            expect(restored(rel, [...selectors], /display:\s*list-item/), `${selectors} keep list-item`).toBe(true);
+        }
+        expect(
+            restored('styles/regions/task-detail.css', ['.chat-gate-list summary'], /display:\s*flex/),
+            'the gate row stays flex'
+        ).toBe(true);
+    });
+
     it('clears 44px touch targets across the compact shell (#189)', () => {
         // Each control clears the floor through its OWN owner's compact-shell segment — the
         // shared list for shared controls, the lane's trailing segment for lane controls (#321).
@@ -544,18 +648,54 @@ describe('the design-system inventory', () => {
     });
 
     it('documents every class the stylesheet defines', () => {
-        const css = stripComments(shippedCss());
-        // The text before every opening brace is a selector prelude — collected at any depth, so
-        // a class defined only inside @media lands on the inventory's books like the rest.
-        const defined = new Set<string>();
-        for (const prelude of css.matchAll(/([^{}]*)\{/g)) {
-            for (const match of prelude[1].matchAll(/\.([a-zA-Z][\w-]*)/g)) defined.add(match[1]);
-        }
-        // Custom utilities carry no leading dot in their prelude, so they are collected here —
-        // lamp-glow fails the inventory until the document names it, like any class.
-        for (const match of css.matchAll(/@utility\s+([a-zA-Z][\w-]*)/g)) defined.add(match[1]);
         // A presence check, not a parse: docs.includes matches substrings, so the guard catches
         // an undocumented class, not an undocumented rule about it.
-        expect([...defined].filter((name) => !docs.includes(name))).toEqual([]);
+        expect([...definedClasses(stripComments(shippedCss()))].filter((name) => !docs.includes(name))).toEqual([]);
+    });
+
+    it('gives every class it defines a caller in web/src or the specimen (#288)', () => {
+        const css = stripComments(shippedCss());
+        const callers = { tokens: new Set<string>(), prefixes: new Set<string>() };
+        for (const dir of [webSrc, specimenDir]) {
+            for (const path of walkFiles(dir).filter((p) => /\.tsx?$/.test(p))) {
+                const found = literalClassTokens(path, readFileSync(path, 'utf8'));
+                for (const token of found.tokens) callers.tokens.add(token);
+                for (const prefix of found.prefixes) callers.prefixes.add(prefix);
+            }
+        }
+        for (const html of [join(webSrc, '../index.html'), join(specimenDir, 'index.html')]) {
+            for (const match of readFileSync(html, 'utf8').matchAll(/class="([^"]*)"/g)) {
+                for (const token of match[1]!.split(/\s+/)) callers.tokens.add(token);
+            }
+        }
+        for (const match of css.matchAll(/@apply\s+([^;]+);/g)) {
+            for (const token of match[1]!.split(/\s+/)) callers.tokens.add(token);
+        }
+        const called = (name: string) =>
+            callers.tokens.has(name) ||
+            [...callers.prefixes].some((p) => name.startsWith(p) && callers.tokens.has(name.slice(p.length)));
+        expect(
+            [...definedClasses(css)].filter(
+                (name) => !called(name) && !LIBRARY_CLASSES.includes(name) && !RESERVED_CLASSES.includes(name)
+            )
+        ).toEqual([]);
+    });
+
+    it('reads callers from literals, lookup maps and composed prefixes, never from prose (#288)', () => {
+        const found = literalClassTokens(
+            'probe.tsx',
+            [
+                '// .ghost cards',
+                'const TONE = { ok: "pill pill-ok" };',
+                'const a = <p className="a b">four cards</p>;',
+                `const d = \`repo-card-disc repo-card-disc-\${tone}\`;`,
+                `const e = \`sidenav-dot \${dot}\`;`,
+            ].join('\n')
+        );
+        for (const token of ['a', 'b', 'pill-ok', 'repo-card-disc', 'sidenav-dot']) {
+            expect(found.tokens, token).toContain(token);
+        }
+        expect([...found.prefixes]).toEqual(['repo-card-disc-']);
+        for (const prose of ['ghost', 'cards', 'four']) expect(found.tokens, prose).not.toContain(prose);
     });
 });

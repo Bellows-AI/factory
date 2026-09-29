@@ -12,6 +12,12 @@ Read before: reporting a number as measured, or "fixing" something in this list.
   week is not necessarily a week without AI.
 - The branch is sampled roughly every 20s, not tracked. A session shorter than one interval can be
   missed entirely, and the sample is allowed to fail silently.
+- **The workspace checkout total is null until every included checkout has a measurement.** It sums
+  the selected `ready` clones and the on-disk orphans — the driver's `.worktrees/` and other
+  workspace files are not checkouts and are not counted — and a cold or failed `du` for any one of
+  them keeps the whole figure null rather than imply a partial sum is the whole (issue #92).
+  `purging` rows are excluded, on their way out. The per-checkout sizes share the same doctrine:
+  null is unmeasured, never zero.
 - `POST /api/otlp/v1/logs` accepts and discards. `prompt.id` and `message.uuid` are only worth
   storing once there is a per-prompt view to spend them on.
 - **The caches `cache.ts` builds are process-global** — the telemetry snapshot and the repo list

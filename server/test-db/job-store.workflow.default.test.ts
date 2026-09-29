@@ -12,6 +12,16 @@ import {
 import { useTestDb } from './harness.js';
 
 /**
+ * A create whose refusal would be a broken setup, never a case under test: narrows the store's
+ * honest union (`{ id } | 'purging'`, issue #92) so the call sites read as they did before.
+ */
+const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
+    p.then((ref) => {
+        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
+        return ref;
+    });
+
+/**
  * The code-owned default workflow (issue #209) against a real database: the frozen root row (name,
  * null workflow_id, snapshot, the selected pair and the gate-repair round limit), the claim's
  * publish flag, the transition into a selected block with and without a recorded publication (the
@@ -54,18 +64,20 @@ async function queueDefaultJob(
     repo: string | null = null
 ): Promise<string> {
     const snapshot = compileDefaultWorkflow(pair, gateFixRounds);
-    const job = await store.create('do the thing', null, {
-        repo,
-        executor: null,
-        workflow: {
-            id: null,
-            name: DEFAULT_WORKFLOW_NAME,
-            node: DEFAULT_ENTRY_NODE,
-            snapshot,
-            params: {},
-            defaultOptions: { ...pair, gateFixRounds },
-        },
-    });
+    const job = await mustCreate(
+        store.create('do the thing', null, {
+            repo,
+            executor: null,
+            workflow: {
+                id: null,
+                name: DEFAULT_WORKFLOW_NAME,
+                node: DEFAULT_ENTRY_NODE,
+                snapshot,
+                params: {},
+                defaultOptions: { ...pair, gateFixRounds },
+            },
+        })
+    );
     return job.id;
 }
 

@@ -2,13 +2,14 @@ import { join } from 'node:path';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES, EXECUTOR_TYPES, MAX_GATE_FIX_ROUNDS } from '@factory-ai/core';
 import type { ErrorCode } from '@factory-ai/core';
-import { callerOf, orgOf } from '../auth/plugin.js';
+import { callerOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
-import type { UserExecutor, UserExecutorStore } from '../db/user-executor-store.js';
-import type { UserRepoStore } from '../db/user-repo-store.js';
+import { handleDeleteRepo, orphansAndTotal, runtimeOf } from './workspace-purge.js';
+import type { UserExecutor } from '../db/user-executor-store.js';
+import type { PurgeConflictError } from '../db/user-repo-store.js';
 import type { AppConfig, Repo } from '../config.js';
 import type { UserRepo } from '../db/user-repo-store.js';
-import type { OrgRegistry, OrgRuntime } from '../orgs.js';
+import type { OrgRegistry } from '../orgs.js';
 import type { FactsCache } from '../workspace/facts.js';
 import { ensureUserWorkspace } from '../workspace/provision.js';
 import { workspaceDir } from '../workspace/reconcile.js';
@@ -158,46 +159,16 @@ type ExecutorEntry = {
     gateFixRounds: number;
 };
 
-type WorkspaceRuntime =
-    | {
-          userRepos: UserRepoStore;
-          userExecutors: UserExecutorStore | undefined;
-          repos: OrgRuntime['repos'];
-          cloneQueue: OrgRuntime['cloneQueue'];
-      }
-    | { error: string; code: string; status: number };
-
-/** The caller's org runtime, or the reason a route cannot serve them. */
-async function runtimeOf(orgs: OrgRegistry, request: Parameters<typeof callerOf>[0]): Promise<WorkspaceRuntime> {
-    const rt = await orgs.for(orgOf(request));
-    if (!rt?.userRepos) {
-        return {
-            error: 'No workspace store for this organization',
-            code: ERROR_CODES.WORKSPACE_UNAVAILABLE,
-            status: HTTP_UNAVAILABLE,
-        };
-    }
-    return {
-        userRepos: rt.userRepos,
-        userExecutors: rt.userExecutors,
-        repos: rt.repos,
-        cloneQueue: rt.cloneQueue,
-    };
-}
-
 interface WorkspaceDeps {
     root: string | null;
     orgs: OrgRegistry;
-    facts: FactsCache;
 }
 
-function describeRepo(deps: WorkspaceDeps, orgId: string, userId: string, row: UserRepo) {
+function describeRepo(ctx: { facts: FactsCache; root: string; orgId: string; userId: string }, row: UserRepo) {
     // Only a `ready` checkout has anything on disk to read. Asking about one that is still cloning
     // would walk a half-written tree and report a size that means nothing.
-    const onDisk =
-        deps.root && row.status === 'ready'
-            ? deps.facts.get(join(workspaceDir(deps.root, orgId, userId), row.name))
-            : { branch: null, lastCommit: null, sizeBytes: null };
+    const dir = join(workspaceDir(ctx.root, ctx.orgId, ctx.userId), row.name);
+    const onDisk = row.status === 'ready' ? ctx.facts.get(dir) : null;
     return {
         owner: row.owner,
         name: row.name,
@@ -205,7 +176,7 @@ function describeRepo(deps: WorkspaceDeps, orgId: string, userId: string, row: U
         error: row.error,
         selectedAt: row.selectedAt,
         readyAt: row.readyAt,
-        ...onDisk,
+        ...(onDisk ?? { branch: null, lastCommit: null, sizeBytes: null }),
     };
 }
 
@@ -298,11 +269,19 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
     const { root } = deps;
     // 200 with a null root, never a 503. "Workspaces are switched off" is a configuration an
     // operator chose, and the page renders a sentence about it rather than an error.
-    if (!root) return reply.code(HTTP_OK).send({ root: null, repos: [], orphaned: [], executors: [] });
+    if (!root) {
+        return reply.code(HTTP_OK).send({
+            root: null,
+            repos: [],
+            orphaned: [],
+            executors: [],
+            checkoutTotalBytes: null,
+        });
+    }
 
     const rt = await runtimeOf(deps.orgs, request);
     if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
-    const { userRepos: store, userExecutors: executors } = rt;
+    const { userRepos: store, userExecutors: executors, facts } = rt;
 
     const loaded = await guard(
         reply,
@@ -327,13 +306,16 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
     );
     if (!loaded.ok) return reply;
 
-    const [selected, orphaned, executorRows] = loaded.value;
+    const [selected, orphanedRows, executorRows] = loaded.value;
+    const userDir = workspaceDir(root, caller.org.id, caller.user.id);
+    const { orphaned, checkoutTotalBytes } = orphansAndTotal(facts, userDir, selected, orphanedRows);
+
     return reply.code(HTTP_OK).send({
-        root: workspaceDir(root, caller.org.id, caller.user.id),
-        repos: selected.map((row) => describeRepo(deps, caller.org.id, caller.user.id, row)),
-        // Deselected, still on disk, nothing prunes them. Reported so that growth is at least
-        // visible on the page rather than only in `df`.
-        orphaned: orphaned.map((row) => ({ owner: row.owner, name: row.name })),
+        root: userDir,
+        repos: selected.map((row) => describeRepo({ facts, root, orgId: caller.org.id, userId: caller.user.id }, row)),
+        // Deselected, still on disk, and now measurable — with a delete that actually reclaims.
+        orphaned,
+        checkoutTotalBytes,
         // `config` is deliberately absent from these rows: it may hold credentials the member
         // pasted, and this payload is fetched by a poll that can run every two seconds.
         executors: executorRows.map((row: UserExecutor) => ({
@@ -379,7 +361,7 @@ async function handlePutRepos(deps: WorkspaceDeps, request: FastifyRequest, repl
     const saved = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        async () => {
+        async (): Promise<string[] | null> => {
             ensureUserWorkspace({
                 root,
                 orgId: caller.org.id,
@@ -387,10 +369,28 @@ async function handlePutRepos(deps: WorkspaceDeps, request: FastifyRequest, repl
                 login: caller.user.login,
                 githubUserId: caller.user.githubUserId,
             });
-            await store.select(caller.user.id, selection);
+            try {
+                await store.select(caller.user.id, selection);
+            } catch (error) {
+                // A checkout stamped `purging` cannot be re-selected underneath its deletion. Not
+                // a 503: the refusal IS the answer, and it names the offending checkouts.
+                if ((error as Error).name === 'PurgeConflictError') {
+                    return (error as PurgeConflictError).names;
+                }
+                throw error;
+            }
+            return null;
         }
     );
     if (!saved.ok) return reply;
+    if (saved.value) {
+        return bad(
+            reply,
+            ERROR_CODES.PURGE_IN_PROGRESS,
+            `"${saved.value.join(', ')}" is being deleted from disk — wait for the deletion to finish`,
+            HTTP_CONFLICT
+        );
+    }
 
     // 202, and the clones run in the background: a clone is minutes, and a request that waited for
     // one would be killed by any proxy in front of it long before it finished.
@@ -485,20 +485,20 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
 
 export interface WorkspaceRoutesDeps {
     readonly config: AppConfig;
-    /** The per-org runtimes; the stores, repo list and clone queue are the caller's org's. */
+    /** The per-org runtimes; the stores, repo list, clone queue, purge service and facts cache are the caller's org's. */
     readonly orgs: OrgRegistry;
-    readonly facts: FactsCache;
 }
 
 export const workspaceRoutes =
-    ({ config, orgs, facts }: WorkspaceRoutesDeps): FastifyPluginAsync =>
+    ({ config, orgs }: WorkspaceRoutesDeps): FastifyPluginAsync =>
     async (app) => {
-        const deps: WorkspaceDeps = { root: config.workspaceRoot, orgs, facts };
+        const deps: WorkspaceDeps = { root: config.workspaceRoot, orgs };
 
         app.get('/api/workspace', (request, reply) => handleGetWorkspace(deps, request, reply));
         app.put('/api/workspace/repos', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handlePutRepos(deps, request, reply)
         );
+        app.delete('/api/workspace/repos/:owner/:name', (request, reply) => handleDeleteRepo(deps, request, reply));
         app.get('/api/workspace/executors', (request, reply) => handleGetExecutors(deps, request, reply));
         app.put('/api/workspace/executors', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handlePutExecutors(deps, request, reply)
