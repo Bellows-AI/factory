@@ -43,6 +43,10 @@
     --bad-wash: color-mix(in oklab, var(--lamp-stop) 14%, transparent);
     --done-wash: color-mix(in oklab, var(--lamp-done) 10%, transparent);
     --accent-hover: color-mix(in oklab, var(--accent) 88%, var(--ink));
+    /* Held down (issue 265): one step past hover, in the same direction, so a press reads as a
+       press and not as a second hover. No transition carries it — the change is instant. */
+    --accent-pressed: color-mix(in oklab, var(--accent) 60%, var(--ink));
+    --surface-pressed: color-mix(in oklab, var(--surface-strong) 76%, var(--ink));
     --accent-border: color-mix(in oklab, var(--accent) 30%, var(--surface-raised));
     --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
     --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));
@@ -96,6 +100,10 @@
     --bad-wash: color-mix(in oklab, var(--lamp-stop) 8%, var(--surface-raised));
     --done-wash: color-mix(in oklab, var(--lamp-done) 8%, var(--surface-raised));
     --accent-hover: color-mix(in oklab, var(--accent) 88%, var(--ink));
+    /* Held down (issue 265): one step past hover, in the same direction, so a press reads as a
+       press and not as a second hover. No transition carries it — the change is instant. */
+    --accent-pressed: color-mix(in oklab, var(--accent) 60%, var(--ink));
+    --surface-pressed: color-mix(in oklab, var(--surface-strong) 76%, var(--ink));
     --accent-border: color-mix(in oklab, var(--accent) 30%, var(--surface-raised));
     --ok-border: color-mix(in oklab, var(--lamp-run) 30%, var(--surface-raised));
     --warn-border: color-mix(in oklab, var(--lamp-wait) 30%, var(--surface-raised));

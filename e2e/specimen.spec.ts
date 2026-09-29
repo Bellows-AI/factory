@@ -28,13 +28,33 @@ interface Target {
     hover: (cell: Locator) => Locator;
     /** Whether Tab reaches it — a table row is hovered, never focused. */
     focusable: boolean;
+    /** Whether holding the pointer down on it has a skin of its own (issue 265). */
+    pressable?: boolean;
 }
 
 const TARGETS: Target[] = [
     { name: 'selector', row: 'Selector (closed)', hover: (c) => c.getByRole('button'), focusable: true },
-    { name: 'primary-button', row: 'Primary button', hover: (c) => c.getByRole('button'), focusable: true },
-    { name: 'secondary-button', row: 'Secondary button', hover: (c) => c.getByRole('button'), focusable: true },
-    { name: 'destructive-button', row: 'Destructive button', hover: (c) => c.getByRole('button'), focusable: true },
+    {
+        name: 'primary-button',
+        row: 'Primary button',
+        hover: (c) => c.getByRole('button'),
+        focusable: true,
+        pressable: true,
+    },
+    {
+        name: 'secondary-button',
+        row: 'Secondary button',
+        hover: (c) => c.getByRole('button'),
+        focusable: true,
+        pressable: true,
+    },
+    {
+        name: 'destructive-button',
+        row: 'Destructive button',
+        hover: (c) => c.getByRole('button'),
+        focusable: true,
+        pressable: true,
+    },
     { name: 'field', row: 'Text field', hover: (c) => c.getByRole('textbox'), focusable: true },
     { name: 'textarea', row: 'Textarea', hover: (c) => c.getByRole('textbox'), focusable: true },
     { name: 'checkbox', row: 'Checkbox', hover: (c) => c.getByRole('checkbox'), focusable: true },
@@ -81,6 +101,15 @@ test.describe('component-state specimen', () => {
                     await home.screenshot({
                         path: `${STATES_OUT}/${target.name}-hover-${theme}-${viewport.width}.png`,
                     });
+                    // Held down (issue 265), with the button actually under the pointer: :active is
+                    // the browser's own, never a class, so the shot has to keep the press open.
+                    if (target.pressable === true) {
+                        await page.mouse.down();
+                        await home.screenshot({
+                            path: `${STATES_OUT}/${target.name}-pressed-${theme}-${viewport.width}.png`,
+                        });
+                        await page.mouse.up();
+                    }
                 }
                 await page.mouse.move(0, 0);
 

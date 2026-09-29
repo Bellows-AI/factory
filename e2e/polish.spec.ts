@@ -69,8 +69,10 @@ const COMPOSITE_PAIRS: readonly Composite[] = [
     ]),
     ['primary button', '--ink-inverse', ['--accent']],
     ['primary button hover', '--ink-inverse', ['--accent-hover']],
+    ['primary button pressed', '--ink-inverse', ['--accent-pressed']],
     ['primary button disabled', '--ink-muted', ['--surface-strong']],
     ['secondary button hover', '--ink', ['--surface-strong']],
+    ['secondary button pressed', '--ink', ['--surface-pressed']],
     ['danger button hover', '--lamp-stop', ['--surface', '--bad-wash']],
     ['avatar initials', '--ink', ['--surface-strong']],
 ];
