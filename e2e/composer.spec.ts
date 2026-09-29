@@ -414,7 +414,16 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
         await expect(page).toHaveURL(/\/settings$/);
         held.executors = held.executors.filter((row) => row.name !== 'doomed');
+        // The clamp, and the notice that names it, are driven by the workspace answer — not by the
+        // return itself. Wait for the answer that has actually dropped the profile: on a slower
+        // board the first one back can still carry it, and asserting before it lands races (#289).
+        const withoutDoomed = page.waitForResponse(async (response) => {
+            if (new URL(response.url()).pathname !== '/api/workspace') return false;
+            const body = (await response.json().catch(() => null)) as { executors?: { name: string }[] } | null;
+            return body !== null && (body.executors ?? []).every((row) => row.name !== 'doomed');
+        });
         await page.goBack();
+        await withoutDoomed;
 
         const notice = page.locator('.composer-notices');
         await expect(notice).toContainText(`Executor ‘doomed’ is no longer available — ${E2E_EXECUTOR.name} selected.`);
@@ -478,7 +487,12 @@ test.describe('the draft survives the configuration detour (F1)', () => {
             const url = new URL(request.url());
             if (url.pathname === '/api/workflows') workflowContexts.push(url.searchParams.get('repo'));
         });
+        // The pending window only exists once the remounted poll has actually asked. Waiting for
+        // the request — which the route above holds — is what makes it deterministic; asserting
+        // the text straight after the return races a board that answers sooner (#289).
+        const polled = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/workspace');
         await page.goBack();
+        await polled;
         await expect(page.getByText('Loading your workspace…')).toBeVisible();
         releasePoll();
 

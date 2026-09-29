@@ -65,6 +65,8 @@ export interface ThreadJob {
     rootJobId: string;
     workflowNode: string | null;
     workflowName: string | null;
+    /** The default workflow's bounded gate-repair round limit (#49), null unless the task set one. */
+    defaultGateFixRounds: number | null;
     doneAt: string | null;
     cancelRequestedAt: string | null;
     workspacePath: string | null;
@@ -156,6 +158,7 @@ function run(fields: RunFields): ThreadJob {
         rootJobId: fields.id,
         workflowNode: null,
         workflowName: null,
+        defaultGateFixRounds: null,
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
