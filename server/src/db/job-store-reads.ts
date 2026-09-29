@@ -17,7 +17,7 @@ import type {
 import { type TaskCursor, decodeCursor, encodeCursor } from './task-summary.js';
 
 export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] | null> {
-    const { sql, orgId, authorJoin, authorColumns } = ctx;
+    const { sql, orgId, authorJoin, authorColumns, waitLateral, publicationJoin, publicationColumns } = ctx;
     // The named row's root_job_id is the whole resolution (022): every member of the
     // conversation carries the same value, so the chain is one indexed read, oldest
     // first. If two adjustments ever landed on one parent, both come back in creation
@@ -38,18 +38,14 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
                (select root.default_gate_fix_rounds from job root where root.id = job.root_job_id)
                    as default_gate_fix_rounds,
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
+               ${publicationColumns}
                ${authorColumns}
         from job ${authorJoin}
         -- The thread's wait (036), carried on every member alike — the open wait first, else
         -- the most recently active terminal one, the same rule listTasksOf() applies.
-        left join lateral (
-            select w.reason as wait_reason, w.active_at as waiting_since,
-                   w.terminal_reason as wait_terminal_reason
-            from workflow_wait w
-            where w.org_id = ${orgId} and w.root_job_id = job.root_job_id
-            order by (w.completed_at is null and w.cancelled_at is null) desc, w.active_at desc
-            limit 1
-        ) wl on true
+        ${waitLateral}
+        -- The thread's publication (036, #324), the same thread-wide rule: one row at most.
+        ${publicationJoin}
         where org_id = ${orgId}
           and root_job_id = (select root_job_id from job where org_id = ${orgId} and id = ${id})
         order by job.created_at, job.id
@@ -59,14 +55,20 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
 }
 
 export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | null> {
-    const { sql, orgId, authorJoin, authorColumns } = ctx;
+    const { sql, orgId, authorJoin, authorColumns, waitLateral, publicationJoin, publicationColumns } = ctx;
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, repo, executor,
                parent_job_id, root_job_id, workflow_node, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
-               summary, wall_clock_ms, failure_kind
+               summary, wall_clock_ms, failure_kind,
+               -- The thread's wait (036) and publication (#324), served by the detail reads on
+               -- the same thread-wide rule thread() follows — the per-run lists answer null.
+               wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
+               ${publicationColumns}
                ${authorColumns}
         from job ${authorJoin}
+        ${waitLateral}
+        ${publicationJoin}
         where org_id = ${orgId} and job.id = ${id}
     `;
     const row = rows[0];
