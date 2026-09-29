@@ -105,8 +105,6 @@
         border-color: var(--accent-hover);
     }
 
-    /* --- Sign-in onboarding ------------------------------------------------------------------- */
-
     /* The setup screen (issue 125, recomposed by issue 187): a centered column, narrower than the
        shell, because it renders before any session exists and carries one decision, not a
        dashboard. The public header sits above it, so the column starts lower. */

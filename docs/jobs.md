@@ -786,8 +786,8 @@ figure or label says a bare "turns"). No OTLP metric carries turns — the arriv
 closed — so the count comes from the session's own records, taken by the driver at run close and
 reported on the completion report as `agentTurns`; the board stores it on the job row
 (`job.agent_turns`, the only migration this feature needed). The SAME reads lift the run's
-**summary** (`job.summary`, 028) — the agent's last words, what the run actually did, for the
-dashboard's recently-completed view; the command records what was asked, never what was done.
+**summary** (`job.summary`, 028) — the agent's last words, what the run actually did, shown on the
+task page's run and the inbox row; the command records what was asked, never what was done.
 
 - **opencode**: `opencode-readout.cjs` already walked the root session's messages — the count is
   a counter in that loop, emitted as `turns` on the readout's JSON line. The session selection

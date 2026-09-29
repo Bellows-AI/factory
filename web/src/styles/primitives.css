@@ -1,9 +1,9 @@
 /*
  * The shared primitives (docs/design-system.md is their inventory): shell, app bar, sidenav and
- * page header, panels, pills and banners, fields, buttons, selectors, dialogs, tables and
- * charts. Components participate by carrying these classes, and the names are the pre-theme
- * names — issue 148 re-tokenized them, it did not rename them. A shared primitive changes here,
- * reviewed against docs/design-system.md; a lane file never redefines one.
+ * page header, panels, pills and banners, fields, buttons, selectors, dialogs and tables (chart
+ * marks are the dashboard lane's). Components participate by carrying these classes, and the
+ * names are the pre-theme names — issue 148 re-tokenized them, it did not rename them. A shared
+ * primitive changes here, reviewed against docs/design-system.md; a lane file never redefines one.
  */
 
 /* Soft halo in the lamp's own color — it follows currentColor, so one utility serves every
@@ -348,10 +348,6 @@
         padding-left: 20px;
     }
 
-    .panel.warn {
-        border-color: var(--warn-border);
-    }
-
     .panel.bad {
         border-color: var(--bad-border);
     }
@@ -481,25 +477,6 @@
         overflow-wrap: anywhere;
     }
 
-    .limits {
-        list-style: disc;
-        margin: 0;
-        padding-left: 20px;
-        max-width: 88ch;
-    }
-
-    .limits li,
-    .panel.warn li {
-        margin-bottom: 6px;
-    }
-
-    .panel.warn ul {
-        list-style: disc;
-        margin: 0;
-        padding-left: 20px;
-        max-width: 88ch;
-    }
-
     footer {
         display: flex;
         gap: 20px;
@@ -535,8 +512,6 @@
             width: 1px;
         }
     }
-
-    /* --- Shell -------------------------------------------------------------------------------- */
 
     /* The skip link: off the page until a keyboard Tab lands on it, then floating over the
        content. The shift is a transform, so revealing it moves nothing else; z-index sits above
@@ -868,8 +843,6 @@
         }
     }
 
-    /* --- Workspace ---------------------------------------------------------------------------- */
-
     .panel-head {
         align-items: center;
         display: flex;
@@ -1004,8 +977,6 @@
         flex: none;
         vertical-align: middle;
     }
-
-    /* --- The repository picker ---------------------------------------------------------------- */
 
     /* The Headless UI dialog shell. The layer carries the z-index policy (the native <dialog> top
        layer is gone), the backdrop div replaces `::backdrop` with the same `--overlay` token, and the
@@ -1226,9 +1197,7 @@
         color: var(--accent);
     }
 
-    /* The environment panel's Variables | Secrets tabs, the draft editor's states (issue 182),
-       and the advanced .env editor. */
-
+    /* A panel's trailing action row (the advanced .env editor's Apply/Cancel). */
     .panel-actions {
         display: flex;
         gap: 8px;

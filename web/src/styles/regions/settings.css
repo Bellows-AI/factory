@@ -19,37 +19,6 @@
         flex: 1;
     }
 
-    .picker-list {
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        list-style: none;
-        margin: 0;
-        max-height: 40vh;
-        overflow-y: auto;
-        padding: 4px;
-    }
-
-    .picker-option {
-        align-items: center;
-        cursor: pointer;
-        display: flex;
-        gap: 8px;
-        padding: 5px 8px;
-    }
-
-    .picker-option[data-focus] {
-        background: var(--surface);
-    }
-
-    .picker-option[data-selected] {
-        color: var(--accent);
-    }
-
-    .picker-name {
-        font-family: var(--font-mono);
-        font-size: 12px;
-    }
-
     /* The repository setup page (issue 181, recomposed on concept 06 by issue 282): the header's
        scope context, the four summary cards, a labeled search row, the selection bar, the
        full-width table, and the selected repository's detail below it — the DOM order is the
