@@ -1,6 +1,6 @@
 /**
- * What members do to tasks: create, follow up, mark done, stop, suspend, remove — and the reclaim a
- * thread queues once its last member is done.
+ * What members do to tasks: create, follow up, mark done, reopen, stop, suspend, remove — and the
+ * reclaim a thread queues once its last member is done.
  */
 
 import type { Sql, TransactionSql } from 'postgres';
@@ -476,5 +476,89 @@ export async function removeJobThread(
         `;
 
         return { result: 'ok', rootJobId, repo: root.repo, workspacePath };
+    });
+}
+
+/**
+ * Done's inverse (issue #327): clear the done stamp on every member of the thread and withdraw a
+ * task_reclaim row that has not run yet, so a task closed by mistake can be followed up again —
+ * createFollowUpRow's `done_at is null` predicate is exactly what this reverses. The whole decision
+ * is one transaction under the SAME per-thread advisory lock the claim and remove take: the refusal
+ * checks, the withdraw and the clear must see every earlier claim of this thread commit, or a
+ * reclaim claim could take the row between the check and the withdraw — a tree removed for a task
+ * that believes itself reopened. A row a worker holds a LIVE claim on is refused outright
+ * (`reclaiming`): the tree is coming down right now, and a 200 over it would be the board vouching
+ * for a worktree that is about to stop existing. The lease expiry is what relinquishes a crashed
+ * worker's claim — the same rule #152 applies to a lost job lease — so an expired claim withdraws
+ * like an unclaimed row. The lock does NOT cover done or complete (deliberately — docs/jobs.md
+ * forbids stalling them behind claim preparation), so a redundant done click or a verdict whose
+ * aggregate straddles this commit can still queue or order a removal after the withdraw; the
+ * follow-up recovers by recreating the tree from the surviving branch.
+ */
+export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<JobStore['reopen']> {
+    const { sql, orgId } = ctx;
+    return sql.begin(async (tx) => {
+        // The thread root, straight off the named row (022) — the same pre-lock read
+        // removeJobThread makes. Nothing when the input never existed.
+        const [named] = await tx<{ id: string; root_job_id: string }[]>`
+            select id, root_job_id from job
+            where org_id = ${orgId} and id = ${id}
+        `;
+        if (!named) return 'missing';
+        const rootJobId = named.root_job_id;
+        await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+
+        // A removed tree is unrecoverable: a follow-up resumes a session in the tree it ran in,
+        // and there is no tree. The marker (045) is stamped at the ack and at a threadDone
+        // verdict — the queue row alone could not carry this, because ack deletes it and the
+        // verdict path never queues one. The root read doubles as the remove-lost-the-race
+        // check: remove deletes the rows under this same lock, so no root row means the thread
+        // is gone, whatever the pre-lock read saw.
+        const [root] = await tx<{ worktree_reclaimed_at: Date | null }[]>`
+            select worktree_reclaimed_at from job
+            where org_id = ${orgId} and id = ${rootJobId}
+        `;
+        if (!root) return 'missing';
+        if (root.worktree_reclaimed_at !== null) return 'reclaimed';
+
+        // A worker holding a LIVE claim is mid-removal — refuse rather than reopen over a tree
+        // that is about to come down. claimed_at-or-expired is exactly claimReclaimRow's own
+        // claimable predicate, read the other way; the post-withdraw re-check below is what
+        // catches a claim that commits between here and the delete (claimReclaimRow takes no
+        // advisory lock).
+        const claimed = (table: typeof tx) => table`
+            select id from task_reclaim
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
+              and claimed_by is not null and lease_expires_at > now()
+        `;
+        if ((await claimed(tx))[0]) return 'reclaiming';
+
+        // A thread nobody closed has nothing to reopen — and reopen is deliberately NOT
+        // idempotent: the second call answers this, the state the first one left behind.
+        const [members] = await tx<{ done: number }[]>`
+            select count(*)::int as done from job
+            where org_id = ${orgId} and root_job_id = ${rootJobId} and done_at is not null
+        `;
+        if (!members || members.done === 0) return 'not_done';
+
+        // Withdraw the queued reclaim BEFORE clearing the stamp, in the same transaction — and
+        // only rows no worker holds a live claim on. The DELETE's row lock is what serializes
+        // against claimReclaimRow's `for update skip locked` candidate: a row being withdrawn is
+        // skipped, never handed out; a row claimed mid-transaction fails this delete's re-checked
+        // predicate and survives it, which the re-read below then refuses.
+        await tx`
+            delete from task_reclaim
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
+              and (claimed_by is null or lease_expires_at <= now())
+        `;
+        if ((await claimed(tx))[0]) return 'reclaiming';
+
+        // The stamp is the thread's done (the UI marks the head, so it can sit on any member):
+        // cleared wherever it sits, which is what makes the follow-up possible again.
+        await tx`
+            update job set done_at = null, done_by = null
+            where org_id = ${orgId} and root_job_id = ${rootJobId} and done_at is not null
+        `;
+        return { result: 'ok' };
     });
 }

@@ -7,7 +7,7 @@
  * - `job-store-rows.ts` — row shapes, mappers and the shared SQL fragments.
  * - `job-store-claim.ts` — the worker's claim and the reclaim claim/ack.
  * - `job-store-worker.ts` — heartbeat, reports, publish token, `complete` and the workflow walk.
- * - `job-store-actions.ts` — member actions: create, follow up, done, stop, suspend, remove.
+ * - `job-store-actions.ts` — member actions: create, follow up, done, reopen, stop, suspend, remove.
  * - `job-store-reads.ts` — get, thread, list, and the task list.
  * - `job-store-org-resolvers.ts` — org-of-lease/job/reclaim, and the minted-token base layer.
  *
@@ -19,6 +19,7 @@ import {
     createJobRow,
     createFollowUpRow,
     markJobDone,
+    reopenJob,
     stopJob,
     suspendJob,
     removeJobThread,
@@ -146,6 +147,11 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         async removeThread(id, removedBy) {
             await gate();
             return removeJobThread(ctx, id, removedBy);
+        },
+
+        async reopen(id) {
+            await gate();
+            return reopenJob(ctx, id);
         },
 
         async claimReclaim(worker, leaseSeconds) {
