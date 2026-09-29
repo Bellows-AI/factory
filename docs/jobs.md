@@ -1492,6 +1492,11 @@ terminal one). Both `listTasks()` and `thread()` join it (206): an OPEN wait buc
 status the wait-entry mechanism (issue #231, `workflow-blocks/runtime.ts` — docs/workflows.md,
 "Durable block waits") parks it under, which today is no `job` row at all — and `thread()` carries
 the same triple on every member of the conversation, since the wait belongs to the root, not the run.
+Since #324 the detail reads (`get()`, `thread()`) serve the wait triple too — `get()` joined neither
+the wait nor the publication before — and expose the recorded publication itself as `publication`
+(`{ repo, prNumber, prUrl, headBranch, baseBranch }`), null for a thread that never published: a
+client can walk from a task to its PR without searching GitHub. The per-run lists answer null for
+both, the same rule they already followed for the wait fields.
 
 **Display precedence.** The web reads a task's state through ONE function, `taskTone`
 (`web/src/task-tree.ts`); `taskStatusLabel` and `taskDotClass` are lookups on it, and first match

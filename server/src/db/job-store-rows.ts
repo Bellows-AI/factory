@@ -68,10 +68,16 @@ export interface JobRow {
     /** Only thread() and the grouped terminal list select it; bigint (and the sum over it) read
      * back as a string. */
     task_wall_clock_ms?: string | null;
-    /** Only thread() joins the wait lateral; absent everywhere else. */
+    /** Only the detail reads (get/thread) join the wait lateral; absent from the lists. */
     wait_reason?: string | null;
     waiting_since?: Date | null;
     wait_terminal_reason?: string | null;
+    /** Only the detail reads (get/thread) join `job_pr` (#324); absent from the lists. */
+    publication_repo?: string | null;
+    publication_pr_number?: number | null;
+    publication_pr_url?: string | null;
+    publication_head_branch?: string | null;
+    publication_base_branch?: string | null;
 }
 
 /**
@@ -179,6 +185,18 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         waitReason: row.wait_reason ?? null,
         waitingSince: row.waiting_since ? row.waiting_since.toISOString() : null,
         waitTerminalReason: row.wait_terminal_reason ?? null,
+        // A matched job_pr row is NOT NULL throughout (036), so the repo column's presence is
+        // the honest test; the non-null assertions below are the receipt of that shape.
+        publication:
+            row.publication_repo == null
+                ? null
+                : {
+                      repo: row.publication_repo,
+                      prNumber: row.publication_pr_number!,
+                      prUrl: row.publication_pr_url!,
+                      headBranch: row.publication_head_branch!,
+                      baseBranch: row.publication_base_branch!,
+                  },
     };
 }
 
@@ -285,6 +303,50 @@ export function authorColumnsFragment(sql: Sql): Fragment {
         , su.avatar_url as stopper_avatar_url
         , du.id as doner_id, du.github_login as doner_login, du.display_name as doner_name
         , du.avatar_url as doner_avatar_url
+    `;
+}
+
+/**
+ * The thread's wait (036), joined by both detail reads (`get`, `thread`) — the open wait first,
+ * else the most recently active terminal one, the rule `listTasksOf()` also applies. Correlated to
+ * `job`, so it composes wherever the FROM walks the job table under that alias.
+ */
+export function waitLateralFragment(sql: Sql, orgId: string): Fragment {
+    return sql`
+        left join lateral (
+            select w.reason as wait_reason, w.active_at as waiting_since,
+                   w.terminal_reason as wait_terminal_reason
+            from workflow_wait w
+            where w.org_id = ${orgId} and w.root_job_id = job.root_job_id
+            order by (w.completed_at is null and w.cancelled_at is null) desc, w.active_at desc
+            limit 1
+        ) wl on true
+    `;
+}
+
+/**
+ * The thread's publication (036, #324), joined by both detail reads (`get`, `thread`). A lateral
+ * subselect, the `wl` wait lateral's exact shape: the aliased outputs keep the outer query's bare
+ * `repo`/`root_job_id` unambiguous, and the primary key `(org_id, root_job_id)` guarantees one
+ * row at most, so the join cannot multiply the job rows. Parameter-free on the org side —
+ * `job.org_id` is the same bound org every read of this table filters by.
+ */
+export function publicationJoinFragment(sql: Sql): Fragment {
+    return sql`
+        left join lateral (
+            select p.repo as publication_repo, p.pr_number as publication_pr_number,
+                   p.pr_url as publication_pr_url, p.head_branch as publication_head_branch,
+                   p.base_branch as publication_base_branch
+            from job_pr p
+            where p.org_id = job.org_id and p.root_job_id = job.root_job_id
+        ) pub on true
+    `;
+}
+
+export function publicationColumnsFragment(sql: Sql): Fragment {
+    return sql`
+        , pub.publication_repo, pub.publication_pr_number, pub.publication_pr_url
+        , pub.publication_head_branch, pub.publication_base_branch
     `;
 }
 

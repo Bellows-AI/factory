@@ -229,12 +229,21 @@ export interface Job {
      * The thread's PR-review wait (036), when it has one — the open wait first, else the most
      * recently active terminal one, the same rule the task-summary read model follows. Carried on
      * every member of the thread alike, since the wait belongs to the ROOT, not the run: the task
-     * view renders it beside whichever member it is looking at. Served by `thread()` only — `get`
-     * and the per-run lists answer null, exactly as they do for a thread that never waited.
+     * view renders it beside whichever member it is looking at. Served by `get()` and `thread()`
+     * (#324) — the per-run lists answer null, exactly as they do for a thread that never waited.
      */
     waitReason: string | null;
     waitingSince: string | null;
     waitTerminalReason: string | null;
+    /**
+     * The thread's recorded publication (036, #324) — the PR identity the publishing verdict
+     * landed: repo, PR number and URL, the head branch the task pushed and the base it branched
+     * from. Belongs to the ROOT, so every member of the thread carries the same one. Null on a
+     * thread that never published — a no-op or a failed publish writes no `job_pr` row. Served by
+     * `get()` and `thread()`; the per-run lists answer null, the same rule the wait fields above
+     * follow.
+     */
+    publication: PublicationState | null;
 }
 
 /**
@@ -993,4 +1002,10 @@ export interface JobStoreContext {
     authorJoin: Fragment;
     authorColumns: Fragment;
     taskPreviewColumns: Fragment;
+    /** The thread's wait (036), joined by the detail reads (`get`, `thread`) — one definition. */
+    waitLateral: Fragment;
+    /** The thread's publication join (`job_pr`, 036, #324), the same two reads only. */
+    publicationJoin: Fragment;
+    /** The publication columns that ride beside it, comma-leading like `authorColumns`. */
+    publicationColumns: Fragment;
 }

@@ -30,6 +30,9 @@ import {
     authorJoinFragment,
     authorColumnsFragment,
     taskPreviewColumnsFragment,
+    waitLateralFragment,
+    publicationJoinFragment,
+    publicationColumnsFragment,
 } from './job-store-rows.js';
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
 import {
@@ -74,6 +77,9 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         authorJoin: authorJoinFragment(sql),
         authorColumns: authorColumnsFragment(sql),
         taskPreviewColumns: taskPreviewColumnsFragment(sql),
+        waitLateral: waitLateralFragment(sql, orgId),
+        publicationJoin: publicationJoinFragment(sql),
+        publicationColumns: publicationColumnsFragment(sql),
     };
 
     return {
