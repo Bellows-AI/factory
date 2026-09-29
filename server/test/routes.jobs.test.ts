@@ -5,6 +5,7 @@ import { LOCAL_ORG_ID } from '../src/config.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
+import { validateWaitQuery } from '../src/routes/job-field-validation.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-types.js';
 import type {
@@ -72,6 +73,8 @@ interface StoreStub extends JobStore {
     reclaimAcks: { id: string; worker: string }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
     leased: { ids: string[] }[];
+    /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
+    waits: { id: string; timeoutMs: number }[];
 }
 
 /**
@@ -104,6 +107,11 @@ function stubStore(
         heartbeatCancelRequested?: boolean;
         /** The lease rows the store answers a batched lookup with; absent means none. */
         leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
+        /**
+         * What `waitForSettle` answers (issue #323); null → 404. A function may delay to model
+         * the store's hold — the route must await it, never answer first.
+         */
+        waitFor?: (id: string, timeoutMs: number) => Promise<{ settled: boolean } | null>;
     } = {}
 ): StoreStub {
     const boom = () => {
@@ -128,6 +136,7 @@ function stubStore(
         reclaimClaims: [],
         reclaimAcks: [],
         leased: [],
+        waits: [],
         async suspend(id) {
             boom();
             stub.suspended.push(id);
@@ -242,6 +251,12 @@ function stubStore(
         async get() {
             boom();
             return options.job ?? null;
+        },
+        async waitForSettle(id, timeoutMs) {
+            boom();
+            stub.waits.push({ id, timeoutMs });
+            const answer = options.waitFor ?? (async () => ({ settled: true }) as const);
+            return answer(id, timeoutMs);
         },
         async thread() {
             boom();
@@ -2136,6 +2151,181 @@ describe('GET /api/jobs', () => {
         const response = await instance.inject({ method: 'GET', url });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe(code);
+    });
+});
+
+describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #323)', () => {
+    // A moving run: the shape the long-poll is asked to watch.
+    const job: Job = {
+        id: ID,
+        command: 'echo hi',
+        status: 'running',
+        attempts: 1,
+        maxAttempts: 3,
+        claimedBy: 'w1',
+        createdBy: null,
+        author: null,
+        stoppedBy: null,
+        doneBy: null,
+        sessionId: null,
+        exitCode: null,
+        output: null,
+        failureKind: null,
+        summary: null,
+        gates: null,
+        runtime: null,
+        repo: null,
+        executor: null,
+        followUpTo: null,
+        rootJobId: ID,
+        workflowName: null,
+        workflowNode: null,
+        waitReason: null,
+        waitingSince: null,
+        waitTerminalReason: null,
+        doneAt: null,
+        cancelRequestedAt: null,
+        workspacePath: null,
+        createdAt: '2026-08-21T12:00:00.000Z',
+        startedAt: '2026-08-21T12:00:01.000Z',
+        finishedAt: null,
+        wallClockMs: null,
+        taskWallClockMs: null,
+    };
+
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    it('refuses a waitFor value other than terminal', async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=finished` });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_WAIT_FOR');
+        expect(store.waits).toEqual([]);
+    });
+
+    it.each([
+        ['a non-numeric timeout', 'timeout=soon'],
+        ['a zero timeout', 'timeout=0'],
+        ['a negative timeout', 'timeout=-1'],
+        ['a fractional timeout', 'timeout=1.5'],
+        ['an empty timeout', 'timeout='],
+        ['a space-prefixed timeout', 'timeout=%205'],
+        ['a repeated timeout', 'timeout=1&timeout=2'],
+    ])('refuses %s', async (_label, query) => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&${query}` });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_TIMEOUT');
+        expect(store.waits).toEqual([]);
+    });
+
+    it('refuses a timeout without waitFor', async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?timeout=5` });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_TIMEOUT');
+        expect(store.waits).toEqual([]);
+    });
+
+    it('defaults the timeout and clamps it to the server-side cap', () => {
+        expect(validateWaitQuery({})).toEqual({ ok: true, value: null });
+        expect(validateWaitQuery({ waitFor: 'terminal' })).toEqual({ ok: true, value: { timeoutMs: 30_000 } });
+        expect(validateWaitQuery({ waitFor: 'terminal', timeout: '5' })).toEqual({
+            ok: true,
+            value: { timeoutMs: 5_000 },
+        });
+        // Over the cap is clamped, not refused — the client asked for "as long as you allow";
+        // a digit string past Number.MAX_SAFE_INTEGER clamps the same way rather than NaN-ing.
+        expect(validateWaitQuery({ waitFor: 'terminal', timeout: '120' })).toEqual({
+            ok: true,
+            value: { timeoutMs: 60_000 },
+        });
+        expect(validateWaitQuery({ waitFor: 'terminal', timeout: '99999999999999999999' })).toEqual({
+            ok: true,
+            value: { timeoutMs: 60_000 },
+        });
+    });
+
+    it('answers the job when the thread is already settled', async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal` });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(job);
+        expect(store.waits).toEqual([{ id: ID, timeoutMs: 30_000 }]);
+    });
+
+    it('holds until the store settles', async () => {
+        const store = stubStore({
+            job,
+            waitFor: async (_id, timeoutMs) => {
+                await sleep(Math.min(300, timeoutMs));
+                return { settled: true };
+            },
+        });
+        const instance = await harnessWith(store);
+        const started = Date.now();
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=5` });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(job);
+        expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+        expect(store.waits).toEqual([{ id: ID, timeoutMs: 5_000 }]);
+    });
+
+    it('answers the current job when the timeout elapses unsettled', async () => {
+        const store = stubStore({
+            job,
+            waitFor: async (_id, timeoutMs) => {
+                await sleep(timeoutMs);
+                return { settled: false };
+            },
+        });
+        const instance = await harnessWith(store);
+        const started = Date.now();
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=1` });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(job);
+        expect(Date.now() - started).toBeGreaterThanOrEqual(950);
+        expect(store.waits).toEqual([{ id: ID, timeoutMs: 1_000 }]);
+    });
+
+    it('answers 404 for an unknown job without holding', async () => {
+        const store = stubStore({ job: null });
+        const instance = await harnessWith(store);
+        const started = Date.now();
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=30` });
+        expect(response.statusCode).toBe(404);
+        expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
+    // The hold's null is its own answer — the wait ran and the org holds no such job — mapped to
+    // the same 404 an unknown id on the plain read gets, after the hold, not instead of it.
+    it('maps a null from the wait itself to 404, after holding', async () => {
+        const store = stubStore({ job, waitFor: async () => null });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal` });
+        expect(response.statusCode).toBe(404);
+        expect(store.waits).toEqual([{ id: ID, timeoutMs: 30_000 }]);
+    });
+
+    it('answers 503 when the wait itself fails, so the caller retries', async () => {
+        const store = stubStore({ fail: true, job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=5` });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('without wait parameters the read is unchanged', async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual(job);
+        expect(store.waits).toEqual([]);
     });
 });
 

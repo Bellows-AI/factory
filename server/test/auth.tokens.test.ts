@@ -30,8 +30,9 @@ afterEach(async () => {
     app = null;
 });
 
-/** Records the author every created job carries — the audit property this whole feature guards. */
-const jobStub = (authors: string[]): JobStore =>
+/** Records the author every created job carries — the audit property this whole feature guards.
+ *  `waits`, when given, records the settle long-poll's holds the same way (issue #323). */
+const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] = []): JobStore =>
     ({
         async create(_command: unknown, createdBy: unknown) {
             authors.push(String(createdBy));
@@ -39,6 +40,10 @@ const jobStub = (authors: string[]): JobStore =>
         },
         async get() {
             return null as Awaited<ReturnType<JobStore['get']>>;
+        },
+        async waitForSettle(id: string, timeoutMs: number) {
+            waits.push({ id, timeoutMs });
+            return { settled: true } as Awaited<ReturnType<JobStore['waitForSettle']>>;
         },
         async thread() {
             return [] as Awaited<ReturnType<JobStore['thread']>>;
@@ -55,12 +60,17 @@ const telemetryStub = (): TelemetryStore => ({
     async recordBranch() {},
 });
 
-async function build(auth: AuthConfig, store: MemoryAuthStore, authors: string[] = []) {
+async function build(
+    auth: AuthConfig,
+    store: MemoryAuthStore,
+    authors: string[] = [],
+    waits: { id: string; timeoutMs: number }[] = []
+) {
     const config = testConfig({ auth });
     const repos = staticRepoSource([{ owner: 'Bellows-AI', name: 'bellows.ai' }]);
     app = await buildApp({
         config,
-        orgs: staticRegistry({ config, repos, jobs: jobStub(authors), telemetry: stubTelemetryClient() }),
+        orgs: staticRegistry({ config, repos, jobs: jobStub(authors, waits), telemetry: stubTelemetryClient() }),
         store: telemetryStub(),
         auth: store,
     });
@@ -79,6 +89,45 @@ describe('personal access tokens: authentication', () => {
         const response = await server.inject({ method: 'GET', url: '/api/jobs', headers: bearer(token) });
 
         expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    // The settle long-poll (issue #323) is the CLI client's read — the credential table applies
+    // unchanged. A fat_ bearer walks the whole path: past the wall, through the hold (asserted on
+    // the store, so a skipped hold cannot pass for a 404 the plain read would also answer), into
+    // the read — the 404 is the stub's answer for an id it does not hold, never a 401.
+    it('holds the settle long-poll under its user\u2019s credential', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat');
+        const token = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const waits: { id: string; timeoutMs: number }[] = [];
+        const server = await build(githubAuth(), store, [], waits);
+
+        const response = await server.inject({
+            method: 'GET',
+            url: `/api/jobs/${JOB_ID}?waitFor=terminal&timeout=1`,
+            headers: bearer(token),
+        });
+
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(waits).toEqual([{ id: JOB_ID, timeoutMs: 1_000 }]);
+    });
+
+    // The browser's credential, same hold — the third cell of the long-poll's credential table.
+    it('holds the settle long-poll under a session cookie', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat');
+        const waits: { id: string; timeoutMs: number }[] = [];
+        const server = await build(githubAuth(), store, [], waits);
+        const cookie = await signedIn(store, caller);
+
+        const response = await server.inject({
+            method: 'GET',
+            url: `/api/jobs/${JOB_ID}?waitFor=terminal&timeout=1`,
+            headers: { cookie },
+        });
+
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(waits).toEqual([{ id: JOB_ID, timeoutMs: 1_000 }]);
     });
 
     it('queues a job with its user as the author', async () => {

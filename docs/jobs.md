@@ -1009,6 +1009,19 @@ version field that binds the sort and every normalized filter — a cursor minte
 is refused (`400 BAD_CURSOR`) under another rather than silently answering page 2 of a different
 question. New runs landing between polls push rows forward without duplicating or skipping any.
 
+**The task read's `terminal` predicate is also the settle long-poll's (issue #323).**
+`GET /api/jobs/:id?waitFor=terminal&timeout=<s>` holds the request until a thread stops moving,
+and "stops moving" is the same rule the task read buckets by (the paragraph above): the chain
+head — the newest member, created-then-id — in `succeeded|failed|dead|stopped`, or an open PR
+wait (036) standing on the thread. The store half is `waitForSettle(id, timeoutMs)` in
+`job-store-reads.ts`: one indexed re-read every 250ms (the same single statement
+`settleStateOf` evaluates each round, no connection held between polls) until it reads settled
+or the deadline lands, `{ settled: false }` at the timeout — the client re-issues — and null
+without holding for an id the org does not hold. A client waiting on this read and the sidenav
+rendering the same thread can therefore never disagree about whether it is still moving; the
+route's parameter contract (the 60s cap, the two `BAD_*` refusals) is documented in
+[docs/api.md](docs/api.md).
+
 ## Stop and remove: winding a task down, and deleting it
 
 Two person-gated actions (session cookie, like `follow-up`/`done` — the board secret must never move a
