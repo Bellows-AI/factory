@@ -2,7 +2,8 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { type BoardScanner, storeFor } from './job-context.js';
+import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
+import { pickBucketMs } from '../telemetry/run-activity.js';
 import {
     followUpRefusal,
     validateCommandField,
@@ -231,6 +232,55 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
     if (!job.ok) return reply;
     if (job.value === null) return notFoundJob(reply);
     return reply.code(HTTP_OK).send(job.value);
+}
+
+// The run-activity read (issue #339): the run's own progress-over-time chart, bucketed from the
+// session telemetry the executor already reported. A person route, like the job read it extends —
+// the session arrived through this org's own job row, which is the whole org boundary.
+export async function handleJobActivity(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { id } = route;
+
+    const telemetry = await telemetryFor(orgs, request);
+    if (!telemetry) return noBoard(reply);
+
+    const job = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job read failed'),
+        () => route.store.get(id)
+    );
+    if (!job.ok) return reply;
+    if (job.value === null) return notFoundJob(reply);
+    const run = job.value;
+    // A run that never started, or whose session was never reported, has nothing to chart —
+    // an empty answer, never a fabricated one.
+    if (!run.startedAt || !run.sessionId) {
+        return reply.code(HTTP_OK).send({
+            jobId: id,
+            sessionId: null,
+            from: null,
+            to: null,
+            bucketMs: null,
+            buckets: [],
+        });
+    }
+    const to = run.finishedAt ?? new Date().toISOString();
+    const bucketMs = pickBucketMs(Date.parse(to) - Date.parse(run.startedAt));
+    const buckets = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job activity read failed'),
+        () => telemetry.runActivity({ sessionId: run.sessionId!, from: run.startedAt!, to, bucketMs })
+    );
+    if (!buckets.ok) return reply;
+    return reply.code(HTTP_OK).send({
+        jobId: id,
+        sessionId: run.sessionId,
+        from: run.startedAt,
+        to,
+        bucketMs,
+        buckets: buckets.value,
+    });
 }
 
 // The whole follow-up chain containing this task, oldest first. ANY member resolves to the same

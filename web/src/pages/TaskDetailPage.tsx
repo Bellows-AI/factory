@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { NavigateFunction } from 'react-router-dom';
-import { useThread } from '../api/useJobs.js';
+import { isTerminal, useThread } from '../api/useJobs.js';
 import type { Job } from '../api/useJobs.js';
+import { useJobActivity } from '../api/useJobActivity.js';
 import type { UseTasks } from '../api/useTasks.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
@@ -198,6 +199,12 @@ export function TaskDetailPage() {
     const latest =
         detail.jobs !== null && detail.jobs.length > 0 ? (detail.jobs[detail.jobs.length - 1] ?? null) : null;
 
+    // The head run's progress-over-time chart (issue 339): fetched for the NEWEST run by its
+    // own id — any member's id resolves to this page, and the chart reads the head, not the
+    // URL — once live and once final, keyed off the thread poll's own changes.
+    const activity = useJobActivity(latest);
+    const live = latest !== null && !isTerminal(latest.status);
+
     const { sending, actionError, followUpError, stoppingId, doneId, followUp, doneTask, stopTask } =
         useTaskConversationActions(id, tasks, detail, latest);
     // Who is looking: only the task's author may follow it up (the board checks the same row).
@@ -230,6 +237,8 @@ export function TaskDetailPage() {
                 followUpError={followUpError}
                 sending={sending}
                 onFollowUp={followUp}
+                activity={activity}
+                live={live}
             />
             {detail.jobs !== null && detail.jobs.length > 0 ? (
                 <TaskRemoveDialog

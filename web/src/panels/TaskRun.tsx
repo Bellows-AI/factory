@@ -2,7 +2,7 @@ import { type Ref, useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { Icon } from '../components/Icon.js';
 import { runDuration, timestamp } from '../format.js';
-import { GATE_PILL, gateCounts, isHttpUrl, prNumber, type ThreadPublish } from '../task-outcome.js';
+import { FAILURE_KIND_LABEL, GATE_PILL, gateCounts, isHttpUrl, prNumber, type ThreadPublish } from '../task-outcome.js';
 
 /**
  * One output well: a clipped log a keyboard user can actually reach. The wrapping section names
@@ -129,6 +129,11 @@ function RunMetaFooter({ job, parked }: { job: Job; parked: boolean }) {
     return (
         <p className="msg-meta">
             <span className="pill">{job.status}</span>
+            {/* The structured terminal reason (issue 339): the one-glance answer to "why did it
+                fail", instead of making the reader scan the output tail for the driver's note. */}
+            {job.failureKind != null ? (
+                <span className="pill pill-bad">{FAILURE_KIND_LABEL[job.failureKind]}</span>
+            ) : null}
             <span className="muted">{timestamp(job.createdAt)}</span>
             {job.executor !== null ? <span className="muted">{job.executor}</span> : null}
             {job.workflowName != null ? <span className="muted">workflow {job.workflowName}</span> : null}

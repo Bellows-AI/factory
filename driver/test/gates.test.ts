@@ -569,6 +569,83 @@ describe('the gate server', () => {
     });
 });
 
+describe('the gate server: run history for the timeout note', () => {
+    // A timed-out run's kill note quotes the latest ad-hoc verdicts (issue #339), so the server
+    // records them as they complete: one entry per declared gate name, the latest run winning.
+    it('records the latest run per gate name, and clears them on unregister', async () => {
+        let call = 0;
+        const manager = {
+            acquire: async () => {},
+            runGate: async (_key: string, name: string, _command: string) => {
+                call += 1;
+                return name === 'lint' ? { exitCode: 3, output: '2 problems' } : { exitCode: 0, output: 'ok' };
+            },
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-hist', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [
+                { name: 'test', command: 'npm test' },
+                { name: 'lint', command: 'npm run lint' },
+            ],
+        });
+        const port = await server.listen();
+        const run = (gate: string) =>
+            fetch(`http://127.0.0.1:${port}/run`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-hist' },
+                body: JSON.stringify({ gate }),
+            });
+
+        expect(server.lastRuns('tok-hist')).toEqual([]);
+        await run('test');
+        await run('lint');
+        await run('test');
+        const runs = server.lastRuns('tok-hist');
+        expect(runs.map((r) => r.name)).toEqual(['test', 'lint']);
+        expect(runs.find((r) => r.name === 'test')?.exitCode).toBe(0);
+        expect(runs.find((r) => r.name === 'lint')?.exitCode).toBe(3);
+        // Only the run of a DECLARED gate with a verdict is recorded, and each stamp is a real
+        // moment the run completed — parseable, close to now.
+        expect(runs.every((r) => !Number.isNaN(Date.parse(r.at)) && Date.parse(r.at) <= Date.now())).toBe(true);
+        expect(call).toBe(3);
+
+        server.unregister('tok-hist');
+        expect(server.lastRuns('tok-hist')).toEqual([]);
+        await server.close();
+    });
+
+    it('records nothing for a harness failure — a 409 is not a verdict', async () => {
+        const manager = {
+            acquire: async () => {},
+            runGate: async () => {
+                const error = new Error('Error response from daemon: No such container') as Error & {
+                    code?: number;
+                };
+                error.code = CONTAINER_GONE_CODE;
+                throw error;
+            },
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-nogate', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
+        const port = await server.listen();
+        await fetch(`http://127.0.0.1:${port}/run`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok-nogate' },
+            body: JSON.stringify({ gate: 'test' }),
+        });
+        expect(server.lastRuns('tok-nogate')).toEqual([]);
+        await server.close();
+    });
+});
+
 describe('the gate server: body size and bind resilience', () => {
     // The endpoint is reachable from runner containers running repo-controlled instructions; an
     // unbounded body there is an OOM on the driver, which supervises every in-flight job.

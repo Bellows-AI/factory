@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import type { Job } from '../src/api/useJobs.js';
+import type { JobActivity } from '../src/api/useJobActivity.js';
 import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
@@ -42,6 +43,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         wallClockMs: null,
         taskWallClockMs: null,
         summary: null,
+        failureKind: null,
         // A finished claude-code run has a session by default here: the follow-up composer is
         // offered for exactly these, and the sessionless case has its own test below.
         sessionId: '33333333-3333-4333-8333-333333333333',
@@ -114,6 +116,10 @@ export interface DetailArgs {
     sending?: boolean;
     /** Who is looking. The default — no account, and the fixture's null author — is the author. */
     viewer?: FollowUpViewer;
+    /** The head run's activity payload, as the page's hook handed it over; null is "none yet". */
+    activity?: JobActivity | null;
+    /** Whether the head run is still going — hatches the chart's last bucket. */
+    live?: boolean;
 }
 
 /** The AUTH_MODE-agnostic default: a null viewer on a null-author row may follow up. */
@@ -126,6 +132,8 @@ export const renderDetail = ({
     followUpError = null,
     sending = false,
     viewer = ANONYMOUS_VIEWER,
+    activity = null,
+    live = false,
 }: DetailArgs = {}) =>
     renderToStaticMarkup(
         // The sessionless branch carries a router Link (Start a new task), so the panel renders
@@ -139,6 +147,8 @@ export const renderDetail = ({
                 followUpError={followUpError}
                 sending={sending}
                 onFollowUp={async () => null}
+                activity={activity}
+                live={live}
             />
         </MemoryRouter>
     );

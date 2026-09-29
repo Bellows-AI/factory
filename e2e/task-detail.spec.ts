@@ -8,6 +8,7 @@ import {
     doneThread,
     failedGateThread,
     followUpThread,
+    mockedActivityOf,
     missingSummaryThread,
     multiFollowUpThread,
     nullAuthorThread,
@@ -648,6 +649,13 @@ test.describe('the task detail page', () => {
         // Every thread but the first answers as a different task — the inbox row clicked below.
         await page.route('**/api/jobs/*/thread*', (route) =>
             route.fulfill({ json: { jobs: route.request().url().includes(first[0]!.id) ? first : other } })
+        );
+        // The page's run-activity hook (issue #339) fetches beside the thread poll; the mocked
+        // thread answers it too, or the real board 404s a task id the fixture only names.
+        await page.route('**/api/jobs/*/activity', (route) =>
+            route.fulfill({
+                json: mockedActivityOf(route.request().url().includes(first[0]!.id) ? first : other),
+            })
         );
         let release: () => void = () => {};
         const held = new Promise<void>((resolve) => {

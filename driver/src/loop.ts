@@ -265,9 +265,12 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         const refusal = claimRefusal(job);
         if (refusal) {
             log(`job ${job.id}: ${refusal.log}`);
-            await report(job, { status: 'failed', exitCode: null, output: refusal.output }).catch((e: Error) =>
-                log(`job ${job.id}: could not report the failure: ${e.message}`)
-            );
+            await report(job, {
+                status: 'failed',
+                exitCode: null,
+                output: refusal.output,
+                failureKind: 'runner_error',
+            }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
             return;
         }
         track(job);

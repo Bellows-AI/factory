@@ -72,6 +72,9 @@ const ORG_TOKEN_ROUTES: readonly (readonly [string, RegExp])[] = [
     ['GET', /^\/api\/jobs$/],
     ['GET', /^\/api\/jobs\/[^/]+$/],
     ['GET', /^\/api\/jobs\/[^/]+\/thread$/],
+    // The run's progress-over-time read (issue #339) — a board read beside the thread's, over
+    // the session the org's own job row names, so it rides the same boundary.
+    ['GET', /^\/api\/jobs\/[^/]+\/activity$/],
 ];
 
 /**

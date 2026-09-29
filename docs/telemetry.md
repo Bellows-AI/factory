@@ -119,3 +119,25 @@ collector config.
   not named `*_test`.** The suite truncates `metric_point` and `session_branch` in
   `beforeEach`, so a shared database means one test run wipes every backfilled session — and
   the tests still pass, which is what makes it worth a guard rather than a comment.
+
+## The run-activity read (issue #339)
+
+**One session's points, bucketed over its run's wall clock** — `GET /api/jobs/:id/activity`, the
+task page's progress-over-time chart. The read is `metric_point_used`, never `metric_point` (the
+double-count rule above), keyed by session id alone: the session reached the route through its own
+org's job row, the same trust path every other metric_point read leans on. Only the six chartable
+canonical fields are selected (the four token fields, `edits_accept`, `edits_reject`).
+
+**The reduction lives in `run-activity.ts`, not in SQL**, for the same reason the week bucketing
+lives in core: the temporality rule is the one correctness hazard in the feature. A delta point
+sums into the bucket that contains it; a cumulative point is reduced per series — max per bucket,
+then consecutive differences against a 0 baseline — because `sum(value)` over a cumulative series
+produces a plausible, wildly wrong number. Negative differences clamp to 0. Every bucket in the
+window is seeded, so a quiet stretch renders as a quiet stretch; but a session the pipeline holds
+no rows for answers `[]` — nothing measured is not a quiet run, and the muted empty state renders
+from that, never from a fabricated zero line.
+
+**Bucket width is scaled to the run** (`pickBucketMs`): the smallest ladder width (1m–1h) giving
+at most 16 bars; a 2h run reads 15-minute buckets. The seed writes one timed-out thread with a
+per-bucket series so the chart and its timeout badge have a real-shaped example (`npm run seed`,
+then `npm run verify:ui`).

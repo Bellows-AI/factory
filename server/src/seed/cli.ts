@@ -18,7 +18,13 @@ import postgres from 'postgres';
 import { LOCAL_ORG_ID } from '../config.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
-import { generate, SYNTHETIC_MEMBERS } from './synthetic.js';
+import {
+    generate,
+    SYNTHETIC_MEMBERS,
+    TIMED_OUT_BUCKET_MINUTES,
+    TIMED_OUT_EDITS_PER_BUCKET,
+    TIMED_OUT_TOKENS_PER_BUCKET,
+} from './synthetic.js';
 import { CLAUDE_CODE } from '@factory-ai/core';
 
 /**
@@ -30,6 +36,17 @@ import { CLAUDE_CODE } from '@factory-ai/core';
 const DISPOSABLE = /_(seed|synthetic|demo|e2e|test)$/;
 
 const MS_PER_DAY = 86_400_000;
+const MS_PER_MINUTE = 60_000;
+/** The timed-out thread's per-bucket series shape (issue #339), steady with a deterministic wobble. */
+const TIMED_OUT_TOKENS_WOBBLE_STEP = 150_000;
+const TIMED_OUT_TOKENS_WOBBLE_MODULUS = 3;
+const TIMED_OUT_OUTPUT_BASE = 380_000;
+const TIMED_OUT_OUTPUT_WOBBLE_STEP = 40_000;
+const TIMED_OUT_OUTPUT_WOBBLE_MODULUS = 2;
+const TIMED_OUT_CACHE_READ_PER_BUCKET = 4_500_000;
+const TIMED_OUT_CACHE_CREATION_PER_BUCKET = 5_000;
+/** A rejected edit every other bucket — a real run's rhythm, not a flat zero. */
+const TIMED_OUT_REJECTS_EVERY = 2;
 
 function databaseName(url: string): string {
     return new URL(url).pathname.replace(/^\//, '');
@@ -108,6 +125,10 @@ try {
             on conflict (org_id, agent, session_id, repo, branch) do nothing
         `;
 
+        // The bucketed session's rows are written per bucket further down — a summed midpoint
+        // row here would double-count inside the run chart's window beside them.
+        if (s.bucketed) continue;
+
         const mid = new Date((Date.parse(s.firstSeen) + Date.parse(s.lastSeen)) / 2);
         const rows = Object.entries(s.fields).map(([field, value]) => ({
             agent: CLAUDE_CODE,
@@ -127,6 +148,47 @@ try {
             source: 'seed',
         }));
         await sql`insert into metric_point ${sql(rows)} on conflict do nothing`;
+    }
+
+    // The timed-out thread's series (issue #339): one delta row per 15-minute bucket across its
+    // wall clock, steady in every bucket — the per-bucket shape the run-activity chart reads,
+    // and the "was still working" answer the timeout badge sits beside.
+    for (const s of data.sessions.filter((candidate) => candidate.bucketed)) {
+        const bucketMs = TIMED_OUT_BUCKET_MINUTES * MS_PER_MINUTE;
+        const from = Date.parse(s.firstSeen);
+        for (let time = from + bucketMs / 2; time <= Date.parse(s.lastSeen); time += bucketMs) {
+            const bucketsIn = Math.round((time - from) / bucketMs);
+            const metricRows = [
+                {
+                    field: 'tokens_input',
+                    value:
+                        TIMED_OUT_TOKENS_PER_BUCKET +
+                        (bucketsIn % TIMED_OUT_TOKENS_WOBBLE_MODULUS) * TIMED_OUT_TOKENS_WOBBLE_STEP,
+                },
+                {
+                    field: 'tokens_output',
+                    value:
+                        TIMED_OUT_OUTPUT_BASE +
+                        (bucketsIn % TIMED_OUT_OUTPUT_WOBBLE_MODULUS) * TIMED_OUT_OUTPUT_WOBBLE_STEP,
+                },
+                { field: 'tokens_cacheRead', value: TIMED_OUT_CACHE_READ_PER_BUCKET },
+                { field: 'tokens_cacheCreation', value: TIMED_OUT_CACHE_CREATION_PER_BUCKET },
+                { field: 'edits_accept', value: TIMED_OUT_EDITS_PER_BUCKET },
+                { field: 'edits_reject', value: bucketsIn % TIMED_OUT_REJECTS_EVERY },
+            ].map((entry) => ({
+                agent: CLAUDE_CODE,
+                metric: metricFor(entry.field),
+                field: entry.field,
+                session_id: s.sessionId,
+                value: entry.value,
+                temporality: 'delta',
+                start_time: null,
+                time: new Date(time),
+                attrs: attrsFor(entry.field, s.sessionId),
+                source: 'seed',
+            }));
+            await sql`insert into metric_point ${sql(metricRows)} on conflict do nothing`;
+        }
     }
 
     for (const org of seedOrgs) {
@@ -166,10 +228,13 @@ try {
         if (!createdBy) continue;
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, created_by, session_id,
-                             created_at, started_at, finished_at, agent_turns)
-            values (${LOCAL_ORG_ID}, ${j.id}, ${j.rootJobId}, ${j.parentJobId}, 'seed task', 'succeeded',
-                    ${createdBy}, ${j.sessionId}, ${new Date(j.createdAt)}, ${new Date(j.createdAt)},
-                    ${new Date(j.createdAt)}, ${j.agentTurns})
+                             created_at, started_at, finished_at, agent_turns, failure_kind, output)
+            values (${LOCAL_ORG_ID}, ${j.id}, ${j.rootJobId}, ${j.parentJobId}, 'seed task',
+                    ${j.failureKind ? 'failed' : 'succeeded'},
+                    ${createdBy}, ${j.sessionId}, ${new Date(j.createdAt)},
+                    ${new Date(j.startedAt ?? j.createdAt)},
+                    ${new Date(j.finishedAt ?? j.createdAt)}, ${j.agentTurns},
+                    ${j.failureKind ?? null}, ${j.output ?? null})
             on conflict (org_id, id) do nothing
         `;
     }

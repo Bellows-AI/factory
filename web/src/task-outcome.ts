@@ -1,4 +1,4 @@
-import { isTerminal, type GateCheck, type Job } from './api/useJobs.js';
+import { isTerminal, type FailureKind, type GateCheck, type Job } from './api/useJobs.js';
 
 /**
  * The outcome summary's raw material, as pure data — the panel formats, these decide. Everything
@@ -126,6 +126,20 @@ export const GATE_PILL: Record<GateCheck['status'], string> = {
     passed: 'pill pill-ok',
     failed: 'pill pill-bad',
     running: 'pill pill-done',
+};
+
+/**
+ * The structured failure kind in the reader's words (issue 339) — the badge's label. Words, not
+ * codes: "timed out" answers the question the reader of a failed run is asking, and the kinds are
+ * a closed set the board's validation already bounds.
+ */
+export const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
+    timeout: 'timed out',
+    cache_lost: 'cache lost',
+    gate: 'gate failed',
+    publish: 'publish failed',
+    helper: 'helper failed',
+    runner_error: 'runner error',
 };
 
 /** A gate count's pill: toned only when something is counted — "0 failed" is good news, never red. */

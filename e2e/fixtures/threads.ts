@@ -57,6 +57,10 @@ export interface ThreadJob {
     exitCode: number | null;
     output: string | null;
     summary: string | null;
+    // The structured terminal reason (issue #339); null on every fixture here — the seed writes
+    // succeeded jobs, and a failed-with-kind run is a lane fixture's to add, never this file's
+    // to retrofit.
+    failureKind: string | null;
     gates: ThreadGate[] | null;
     runtime: ThreadRuntime | null;
     repo: string | null;
@@ -150,6 +154,7 @@ function run(fields: RunFields): ThreadJob {
         exitCode: 0,
         output: null,
         summary: null,
+        failureKind: null,
         gates: null,
         runtime: null,
         repo: null,
@@ -509,10 +514,30 @@ export const nullAuthorThread = thread([
     }),
 ]);
 
+/**
+ * The activity payload a mocked thread answers with (issue #339): empty buckets, so the page's
+ * run-activity panel renders its muted state. The page fetches `GET /api/jobs/:id/activity`
+ * beside its thread poll — a mocked thread must answer that too, or the real board 404s a task
+ * id the fixture only names, and the console watcher fails the spec.
+ */
+export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
+    const head = jobs[jobs.length - 1] ?? null;
+    return {
+        jobId: head?.id ?? null,
+        sessionId: head?.sessionId ?? null,
+        from: head?.startedAt ?? null,
+        to: head?.finishedAt ?? head?.startedAt ?? null,
+        bucketMs: null,
+        buckets: [],
+    };
+}
+
 /** Answer every thread poll on the page with `jobs` — the rest of the page stays the real board's. */
 export async function routeThread(page: Page, jobs: readonly ThreadJob[]): Promise<void> {
     await page.unroute('**/api/jobs/*/thread*');
     await page.route('**/api/jobs/*/thread*', (route) => route.fulfill({ json: { jobs } }));
+    await page.unroute('**/api/jobs/*/activity');
+    await page.route('**/api/jobs/*/activity', (route) => route.fulfill({ json: mockedActivityOf(jobs) }));
 }
 
 /** The same thread queued by `author` — every member, the way the board attributes a chain. Only

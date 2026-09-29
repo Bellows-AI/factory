@@ -3,6 +3,7 @@ import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js'
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import {
     closureOf,
+    FAILURE_KIND_LABEL,
     followUpEligibility,
     gateCounts,
     issueUrl,
@@ -15,6 +16,18 @@ import {
     threadPublish,
 } from '../src/task-outcome.js';
 import { job } from './tasks-fixtures.js';
+
+describe('FAILURE_KIND_LABEL (issue #339)', () => {
+    // The badge's one glance: the structured kind in the reader's words, every kind named.
+    it('names all six kinds', () => {
+        expect(FAILURE_KIND_LABEL.timeout).toBe('timed out');
+        expect(FAILURE_KIND_LABEL.cache_lost).toBe('cache lost');
+        expect(FAILURE_KIND_LABEL.gate).toBe('gate failed');
+        expect(FAILURE_KIND_LABEL.publish).toBe('publish failed');
+        expect(FAILURE_KIND_LABEL.helper).toBe('helper failed');
+        expect(FAILURE_KIND_LABEL.runner_error).toBe('runner error');
+    });
+});
 
 describe('isTerminal', () => {
     // This is what stops the detail poll: a finished job is never going to grow an output.

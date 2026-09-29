@@ -51,12 +51,19 @@ export interface SyntheticJob {
     readonly createdBy: string;
     readonly sessionId: string;
     readonly createdAt: string;
+    /** When the run started, when it differs from the create stamp (the timed-out thread). */
+    readonly startedAt?: string;
+    readonly finishedAt?: string;
     /**
      * Agent turns counted at close. Null for some runs on purpose: unmeasured is a real state
      * (a killed run, a failed read), and the task statistics must show a task excluded from the
      * turn distribution beside tasks that measured.
      */
     readonly agentTurns: number | null;
+    /** The structured terminal reason (issue #339); absent on every ordinary succeeded run. */
+    readonly failureKind?: 'timeout';
+    /** The verdict tail a timed-out run leaves in its output well. */
+    readonly output?: string;
 }
 
 /** The synthetic members the board rows attribute to. Stable ids keep the dataset reproducible. */
@@ -81,6 +88,12 @@ export interface SyntheticSession {
     readonly samples: number;
     /** field -> value, already summed. Written as delta datapoints. */
     readonly fields: Readonly<Record<string, number>>;
+    /**
+     * Written by the CLI as one delta row per 15-minute bucket instead of one summed midpoint
+     * row — the timed-out thread's progress-over-time series (issue #339), whose chart needs the
+     * per-bucket shape and would otherwise double-count the midpoint row beside it.
+     */
+    readonly bucketed?: boolean;
 }
 
 const HOUR = 3_600_000;
@@ -185,7 +198,69 @@ export function generate(options: SeedOptions): SyntheticData {
         sessions.push(session({ repo, branch: `spike/${pick(AREAS)}-${i}`, createdAt: at, spanHours, random, now }));
     }
 
+    sessions.push(timedOutSession({ repo, now }));
+    jobs.push(timedOutJob({ repo, now }));
+
     return { sessions, jobs };
+}
+
+/** The timed-out thread's wall clock: two hours, ending one hour before the dataset cutoff. */
+export const TIMED_OUT_SPAN_HOURS = 2;
+export const TIMED_OUT_LAG_HOURS = 1;
+export const TIMED_OUT_BUCKET_MINUTES = 15;
+export const TIMED_OUT_BRANCH = 'fix/task-timeout-report';
+export const TIMED_OUT_TOKENS_PER_BUCKET = 2_400_000;
+export const TIMED_OUT_EDITS_PER_BUCKET = 5;
+
+/**
+ * The one timed-out thread (issue #339): a failed run carrying the structured `timeout` kind, a
+ * session whose metric series lands one row per 15-minute bucket of its two-hour wall clock —
+ * steady work in every bucket, the shape that reads "was still working when it was killed". The
+ * task page's timeout badge and run-activity chart render from exactly these rows.
+ */
+function timedOutSession({ repo, now }: { repo: string; now: Date }): SyntheticSession {
+    const lastSeen = new Date(now.getTime() - TIMED_OUT_LAG_HOURS * HOUR);
+    const firstSeen = new Date(lastSeen.getTime() - TIMED_OUT_SPAN_HOURS * HOUR);
+    return {
+        sessionId: sha(`${repo}:${TIMED_OUT_BRANCH}:timed-out`).slice(0, ID_LENGTH),
+        repo,
+        branch: TIMED_OUT_BRANCH,
+        firstSeen: firstSeen.toISOString(),
+        lastSeen: lastSeen.toISOString(),
+        samples: 1,
+        bucketed: true,
+        fields: {
+            tokens_input: TIMED_OUT_TOKENS_PER_BUCKET * (TIMED_OUT_SPAN_HOURS * (60 / TIMED_OUT_BUCKET_MINUTES)),
+            tokens_output: 400_000,
+            tokens_cacheRead: 18_000_000,
+            tokens_cacheCreation: 20_000,
+            lines_added: 210,
+            lines_removed: 45,
+            edits_accept: TIMED_OUT_EDITS_PER_BUCKET * (TIMED_OUT_SPAN_HOURS * (60 / TIMED_OUT_BUCKET_MINUTES)),
+            edits_reject: 1,
+            active_seconds: 6_800,
+        },
+    };
+}
+
+/** The timed-out thread's board row: failed, sessioned, attributed, with the driver's kill note. */
+function timedOutJob({ repo, now }: { repo: string; now: Date }): SyntheticJob {
+    const session = timedOutSession({ repo, now });
+    return {
+        id: sha(`job:${session.sessionId}`).slice(0, ID_LENGTH),
+        rootJobId: sha(`job:${session.sessionId}`).slice(0, ID_LENGTH),
+        parentJobId: null,
+        createdBy: SYNTHETIC_MEMBERS[0].login,
+        sessionId: session.sessionId,
+        createdAt: session.firstSeen,
+        startedAt: session.firstSeen,
+        finishedAt: session.lastSeen,
+        agentTurns: null,
+        failureKind: 'timeout',
+        output:
+            '[driver] killed after 7200000ms — still active: last output 2s ago, ' +
+            'gates test+lint passed at 22:45:02, last activity "Now the two wording fixes:"',
+    };
 }
 
 /** How often a generated session gets a board thread at all. */

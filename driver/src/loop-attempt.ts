@@ -2,6 +2,7 @@ import type { BoardJob, HeartbeatVerdict, RuntimeReport } from './board.js';
 import { currentActivity } from './runner.js';
 import type { RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
+import type { TimeoutActivity } from './timeout-note.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;
@@ -228,6 +229,8 @@ function buildRuntimeReport(sample: RuntimeSample, latest: string): RuntimeRepor
  */
 interface OutputPump {
     latest: string | null;
+    /** Epoch ms of the last CHANGED tail — the freshness fact a timeout note keys on (issue #339). */
+    lastOutputAt: number | null;
     sent: string | null;
     sample: RuntimeSample | null;
     sentSample: RuntimeSample | null;
@@ -278,10 +281,21 @@ async function flushIfChanged(rt: LoopRuntime, job: BoardJob, pump: OutputPump):
     }
 }
 
-export function watchOutput(rt: LoopRuntime, job: BoardJob, state: JobState): (tail: string) => void {
+/**
+ * Starts the output pump and answers its two handles: `push`, the callback the runner hands its
+ * newest tail to (unchanged from before), and `snapshot`, the liveness read a timed-out run's
+ * kill note is built from (issue #339). The stamp lands only when the tail CHANGED — kubernetes's
+ * repeated identical log polls must not fake freshness.
+ */
+export function watchOutput(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState
+): { push: (tail: string) => void; snapshot: () => TimeoutActivity } {
     const { sleep } = rt;
     const pump: OutputPump = {
         latest: null,
+        lastOutputAt: null,
         sent: null,
         sample: null,
         sentSample: null,
@@ -303,7 +317,11 @@ export function watchOutput(rt: LoopRuntime, job: BoardJob, state: JobState): (t
             if (verdict === 'lost') return;
         }
     })();
-    return (tail) => {
-        pump.latest = tail;
+    return {
+        push: (tail) => {
+            if (tail !== pump.latest) pump.lastOutputAt = Date.now();
+            pump.latest = tail;
+        },
+        snapshot: () => ({ lastOutputAt: pump.lastOutputAt, activity: currentActivity(pump.latest) }),
     };
 }

@@ -14,6 +14,12 @@ export async function storeFor(orgs: OrgRegistry, request: FastifyRequest): Prom
     return rt?.jobs ?? null;
 }
 
+/** The telemetry client the caller's org reads through (#99), mirroring `storeFor`. */
+export async function telemetryFor(orgs: OrgRegistry, request: FastifyRequest) {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.telemetry ?? null;
+}
+
 /**
  * The boards a WORKER call may reach. The shared secret authenticates the driver, not an
  * org, so a claim names no row and no org: it is offered EVERY org's queue, first claim

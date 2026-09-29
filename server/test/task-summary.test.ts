@@ -30,6 +30,7 @@ const job = (overrides: Partial<Job> & { id: string }): Job => ({
     exitCode: null,
     output: null,
     summary: null,
+    failureKind: null,
     gates: null,
     runtime: null,
     repo: null,

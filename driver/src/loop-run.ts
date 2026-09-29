@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type { Board, BoardJob, LeaseState } from './board.js';
+import type { Board, BoardJob, FailureKind, LeaseState } from './board.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import type { HelperFailureReport } from './helpers.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, releaseGateSession, runDeclaredGates } from './loop-gates.js';
 import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-attempt.js';
+import type { TimeoutActivity, GateRunNote } from './timeout-note.js';
+import { timeoutNote } from './timeout-note.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
@@ -131,6 +133,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | nu
             status: 'failed',
             exitCode: null,
             output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
+            failureKind: 'runner_error',
         }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
         return STOOD_DOWN;
     }
@@ -167,6 +170,7 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | nul
             status: 'failed',
             exitCode: null,
             output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
+            failureKind: 'runner_error',
         }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
         return STOOD_DOWN;
     }
@@ -180,6 +184,7 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | nul
             status: 'failed',
             exitCode: null,
             output: `This job declares verification gates in .bellows.yaml, and ${why}. Re-queue it against a driver built with the GATE_* configuration set.`,
+            failureKind: 'runner_error',
         }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
         return STOOD_DOWN;
     }
@@ -211,6 +216,7 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
                 status: 'failed',
                 exitCode: null,
                 output: `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
+                failureKind: 'runner_error',
             })
             .catch((err: Error) => log(`job ${job.id}: could not report the failure: ${err.message}`));
         return STOOD_DOWN;
@@ -236,7 +242,18 @@ async function runSetup(ctx: AttemptCtx): Promise<GateSession | null | typeof ST
 type RunPhaseDone = { done: true };
 
 /** The run phase's ordinary conclusion: what to report, and the gate failure (if any) behind it. */
-type RunPhaseResult = { done: false; outcome: RunOutcome; failure: GateFailure | null };
+type RunPhaseResult = {
+    done: false;
+    outcome: RunOutcome;
+    failure: GateFailure | null;
+    /**
+     * When `runner.run` resolved — the moment the run ended, and the timestamp the timeout
+     * note's active/idle verdict is measured at. The verdict builds later: the declared gates,
+     * the post-helpers and the session scrape can each run minutes after a kill, and aging the
+     * last output from VERDICT time would report a run that was streaming when it died as idle.
+     */
+    endedAt: number;
+};
 
 /** Handles the run-ended verdicts that are not an ordinary finish: lost, removed, stopped. */
 async function settleNonFinish(
@@ -290,6 +307,10 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     state.launched = true;
 
     const outcome = await runner.run(job, session, onOutput);
+    // The run's end, stamped HERE — not at verdict time: the gates, helpers and session scrape
+    // below can run minutes after a kill, and the timeout note's active/idle verdict must
+    // describe the run as it ended, not as it was reported.
+    const endedAt = Date.now();
 
     if (await settleNonFinish(ctx, executorType, outcome)) return { done: true };
 
@@ -322,7 +343,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     let failure: GateFailure | null = null;
     if (gateSession && !outcome.refused) failure = await runDeclaredGates(rt, job, gateSession, state);
 
-    return { done: false, outcome, failure };
+    return { done: false, outcome, failure, endedAt };
 }
 
 /** Whether the finish reason names a run that stopped talking before it was done. */
@@ -398,6 +419,28 @@ interface FinishCtx {
     failure: GateFailure | null;
     helperFailure: HelperFailureReport | null;
     published: PublishResult | null;
+    /** When the run ended — the stamp the timeout note's ages are measured from. */
+    endedAt: number;
+    /** The pump's liveness read at the moment the run ended — the timeout note's raw material. */
+    activity: TimeoutActivity;
+    /** The ad-hoc gate server's latest verdicts, read before the session's teardown clears them. */
+    gateRuns: readonly GateRunNote[];
+}
+
+/** The structured failure kind a verdict's terminal conditions name, in precedence order. */
+export function verdictFailureKind(
+    finish: Pick<FinishCtx, 'outcome' | 'failure' | 'helperFailure'>,
+    publishUnlanded: boolean,
+    status: 'succeeded' | 'failed'
+): FailureKind | null {
+    if (finish.outcome.timedOut) return 'timeout';
+    if (finish.outcome.cacheLost) return 'cache_lost';
+    if (finish.failure) return 'gate';
+    if (finish.helperFailure) return 'helper';
+    if (publishUnlanded) return 'publish';
+    // Everything else that lands failed — a non-zero exit, a premature finish, a refused
+    // `.bellows.yaml` — is the runner erroring. A success carries no kind at all.
+    return status === 'failed' ? 'runner_error' : null;
 }
 
 /** The verdict output text, annotated with every terminal condition worth telling the author about. */
@@ -405,7 +448,7 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, publishUnlanded: boolea
     const { job, outcome, failure, helperFailure, published } = finish;
     const { config, log } = rt;
     let output = outcome.timedOut
-        ? `${outcome.output}\n[driver] killed after ${config.jobTimeoutMs}ms`
+        ? `${outcome.output}\n${timeoutNote(config.jobTimeoutMs, finish.activity, finish.gateRuns, finish.endedAt)}`
         : outcome.output;
     if (published?.published) {
         output = `${output}\n[driver] published ${published.branch}${published.prUrl ? ` — ${published.prUrl}` : ''}`;
@@ -462,6 +505,7 @@ async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
     const exitCode = failure ? failure.exitCode : outcome.exitCode;
     const output = buildOutput(rt, finish, publishUnlanded);
     const publication = publicationOf(published);
+    const failureKind = verdictFailureKind(finish, publishUnlanded, status);
 
     const verdict = await report(rt, job, {
         status,
@@ -473,6 +517,8 @@ async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
         ...(typeof outcome.agentTurns === 'number' ? { agentTurns: outcome.agentTurns } : {}),
         // The run's last words, when the close-time read lifted them; absent stays absent.
         ...(outcome.summary ? { summary: outcome.summary } : {}),
+        // The structured failure reason (issue #339); a success reports no kind at all.
+        ...(failureKind ? { failureKind } : {}),
         ...(publication ? { publication } : {}),
     });
     log(
@@ -485,6 +531,12 @@ async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
 /** The verdict is reported, then the task worktree reclaim barrier is armed — see `report` in loop.ts. */
 async function report(rt: LoopRuntime, job: BoardJob, result: Parameters<Board['complete']>[1]): Promise<LeaseState> {
     return rt.report(job, result);
+}
+
+/** The ad-hoc gate history one attempt's timeout note quotes, read before the session's teardown. */
+function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly GateRunNote[] {
+    if (gateSession === null) return [];
+    return rt.gates?.server.lastRuns(gateSession.token) ?? [];
 }
 
 /**
@@ -500,9 +552,12 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const executorRefusal = executorRefusalReason(rt, job);
     if (executorRefusal) {
         log(`job ${job.id}: executor selection is not runnable, failing`);
-        await report(rt, job, { status: 'failed', exitCode: null, output: executorRefusal }).catch((e: Error) =>
-            log(`job ${job.id}: could not report the executor failure: ${e.message}`)
-        );
+        await report(rt, job, {
+            status: 'failed',
+            exitCode: null,
+            output: executorRefusal,
+            failureKind: 'runner_error',
+        }).catch((e: Error) => log(`job ${job.id}: could not report the executor failure: ${e.message}`));
         return;
     }
 
@@ -514,16 +569,21 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const promptRefusal = masterPromptRefusalReason(job);
     if (promptRefusal) {
         log(`job ${job.id}: master prompt is not runnable, failing`);
-        await report(rt, job, { status: 'failed', exitCode: null, output: promptRefusal }).catch((e: Error) =>
-            log(`job ${job.id}: could not report the master-prompt failure: ${e.message}`)
-        );
+        await report(rt, job, {
+            status: 'failed',
+            exitCode: null,
+            output: promptRefusal,
+            failureKind: 'runner_error',
+        }).catch((e: Error) => log(`job ${job.id}: could not report the master-prompt failure: ${e.message}`));
         return;
     }
 
     const state = newJobState();
     const beating = heartbeat(rt, job, state);
-    // Armed before the run so the runner can hand over tails from its first chunk.
-    const onOutput = watchOutput(rt, job, state);
+    // Armed before the run so the runner can hand over tails from its first chunk; the pump's
+    // snapshot is the liveness read the timeout note is built from (issue #339).
+    const outputPump = watchOutput(rt, job, state);
+    const onOutput = outputPump.push;
     const session = pickSession(job, executorType);
 
     const settle = async () => {
@@ -582,12 +642,17 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 helperFailure,
             });
             await settle();
+            // The liveness read and the gate verdicts are read BEFORE the finally below
+            // releases the gate session — unregistering clears the recorded runs.
             await reportFinish(rt, {
                 job,
                 outcome: outcome.outcome,
                 failure: outcome.failure,
                 helperFailure,
                 published,
+                endedAt: outcome.endedAt,
+                activity: outputPump.snapshot(),
+                gateRuns: gateHistory(rt, gateSession),
             });
         } finally {
             if (gateSession) releaseGateSession(rt, gateSession);

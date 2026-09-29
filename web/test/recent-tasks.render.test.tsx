@@ -29,6 +29,7 @@ const job = (over: Partial<Job>): Job => ({
     exitCode: 0,
     output: null,
     summary: null,
+    failureKind: null,
     gates: null,
     runtime: null,
     repo: 'Bellows-AI/factory',

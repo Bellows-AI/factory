@@ -16,6 +16,14 @@ import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js
  */
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
+/**
+ * The structured terminal reason of a failed run (issue 339), copied from the board's
+ * `failure_kind` column: why it failed — the timeout kill, a prompt-cache loss, a failed gate,
+ * an unlanded publish, a failed block-helper, or the runner erroring. Null on a success and on
+ * every row that predates the column — "not a failure", never "unknown".
+ */
+export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'runner_error';
+
 /** Where one declared verification gate stands. The board stores current/last only — no history. */
 export interface GateCheck {
     name: string;
@@ -88,6 +96,8 @@ export interface Job {
     doneBy: AuthorRef | null;
     exitCode: number | null;
     output: string | null;
+    /** Why a FAILED run failed, structured (issue 339); null is "not a failure". */
+    failureKind: FailureKind | null;
     /**
      * What the run did, in the agent's own last words — lifted from the session records at
      * close and reported with the verdict. Null is unmeasured, never empty; the command above

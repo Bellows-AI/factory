@@ -6,7 +6,8 @@ import type { GateManager, GateServer } from '../src/gates.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
-import type { GateStack } from '../src/loop-types.js';
+import type { GateStack, LoopRuntime } from '../src/loop-types.js';
+import { newJobState, watchOutput } from '../src/loop-attempt.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -306,6 +307,8 @@ function stubGateStack(outcomes: Record<string, number> = {}) {
             unregister: () => {
                 stack.unregistered += 1;
             },
+            // No ad-hoc gate ran through this stub, so the timeout note's verdict history is empty.
+            lastRuns: () => [],
             listen: async () => 9099,
             close: async () => {},
         } as GateServer,
@@ -500,6 +503,48 @@ describe('the poll loop', () => {
 
         expect(board.board.completed[0]?.status).toBe('failed');
         expect(board.board.completed[0]?.output).toContain('killed after 60000ms');
+        expect(board.board.completed[0]?.output).toContain(' — idle: no output');
+        expect(board.board.completed[0]?.failureKind).toBe('timeout');
+    });
+
+    // The active/idle distinction (issue #339): a run whose tail was still moving when the wall
+    // clock ran out was WORKING — the note must say so, with the last activity line, not leave
+    // the reader to raw-SQL three sources to find out.
+    it('says a timed-out run was still active when its output was still arriving', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('Now the two wording fixes:');
+            return ok({ exitCode: 137, output: 'partial', timedOut: true });
+        });
+
+        await drive({ ...board, runner }, { DRIVER_JOB_TIMEOUT_MS: '60000' });
+
+        expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.completed[0]?.output).toContain('killed after 60000ms — still active: last output');
+        expect(board.board.completed[0]?.output).toContain('last activity "Now the two wording fixes:"');
+    });
+
+    // The declared gates run AFTER the kill — a suite can take minutes — and the note must not
+    // age the last output from VERDICT time: a run that was streaming when it died would read
+    // idle because its gates were slow. Observed against the first cut of the note, which did.
+    it('ages the timeout note from the run’s end, not the verdict the slow gates delay', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const runner = stubRunner(async (_job, _session, onOutput) => {
+            onOutput?.('still writing');
+            return ok({ exitCode: 137, output: 'partial', timedOut: true });
+        });
+        const { gates, stack } = stubGateStack();
+        stack.manager.runGate = async () => {
+            await new Promise((resolve) => setTimeout(resolve, 2_500));
+            return { exitCode: 0, output: 'ok' };
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(board.board.completed[0]?.failureKind).toBe('timeout');
+        // The output was stamped the instant the run resolved; aged from the run's end the age
+        // is ~0. Aged from the verdict — the bug — it would read the gates' 2.5s as "2s".
+        expect(board.board.completed[0]?.output).toContain(' — still active: last output 0s ago');
     });
 
     // Instructions are not enforcement: the deterministic publish runs after a succeeded run,
@@ -2578,6 +2623,7 @@ describe('block-helper steps (issue #207)', () => {
                 status: 'failed',
                 exitCode: null,
                 output: expect.stringContaining('the helper blew up'),
+                failureKind: 'helper',
             },
         ]);
     });
@@ -2934,5 +2980,192 @@ describe('block-helper steps (issue #207)', () => {
             expect(board.board.publishTokenAsks).toEqual([]);
             expect(calls.map((c) => c.token)).toEqual([undefined, undefined]);
         });
+    });
+});
+
+describe('the output pump snapshot', () => {
+    /**
+     * The timeout note's active/idle verdict keys on the age of the last CHANGED tail (issue
+     * #339). A runner that re-pushes the same tail — kubernetes's repeated identical log polls —
+     * must not fake freshness: only a changed tail stamps the pump, and the activity line is the
+     * newest tail's last non-empty line.
+     */
+    it('stamps lastOutputAt only when the tail changes, and derives the activity line', async () => {
+        const board = stubBoard([]);
+        const runner = stubRunner(async () => ok());
+        const rt: LoopRuntime = {
+            board: board.board,
+            runner,
+            config: config(),
+            log: () => {},
+            sleep,
+            reclaims: new Map(),
+            report: async () => 'held',
+        };
+        const state = newJobState();
+        const pump = watchOutput(rt, job(1), state);
+        try {
+            expect(pump.snapshot().lastOutputAt).toBeNull();
+            expect(pump.snapshot().activity).toBeNull();
+
+            pump.push('$ npm test');
+            const first = pump.snapshot().lastOutputAt;
+            expect(first).not.toBeNull();
+            expect(pump.snapshot().activity).toBe('$ npm test');
+
+            // The same tail again — a re-poll, not progress. The stamp must not move.
+            pump.push('$ npm test');
+            expect(pump.snapshot().lastOutputAt).toBe(first);
+
+            await new Promise((resolve) => setTimeout(resolve, 2));
+            pump.push('$ npm run lint\n');
+            expect(pump.snapshot().lastOutputAt).toBeGreaterThan(first!);
+            expect(pump.snapshot().activity).toBe('$ npm run lint');
+        } finally {
+            state.finished = true;
+            state.wake();
+        }
+    });
+});
+
+describe('the verdict failure kind (issue #339)', () => {
+    /**
+     * Every terminal path names its kind on the verdict, so "how many timeouts this week" and
+     * "timeouts where the gates passed" are queries, not archaeology. Precedence when several
+     * conditions land on one run: timeout, then cache, then gate, then helper, then publish,
+     * then the plain runner error.
+     */
+    it('names a failed gate gate', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const runner = stubRunner(async () => ok());
+        const { gates } = stubGateStack({ test: 3 });
+
+        await drive({ ...board, runner, gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
+    });
+
+    it('names an unlanded publish publish', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok(), {
+            publish: {
+                ok: false,
+                published: false,
+                branch: null,
+                prUrl: null,
+                reason: 'the push was refused',
+                repository: null,
+                baseBranch: null,
+                prNumber: null,
+            },
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'publish' });
+    });
+
+    it('names a failed post-helper helper', async () => {
+        const board = stubBoard([
+            { ...job(1), helperPlans: [{ helperId: 'noop', phase: 'post', input: null, githubWriting: false }] },
+        ]);
+        const runner = stubRunner(async () => ok());
+        runner.runHelper = async () => ({ ok: false, reason: 'malformed_output', message: 'unreadable verdict' });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'helper' });
+    });
+
+    it('names a failed pre-helper helper — the agent never launched', async () => {
+        const board = stubBoard([
+            { ...job(1), helperPlans: [{ helperId: 'noop', phase: 'pre', input: null, githubWriting: false }] },
+        ]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+        runner.runHelper = async () => ({ ok: false, reason: 'runner_error', message: 'the helper blew up' });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'helper' });
+    });
+
+    it('names a cache kill cache_lost', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({ exitCode: 1, output: 'cut', cacheLost: '3 consecutive turns with no prompt-cache reads' })
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'cache_lost' });
+    });
+
+    it('names a plain non-zero exit and a premature finish runner_error', async () => {
+        const board = stubBoard([job(1), job(2)]);
+        let ran = 0;
+        const runner = stubRunner(async () =>
+            ran++ === 0 ? ok({ exitCode: 2, output: 'boom' }) : ok({ output: 'reads only', finishReason: 'length' })
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(board.board.completed[1]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+    });
+
+    it('puts no kind on a succeeded verdict', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+        expect(board.board.completed[0]).not.toHaveProperty('failureKind');
+    });
+
+    it('names every pre-run refusal runner_error', async () => {
+        // The claim refusals and setup refusals are the driver's own environment failing, never
+        // the agent's work — all of them are runner errors, and none is a gate (that name is
+        // reserved for a gate RUN that failed).
+        const refusalCases: {
+            job: BoardJob;
+            fragment: string;
+            sync?: SyncResult;
+            rereadGates?: { gates: BoardJob['gates']; gateError: string | null } | null;
+        }[] = [
+            { job: { ...job(1), executorType: null }, fragment: 'selected executor no longer exists' },
+            { job: { ...job(1), masterPrompt: null }, fragment: 'no Factory execution context' },
+            {
+                job: { ...job(1), repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' },
+                fragment: 'do not resolve to a task worktree',
+            },
+            {
+                job: job(2),
+                fragment: 'could not be synced with the remote',
+                sync: { ok: false, reason: 'the task branch could not be rebased onto origin/main' },
+            },
+            {
+                job: job(3),
+                fragment: 'could not be read as a gate declaration',
+                rereadGates: { gates: null, gateError: '.bellows.yaml line 3: unknown key "ports"' },
+            },
+        ];
+        for (const refusal of refusalCases) {
+            const board = stubBoard([refusal.job], { rereadGates: refusal.rereadGates });
+            const runner = stubRunner(
+                async () => {
+                    throw new Error('the runner must never be reached');
+                },
+                { sync: refusal.sync }
+            );
+
+            await drive({ ...board, runner });
+
+            expect(board.board.completed[0]?.status, refusal.fragment).toBe('failed');
+            expect(board.board.completed[0]?.output, refusal.fragment).toContain(refusal.fragment);
+            expect(board.board.completed[0]?.failureKind, refusal.fragment).toBe('runner_error');
+        }
     });
 });

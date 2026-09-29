@@ -3,6 +3,7 @@ import type { JobRun, SessionRollup, TokenTotals, UserRef } from '@factory-ai/co
 import type { TelemetryClient, TelemetryFetch, TelemetryHealth } from './client.js';
 import { TelemetryError } from './errors.js';
 import type { CanonicalField } from './metric-map.js';
+import { bucketizeActivity, type ActivityBucket } from './run-activity.js';
 
 interface SummaryRow {
     agent: string;
@@ -74,8 +75,52 @@ export interface PostgresTelemetryDeps {
     ready?: Promise<unknown>;
 }
 
+interface ActivityRow {
+    agent: string;
+    metric: string;
+    field: string;
+    temporality: string;
+    start_time: Date | null;
+    attrs: unknown;
+    value: number;
+    time: Date;
+}
+
 export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTelemetryDeps): TelemetryClient {
     return {
+        async runActivity({ sessionId, from, to, bucketMs }): Promise<ActivityBucket[]> {
+            if (ready) await ready;
+            // Keyed by session id alone — metric_point has no org column by design, and the
+            // session arrived here through the caller's own org's job row, the same trust path
+            // every other metric_point read leans on. `metric_point_used`, never `metric_point`:
+            // the double-count rule (002_views.repeatable.sql). The window and the field filter
+            // bound the scan; the session index serves the rest.
+            const rows = await sql<ActivityRow[]>`
+                select agent, metric, field, temporality, start_time, attrs, value, time
+                from metric_point_used
+                where session_id = ${sessionId}
+                  and field in ('tokens_input', 'tokens_output', 'tokens_cacheRead', 'tokens_cacheCreation',
+                                'edits_accept', 'edits_reject')
+                  and time >= ${from} and time <= ${to}
+            `;
+            // Nothing measured is not a quiet run: [] is what the UI renders its muted
+            // "no telemetry for this run" state from, never a fabricated zero line.
+            if (rows.length === 0) return [];
+            return bucketizeActivity(
+                rows.map((row) => ({
+                    field: row.field,
+                    temporality: row.temporality,
+                    startTime: row.start_time === null ? null : new Date(row.start_time).toISOString(),
+                    attrs: (row.attrs ?? {}) as Record<string, string>,
+                    metric: row.metric,
+                    agent: row.agent,
+                    value: Number(row.value),
+                    time: new Date(row.time).toISOString(),
+                })),
+                { from, to, bucketMs }
+            );
+        },
+
         async fetchRollups(): Promise<TelemetryFetch> {
             try {
                 if (ready) await ready;

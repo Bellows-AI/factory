@@ -16,6 +16,16 @@ export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' |
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
 export type JobOutcome = 'succeeded' | 'failed';
 
+/**
+ * The structured terminal reason of a run (issue #339), stored as `job.failure_kind` and served on
+ * every job read: why a failed run failed — the timeout kill, a prompt-cache loss, a failed gate,
+ * an unlanded publish, a failed block-helper, or the runner erroring. Null is "not a failure": a
+ * success, or a row older than the column (044). Copied here rather than imported because the
+ * driver depends on nothing; the spellings are a wire contract kept in step by the route's
+ * validation.
+ */
+export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'runner_error';
+
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
 export interface GateReport {
     name: string;
@@ -107,6 +117,13 @@ export interface Job {
      * the command above records what was ASKED; this records what was done.
      */
     summary: string | null;
+    /**
+     * The structured terminal reason (issue #339) — why a FAILED run failed: the timeout kill, a
+     * prompt-cache loss, a failed gate, an unlanded publish, a failed block-helper, or the runner
+     * erroring. Null on every success, and on every row that predates the column (044) — "not a
+     * failure", never "unknown failure".
+     */
+    failureKind: FailureKind | null;
     /**
      * The verification gates this run has run or is running — the checks the job's checkout
      * declares in `.bellows.yaml` and the driver executes in the declared environment image.
@@ -679,6 +696,12 @@ export interface JobStore {
              * agent's final text, already truncated by the driver and re-bounded by the route.
              */
             summary?: string | null;
+            /**
+             * The structured terminal reason (issue #339), validated at the route against the
+             * six known kinds. Null (or absent) is "not a failure" — the column keeps null, so
+             * a success and a pre-column row read the same.
+             */
+            failureKind?: FailureKind | null;
             /**
              * The publication the run reports — the PR identity a successful publish landed.
              * Omitted (or null) when the run published nothing, so no `job_pr` row is invented.

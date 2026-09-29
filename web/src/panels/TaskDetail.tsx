@@ -1,10 +1,12 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { isTerminal, type Job } from '../api/useJobs.js';
+import type { JobActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
+import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
 import { Publication, TaskRun, Verification } from './TaskRun.js';
 
@@ -213,6 +215,8 @@ export function TaskDetail({
     followUpError,
     sending,
     onFollowUp,
+    activity = null,
+    live = false,
 }: {
     /** The task's whole chain, oldest first — null until the thread poll lands. */
     jobs: Job[] | null;
@@ -226,6 +230,13 @@ export function TaskDetail({
     followUpError: string | null;
     sending: boolean;
     onFollowUp: (command: string) => Promise<string | null>;
+    /**
+     * The head run's activity payload (issue 339), fetched by the page's hook — the panel
+     * draws what it is handed, and null is "nothing (yet) to chart", drawn as a quiet sentence.
+     */
+    activity?: JobActivity | null;
+    /** Whether the head run is still going — hatches the chart's in-progress bucket. */
+    live?: boolean;
 }) {
     const outputRef = useRef<HTMLPreElement | null>(null);
 
@@ -280,6 +291,9 @@ export function TaskDetail({
                         ))}
                     </section>
                     <RunHistory jobs={jobs} />
+                    {/* The head run's progress over time (issue 339) — one chart, for the run
+                    the reader is looking at, driven by `failure_kind`'s sibling read. */}
+                    <TaskActivity payload={activity} live={live} />
                     {gates !== null && gates.length > 0 ? <Verification gates={gates} /> : null}
                     {services !== null && services.length > 0 ? <Services services={services} /> : null}
                     {publish !== null ? <Publication publish={publish} /> : null}
