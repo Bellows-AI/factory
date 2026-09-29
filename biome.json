@@ -11,6 +11,7 @@
             "server/**",
             "web/**",
             "driver/**",
+            "cli/**",
             "e2e/**",
             "*.ts",
             "package.json",
@@ -196,6 +197,7 @@
                 "server/test/**",
                 "server/test-db/**",
                 "driver/test/**",
+                "cli/test/**",
                 "web/test/**",
                 "e2e/**"
             ],

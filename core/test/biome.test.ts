@@ -79,7 +79,7 @@ describe('biome', () => {
         });
         expect(config.linter).toMatchObject({ enabled: true });
         expect(config.linter.rules.preset).toBe('recommended');
-        for (const glob of ['core/**', 'server/**', 'web/**', 'driver/**']) {
+        for (const glob of ['core/**', 'server/**', 'web/**', 'driver/**', 'cli/**']) {
             expect(config.files.includes).toContain(glob);
         }
     });

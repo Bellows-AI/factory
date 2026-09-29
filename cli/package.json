@@ -1,0 +1,16 @@
+{
+    "name": "@factory-ai/cli",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "bin": {
+        "factory": "dist/index.js"
+    },
+    "scripts": {
+        "build": "tsc -b",
+        "dev": "tsx --env-file-if-exists=../.env src/index.ts"
+    },
+    "devDependencies": {
+        "tsx": "^4.19.0"
+    }
+}

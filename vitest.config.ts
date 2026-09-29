@@ -9,6 +9,7 @@ export default defineConfig({
             // real processes (the branch reporter's node children, git fixtures, loopback HTTP)
             // still touches nothing but its own temp dirs — offline, no daemon, no network.
             'driver/test/**/*.test.ts',
+            'cli/test/**/*.test.ts',
             // Renders panels with react-dom/server, so no DOM and no browser is needed.
             'web/test/**/*.test.tsx',
             // `.test.ts` too: web/test holds non-component suites (executor config validation)
@@ -40,9 +41,9 @@ export default defineConfig({
             provider: 'v8',
             // 'lcov' is what Sonar ingests; 'text' is for reading here. Both, or CI is silent.
             reporter: ['text', 'lcov'],
-            include: ['core/src/**', 'server/src/**', 'web/src/**', 'driver/src/**'],
+            include: ['core/src/**', 'server/src/**', 'web/src/**', 'driver/src/**', 'cli/src/**'],
             // Measured but never executed by this suite, so they only dilute the percentage.
-            exclude: ['**/*.d.ts', 'web/src/main.tsx', 'server/src/index.ts'],
+            exclude: ['**/*.d.ts', 'web/src/main.tsx', 'server/src/index.ts', 'cli/src/index.ts'],
         },
     },
 });

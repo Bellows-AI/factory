@@ -1,7 +1,7 @@
 # Job board
 
 Read before: touching `server/src/routes/jobs.ts`, `server/src/db/job-store*.ts`,
-`server/migrations/006_jobs.sql` or anything under `driver/`.
+`server/migrations/006_jobs.sql` or anything under `driver/` or `cli/`.
 
 A job is a text command waiting for a worker — read as an agent prompt. The runner's `ENTRYPOINT`
 is a CLI wrapper: the driver passes the command as `-p <command>` to claude-code, or as the
@@ -17,6 +17,36 @@ When a task walks a WORKFLOW — the graph of agent nodes the board itself walks
 that is a separate doc: [docs/workflows.md](docs/workflows.md) covers the definition grammar, the
 edge vocabulary, the claim's `publish` flag and the halt semantics. This file describes the
 one-row pipeline every task still shares, workflow or not.
+
+## The CLI (`cli/`, issue #21)
+
+`npm run cli -- <args>` (or `node cli/dist/index.js` after a build) — a plain HTTP client shaped
+exactly like `driver/`: it depends on nothing, `core` included, and speaks to the board's person
+routes only. Three commands:
+
+```
+factory job create <command...> [--repo owner/name] [--executor name]   POST /api/jobs
+factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]   GET /api/jobs
+factory job investigate <id> [--json]                                   GET /api/jobs/:id + /thread
+```
+
+- **Config is two environment variables and nothing else.** `FACTORY_URL` names the board and is
+  required — unlike the driver there is no default, because a CLI that guesses a board queues real
+  tasks against whichever one answers. `FACTORY_TOKEN` carries a personal access token (`fat_…`,
+  minted from the settings page — docs/auth.md "Access tokens", issue #70); the `Authorization`
+  header is **omitted, never sent empty**, when it is unset, which is the common case against an
+  `AUTH_MODE=none` board. An `oat_` org token also authenticates, but only the two reads — a
+  create answers the board's own 403.
+- **The board is the validator.** The CLI performs no command-length or repo-shape checks of its
+  own — every refusal arrives as the board's `{error, code}` envelope and is printed to stderr
+  with the code. The one client-side check is `--limit`, so an obvious typo never round-trips.
+- **`--` ends option parsing**, so a create command with flags of its own survives:
+  `factory job create --repo owner/name -- npm test --watch`.
+- **Exit codes: 0 ok, 1 board or network failure, 2 usage or configuration.** `investigate`
+  prints the job's header block (status, command, authorship, timing, session, gates, output
+  tail) followed by every thread member with its command, verdict, session id and tail;
+  `--json` prints the payloads as JSON — the `jobs` array for list, `{job, thread}` for
+  investigate.
 
 ## The driver contract
 
