@@ -14,6 +14,7 @@ import type {
     LeaseResult,
     ReclaimClaim,
     RemoveResult,
+    RetryRefusal,
     StopResult,
 } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
@@ -37,6 +38,7 @@ afterEach(async () => {
 const ID = '11111111-1111-4111-8111-111111111111';
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
+const RETRY_ID = '66666666-6666-4666-8666-666666666666';
 
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
@@ -63,6 +65,7 @@ interface StoreStub extends JobStore {
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
+    retries: { id: string; createdBy: string | null }[];
     markedDone: { id: string; doneBy: string | null }[];
     gatesReported: { id: string; results: GateReport[] }[];
     gatesReread: { id: string }[];
@@ -93,6 +96,7 @@ function stubStore(
         job?: Job | null;
         thread?: Job[] | null;
         followUp?: FollowUpRefusal;
+        retry?: RetryRefusal;
         /** What the store answers a create with; 'purging' is the manual purge's refusal (#92). */
         create?: 'purging';
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
@@ -129,6 +133,7 @@ function stubStore(
         gatesReread: [],
         publishTokens: [],
         followUps: [],
+        retries: [],
         markedDone: [],
         gatesReported: [],
         stopped: [],
@@ -159,6 +164,11 @@ function stubStore(
             boom();
             stub.followUps.push({ parentId, command, createdBy: createdBy ?? null });
             return options.followUp ?? { id: FOLLOW_UP_ID };
+        },
+        async createRetry(id, createdBy) {
+            boom();
+            stub.retries.push({ id, createdBy: createdBy ?? null });
+            return options.retry ?? { id: RETRY_ID };
         },
         async markDone(id, doneBy) {
             boom();
@@ -1533,6 +1543,15 @@ describe('lifecycle actor attribution', () => {
         expect(store.followUps).toEqual([{ parentId: ID, command: 'again, tighter', createdBy: caller.user.id }]);
     });
 
+    it('retry records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/retry`, cookie);
+
+        expect(response.statusCode).toBe(201);
+        expect(store.retries).toEqual([{ id: ID, createdBy: caller.user.id }]);
+    });
+
     it('stop records the signed-in caller', async () => {
         const { instance, store, caller, cookie } = await signedInHarness();
 
@@ -1757,6 +1776,68 @@ describe('POST /api/jobs/:id/follow-up', () => {
     it('refuses a malformed id before touching the store', async () => {
         const instance = await harnessWith(stubStore());
         const response = await post(instance, '/api/jobs/nope/follow-up', { command: 'again' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+});
+
+describe('POST /api/jobs/:id/retry', () => {
+    // Retry takes NOTHING from the body: the command is the thread head's, copied at insert, and
+    // everything else about the run comes from the thread. A stale body is ignored, never read.
+    it('queues a retry taking nothing from the body', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/retry`, { command: 'ignored', executor: 'ignored' });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json()).toEqual({ id: RETRY_ID, status: 'queued' });
+        expect(store.retries).toEqual([{ id: ID, createdBy: null }]);
+    });
+
+    // A retry is a person's action on a finished run: there is no lease token to present and
+    // none would mean anything.
+    it('takes no lease token', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(201);
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ retry: 'missing' }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(404);
+    });
+
+    // Author-scoped like follow-up: the retry runs in the author's checkout tree.
+    it('answers 403 for a task queued by another account', async () => {
+        const instance = await harnessWith(stubStore({ retry: 'forbidden' }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(403);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
+    it.each([
+        ['a task that is still moving', 'not_finished', 'NOT_FINISHED'],
+        ['a task the user has marked done', 'task_done', 'TASK_DONE'],
+        ['a checkout that is being deleted', 'purging', 'PURGE_IN_PROGRESS'],
+    ])('answers 409 for %s', async (_label, verdict, code) => {
+        const instance = await harnessWith(stubStore({ retry: verdict as RetryRefusal }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id before touching the store', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs/nope/retry', {});
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_ID');
     });

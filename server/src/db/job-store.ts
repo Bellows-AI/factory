@@ -18,6 +18,7 @@
 import {
     createJobRow,
     createFollowUpRow,
+    createRetryRow,
     markJobDone,
     stopJob,
     suspendJob,
@@ -91,6 +92,11 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         async createFollowUp(parentId, command, createdBy) {
             await gate();
             return createFollowUpRow(sql, { orgId, parentId, command, createdBy });
+        },
+
+        async createRetry(id, createdBy) {
+            await gate();
+            return createRetryRow(sql, { orgId, id, createdBy });
         },
 
         async markDone(id, doneBy) {

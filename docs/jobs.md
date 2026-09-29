@@ -951,8 +951,9 @@ driver died before it could report. Since 016 the session id is whatever the exe
 claude uuid or an opencode `ses_…` — so every executor with a reported session can be followed up. Marking a task done is likewise terminal-only, and idempotent by `coalesce` on `done_at`, so a
 retried click answers the first verdict's instant rather than rewriting it.
 
-**Both insert paths take the author's checkout row's lock (issue #92).** Root creation and
-follow-up insertion check the AUTHOR's `user_repo` row for the task's repo NAME — by name, because
+**All three insert paths take the author's checkout row's lock (issue #92).** Root creation,
+follow-up insertion and retry insertion (issue #326) check the AUTHOR's `user_repo` row for the
+task's repo NAME — by name, because
 the directory is keyed by name even when an old task's `owner/name` label differs — inside the
 same transaction as the job insert, `for update` BEFORE inserting. `purging` answers
 `409 PURGE_IN_PROGRESS`: a checkout that is being manually deleted must not have a task queued
@@ -990,6 +991,31 @@ cleared.** The claim's keep predicate (below) extends to rows carrying
 `parent_job_id`: the session holds the whole conversation, not just the dead attempt's work, and
 clearing it would throw the thread away with the attempt. The command re-delivers on that re-claim,
 which is the ordinary retry semantics for a run.
+
+**Retry (issue #326) is the exit from follow-up's `NO_SESSION` dead end.** A finished run whose
+session was never reported — the driver died before reporting, or a refused start reported its
+minted session and then took it back — has nothing to continue, and before retry the only way
+forward was a brand-new task that lost the thread and its worktree. `POST /api/jobs/:id/retry`
+(takes no body, no lease token — a person's action on a finished task) queues a fresh attempt of
+the THREAD HEAD's command — the newest member, the chainHead rule — in the same thread. The new
+row copies the head's `command`, `repo`, `executor` and frozen `workflow_name` (every member
+inherits those labels, so the head and the named task agree today), and carries the thread's
+`root_job_id`; what it deliberately does NOT carry is
+the follow-up's other two columns — no `parent_job_id`, no `session_id`. That absence is the whole
+mechanism: the claim computes `followUp` from `parent_job_id` and keeps `session_id` only for a
+follow-up, so a retry is delivered as an ordinary first fresh run (`resumeSessionId: null`,
+`followUp: false`) with no claim-side rule added, and it lands in the thread's own worktree
+because the worktree is keyed by the root. Retry never refuses for HAVING a session and never
+resumes one — follow-up is the resume action, retry the fresh one. On a WORKFLOW thread the retry
+row is off-graph like a user follow-up: it copies the head's `workflow_name` but carries no
+`workflow_node`, so its claim's publish flag reads as absent (the driver publishes after a
+succeeded gated run, exactly as it does for a follow-up) and its completion drives the transition
+decision from the halted node. Refusals are decided atomically
+with the insert, under the named row's `for update` lock and the same checkout purge guard the
+other insert paths take: `404` unknown, `409 NOT_FINISHED`, `409 TASK_DONE`, `403 FORBIDDEN`
+(author-scoped like follow-up — the thread's worktree lives in the author's checkout tree),
+`409 PURGE_IN_PROGRESS`. Executor parity is by construction: the claim shape is unchanged, so
+docker and kubernetes run a retried task exactly as they run a first one.
 
 ## The task summary read model: `GET /api/tasks` (#157)
 

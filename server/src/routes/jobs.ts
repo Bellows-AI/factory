@@ -22,6 +22,7 @@ import {
     handleReclaimsAck,
     handleReclaimsClaim,
     handleRemove,
+    handleRetry,
     handleStop,
     handleThread,
 } from './job-handlers-actions.js';
@@ -81,6 +82,9 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleFollowUp(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleRetry(orgs, request, reply)
         );
         app.post('/api/jobs/:id/done', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDone(orgs, request, reply)

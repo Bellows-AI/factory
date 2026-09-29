@@ -418,6 +418,31 @@ export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
     }
 }
 
+export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+
+export function retryRefusal(reply: FastifyReply, reason: RetryRefusal) {
+    switch (reason) {
+        case 'missing':
+            return notFoundJob(reply);
+        case 'not_finished':
+            return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
+        case 'task_done':
+            return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: ERROR_CODES.TASK_DONE });
+        case 'forbidden':
+            return bad(
+                reply,
+                ERROR_CODES.FORBIDDEN,
+                'Only the account that queued the task can retry it',
+                HTTP_FORBIDDEN
+            );
+        case 'purging':
+            return reply.code(HTTP_CONFLICT).send({
+                error: "The task's checkout is being deleted from disk",
+                code: ERROR_CODES.PURGE_IN_PROGRESS,
+            });
+    }
+}
+
 export function validateListQuery(query: {
     status?: string;
     limit?: string;

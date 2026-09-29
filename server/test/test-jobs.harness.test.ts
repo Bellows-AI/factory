@@ -40,6 +40,15 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('attempts 0');
     });
 
+    it('the retry block exercises the no-session retry contract (issue #326)', () => {
+        expect(SCRIPT).toContain('409 POST "/api/jobs/$retry_id/retry"');
+        expect(SCRIPT).toContain('409 POST "/api/jobs/$retry_id/follow-up"');
+        expect(SCRIPT).toContain('POST "/api/jobs/$retry_id/retry"');
+        expect(SCRIPT).toContain('rootJobId "$retry_id"');
+        expect(SCRIPT).toContain("resumeSessionId ''");
+        expect(SCRIPT).toContain('followUp false');
+    });
+
     it('the truncate waits for the seeded workflow, proven by the refusal body, not the 400 alone', () => {
         // seedBase() fires un-awaited at runtime build (orgs.ts), so a one-shot warm-up gates
         // nothing: a NAMED create answers 404 UNKNOWN_WORKFLOW while `fix-issue` is still missing

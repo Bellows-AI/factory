@@ -20,10 +20,10 @@ const web = { owner: 'acme', name: 'web' };
 
 /**
  * The races the manual purge can lose (issue #92's acceptance criterion): duplicate/replayed
- * purge, selection versus purge, BOTH job-insert paths versus purge, and same-name tasks from
- * another owner. The losing operation must observe the winning transaction's state — which is
- * what the row lock buys, and what these tests exercise with a real second transaction holding
- * the lock.
+ * purge, selection versus purge, ALL THREE job-insert paths (create, follow-up, retry) versus
+ * purge, and same-name tasks from another owner. The losing operation must observe the winning
+ * transaction's state — which is what the row lock buys, and what these tests exercise with a
+ * real second transaction holding the lock.
  */
 const db = useTestDb({
     orgs: [ORG],
@@ -114,7 +114,7 @@ describe.skipIf(!enabled)('the purge races', () => {
         expect(await store.stampPurge(ALICE, web)).toEqual({ refused: 'selected' });
     });
 
-    it('a stamp that commits first refuses both job-insert paths', async () => {
+    it('a stamp that commits first refuses all three job-insert paths', async () => {
         await seedOrphan(web);
         await store.stampPurge(ALICE, web);
 
@@ -129,6 +129,9 @@ describe.skipIf(!enabled)('the purge races', () => {
                     ${'33333333-3333-4333-8333-333333333333'}, ${parentId})
         `;
         expect(await jobs.createFollowUp(parentId, 'again', ALICE)).toBe('purging');
+
+        // And the retry path (issue #326), whose guard reads the NAMED task's repo label.
+        expect(await jobs.createRetry(parentId, ALICE)).toBe('purging');
     });
 
     it('a re-selection while the stamp is held waits, then refuses with the row intact', async () => {
@@ -177,5 +180,8 @@ describe.skipIf(!enabled)('the purge races', () => {
 
         const followUp = await jobs.createFollowUp(parentId, 'again', ALICE);
         expect(followUp).toHaveProperty('id');
+        // The retry path reads the same absent row as no refusal, the same contract.
+        const retry = await jobs.createRetry(parentId, ALICE);
+        expect(retry).toHaveProperty('id');
     });
 });

@@ -149,9 +149,11 @@ describe('the route table', () => {
         // again, one level up.
         ['/api/tasks', 'user'],
         [`/api/jobs/${JOB_ID}`, 'user'],
-        // Both are person's actions on a finished task — a follow-up asks for adjustments, done
-        // declares the task finished by hand — and both fall through to `user`.
+        // All three are person's actions on a finished task — a follow-up asks for adjustments,
+        // retry re-runs the thread head's command fresh, done declares the task finished by
+        // hand — and all fall through to `user`.
         [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
+        [`/api/jobs/${JOB_ID}/retry`, 'user'],
         [`/api/jobs/${JOB_ID}/done`, 'user'],
         // Stop and remove are person's actions too. The driver is told to stop through the
         // heartbeat it already holds, never through a stop route of its own; and a worker token

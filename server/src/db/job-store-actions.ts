@@ -214,6 +214,90 @@ async function followUpRefusalOf(
     return 'no_session';
 }
 
+/**
+ * createRetry's body (issue #326): queue a fresh attempt of the thread head's command in the SAME
+ * thread, without resuming a session. One transaction and one conditional insert, shaped exactly
+ * like the follow-up's: the checkout purge guard first, then the insert whose `named` CTE carries
+ * every precondition on the NAMED row — terminal, not done, the caller's own — under its `for
+ * update` lock, so the refusal below names the row as it is now, never a stale snapshot.
+ *
+ * What is copied comes from the thread HEAD (the newest member by created_at then id — the same
+ * chainHead rule the reads follow): its command, repo, executor, workflow_name and root_job_id.
+ * What is deliberately ABSENT is the follow-up's other two columns: no `parent_job_id` and no
+ * `session_id`. The claim computes `followUp` from `parent_job_id` and keeps `session_id` only on
+ * a follow-up, so this row is delivered as an ordinary first run — `resumeSessionId: null,
+ * followUp: false` — with no claim-side rule added, and it lands in the thread's own worktree
+ * because the worktree is keyed by `root_job_id`.
+ */
+export async function createRetryRow(
+    sql: Sql,
+    input: { orgId: string; id: string; createdBy: string | null }
+): Promise<{ id: string } | 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging'> {
+    const { orgId, id, createdBy } = input;
+    // One transaction for the checkout-row guard and the conditional insert, the same lock both
+    // job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
+    return sql.begin(async (tx) => {
+        // The retry runs in the thread's repo's checkout, so the guard reads the named row's
+        // repo label (a finished row's label never changes) and locks the author's checkout row
+        // before anything can be inserted.
+        const [label] = await tx<{ repo: string | null }[]>`
+            select repo from job where org_id = ${orgId} and id = ${id}
+        `;
+        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label?.repo ?? null)) return 'purging';
+        const rows = await tx<{ id: string }[]>`
+            with named as (
+                select id, root_job_id
+                from job
+                where org_id = ${orgId} and id = ${id}
+                  and status in ('succeeded','failed','dead','stopped')
+                  and done_at is null
+                  and created_by is not distinct from ${createdBy}
+                for update
+            ),
+            head as (
+                select command, repo, executor, root_job_id, workflow_name
+                from job
+                where org_id = ${orgId} and root_job_id = (select root_job_id from named)
+                order by created_at desc, id desc
+                limit 1
+            )
+            insert into job (org_id, command, created_by, repo, executor, root_job_id, workflow_name)
+            select ${orgId}, head.command, ${createdBy}, head.repo, head.executor,
+                   head.root_job_id, head.workflow_name
+            from named, head
+            returning id
+        `;
+        if (rows[0]) return { id: rows[0]!.id };
+        // Nothing inserted — one of the preconditions failed, and which one decides the answer
+        // the route turns into a status code.
+        if (!(await exists(tx, orgId, id))) return 'missing';
+        return retryRefusalOf(tx, orgId, id);
+    });
+}
+
+/**
+ * Names the precondition the conditional insert failed on, for the row AS IT IS NOW — the same
+ * honesty followUpRefusalOf states. The author predicate has no arm here: the insert's `named`
+ * CTE already decided it, so after the done and status reads the only remaining cause is a row
+ * that moved between the CTE and this read, and `forbidden` is the catch-all answer. A row that
+ * moved all the way to deleted answers `missing` rather than dying on the read.
+ */
+async function retryRefusalOf(
+    tx: TransactionSql,
+    orgId: string,
+    id: string
+): Promise<'missing' | 'task_done' | 'not_finished' | 'forbidden'> {
+    const [row] = await tx<{ status: JobStatus; done_at: Date | null }[]>`
+        select status, done_at from job where org_id = ${orgId} and id = ${id}
+    `;
+    if (!row) return 'missing';
+    if (row.done_at !== null) return 'task_done';
+    if (row.status !== 'succeeded' && row.status !== 'failed' && row.status !== 'dead' && row.status !== 'stopped') {
+        return 'not_finished';
+    }
+    return 'forbidden';
+}
+
 export async function markJobDone(
     ctx: JobStoreContext,
     id: string,
