@@ -5,6 +5,7 @@ import {
     authoredBy,
     failedGateFollowUpThread,
     failedGateThread,
+    mockedActivityOf,
     otherAuthorThread,
     parkedReviewWaitMarkedDoneThread,
     parkedReviewWaitRunningThread,
@@ -67,6 +68,9 @@ async function shoot(page: Page, journey: string, step: string, theme: Theme): P
  */
 async function routeTask(page: Page, held: { jobs: ThreadJob[] }): Promise<void> {
     await page.route('**/api/jobs/*/thread*', (route) => route.fulfill({ json: { jobs: held.jobs } }));
+    // The page's run-activity hook (issue #339) fetches beside the thread poll; a mocked thread
+    // answers it too, or the real board 404s a task id the fixture only names.
+    await page.route('**/api/jobs/*/activity', (route) => route.fulfill({ json: mockedActivityOf(held.jobs) }));
     await page.route(/\/api\/tasks(\?|$)/, (route) => {
         const row = taskSummaryOf(held.jobs);
         const terminal =

@@ -1,6 +1,6 @@
 import { COMMAND_LIMIT, ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
-import type { GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
+import type { FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
     type WorkflowDefinition,
@@ -196,6 +196,25 @@ export interface CompleteFields {
     contextCostUsd: number | null;
     agentTurns: number | null;
     summary: string | null;
+    failureKind: FailureKind | null;
+}
+
+/**
+ * The structured terminal reasons a verdict may name (issue #339). The route is the value
+ * boundary: anything not in this list is refused, so the stored column is always one of these
+ * six spellings or null — "not a failure".
+ */
+export const FAILURE_KINDS: readonly FailureKind[] = [
+    'timeout',
+    'cache_lost',
+    'gate',
+    'publish',
+    'helper',
+    'runner_error',
+];
+
+function badFailureKind(failureKind: unknown): boolean {
+    return failureKind !== undefined && failureKind !== null && !FAILURE_KINDS.includes(failureKind as FailureKind);
 }
 
 function badExitCode(exitCode: unknown): boolean {
@@ -244,43 +263,64 @@ function badSummaryField(summary: unknown): boolean {
     return summary !== undefined && summary !== null && typeof summary !== 'string';
 }
 
-export function validateCompleteFields(
-    fields: Record<string, unknown>
-): { ok: true; value: CompleteFields } | { ok: false; code: string; message: string } {
-    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary } = fields;
+/** The last two scalar checks of a complete body — the close-time summary and the failure kind. */
+function closingFieldRefusal(fields: Record<string, unknown>): { code: string; message: string } | null {
+    if (badSummaryField(fields.summary)) {
+        return { code: ERROR_CODES.BAD_SUMMARY, message: 'summary must be a string or null' };
+    }
+    if (badFailureKind(fields.failureKind)) {
+        return {
+            code: ERROR_CODES.BAD_FAILURE_KIND,
+            message: `failureKind must be one of ${FAILURE_KINDS.join(', ')} or null`,
+        };
+    }
+    return null;
+}
+
+/** The measured fields of a complete body, before the close-time pair — every bounded number. */
+function measuredFieldRefusal(fields: Record<string, unknown>): { code: string; message: string } | null {
+    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns } = fields;
     if (status !== 'succeeded' && status !== 'failed') {
-        return { ok: false, code: ERROR_CODES.BAD_STATUS, message: "status must be 'succeeded' or 'failed'" };
+        return { code: ERROR_CODES.BAD_STATUS, message: "status must be 'succeeded' or 'failed'" };
     }
     if (badExitCode(exitCode)) {
-        return { ok: false, code: ERROR_CODES.BAD_EXIT_CODE, message: 'exitCode must be an integer or null' };
+        return { code: ERROR_CODES.BAD_EXIT_CODE, message: 'exitCode must be an integer or null' };
     }
     if (badOutputField(output)) {
-        return { ok: false, code: ERROR_CODES.BAD_OUTPUT, message: 'output must be a string or null' };
+        return { code: ERROR_CODES.BAD_OUTPUT, message: 'output must be a string or null' };
     }
     if (badContextTokens(contextTokens)) {
         return {
-            ok: false,
             code: ERROR_CODES.BAD_CONTEXT,
             message: `contextTokens must be an integer 0..${CONTEXT_TOKENS_MAX}`,
         };
     }
     if (badContextCost(contextCostUsd)) {
         return {
-            ok: false,
             code: ERROR_CODES.BAD_CONTEXT,
             message: `contextCostUsd must be a number 0..${CONTEXT_COST_MAX}`,
         };
     }
     if (badAgentTurns(agentTurns)) {
         return {
-            ok: false,
             code: ERROR_CODES.BAD_AGENT_TURNS,
             message: `agentTurns must be an integer 0..${AGENT_TURNS_MAX}`,
         };
     }
-    if (badSummaryField(summary)) {
-        return { ok: false, code: ERROR_CODES.BAD_SUMMARY, message: 'summary must be a string or null' };
-    }
+    return null;
+}
+
+// Empty is none, the same contract the store and the docs state: null is unmeasured,
+// never an empty string. Bounded by codepoint, so the cap never splits a surrogate pair.
+const summaryValue = (summary: unknown): string | null =>
+    typeof summary === 'string' && summary.trim() ? [...summary.trim()].slice(0, SUMMARY_LIMIT).join('') : null;
+
+export function validateCompleteFields(
+    fields: Record<string, unknown>
+): { ok: true; value: CompleteFields } | { ok: false; code: string; message: string } {
+    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind } = fields;
+    const refusal = measuredFieldRefusal(fields) ?? closingFieldRefusal(fields);
+    if (refusal !== null) return { ok: false, ...refusal };
     return {
         ok: true,
         value: {
@@ -290,12 +330,8 @@ export function validateCompleteFields(
             contextTokens: (contextTokens as number | undefined) ?? null,
             contextCostUsd: (contextCostUsd as number | undefined) ?? null,
             agentTurns: (agentTurns as number | undefined) ?? null,
-            // Empty is none, the same contract the store and the docs state: null is unmeasured,
-            // never an empty string. Bounded by codepoint, so the cap never splits a surrogate pair.
-            summary:
-                typeof summary === 'string' && summary.trim()
-                    ? [...summary.trim()].slice(0, SUMMARY_LIMIT).join('')
-                    : null,
+            summary: summaryValue(summary),
+            failureKind: (failureKind as FailureKind | undefined) ?? null,
         },
     };
 }

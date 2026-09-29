@@ -56,6 +56,14 @@ restart with a warm database serves real data on the first request rather than a
   every save. A column travels with the row through that same replace, and a deleted row takes its
   flag with it for free. One default per member is a partial unique index, `027_workflows.sql`'s
   `workflow_default_uk` precedent.
+- **`044_job_failure_kind.sql` is one nullable text column, and that is the whole migration.**
+  `job.failure_kind` names a failed run's terminal reason (issue #339 — the six spellings and the
+  driver's precedence live in docs/jobs.md). No check constraint, unlike `status`: the database
+  never transitions this column — the verdict's overwrite is the only write, so the value boundary
+  is the route's validation, and a constraint would be a second list to keep in step. Null is
+  "not a failure" (a success, or a pre-column row) and there is no backfill, by the same reasoning
+  043 states: a historical tail usually does not name a kind, and guessing one would manufacture
+  history.
 
 **Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
 `npm test`**. That is the price of keeping the default suite offline and database-free; they are

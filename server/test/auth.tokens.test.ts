@@ -271,6 +271,8 @@ describe('organization access tokens: allowlist and reads', () => {
             // The stub board holds no such job, so the read itself 404s — the point is the wall.
             ['GET', `/api/jobs/${JOB_ID}`, HTTP_NOT_FOUND],
             ['GET', `/api/jobs/${JOB_ID}/thread`, HTTP_OK],
+            // The run-activity read (issue #339) rides the same boundary as the thread's.
+            ['GET', `/api/jobs/${JOB_ID}/activity`, HTTP_NOT_FOUND],
         ];
         for (const [method, url, expected] of allowed) {
             const response = await server.inject({ method, url, headers: bearer(token) });

@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob, FailureKind } from './board.js';
 import type { HelperFailureReport, HelperPlan, HelperResult } from './helpers.js';
 import { formatConcludeOutput, runHelperPlan } from './helpers.js';
 import { down, raceStep } from './loop-attempt.js';
@@ -71,6 +71,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN 
                     status: 'failed',
                     exitCode: null,
                     output: `The declared pre-run helper "${plan.helperId}" failed (${result.reason}): ${result.message}`,
+                    failureKind: 'helper' satisfies FailureKind,
                 })
                 .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
             return STOOD_DOWN;

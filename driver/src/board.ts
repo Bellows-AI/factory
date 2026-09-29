@@ -177,6 +177,14 @@ export const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 export type HeartbeatVerdict = { result: 'held'; cancelRequested: boolean } | 'lost' | 'removed';
 
 /**
+ * The structured terminal reason of a run (issue #339): what class of ending the verdict records,
+ * reported with the verdict and stored by the board as `job.failure_kind`. Null — the field off
+ * the wire — means "not a failure": a success, or a row older than the column. Copied here rather
+ * than imported because this package depends on nothing.
+ */
+export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'runner_error';
+
+/**
  * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
  * the tree for somebody to take down. The lease claims the row so the reclaim is mutually
  * exclusive with a live attempt's startup sync; the row is deleted when the work is acked.
@@ -308,6 +316,13 @@ export interface Board {
             agentTurns?: number | null;
             summary?: string | null;
             /**
+             * The structured terminal reason (issue #339): why a failed run failed — the timeout
+             * kill, a cache loss, a failed gate, an unlanded publish, a failed helper, or the
+             * runner erroring. Absent when the run succeeded, so the board stores null and the
+             * row stays queryable as "not a failure".
+             */
+            failureKind?: FailureKind;
+            /**
              * What the publish landed, when a publish did: the board's only trusted record of a
              * thread's repository — review traffic and the thread's wait key on it. Omitted when
              * the run published nothing.
@@ -366,6 +381,46 @@ const bestEffortLeases = async (
         return null;
     }
 };
+
+/**
+ * The verdict's POST body: every measured field rides, and absent stays absent — the never-zero
+ * contract is the driver's to keep on the wire too. Extracted from `complete` so the client
+ * method stays a round trip, not a payload builder.
+ */
+function completeBody({
+    status,
+    exitCode,
+    output,
+    contextTokens,
+    contextCostUsd,
+    agentTurns,
+    summary,
+    failureKind,
+    publication,
+}: Parameters<Board['complete']>[1]): Record<string, unknown> {
+    return {
+        status,
+        exitCode,
+        output,
+        ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
+        ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
+        // A number only: null and absent both stay off the wire, and the board stores
+        // unmeasured — the never-zero contract is the driver's to keep too.
+        ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
+        ...(summary ? { summary } : {}),
+        // The structured failure reason, when there is one (issue #339); absent stays null.
+        ...(failureKind ? { failureKind } : {}),
+        // The identity of what was published, when anything was — the board keys review
+        // traffic and the thread's wait on it.
+        ...(publication ? { publication } : {}),
+    };
+}
+
+/** The verdict POST carries the lease token beside the payload, like every worker write. */
+const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1]): Record<string, unknown> => ({
+    leaseToken: job.leaseToken,
+    ...completeBody(result),
+});
 
 export function createBoard({
     url,
@@ -525,25 +580,8 @@ export function createBoard({
             return bestEffortLeases(post, ids);
         },
 
-        async complete(
-            job,
-            { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, publication }
-        ) {
-            const response = await post(`/api/jobs/${job.id}/complete`, {
-                leaseToken: job.leaseToken,
-                status,
-                exitCode,
-                output,
-                ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
-                ...(typeof contextCostUsd === 'number' ? { contextCostUsd } : {}),
-                // A number only: null and absent both stay off the wire, and the board stores
-                // unmeasured — the never-zero contract is the driver's to keep too.
-                ...(typeof agentTurns === 'number' ? { agentTurns } : {}),
-                ...(summary ? { summary } : {}),
-                // The identity of what was published, when anything was — the board keys review
-                // traffic and the thread's wait on it.
-                ...(publication ? { publication } : {}),
-            });
+        async complete(job, result) {
+            const response = await post(`/api/jobs/${job.id}/complete`, completeWireBody(job, result));
             // 409 is a verdict, not a failure: the lease is gone and with it any say over the
             // thread — the done answer is false, not unknown.
             if (response.status === HTTP_CONFLICT) return { state: 'lost', threadDone: false };

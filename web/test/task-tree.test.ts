@@ -200,6 +200,7 @@ describe('taskSummary', () => {
         wallClockMs: null,
         taskWallClockMs: null,
         summary: null,
+        failureKind: null,
         sessionId: null,
         waitReason: null,
         waitingSince: null,

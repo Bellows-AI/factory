@@ -1,4 +1,5 @@
 import type { JobRun, TelemetryInput } from '@factory-ai/core';
+import type { ActivityBucket } from './run-activity.js';
 
 export type TelemetrySource = 'postgres' | 'fixture' | 'off';
 
@@ -28,6 +29,12 @@ export interface TelemetryFetch {
  */
 export interface TelemetryClient {
     fetchRollups(options?: { repos?: readonly string[]; since?: string }): Promise<TelemetryFetch>;
+    /**
+     * One session's metric points bucketed over its run's wall clock (issue #339) — the
+     * task page's progress-over-time chart. Keyed by session id alone, like every other
+     * metric_point read: the caller resolved the session through its own org's job row.
+     */
+    runActivity(input: { sessionId: string; from: string; to: string; bucketMs: number }): Promise<ActivityBucket[]>;
     /** Never throws — it is called on the degradation path. */
     health(): Promise<TelemetryHealth>;
 }

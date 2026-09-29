@@ -36,6 +36,8 @@ export interface JobRow {
     output?: string | null;
     /** Absent from reads before 028 filled it; null is unmeasured, never empty. */
     summary?: string | null;
+    /** The structured terminal reason (044); null is "not a failure", never "unknown". */
+    failure_kind?: string | null;
     /** Absent from the list() select — a list view shows no checks, and bounded is not free. */
     gates?: GateReport[] | null;
     /**
@@ -154,6 +156,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         exitCode: row.exit_code,
         output: row.output ?? null,
         summary: row.summary ?? null,
+        failureKind: (row.failure_kind as Job['failureKind']) ?? null,
         gates: row.gates ?? null,
         runtime: row.runtime ?? null,
         repo: row.repo,

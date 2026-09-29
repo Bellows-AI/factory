@@ -9,6 +9,7 @@ import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName, gateExecArgs } from './docker.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import type { GateRunNote } from './timeout-note.js';
 import { networkName } from './services.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
@@ -314,6 +315,12 @@ export interface GateServer {
      */
     register(token: string, claim: GateClaim): void;
     unregister(token: string): void;
+    /**
+     * The latest ad-hoc run per declared gate name, as the server recorded it completing (issue
+     * #339) — what a timed-out run's kill note quotes as "the last gate verdicts". A harness
+     * failure (409/500) is not a verdict and records nothing; unregister clears.
+     */
+    lastRuns(token: string): readonly GateRunNote[];
     /** Idempotent. Resolves with the bound port, which is what the advertised URL is built from. */
     listen(): Promise<number>;
     close(): Promise<void>;
@@ -391,6 +398,8 @@ export function createGateServer({
     manager: Pick<GateManager, 'acquire' | 'runGate'>;
 }): GateServer {
     const claims = new Map<string, GateClaim>();
+    /** Per token, the latest completed run per gate name — the timeout note's raw material. */
+    const history = new Map<string, Map<string, GateRunNote>>();
     let server: Server | null = null;
     let listening: Promise<number> | null = null;
 
@@ -418,15 +427,26 @@ export function createGateServer({
         if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
 
         const result = await runRegisteredGate(manager, claim, gate);
+        if (result.status === HTTP_OK) {
+            const verdict = result.body as { exitCode: number | null };
+            const runs = history.get(auth) ?? new Map<string, GateRunNote>();
+            runs.set(gate.name, { name: gate.name, exitCode: verdict.exitCode, at: new Date().toISOString() });
+            history.set(auth, runs);
+        }
         return respond(reply, result.status, result.body);
     };
 
     return {
         register(token, claim) {
             claims.set(token, { ...claim, envBody: claim.envBody ?? '' });
+            history.set(token, new Map());
         },
         unregister(token) {
             claims.delete(token);
+            history.delete(token);
+        },
+        lastRuns(token) {
+            return [...(history.get(token)?.values() ?? [])];
         },
         listen() {
             // One promise per bind, cached: a second claim racing the first's bind awaits the
@@ -469,6 +489,7 @@ export function createGateServer({
             server = null;
             listening = null;
             claims.clear();
+            history.clear();
             closing.closeAllConnections();
             return new Promise((resolve) => closing.close(() => resolve()));
         },

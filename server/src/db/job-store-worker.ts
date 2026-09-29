@@ -198,7 +198,8 @@ export async function completeJob(
     result: CompleteResult
 ): ReturnType<JobStore['complete']> {
     const { sql, orgId, wallTick, prs } = ctx;
-    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, publication } = result;
+    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, publication } =
+        result;
     // The context stats ride the verdict and merge into the runtime vitals — the row keeps
     // its last CPU sample AND gains the context the run reached. The stats are stored
     // under the keys the task view reads (`contextTokens`, `costUsd`; the wire field is
@@ -220,6 +221,10 @@ export async function completeJob(
     // The close-time summary, same overwrite rule: the verdict replaces whatever the
     // attempt left, it never merges with one.
     const summaryPatch = typeof summary === 'string' ? summary : null;
+    // The structured terminal reason (044, issue #339), same overwrite rule: the verdict is
+    // the attempt's whole write, so an absent kind overwrites to null — a success and a
+    // pre-column row read the same, "not a failure".
+    const failureKindPatch = failureKind ?? null;
     const runtimeUpdate = context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`;
     // One transaction, because the terminality answer must describe the thread AS THE
     // VERDICT lands: the walk below runs on the same connection, where the just-updated
@@ -247,6 +252,7 @@ export async function completeJob(
                 cancel_requested_at = null,
                 agent_turns = ${agentTurnsPatch},
                 summary = ${summaryPatch},
+                failure_kind = ${failureKindPatch},
                 runtime     = ${runtimeUpdate}
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}

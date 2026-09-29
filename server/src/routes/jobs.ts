@@ -17,6 +17,7 @@ import {
     handleDone,
     handleFollowUp,
     handleGetJob,
+    handleJobActivity,
     handleListJobs,
     handleReclaimsAck,
     handleReclaimsClaim,
@@ -101,5 +102,6 @@ export const jobRoutes =
         );
         app.get('/api/jobs/:id', (request, reply) => handleGetJob(orgs, request, reply));
         app.get('/api/jobs/:id/thread', (request, reply) => handleThread(orgs, request, reply));
+        app.get('/api/jobs/:id/activity', (request, reply) => handleJobActivity(orgs, request, reply));
         app.get('/api/jobs', (request, reply) => handleListJobs(orgs, request, reply));
     };

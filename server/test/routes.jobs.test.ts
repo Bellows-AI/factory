@@ -56,6 +56,7 @@ interface StoreStub extends JobStore {
         contextCostUsd: number | null;
         agentTurns: number | null;
         summary: string | null;
+        failureKind: string | null;
     }[];
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
@@ -201,7 +202,11 @@ function stubStore(
             stub.progressed.push({ id, output, runtime });
             return options.verdict ?? 'ok';
         },
-        async complete(id: string, _token: string, { output, contextTokens, contextCostUsd, agentTurns, summary }) {
+        async complete(
+            id: string,
+            _token: string,
+            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind }
+        ) {
             boom();
             stub.completed.push({
                 id,
@@ -210,6 +215,7 @@ function stubStore(
                 contextCostUsd: contextCostUsd ?? null,
                 agentTurns: agentTurns ?? null,
                 summary: summary ?? null,
+                failureKind: failureKind ?? null,
             });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
@@ -255,11 +261,11 @@ function stubStore(
     return stub;
 }
 
-async function harnessWith(jobs?: StoreStub, workflows?: WorkflowStore) {
+async function harnessWith(jobs?: StoreStub, workflows?: WorkflowStore, telemetry = stubTelemetryClient()) {
     const config = testConfig();
     const instance = await buildApp({
         config,
-        orgs: staticRegistry({ config, jobs, workflows, telemetry: stubTelemetryClient() }),
+        orgs: staticRegistry({ config, jobs, workflows, telemetry }),
     });
     app = instance;
     return instance;
@@ -1775,7 +1781,15 @@ describe('POST /api/jobs/:id/complete', () => {
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
         expect(store.completed).toEqual([
-            { id: ID, output: 'hello', contextTokens: null, contextCostUsd: null, agentTurns: null, summary: null },
+            {
+                id: ID,
+                output: 'hello',
+                contextTokens: null,
+                contextCostUsd: null,
+                agentTurns: null,
+                summary: null,
+                failureKind: null,
+            },
         ]);
     });
 
@@ -1880,6 +1894,38 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(response.json().code).toBe('BAD_CONTEXT');
     });
 
+    // The structured failure kind (issue #339): a known kind lands beside the verdict, an unknown
+    // one is refused before the store can be told, and absent stores null.
+    it('records the failure kind beside the verdict', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            status: 'failed',
+            failureKind: 'timeout',
+        });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ failureKind: 'timeout' });
+    });
+
+    it('stores null when the report carries no failure kind', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, done);
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ failureKind: null });
+    });
+
+    it.each([
+        ['an unknown failure kind', 'nope'],
+        ['a non-string failure kind', 3],
+    ])('refuses %s with BAD_FAILURE_KIND', async (_label, failureKind) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, failureKind });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_FAILURE_KIND');
+    });
+
     it('rejects a report from a worker whose lease was reclaimed', async () => {
         const instance = await harnessWith(stubStore({ verdict: 'lost' }));
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
@@ -1923,6 +1969,7 @@ describe('GET /api/jobs', () => {
         sessionId: '33333333-3333-4333-8333-333333333333',
         exitCode: 0,
         output: 'hello',
+        failureKind: null,
         summary: null,
         repo: 'acme/web',
         executor: 'main',
@@ -2069,6 +2116,96 @@ describe('GET /api/jobs', () => {
         const response = await instance.inject({ method: 'GET', url });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe(code);
+    });
+});
+
+describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', () => {
+    // A started, session-bearing run — the shape the chart can draw is in. The fields the route
+    // reads are the started/finished stamps and the session id; the rest rides along for type.
+    const runJob: Job = {
+        id: ID,
+        command: 'echo hi',
+        status: 'failed',
+        attempts: 1,
+        maxAttempts: 3,
+        claimedBy: 'w1',
+        createdBy: null,
+        author: null,
+        stoppedBy: null,
+        doneBy: null,
+        sessionId: '33333333-3333-4333-8333-333333333333',
+        exitCode: null,
+        output: 'killed after 7200000ms',
+        summary: null,
+        failureKind: 'timeout',
+        repo: 'acme/web',
+        executor: 'main',
+        followUpTo: null,
+        rootJobId: ID,
+        workflowNode: null,
+        workflowName: null,
+        gates: null,
+        runtime: null,
+        doneAt: null,
+        cancelRequestedAt: null,
+        workspacePath: null,
+        createdAt: '2026-09-22T20:46:16.000Z',
+        startedAt: '2026-09-22T20:46:16.000Z',
+        finishedAt: '2026-09-22T22:46:16.000Z',
+        wallClockMs: null,
+        taskWallClockMs: null,
+    };
+
+    it('answers the telemetry buckets over the run window', async () => {
+        const telemetry = stubTelemetryClient({
+            runActivity: () => [{ start: '2026-09-22T21:00:00.000Z', tokens: 2_500_000, edits: 3 }],
+        });
+        const instance = await harnessWith(stubStore({ job: runJob }), undefined, telemetry);
+
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+            jobId: ID,
+            sessionId: runJob.sessionId,
+            from: runJob.startedAt,
+            to: runJob.finishedAt,
+            bucketMs: 900_000,
+            buckets: [{ start: '2026-09-22T21:00:00.000Z', tokens: 2_500_000, edits: 3 }],
+        });
+    });
+
+    it('answers empty for a job that never started or never named a session', async () => {
+        const telemetry = stubTelemetryClient();
+        const instance = await harnessWith(stubStore({ job: { ...runJob, sessionId: null } }), undefined, telemetry);
+        const noSession = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` });
+        expect(noSession.statusCode).toBe(200);
+        expect(noSession.json()).toEqual({
+            jobId: ID,
+            sessionId: null,
+            from: null,
+            to: null,
+            bucketMs: null,
+            buckets: [],
+        });
+        expect(telemetry.activityCalls).toEqual([]);
+
+        const neverStarted = await harnessWith(
+            stubStore({ job: { ...runJob, startedAt: null } }),
+            undefined,
+            stubTelemetryClient()
+        ).then((app) => app.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` }));
+        expect(neverStarted.json().buckets).toEqual([]);
+    });
+
+    it('answers 404 for an unknown job and BAD_ID for a malformed one', async () => {
+        const missing = await harnessWith(stubStore({ job: null }));
+        expect((await missing.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` })).statusCode).toBe(404);
+
+        const instance = await harnessWith(stubStore());
+        const response = await instance.inject({ method: 'GET', url: '/api/jobs/nope/activity' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
     });
 });
 

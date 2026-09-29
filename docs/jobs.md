@@ -42,7 +42,9 @@ POST /api/jobs/leases {ids}                     the orphan reaper's batched look
                                                 services) — each known id's status and CURRENT
                                                 lease, absent for the ids the board does not know
 POST /api/jobs/:id/complete {leaseToken, status, exitCode, output,
-                             publication?}  (see Publishing and the verdict paragraph below)
+                             failureKind?, publication?}  (see Publishing and the verdict
+                              paragraph below; failureKind is the structured terminal
+                              reason — issue #339)
   -> 200 {id, status, threadDone}   the verdict, plus whether EVERY job of the thread is
                                     terminal AND the user has closed it — the worktree-reclaim
                                     signal (see below)
@@ -160,7 +162,7 @@ cluster phase adds are in [kubernetes.md](kubernetes.md).
 | `DRIVER_CONCURRENCY` | `2` | |
 | `DRIVER_POLL_MS` | `5000` | |
 | `DRIVER_LEASE_SECONDS` | `300` | Heartbeat is a third of this. |
-| `DRIVER_JOB_TIMEOUT_MS` | `7200000` | The container is `docker kill`ed and the job reported failed, with a note. |
+| `DRIVER_JOB_TIMEOUT_MS` | `7200000` | The container is `docker kill`ed and the job reported failed, with a note — and the note says whether the run was still working: `[driver] killed after 7200000ms — still active: last output 2s ago, gates test+lint passed at 22:45:02, last activity "…"` versus `— idle: no output for 34m`. Active means the newest CHANGED output tail is younger than `STILL_ACTIVE_AFTER_MS` (120s); the gate clause quotes the ad-hoc gate server's latest verdict per declared gate (docker and kubernetes share the loop and the server, so both executors get it); the activity clause quotes the agent's last output line. Each clause is omitted when the driver holds nothing for it. |
 | `RUNNER_CACHE_WATCH` | off | Kills a job whose provider stopped serving prompt cache: three consecutive completed turns with no cached input over ≥20k tokens, each turn over a minute. Opencode only — see the section below. |
 | `RUNNER_CACHE_WATCH_POLL_MS` | `30000` | How often the watch probes the session database. One throwaway container per poll. |
 | `RUNNER_SKIP_PERMISSIONS` | off | Appends `--dangerously-skip-permissions`. Read the paragraph below. |
@@ -820,6 +822,32 @@ dashboard's recently-completed view; the command records what was asked, never w
   transcript that is gone — all store null, never zero. A genuine zero-response run stores 0.
   The task statistics exclude a task with any unmeasured in-range run from the agent-turn
   distribution rather than sum it partially; its tokens and runs still count in theirs.
+
+## The structured failure kind
+
+**Every failed run names WHY it failed in one queryable column** (`job.failure_kind`, 044, issue
+#339): the driver reports `failureKind` with the verdict, the route validates it against the six
+known spellings (`400 BAD_FAILURE_KIND` otherwise), and every job read — detail, thread, both list
+shapes — serves it, so "how many timeouts this week" and "timeouts where the gates passed" are
+queries, not archaeology through output tails.
+
+- **`timeout`** — the `DRIVER_JOB_TIMEOUT_MS` kill (see the env table above for the active/idle
+  note that rides the same verdict's output).
+- **`cache_lost`** — the prompt-cache watch kill (`RUNNER_CACHE_WATCH`).
+- **`gate`** — a declared gate ran and failed. Reserved for a gate RUN: the setup refusals (a
+  gates file that cannot be read, a driver started with no gate environment, a gate environment
+  that will not start) are `runner_error`, not `gate`.
+- **`helper`** — a declared pre- or post-block-helper step failed.
+- **`publish`** — the deterministic publish ran and its work did not land.
+- **`runner_error`** — every other failed ending: a non-zero exit, a premature finish, a refused
+  setup (claim refusals, a failed checkout sync, an unrunnable executor selection or master
+  prompt). The precedence when several conditions land on one verdict: timeout, cache, gate,
+  helper, publish, then runner error.
+
+**Null is "not a failure"** — a succeeded run, and every row that predates the column (there is no
+backfill; a historical tail usually does not name a kind and guessing one would manufacture
+history). The verdict's overwrite is the only write, so an absent kind overwrites to null like
+`agent_turns` does.
 
 ## The park (`suspend`)
 

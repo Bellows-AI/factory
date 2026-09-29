@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { TelemetryInput } from '@factory-ai/core';
 import type { TelemetryClient, TelemetryFetch } from './client.js';
+import type { ActivityBucket } from './run-activity.js';
 import { TelemetryError } from './errors.js';
 
 const FIXTURE = new URL('../../../core/test/fixtures/telemetry-sessions.json', import.meta.url);
@@ -25,6 +26,10 @@ export function createFixtureTelemetryClient(path: URL = FIXTURE): TelemetryClie
             // payload shape a real deployment answers with.
             return { input: structuredClone(load()), runs: [] };
         },
+        // The fixture replays session rollups, not raw points — there is nothing to bucket.
+        async runActivity(): Promise<ActivityBucket[]> {
+            return [];
+        },
         async health() {
             return { status: 'ok', reason: null };
         },
@@ -39,6 +44,9 @@ export function createNullTelemetryClient(): TelemetryClient {
     return {
         async fetchRollups(): Promise<TelemetryFetch> {
             throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
+        },
+        async runActivity(): Promise<ActivityBucket[]> {
+            return [];
         },
         async health() {
             return { status: 'unreachable', reason: 'Telemetry is disabled (TELEMETRY_SOURCE=off)' };

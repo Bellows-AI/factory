@@ -321,6 +321,41 @@ describe.skipIf(!enabled)('job store', () => {
         expect(await store.get(second.id)).toMatchObject({ summary: null });
     });
 
+    it('stores the failure kind, serves it on every read, and keeps null when the report carries none', async () => {
+        const first = await queue('echo hi');
+        const one = await store.claim('w1', LEASE_SECONDS);
+        await store.complete(first.id, one!.leaseToken, {
+            status: 'failed',
+            exitCode: null,
+            output: 'killed after 7200000ms',
+            failureKind: 'timeout',
+        });
+        // The column itself: the reason is queryable ("how many timeouts this week", "timeouts
+        // where the gates passed"), which is the whole point of the structured kind (issue #339).
+        const rows = await sql<{ failure_kind: string | null }[]>`
+            select failure_kind from job where org_id = ${ORG} and id = ${first.id}
+        `;
+        expect(rows[0]?.failure_kind).toBe('timeout');
+
+        // Served on the job read, the thread read, the per-run list, and the grouped terminal
+        // list — every read a badge or a query would draw from.
+        expect(await store.get(first.id)).toMatchObject({ failureKind: 'timeout' });
+        const thread = await store.thread(first.id);
+        expect(thread?.find((member) => member.id === first.id)).toMatchObject({ failureKind: 'timeout' });
+        expect((await store.list({ limit: 10 })).find((row) => row.id === first.id)).toMatchObject({
+            failureKind: 'timeout',
+        });
+        const terminal = await store.list({ status: 'terminal', limit: 10 });
+        expect(terminal.find((row) => row.id === first.id)).toMatchObject({ failureKind: 'timeout' });
+
+        // A report without a kind overwrites to null — a success and a pre-column row read the
+        // same, "not a failure".
+        const second = await queue('echo hi');
+        const two = await store.claim('w2', LEASE_SECONDS);
+        await store.complete(second.id, two!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        expect(await store.get(second.id)).toMatchObject({ failureKind: null });
+    });
+
     it('carries the run banked wall clock on list rows, and the thread sum only on the thread read', async () => {
         const first = await queue('echo hi');
         const one = await store.claim('w1', LEASE_SECONDS);

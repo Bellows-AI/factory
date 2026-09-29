@@ -602,6 +602,19 @@ describe('the complete verdict', () => {
         await expect(board.complete(job, { status: 'succeeded', exitCode: 0, output: '' })).rejects.toThrow(/404/);
     });
 
+    it('carries failureKind on the wire when the verdict names one, and no key when it does not', async () => {
+        // The structured failure kind (issue #339) rides the verdict like agentTurns does: present
+        // only when there is one, so a success or a pre-column row is stored null, never zero-ish.
+        const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', threadDone: false }, { status: 200 }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+
+        await board.complete(job, { status: 'failed', exitCode: null, output: 'killed', failureKind: 'timeout' });
+        expect(calls[0]!.body).toMatchObject({ failureKind: 'timeout' });
+
+        await board.complete(job, { status: 'succeeded', exitCode: 0, output: 'done' });
+        expect(calls[1]!.body).not.toHaveProperty('failureKind');
+    });
+
     it('no longer carries a separate thread read — the answer travels on complete', () => {
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: recorder(() => claimed()).fetch });
         expect('threadDone' in board).toBe(false);

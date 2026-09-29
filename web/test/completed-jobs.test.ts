@@ -26,6 +26,7 @@ const job = (id: string): Job =>
         exitCode: 0,
         output: null,
         summary: null,
+        failureKind: null,
         gates: null,
         runtime: null,
         repo: null,

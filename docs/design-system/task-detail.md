@@ -8,10 +8,11 @@ contracts: [../design-system.md](../design-system.md).
 
 | Primitive | Classes | Use for |
 | --- | --- | --- |
-| Grid | `task-layout`, `task-main` | The task page's grid: the outcome rail (`task-outcome`) and the main column (`task-main`: conversation → run history → verification → services → published work → follow-up). Rail first in the DOM; a 320px right column from 1024px, a two-column summary above the main column below it — DOM order is visual order |
-| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code |
+| Grid | `task-layout`, `task-main` | The task page's grid: the outcome rail (`task-outcome`) and the main column (`task-main`: conversation → run history → run activity → verification → services → published work → follow-up). Rail first in the DOM; a 320px right column from 1024px, a two-column summary above the main column below it — DOM order is visual order |
+| Exchange | `chat-exchange`, `msg-user`, `msg-meta`, `chat-exit` | One turn: prompt as plain prose (line breaks kept, not mono), metadata, exit code. A failed run's structured failure kind (issue 339) renders in the metadata as a `pill-bad` word badge — "timed out", "cache lost" — beside the status pill; a run without a kind renders none |
 | Run article | `run-label`, `run-summary`, `run-output`, `run-well` | One run's sections in reading order: labels (Request / Follow-up / Agent response / activity), the stored summary as flowing prose, and the raw-output disclosure (collapsed behind a summary, expanded when it is all there is) — never a fabricated response. Gates and publication are the task's panels, not a run's |
 | Run history | `task-history`, `task-history-item` | The recorded stamps only, oldest first — created, started, finished, stop requested, `waitingSince`, `doneAt` + `doneBy` — each with its relative `time`. No inferred rows ("Implemented changes", "Published PR") |
+| Run activity | `task-activity` | The head run's progress over time (issue 339) as a `panel`: the existing `BarChart` with a Tokens bar series and an Edits line, bucket width scaled to the run; the last bucket `bar-partial`-hatched while the run is live. A run the pipeline holds nothing about renders one `muted` sentence — never a fabricated zero line |
 | Verification | `task-verification`, `task-verification-counts`, `gate-output-wrap`, `gate-output` | The newest run's gates as a panel (`#task-verification`, a focus target for the rail's View checks): "N failed" `pill-bad` / "N passed" `pill-ok` / "N running" `pill-done`, each only when N > 0; each gate a `<details>`, failed ones `open`; the output a 12px mono well on `--surface-sunken`, lines kept whole and scrolled in its own well, with a copy button. No durations, no per-test tree |
 | Published work | `task-published`, `task-branch`, `run-publish`, `task-copy` | The branch as a mono chip with its copy button, and the PR link only through `isHttpUrl`. `task-copy` is the copy button (a `chat-resume`, so the 44px rule already covers it) |
 | Runtime | `chat-runtime`, `chat-activity`, `task-summary`, `task-clock` | The "is it stuck or working" strips |
@@ -30,8 +31,9 @@ contracts: [../design-system.md](../design-system.md).
 | --- | --- |
 | `TaskDetailPage.tsx` | page-header, status |
 | `TaskHeader.tsx` | page-header, pill, pill-ok, pill-bad, pill-done, pill-accent, task-pill-wait, task-pill-done, sidenav-dot, icon, task-meta-line, task-opened-by, avatar, avatar-fallback, task head, task-action-help, task-closed, popover, popover-option, primary, chat-resume, chat-stop, chat-remove, muted |
-| `TaskDetail.tsx` | task-layout, task-main, task-conversation, task-history, task-history-item, task-follow-up, panel-head, panel, kv, composer, field, status, muted |
+| `TaskDetail.tsx` | task-layout, task-main, task-conversation, task-history, task-history-item, task-activity, task-follow-up, panel-head, panel, kv, composer, field, status, muted |
 | `TaskRun.tsx` | chat-exchange, run-label, run-summary, run-output, run-well, run-publish, msg-user, msg-meta, chat-runtime, chat-activity, chat-exit, chat-done, chat-stop, task-verification, task-verification-counts, chat-gate-list, gate-output-wrap, gate-output, task-published, task-branch, task-copy, chat-resume, icon, pill-ok, pill-bad, pill-done, chat-output, panel, panel-head, pill, muted, code |
+| `TaskActivity.tsx` | task-activity, panel, panel-head, muted |
 | `TaskOutcome.tsx` | task-outcome, task-outcome-summary, task-outcome-body, task-outcome-label, panel, pill, pill-ok, pill-bad, pill-done, msg-meta, chat-done, chat-stop, chat-exit, task-avatar, by-user-user, kv, muted, code |
 | `TaskRemoveDialog.tsx` | dialog, task-remove, status, chat-resume, chat-remove |
 

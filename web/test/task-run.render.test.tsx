@@ -254,6 +254,26 @@ describe('TaskRun — footer attribution, prompt and output wells', () => {
     });
 });
 
+describe('TaskRun — failure kind (issue #339)', () => {
+    const articleOf = (html: string, marker: string): string => {
+        const start = html.indexOf(marker);
+        return html.slice(start, html.indexOf('</article>', start));
+    };
+
+    it('a failed run with a structured kind renders the named bad pill', () => {
+        const html = articleOf(
+            renderDetail({ jobs: [job({ status: 'failed', exitCode: null, failureKind: 'timeout' })] }),
+            'fix the flaky login test'
+        );
+        expect(html).toMatch(/<span class="pill pill-bad">timed out<\/span>/);
+    });
+
+    it('a run without a kind renders no failure pill', () => {
+        const html = articleOf(renderDetail({ jobs: [job()] }), 'fix the flaky login test');
+        expect(html).not.toContain('pill-bad');
+    });
+});
+
 describe('follow-up composer', () => {
     it('labels the composer Ask for a follow-up, with its helper and the shortcut visible', () => {
         const html = renderDetail({ jobs: [job()] });
