@@ -51,8 +51,12 @@ export interface ReaperArm {
     reap(group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]>;
 }
 
-/** The statuses a job can never come back from — the objects its attempts created are orphans. */
-const TERMINAL: readonly string[] = ['succeeded', 'failed', 'dead', 'stopped'];
+/**
+ * The statuses a job can never come back from — the objects its attempts created are orphans.
+ * Exported because the reclaim loop's orphaned-claim decision (issue #344) must read the SAME
+ * vocabulary the reaper decides with, not a restated list that can drift.
+ */
+export const TERMINAL_JOB_STATUSES: readonly string[] = ['succeeded', 'failed', 'dead', 'stopped'];
 
 /**
  * The decision table, pure — the unit-test surface for the whole feature. `lease` is the board's
@@ -69,7 +73,7 @@ export function reapDecision(
     let verdict: ReapVerdict | null;
     if (lease === undefined) {
         verdict = 'gone';
-    } else if (TERMINAL.includes(lease.status)) {
+    } else if (TERMINAL_JOB_STATUSES.includes(lease.status)) {
         verdict = 'gone';
     } else if (lease.leaseToken !== null && lease.leaseToken === group.leaseToken) {
         // The live attempt's own objects: its teardown, and its fence, own them.

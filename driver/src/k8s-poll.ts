@@ -25,13 +25,14 @@ import {
     HTTP_TOO_MANY_REQUESTS,
     isMalformedRequest400,
     livePod,
+    livePodOfItems,
     parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
     postRefusal,
     refusal,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sJobStatus, K8sPodList, K8sResponse } from './k8s-transport.js';
 import { parseLastJsonLine, reclaimUnreadable, syncUnreadable } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 
@@ -407,21 +408,73 @@ export async function readRunnerVerdict(
  * state would compound whatever went wrong. Empty for anything unreadable. `failure` is the
  * container's own status when it ended badly — a container that never started (an image with no
  * `node`) has no log at all, and its status is the only place the cause survives.
+ *
+ * `why` is issue #344's answer to the bare unreadable verdict: WHEN the log is empty, it names the
+ * exact cause — no live pod (with the count), a refused or throwing read, or a container that
+ * really printed nothing — so the caller can fold it into the failure reason it reports. By the
+ * time anyone reads a failed sync, the Job has been reaped by its TTL and its pod events have
+ * expired; this string is the only place the cause survives. Null whenever the log was read.
  */
-async function readJobLog(deps: K8sDeps, jobName: string): Promise<{ log: string; failure: string | null }> {
+async function readJobLog(
+    deps: K8sDeps,
+    jobName: string
+): Promise<{ log: string; failure: string | null; why: string | null }> {
     let failure: string | null = null;
+    let pods: K8sResponse;
     try {
-        const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, jobName));
-        const pod = livePod(pods.body);
-        failure = containerFailure(pod);
-        if (pod?.metadata?.name) {
-            const log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, pod.metadata.name, null));
-            if (log.status < HTTP_ERROR_STATUS) return { log: log.body, failure };
-        }
-    } catch {
-        // Unreadable is empty, same as a pod that never carried a log.
+        pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, jobName));
+    } catch (e) {
+        return {
+            log: '',
+            failure: null,
+            why: `the pod list of ${jobName} could not be read: ${(e as Error).message}`,
+        };
     }
-    return { log: '', failure };
+    if (pods.status >= HTTP_ERROR_STATUS) {
+        return { log: '', failure: null, why: `the pod list of ${jobName} ${answerPreview(pods.status, pods.body)}` };
+    }
+    const items = parse<K8sPodList>(pods.body).items ?? [];
+    const pod = livePodOfItems(items);
+    failure = containerFailure(pod);
+    if (!pod) {
+        const why =
+            items.length === 0
+                ? `no live pod for ${jobName} (none listed)`
+                : `no live pod for ${jobName} (${items.length} listed, all terminating)`;
+        return { log: '', failure, why };
+    }
+    const name = pod.metadata?.name;
+    if (!name) {
+        return { log: '', failure, why: `the live pod of ${jobName} has no name` };
+    }
+    let log: K8sResponse;
+    try {
+        log = await deps.request('GET', podLogPath(deps.config.k8sNamespace, name, null));
+    } catch (e) {
+        return { log: '', failure, why: `the log of ${name} could not be read: ${(e as Error).message}` };
+    }
+    if (log.status >= HTTP_ERROR_STATUS) {
+        return { log: '', failure, why: `the log of ${name} ${answerPreview(log.status, log.body)}` };
+    }
+    if (log.body.trim() === '') {
+        return {
+            log: '',
+            failure,
+            why: `the container printed nothing (pod ${name}, phase ${pod.status?.phase ?? 'unknown'})`,
+        };
+    }
+    return { log: log.body, failure, why: null };
+}
+
+/**
+ * The unreadable-verdict detail the sync/reclaim callers fold into their reason: WHY the verdict
+ * line could not be read — `readJobLog`'s empty-log cause when it has one, else the last log line
+ * itself, preview-bounded like every other error preview (issue #344).
+ */
+function unreadableDetail(log: string, why: string | null): string {
+    if (why) return why;
+    const line = log.trim().split('\n').filter(Boolean).pop() ?? '';
+    return `last log line ${JSON.stringify(line.slice(0, ERROR_PREVIEW_CHARS))}`;
 }
 
 /**
@@ -469,9 +522,11 @@ export async function runSyncJob(
         executorImage(deps.config, job.executorType)
     );
     if (pollFailure) return { ok: false, reason: pollFailure };
-    const { log, failure } = await readJobLog(deps, jobName);
+    const { log, failure, why } = await readJobLog(deps, jobName);
     return parseLastJsonLine<SyncResult>(log, () =>
-        failure ? { ok: false, reason: `the worktree sync container failed: ${failure}` } : syncUnreadable
+        failure
+            ? { ok: false, reason: `the worktree sync container failed: ${failure}` }
+            : { ok: false, reason: `${syncUnreadable.reason}: ${unreadableDetail(log, why)}` }
     );
 }
 
@@ -497,10 +552,10 @@ export async function runReclaimJob(deps: K8sDeps, job: BoardJob): Promise<Recla
         executorImage(deps.config, job.executorType)
     );
     if (pollFailure) return { ok: false, removed: false, reason: pollFailure };
-    const { log, failure } = await readJobLog(deps, jobName);
+    const { log, failure, why } = await readJobLog(deps, jobName);
     return parseLastJsonLine<ReclaimResult>(log, () =>
         failure
             ? { ok: false, removed: false, reason: `the worktree reclaim container failed: ${failure}` }
-            : reclaimUnreadable
+            : { ok: false, removed: false, reason: `${reclaimUnreadable.reason}: ${unreadableDetail(log, why)}` }
     );
 }

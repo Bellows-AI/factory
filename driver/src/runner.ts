@@ -183,6 +183,16 @@ export interface Runner {
      */
     releaseFence?(job: BoardJob): Promise<void>;
     /**
+     * Deletes the checkout claim of a job the board no longer knows as live (issue #344): a
+     * driver that died holding the claim leaked it, and when the leaked holder's thread is later
+     * removed, its reclaim is refused by that claim forever — nothing else can see a bare
+     * ConfigMap, so the reclaim loop is the only cleaner. Ownership-safe by construction: the
+     * delete carries the uid of the exact object this call read, and answers true only when that
+     * object is the one that went. Optional: kubernetes only — docker's fence leaves no claim
+     * object behind to reap, so its runner implements nothing and the loop never calls.
+     */
+    reapOrphanedClaim?(job: BoardJob): Promise<boolean>;
+    /**
      * Runs one declared block-helper step (issue #207): an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `token` is a
      * fresh GitHub installation token, minted by the loop immediately before a github-writing

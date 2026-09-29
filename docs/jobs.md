@@ -1082,6 +1082,20 @@ because the rows are already gone. A done on an already-terminal thread feeds th
 the reclaim section below), so remove and done are the queue's two writers and the verdict-time
 reclaim is the third path, covering a done declared while a follow-up still moved.
 
+**A reclaim that cannot settle names why, once, until what refuses changes (issue #344).** The
+row is re-offered every lease expiry, so a refusal that will repeat identically — under
+kubernetes, an orphaned checkout claim whose holder job the board no longer knows: the driver
+that held it died, its thread was later removed, and nothing else can see a bare ConfigMap —
+used to log the same line every five minutes, forever (109 in 24h in the wild). The failure
+line now logs on the first refusal and on STATE CHANGES only: the digest is the refusal reason
+plus the held claim's name, a settled row clears its entry, and the claim's age is reported in
+the orphan line but never makes a "change". The orphan itself is proven against the board, in
+the reaper's own vocabulary: `POST /api/jobs/leases` answers the root row absent or terminal —
+no attempt of that thread exists or can ever come — and only then does the driver reap the
+claim (uid-preconditioned; `docs/kubernetes.md` has the full protocol) and retry the removal
+once, in the same drain. A live row or a refused lookup reaps nothing and logs throttled; age
+is never the decider, the fence's no-clock rule.
+
 ## Gates: verification checks declared by `.bellows.yaml`
 
 A repository may ship a `.bellows.yaml` at its checkout root declaring an environment image and
