@@ -22,6 +22,7 @@ import {
     handleReclaimsAck,
     handleReclaimsClaim,
     handleRemove,
+    handleReopen,
     handleStop,
     handleThread,
     handleWaitCancel,
@@ -92,6 +93,11 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/remove', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRemove(orgs, request, reply)
+        );
+        // Done's inverse (issue #327): the mistake undone, while the worktree it would resume in
+        // still exists. Person-gated like done, beside which it is registered.
+        app.post('/api/jobs/:id/reopen', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleReopen(orgs, request, reply)
         );
         // Both control a thread parked on a durable PR wait (issue #328) — person's actions on a
         // wait no worker holds a lease on, so no token and the actor off the session, exactly as

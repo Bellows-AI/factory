@@ -178,6 +178,41 @@ export async function handleWaitPoke(orgs: OrgRegistry, request: FastifyRequest,
     return reply.code(HTTP_OK).send({ id, woken: result.value.woken });
 }
 
+// The user's reopening of a done task (issue #327): done's inverse. Person-gated like done/remove
+// — a person's verdict on a task no worker holds — and it takes no lease token for the same
+// reason. The store refuses atomically: a task that was never done, one whose worktree a reclaim
+// already removed (a follow-up would have nothing to resume in), and one whose worktree is being
+// removed right now (retry once the reclaim settles) are all conflicts.
+export async function handleReopen(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job reopen failed'),
+        () => store.reopen(id)
+    );
+    if (!result.ok) return reply;
+    if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'not_done') {
+        return reply.code(HTTP_CONFLICT).send({ error: 'Task is not done', code: ERROR_CODES.TASK_NOT_DONE });
+    }
+    if (result.value === 'reclaimed') {
+        return reply.code(HTTP_CONFLICT).send({
+            error: "The task's worktree was already reclaimed",
+            code: ERROR_CODES.WORKTREE_RECLAIMED,
+        });
+    }
+    if (result.value === 'reclaiming') {
+        return reply.code(HTTP_CONFLICT).send({
+            error: "A driver is removing the task's worktree — retry once the reclaim settles",
+            code: ERROR_CODES.RECLAIM_IN_PROGRESS,
+        });
+    }
+    return reply.code(HTTP_OK).send({ id, reopened: true });
+}
+
 // The driver's poll of the worktree-reclaim queue: the rows POST /remove left behind for
 // worktrees no live driver holds a lease on. Claim and ack are the worker routes the job
 // claim/complete are, and the body matches: the worker name is required (it is queued for

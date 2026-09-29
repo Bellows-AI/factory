@@ -16,6 +16,7 @@ import type {
     PokeWaitResult,
     ReclaimClaim,
     RemoveResult,
+    ReopenResult,
     StopResult,
 } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
@@ -73,6 +74,7 @@ interface StoreStub extends JobStore {
     removed: { id: string; removedBy: string | null }[];
     cancelledWaits: { id: string; cancelledBy: string | null }[];
     pokes: { id: string; pokedBy: string | null }[];
+    reopened: string[];
     reclaimClaims: { worker: string; leaseSeconds: number }[];
     reclaimAcks: { id: string; worker: string }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
@@ -108,6 +110,7 @@ function stubStore(
         remove?: RemoveResult;
         cancelWait?: CancelWaitResult;
         pokeWait?: PokeWaitResult;
+        reopen?: ReopenResult;
         reclaimClaim?: ReclaimClaim | null;
         ackReclaim?: 'ok' | 'lost' | 'missing';
         heartbeatCancelRequested?: boolean;
@@ -141,6 +144,7 @@ function stubStore(
         removed: [],
         cancelledWaits: [],
         pokes: [],
+        reopened: [],
         reclaimClaims: [],
         reclaimAcks: [],
         leased: [],
@@ -205,6 +209,11 @@ function stubStore(
             boom();
             stub.pokes.push({ id, pokedBy: pokedBy ?? null });
             return options.pokeWait ?? { result: 'ok', woken: true };
+        },
+        async reopen(id) {
+            boom();
+            stub.reopened.push(id);
+            return options.reopen ?? { result: 'ok' };
         },
         async claimReclaim(worker, leaseSeconds) {
             boom();
@@ -1507,6 +1516,62 @@ describe('POST /api/jobs/:id/remove', () => {
     it('refuses a malformed id', async () => {
         const instance = await harnessWith(stubStore());
         expect((await post(instance, '/api/jobs/nope/remove', {})).statusCode).toBe(400);
+    });
+
+    describe('POST /api/jobs/:id/reopen', () => {
+        it('reopens a done task', async () => {
+            const store = stubStore({ reopen: { result: 'ok' } });
+            const instance = await harnessWith(store);
+
+            const response = await post(instance, `/api/jobs/${ID}/reopen`, {});
+
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toEqual({ id: ID, reopened: true });
+            expect(store.reopened).toEqual([ID]);
+        });
+
+        // The done stamp is the only thing reopen reverses: a task that was never closed has
+        // nothing to reopen, and the refusal names that rather than pretending to succeed.
+        it('refuses a task that is not done', async () => {
+            const instance = await harnessWith(stubStore({ reopen: 'not_done' }));
+            const response = await post(instance, `/api/jobs/${ID}/reopen`, {});
+            expect(response.statusCode).toBe(409);
+            expect(response.json().code).toBe('TASK_NOT_DONE');
+        });
+
+        // The worktree a follow-up resumes in is gone — reopen cannot give it back.
+        it('refuses once the worktree reclaim has run', async () => {
+            const instance = await harnessWith(stubStore({ reopen: 'reclaimed' }));
+            const response = await post(instance, `/api/jobs/${ID}/reopen`, {});
+            expect(response.statusCode).toBe(409);
+            expect(response.json().code).toBe('WORKTREE_RECLAIMED');
+        });
+
+        // A driver is mid-removal: retry once the reclaim settles rather than reopening over a
+        // tree that is about to come down.
+        it('refuses while a reclaim is in flight', async () => {
+            const instance = await harnessWith(stubStore({ reopen: 'reclaiming' }));
+            const response = await post(instance, `/api/jobs/${ID}/reopen`, {});
+            expect(response.statusCode).toBe(409);
+            expect(response.json().code).toBe('RECLAIM_IN_PROGRESS');
+        });
+
+        it('answers 404 for a task that does not exist', async () => {
+            const instance = await harnessWith(stubStore({ reopen: 'missing' }));
+            expect((await post(instance, `/api/jobs/${ID}/reopen`, {})).statusCode).toBe(404);
+        });
+
+        it('answers 503 when the store is down, so the caller retries', async () => {
+            const instance = await harnessWith(stubStore({ fail: true }));
+            const response = await post(instance, `/api/jobs/${ID}/reopen`, {});
+            expect(response.statusCode).toBe(503);
+            expect(response.json().code).toBe('UNAVAILABLE');
+        });
+
+        it('refuses a malformed id', async () => {
+            const instance = await harnessWith(stubStore());
+            expect((await post(instance, '/api/jobs/nope/reopen', {})).statusCode).toBe(400);
+        });
     });
 });
 

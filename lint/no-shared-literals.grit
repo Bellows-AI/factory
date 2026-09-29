@@ -67,6 +67,7 @@ or {
                 r"^['\"]NOT_STOPPABLE['\"]$",
                 r"^['\"]ORG_UNAVAILABLE['\"]$",
                 r"^['\"]PURGE_IN_PROGRESS['\"]$",
+                r"^['\"]RECLAIM_IN_PROGRESS['\"]$",
                 r"^['\"]REPO_CLONING['\"]$",
                 r"^['\"]REPO_NAME_CONFLICT['\"]$",
                 r"^['\"]REPO_SELECTED['\"]$",
@@ -74,6 +75,7 @@ or {
                 r"^['\"]RESERVED_ENV_NAME['\"]$",
                 r"^['\"]SCOPE_REQUIRES_USER['\"]$",
                 r"^['\"]TASK_DONE['\"]$",
+                r"^['\"]TASK_NOT_DONE['\"]$",
                 r"^['\"]TASK_RUNNING['\"]$",
                 r"^['\"]TASKS_IN_FLIGHT['\"]$",
                 r"^['\"]TELEMETRY_DISABLED['\"]$",
@@ -83,7 +85,8 @@ or {
                 r"^['\"]WORKFLOW_SETTINGS_UNAVAILABLE['\"]$",
                 r"^['\"]WORKFLOWS_UNAVAILABLE['\"]$",
                 r"^['\"]WORKSPACE_DISABLED['\"]$",
-                r"^['\"]WORKSPACE_UNAVAILABLE['\"]$"
+                r"^['\"]WORKSPACE_UNAVAILABLE['\"]$",
+                r"^['\"]WORKTREE_RECLAIMED['\"]$"
             }
         }
     },
