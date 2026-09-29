@@ -18,7 +18,6 @@
         "dev:server": "npm run dev -w server",
         "dev:web": "npm run dev -w web",
         "driver": "npm run dev -w driver",
-        "cli": "npm run dev -w cli",
         "start": "node --env-file-if-exists=.env server/dist/index.js",
         "pretest": "npm run build -w core",
         "test": "vitest run",
