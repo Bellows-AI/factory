@@ -22,6 +22,7 @@ import {
     handleReclaimsAck,
     handleReclaimsClaim,
     handleRemove,
+    handleReopen,
     handleStop,
     handleThread,
 } from './job-handlers-actions.js';
@@ -90,6 +91,11 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/remove', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRemove(orgs, request, reply)
+        );
+        // Done's inverse (issue #327): the mistake undone, while the worktree it would resume in
+        // still exists. Person-gated like done, beside which it is registered.
+        app.post('/api/jobs/:id/reopen', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleReopen(orgs, request, reply)
         );
         app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReclaimsClaim(orgs, firstReclaimClaim, request, reply)

@@ -1052,11 +1052,11 @@ rendering the same thread can therefore never disagree about whether it is still
 route's parameter contract (the 60s cap, the two `BAD_*` refusals) is documented in
 [docs/api.md](docs/api.md).
 
-## Stop and remove: winding a task down, and deleting it
+## Stop, remove, reopen: winding a task down, deleting it, or taking the close back
 
-Two person-gated actions (session cookie, like `follow-up`/`done` — the board secret must never move a
-thread the driver does not hold). Both reuse what exists: stopping lands on the suspend machinery,
-removing lands on the worktree-reclaim machinery.
+Three person-gated actions (session cookie, like `follow-up`/`done` — the board secret must never move a
+thread the driver does not hold). All reuse what exists: stopping lands on the suspend machinery,
+removing lands on the worktree-reclaim machinery, and reopening is done's own inverse.
 
 **Stop ends the turn.** `POST /api/jobs/:id/stop` is a person's verdict that this run should stop
 talking: the row settles `stopped` — terminal, its session kept — so the follow-up composer is
@@ -1124,6 +1124,27 @@ removed task cannot be undeleted; the worktree removal is the last thing to land
 because the rows are already gone. A done on an already-terminal thread feeds the same queue (see
 the reclaim section below), so remove and done are the queue's two writers and the verdict-time
 reclaim is the third path, covering a done declared while a follow-up still moved.
+
+**Reopen is done's inverse (issue #327).** `POST /api/jobs/:id/reopen` takes back a close made by
+mistake: it clears `done_at`/`done_by` on every member of the thread and withdraws a queued
+`task_reclaim` row — the `TASK_DONE` refusal a follow-up would otherwise hit is gone, and the
+conversation continues. It is the done stamp's only writer besides `done` itself, and the one
+transaction — under the same advisory lock remove takes — is what makes it race-safe against the
+reclaim claim: the withdraw's DELETE row-locks the row out of `claimReclaim`'s candidate scan, so a
+row being withdrawn is never handed out. A worker that already claimed the row is not recalled —
+its ack answers `404` and its side may still take the tree down; a follow-up recovers by recreating
+the tree from the surviving `factory/<root>` branch. The refuse-side is the `worktree_reclaimed_at`
+marker on the root (045): "done + all-terminal + no reclaim row" is ambiguous between tree present
+and tree gone — ack DELETES the row, and the verdict-time reclaim never queues one — so both points
+where a removal becomes issued stamp the marker (the ack's transaction, and a `threadDone`-true
+verdict's), and reopen answers `409 WORKTREE_RECLAIMED` once it is set. A thread nobody closed has
+nothing to reopen (`409 TASK_NOT_DONE` — reopen is deliberately NOT idempotent), a moving thread
+with an early done reopens fine (clearing the stamp is exactly the recovery; the member's verdict
+then answers `threadDone: false`), and `200 { id, reopened: true }` vouches that no removal was
+ever issued. The marker records the removal as ISSUED, never completed — a driver that crashes
+between the `threadDone: true` answer and the actual `rm` leaves the tree on disk under a stamped
+marker, and reopen conservatively refuses a thread whose tree survives; recover by removing, or by
+re-done and a later reclaim, the same paths that take a tree down anyway.
 
 **A reclaim that cannot settle names why, once, until what refuses changes (issue #344).** The
 row is re-offered every lease expiry, so a refusal that will repeat identically — under

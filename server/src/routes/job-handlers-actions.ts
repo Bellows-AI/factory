@@ -138,6 +138,34 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
     return reply.code(HTTP_OK).send({ id, removed: true });
 }
 
+// The user's reopening of a done task (issue #327): done's inverse. Person-gated like done/remove
+// — a person's verdict on a task no worker holds — and it takes no lease token for the same
+// reason. The store refuses atomically: a task that was never done, and one whose worktree a
+// reclaim already removed (a follow-up would have nothing to resume in), are both conflicts.
+export async function handleReopen(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job reopen failed'),
+        () => store.reopen(id)
+    );
+    if (!result.ok) return reply;
+    if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'not_done') {
+        return reply.code(HTTP_CONFLICT).send({ error: 'Task is not done', code: ERROR_CODES.TASK_NOT_DONE });
+    }
+    if (result.value === 'reclaimed') {
+        return reply.code(HTTP_CONFLICT).send({
+            error: "The task's worktree was already reclaimed",
+            code: ERROR_CODES.WORKTREE_RECLAIMED,
+        });
+    }
+    return reply.code(HTTP_OK).send({ id, reopened: true });
+}
+
 // The driver's poll of the worktree-reclaim queue: the rows POST /remove left behind for
 // worktrees no live driver holds a lease on. Claim and ack are the worker routes the job
 // claim/complete are, and the body matches: the worker name is required (it is queued for

@@ -621,12 +621,26 @@ export async function ackReclaimRow(
     // The claim's worker only, and the row id the claim handed back is the whole proof — a
     // reclaim's lease token IS its id. A foreign ack is refused rather than deleting a
     // row somebody else's driver is mid-reclaim on.
-    const rows = await sql<{ id: string }[]>`
-        delete from task_reclaim
-        where org_id = ${orgId} and id = ${id} and claimed_by = ${worker}
-        returning id
-    `;
-    if (rows[0]) return 'ok';
-    const present = await sql<{ id: string }[]>`select id from task_reclaim where org_id = ${orgId} and id = ${id}`;
-    return present[0] ? 'lost' : 'missing';
+    //
+    // One transaction now, because the ack also stamps the durable `worktree_reclaimed_at`
+    // marker on the thread root (045, issue #327): the delete alone left "reclaim already ran"
+    // indistinguishable from "reclaim never queued" — the ambiguity reopen has to resolve. The
+    // update answers 0 rows for a thread remove deleted whole (its artifact is the reclaim row
+    // being deleted here); coalesce keeps the first writer's instant.
+    return sql.begin(async (tx) => {
+        const rows = await tx<{ id: string; root_job_id: string }[]>`
+            delete from task_reclaim
+            where org_id = ${orgId} and id = ${id} and claimed_by = ${worker}
+            returning id, root_job_id
+        `;
+        if (rows[0]) {
+            await tx`
+                update job set worktree_reclaimed_at = coalesce(worktree_reclaimed_at, now())
+                where org_id = ${orgId} and id = ${rows[0].root_job_id}
+            `;
+            return 'ok';
+        }
+        const present = await tx<{ id: string }[]>`select id from task_reclaim where org_id = ${orgId} and id = ${id}`;
+        return present[0] ? 'lost' : 'missing';
+    });
 }

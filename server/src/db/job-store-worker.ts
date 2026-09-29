@@ -304,10 +304,19 @@ export async function completeJob(
             from job
             where org_id = ${orgId} and root_job_id = ${rootJobId}
         `;
-        return {
-            result: 'ok',
-            threadDone: (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0,
-        };
+        const threadDone = (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0;
+        if (threadDone) {
+            // A threadDone-true verdict IS the worktree-reclaim order: the driver removes the
+            // tree directly on this answer, with no queue row and no ack — so this verdict is
+            // where the board records the removal as issued (045, issue #327), or reopen could
+            // not tell "tree gone" from "tree still there". Same transaction as the verdict,
+            // coalesce keeps the first writer's instant.
+            await tx`
+                update job set worktree_reclaimed_at = coalesce(worktree_reclaimed_at, now())
+                where org_id = ${orgId} and id = ${rootJobId}
+            `;
+        }
+        return { result: 'ok', threadDone };
     });
 }
 
