@@ -28,6 +28,8 @@ export interface WorkspaceExecutor {
     createdAt: string;
     /** The row a new task draft autoselects. At most one true per member. */
     isDefault: boolean;
+    /** The default workflow's gate-repair round limit tasks on this executor launch with (#49). */
+    gateFixRounds: number;
     /** Deliberately absent from the payload: it may hold credentials, and this is polled. */
 }
 
@@ -55,7 +57,7 @@ export interface UseWorkspace {
     saving: boolean;
     save: (repos: { owner: string; name: string }[]) => Promise<string | null>;
     saveExecutors: (
-        executors: { name: string; type: string; config: object; isDefault: boolean }[]
+        executors: { name: string; type: string; config: object; isDefault: boolean; gateFixRounds: number }[]
     ) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
@@ -121,6 +123,7 @@ const isExecutorFull = (row: unknown): row is WorkspaceExecutorFull =>
     typeof (row as WorkspaceExecutorFull).type === 'string' &&
     typeof (row as WorkspaceExecutorFull).createdAt === 'string' &&
     typeof (row as WorkspaceExecutorFull).isDefault === 'boolean' &&
+    typeof (row as WorkspaceExecutorFull).gateFixRounds === 'number' &&
     typeof (row as WorkspaceExecutorFull).config === 'object' &&
     (row as WorkspaceExecutorFull).config !== null;
 
@@ -264,7 +267,7 @@ export function useWorkspace(): UseWorkspace {
      */
     const saveExecutors = useCallback(
         async (
-            executors: { name: string; type: string; config: object; isDefault: boolean }[]
+            executors: { name: string; type: string; config: object; isDefault: boolean; gateFixRounds: number }[]
         ): Promise<string | null> => {
             setSaving(true);
             try {

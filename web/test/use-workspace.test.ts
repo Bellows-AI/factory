@@ -20,7 +20,16 @@ describe('listExecutorConfigs', () => {
     it('issues exactly one GET /api/workspace/executors and lands the full rows', async () => {
         const fetch = vi.fn().mockResolvedValue(
             json({
-                executors: [{ name: 'main', type: 'claude-code', createdAt: 'x', isDefault: false, config: {} }],
+                executors: [
+                    {
+                        name: 'main',
+                        type: 'claude-code',
+                        createdAt: 'x',
+                        isDefault: false,
+                        gateFixRounds: 3,
+                        config: {},
+                    },
+                ],
             })
         );
         vi.stubGlobal('fetch', fetch);
@@ -29,7 +38,9 @@ describe('listExecutorConfigs', () => {
         expect(fetch).toHaveBeenCalledWith('/api/workspace/executors');
         expect(result).toEqual({
             ok: true,
-            executors: [{ name: 'main', type: 'claude-code', createdAt: 'x', isDefault: false, config: {} }],
+            executors: [
+                { name: 'main', type: 'claude-code', createdAt: 'x', isDefault: false, gateFixRounds: 3, config: {} },
+            ],
         });
     });
 

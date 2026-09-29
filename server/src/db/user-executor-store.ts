@@ -1,4 +1,5 @@
 import type { Sql, TransactionSql } from 'postgres';
+import { DEFAULT_GATE_FIX_ROUNDS } from '@factory-ai/core';
 
 export interface UserExecutor {
     readonly name: string;
@@ -7,12 +8,19 @@ export interface UserExecutor {
     readonly updatedAt: string;
     /** The row the composer autoselects on a new task draft. At most one true per member. */
     readonly isDefault: boolean;
+    /**
+     * The default workflow's gate-repair round limit this row launches with (issue #49): bounded
+     * 0-10, 3 when unset, 0 disables automatic repair. Read once at launch, frozen onto the
+     * thread's root row — editing it later changes later tasks, never a running thread.
+     */
+    readonly gateFixRounds: number;
 }
 
-/** What `configFor` answers: the row's type and the raw config the member pasted. */
+/** What `configFor` answers: the row's type, the raw config the member pasted, and its round limit. */
 export interface UserExecutorConfig {
     readonly type: string;
     readonly config: Record<string, unknown>;
+    readonly gateFixRounds: number;
 }
 
 export interface UserExecutorStore {
@@ -31,6 +39,7 @@ export interface UserExecutorStore {
             type: string;
             config: Record<string, unknown>;
             isDefault?: boolean;
+            gateFixRounds?: number;
         }[]
     ): Promise<void>;
     list(userId: string): Promise<UserExecutor[]>;
@@ -59,6 +68,7 @@ interface Row {
     created_at: Date;
     updated_at: Date;
     is_default: boolean;
+    gate_fix_rounds: number;
 }
 
 const toUserExecutor = (row: Row): UserExecutor => ({
@@ -67,6 +77,7 @@ const toUserExecutor = (row: Row): UserExecutor => ({
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     isDefault: row.is_default,
+    gateFixRounds: row.gate_fix_rounds,
 });
 
 /** The organization is bound at construction, for the reason createUserRepoStore's header gives. */
@@ -102,11 +113,12 @@ export function createUserExecutorStore({
                         type: executor.type,
                         config: executor.config as never,
                         is_default: executor.isDefault ?? false,
+                        gate_fix_rounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
                         position: index,
                     }));
                     await tx`
                         insert into user_executor
-                            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'is_default', 'position')}
+                            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'is_default', 'gate_fix_rounds', 'position')}
                     `;
                 }
             });
@@ -117,7 +129,7 @@ export function createUserExecutorStore({
             // `config` is deliberately not selected: the routes echo these rows on every poll, and
             // pasted config may hold credentials.
             const rows = await sql<Row[]>`
-                select name, type, created_at, updated_at, is_default
+                select name, type, created_at, updated_at, is_default, gate_fix_rounds
                 from user_executor
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -128,7 +140,7 @@ export function createUserExecutorStore({
         async listWithConfigs(userId) {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select name, type, created_at, updated_at, is_default, config
+                select name, type, created_at, updated_at, is_default, gate_fix_rounds, config
                 from user_executor
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -140,13 +152,15 @@ export function createUserExecutorStore({
             await gate();
             // The primary key is (org_id, user_id, name), so a label names at most one row per
             // member — the read cannot be ambiguous.
-            const rows = await (exec as Sql)<{ type: string; config: Record<string, unknown> }[]>`
-                select type, config
+            const rows = await (exec as Sql)<
+                { type: string; config: Record<string, unknown>; gate_fix_rounds: number }[]
+            >`
+                select type, config, gate_fix_rounds
                 from user_executor
                 where org_id = ${orgId} and user_id = ${userId} and name = ${name}
             `;
             const row = rows[0];
-            return row ? { type: row.type, config: row.config } : null;
+            return row ? { type: row.type, config: row.config, gateFixRounds: row.gate_fix_rounds } : null;
         },
     };
 }

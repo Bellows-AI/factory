@@ -37,6 +37,20 @@ Platform-parity cases are not duplicates. Keep both when the same contract is en
 argv and Kubernetes object specs. Consolidate only when setup, branch, and expected failure are the
 same; the consecutive Kubernetes polling/Secret cleanup cases are the reference pattern.
 
+## The gate-repair round and the runner transports (issue #49)
+
+The default workflow's bounded `gate-fix` round (docs/workflows.md, "The code-owned default
+workflow") adds nothing to either runner transport, and that is the tested claim: a repair round's
+claim is byte-shape identical to any gated publishing claim (`resumeSessionId`, `publish: true`,
+gates present), and the one shared loop in `driver/src/loop.ts` drives Docker and Kubernetes from
+exactly that shape. The pin lives board-side in `server/test-db/job-store.workflow.default.test.ts`
+("the gate-fix claim runs through the ordinary machinery"), the offline graph/walk behavior in
+`server/test/default-workflow.test.ts`, and the launch resolution (executor row → frozen limit) in
+`server/test/routes.jobs.default-workflow.test.ts`. Neither `docker.test.ts` nor `k8s.test.ts`
+grows a gate-repair case, because neither transport grew a gate, a retry, or a config key — a
+future change that DOES touch a transport for repair must land the parity pair here and in both
+suites, per the executor-parity rule in AGENTS.md.
+
 ## Remaining gaps, in priority order
 
 1. The real collector is not in either end-to-end assertion path. Add a synthetic runner export to

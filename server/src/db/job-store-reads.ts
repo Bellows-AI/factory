@@ -32,6 +32,11 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
                -- them. A sum over all-null banks is null — nothing measurable, never zero.
                sum(wall_clock_ms) over () as task_wall_clock_ms,
                wall_clock_ms, summary,
+               -- The root's frozen gate-repair round limit (043, issue #49): root-only on the
+               -- row, read here through the root pointer so every member of the thread hands
+               -- the task view the same budget.
+               (select root.default_gate_fix_rounds from job root where root.id = job.root_job_id)
+                   as default_gate_fix_rounds,
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
                ${authorColumns}
         from job ${authorJoin}

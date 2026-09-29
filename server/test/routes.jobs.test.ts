@@ -506,9 +506,9 @@ describe('POST /api/jobs workflow resolution', () => {
                 id: null,
                 name: DEFAULT_WORKFLOW_NAME,
                 node: DEFAULT_ENTRY_NODE,
-                snapshot: compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }),
+                snapshot: compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 3),
                 params: {},
-                defaultOptions: { reviewReconciliation: true, mergeConflictAutofix: true },
+                defaultOptions: { reviewReconciliation: true, mergeConflictAutofix: true, gateFixRounds: 3 },
             },
         ]);
         expect(jobs.commands).toEqual(['echo hi']);

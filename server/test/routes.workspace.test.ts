@@ -354,6 +354,32 @@ describe('executors: listing and replacing', () => {
         const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
         expect(body.executors).toEqual([expect.objectContaining({ name: 'oc', isDefault: false })]);
     });
+
+    it('persists gateFixRounds and echoes it on the PUT response, the poll and the config read', async () => {
+        const { app, cookie, executors } = await boot();
+        const put = await putExecutors(app, cookie, [{ ...CLAUDE_CODE, gateFixRounds: 5 }]);
+
+        expect(put.statusCode).toBe(HTTP_OK);
+        expect(executors.rows()[0]?.gateFixRounds).toBe(5);
+        expect(put.json().executors).toEqual([expect.objectContaining({ name: 'main', gateFixRounds: 5 })]);
+
+        const poll = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(poll.executors).toEqual([expect.objectContaining({ name: 'main', gateFixRounds: 5 })]);
+
+        const config = (
+            await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } })
+        ).json();
+        expect(config.executors).toEqual([expect.objectContaining({ name: 'main', gateFixRounds: 5 })]);
+    });
+
+    it('a row sent without gateFixRounds gets the default of 3', async () => {
+        const { app, cookie, executors } = await boot();
+        const put = await putExecutors(app, cookie, [CLAUDE_CODE]);
+
+        expect(put.statusCode).toBe(HTTP_OK);
+        expect(executors.rows()[0]?.gateFixRounds).toBe(3);
+        expect(put.json().executors).toEqual([expect.objectContaining({ name: 'main', gateFixRounds: 3 })]);
+    });
 });
 
 describe('executors: validation', () => {
@@ -442,6 +468,22 @@ describe('executors: validation', () => {
             expect(response.statusCode, String(isDefault)).toBe(HTTP_BAD_REQUEST);
             expect(response.json().code, String(isDefault)).toBe('BAD_BODY');
         }
+    });
+
+    it.each([
+        ['a negative number', -1],
+        ['over the ceiling', 11],
+        ['a fraction', 2.5],
+        ['a numeric string', '3'],
+        ['null', null],
+        ['an object', { rounds: 3 }],
+    ])('refuses a gateFixRounds that is not a nonnegative bounded integer (%s)', async (_label, gateFixRounds) => {
+        const { app, cookie, executors } = await boot();
+        const response = await putExecutors(app, cookie, [{ ...CLAUDE_CODE, gateFixRounds }]);
+
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_EXECUTOR_ROUNDS');
+        expect(executors.rows()).toEqual([]);
     });
 });
 

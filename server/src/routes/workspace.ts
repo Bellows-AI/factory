@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
+import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES, EXECUTOR_TYPES, MAX_GATE_FIX_ROUNDS } from '@factory-ai/core';
 import type { ErrorCode } from '@factory-ai/core';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
@@ -80,6 +80,55 @@ function parseSelection(raw: unknown): Repo[] | string {
 }
 
 /**
+ * One entry's gate-repair round limit (issue #49): optional, a whole number in 0..10, the code
+ * default when absent. A refusal message starts with `gateFixRounds` so `validateExecutorList`
+ * can name the code — the same prefix convention the executor-type refusal uses.
+ */
+function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): number | string {
+    if (item.gateFixRounds === undefined) return DEFAULT_GATE_FIX_ROUNDS;
+    const rounds = item.gateFixRounds;
+    if (typeof rounds !== 'number' || !Number.isInteger(rounds) || rounds < 0 || rounds > MAX_GATE_FIX_ROUNDS) {
+        return `gateFixRounds for "${item.name}" must be a whole number between 0 and ${MAX_GATE_FIX_ROUNDS}`;
+    }
+    return rounds;
+}
+
+/**
+ * One executor entry, validated: the name/type/config shape, the known type, the boolean default
+ * flag and the round limit. A string return is the refusal message; the caller stops at the first.
+ */
+function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
+    const item = entry as {
+        name?: unknown;
+        type?: unknown;
+        config?: unknown;
+        isDefault?: unknown;
+        gateFixRounds?: unknown;
+    };
+    if (typeof item?.name !== 'string' || typeof item?.type !== 'string') {
+        return 'each entry must be { name: string, type: string, config: object }';
+    }
+    if (typeof item.config !== 'object' || item.config === null || Array.isArray(item.config)) {
+        return `config for "${item.name}" must be a JSON object`;
+    }
+    if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
+        return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
+    }
+    if (item.isDefault !== undefined && typeof item.isDefault !== 'boolean') {
+        return `isDefault for "${item.name}" must be a boolean`;
+    }
+    const gateFixRounds = parseGateFixRounds(item);
+    if (typeof gateFixRounds === 'string') return gateFixRounds;
+    return {
+        name: item.name,
+        type: item.type,
+        config: item.config as Record<string, unknown>,
+        isDefault: item.isDefault ?? false,
+        gateFixRounds,
+    };
+}
+
+/**
  * The authoritative structural validation for a pasted executor list; the client's copy is UX only.
  *
  * No field-level schema inside `config` for now: the contract is "raw JSON the member pastes", and
@@ -94,30 +143,20 @@ function parseExecutors(raw: unknown): ExecutorEntry[] | string {
     }
     const parsed: ExecutorEntry[] = [];
     for (const entry of list) {
-        const item = entry as { name?: unknown; type?: unknown; config?: unknown; isDefault?: unknown };
-        if (typeof item?.name !== 'string' || typeof item?.type !== 'string') {
-            return 'each entry must be { name: string, type: string, config: object }';
-        }
-        if (typeof item.config !== 'object' || item.config === null || Array.isArray(item.config)) {
-            return `config for "${item.name}" must be a JSON object`;
-        }
-        if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
-            return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
-        }
-        if (item.isDefault !== undefined && typeof item.isDefault !== 'boolean') {
-            return `isDefault for "${item.name}" must be a boolean`;
-        }
-        parsed.push({
-            name: item.name,
-            type: item.type,
-            config: item.config as Record<string, unknown>,
-            isDefault: item.isDefault ?? false,
-        });
+        const one = parseExecutorEntry(entry);
+        if (typeof one === 'string') return one;
+        parsed.push(one);
     }
     return parsed;
 }
 
-type ExecutorEntry = { name: string; type: string; config: Record<string, unknown>; isDefault: boolean };
+type ExecutorEntry = {
+    name: string;
+    type: string;
+    config: Record<string, unknown>;
+    isDefault: boolean;
+    gateFixRounds: number;
+};
 
 type WorkspaceRuntime =
     | {
@@ -219,6 +258,7 @@ function validateExecutorList(
         let code: ErrorCode = ERROR_CODES.BAD_BODY;
         if (list.startsWith('at most')) code = ERROR_CODES.TOO_MANY_EXECUTORS;
         else if (list.startsWith('unknown executor type')) code = ERROR_CODES.BAD_EXECUTOR_TYPE;
+        else if (list.startsWith('gateFixRounds')) code = ERROR_CODES.BAD_EXECUTOR_ROUNDS;
         return { ok: false, code, message: list };
     }
     for (const executor of list) {
@@ -301,6 +341,7 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             type: row.type,
             createdAt: row.createdAt,
             isDefault: row.isDefault,
+            gateFixRounds: row.gateFixRounds,
         })),
     });
 }
@@ -390,6 +431,7 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
             type: row.type,
             createdAt: row.createdAt,
             isDefault: row.isDefault,
+            gateFixRounds: row.gateFixRounds,
             config: row.config,
         })),
     });
@@ -436,6 +478,7 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
             type: row.type,
             createdAt: row.createdAt,
             isDefault: row.isDefault,
+            gateFixRounds: row.gateFixRounds,
         })),
     });
 }

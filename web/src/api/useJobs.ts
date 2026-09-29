@@ -117,6 +117,12 @@ export interface Job {
      * (this row's graph position); a rename or delete of the source workflow never changes it.
      */
     workflowName: string | null;
+    /**
+     * The thread root's frozen gate-repair round limit (#49), served on every row of a thread
+     * read. Null on every non-default thread — no repair loop, no counter — and the task view
+     * reads it beside the thread's own gate-fix rows.
+     */
+    defaultGateFixRounds?: number | null;
     /** The finished task this one asks for adjustments on, when it is a follow-up. */
     followUpTo: string | null;
     /**

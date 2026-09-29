@@ -159,6 +159,13 @@ export interface Job {
      */
     workflowName: string | null;
     /**
+     * The thread root's frozen gate-repair round limit (043, issue #49): how many bounded
+     * gate-fix rounds this default-workflow thread may spend, fixed at create. Null on every
+     * non-default thread, where no repair loop exists to bound. Only the thread read selects it
+     * — it is the task view's repair counter, not a claim input.
+     */
+    defaultGateFixRounds?: number | null;
+    /**
      * When the user declared the task done — the verdict no run can make. Null until they say so,
      * and only settable on a finished task; it never replaces the run's own outcome.
      */
@@ -474,8 +481,15 @@ export interface JobStore {
                 node: string;
                 snapshot: WorkflowDefinition;
                 params: ParamValues;
-                /** The selected optional-block pair, only for the code-owned default (039). */
-                defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean };
+                /**
+                 * The default workflow's launch-time options, only for the code-owned default
+                 * (039, and the round limit 043). Absent on a named workflow.
+                 */
+                defaultOptions?: {
+                    reviewReconciliation: boolean;
+                    mergeConflictAutofix: boolean;
+                    gateFixRounds: number;
+                };
             } | null;
         }
     ): Promise<{ id: string }>;
