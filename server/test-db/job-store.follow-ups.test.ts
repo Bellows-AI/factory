@@ -619,16 +619,26 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             expect(await store.reopen(ABSENT)).toBe('missing');
         });
 
-        it("withdraws a row a worker has already claimed, and that worker's later ack answers missing", async () => {
+        // A live reclaim claim means a driver is mid-removal: reopening over it would answer 200
+        // for a tree that is about to come down (the review race on #367). The person retries once
+        // the reclaim settles — ack (marker set → reclaimed) or lease expiry, which is how a
+        // crashed worker's claim is relinquished everywhere else in this system (#152's rule).
+        it('refuses while a worker holds a live claim, and an expired claim withdraws', async () => {
             const root = await finishWithSession('drive me');
             await store.markDone(root, null);
             const claim = await store.claimReclaim('w1', LEASE_SECONDS);
             expect(claim).not.toBeNull();
 
-            // The withdraw stops the row being OFFERED again; a driver already holding it finds
-            // nothing to ack — its side may still take the tree down (docs/jobs.md), and a
-            // follow-up recovers by recreating the tree from the surviving branch.
+            expect(await store.reopen(root)).toBe('reclaiming');
+            expect(await reclaimRows(root)).toHaveLength(1);
+            expect((await store.get(root))?.doneAt).not.toBeNull();
+
+            // The expired lease reverts the row to withdrawable: the reopen lands, the row is
+            // gone, and the slow worker's later ack finds nothing.
+            await sql`update task_reclaim set lease_expires_at = now() - interval '1 second'
+                where org_id = ${ORG} and root_job_id = ${root}`;
             expect(await store.reopen(root)).toEqual({ result: 'ok' });
+            expect(await reclaimRows(root)).toHaveLength(0);
             expect(await store.ackReclaim(claim!.id, 'w1')).toBe('missing');
         });
 

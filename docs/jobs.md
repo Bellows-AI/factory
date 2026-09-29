@@ -1130,10 +1130,14 @@ mistake: it clears `done_at`/`done_by` on every member of the thread and withdra
 `task_reclaim` row — the `TASK_DONE` refusal a follow-up would otherwise hit is gone, and the
 conversation continues. It is the done stamp's only writer besides `done` itself, and the one
 transaction — under the same advisory lock remove takes — is what makes it race-safe against the
-reclaim claim: the withdraw's DELETE row-locks the row out of `claimReclaim`'s candidate scan, so a
-row being withdrawn is never handed out. A worker that already claimed the row is not recalled —
-its ack answers `404` and its side may still take the tree down; a follow-up recovers by recreating
-the tree from the surviving `factory/<root>` branch. The refuse-side is the `worktree_reclaimed_at`
+reclaim claim: only rows no worker holds a LIVE claim on are withdrawn (with a re-check after the
+delete, so a row claimed mid-transaction is refused, not yanked), and the withdraw's DELETE
+row-locks the row out of `claimReclaim`'s candidate scan, so a row being withdrawn is never handed
+out. A worker holding a live claim is mid-removal, and reopen refuses outright —
+`409 RECLAIM_IN_PROGRESS`, retry once the claim settles: an ack stamps the marker
+(`WORKTREE_RECLAIMED`), an expired lease — the crashed worker's relinquish, the same rule #152
+applies to a lost job lease — reverts the row to withdrawable and the reopen lands. The refuse-side
+is the `worktree_reclaimed_at`
 marker on the root (045): "done + all-terminal + no reclaim row" is ambiguous between tree present
 and tree gone — ack DELETES the row, and the verdict-time reclaim never queues one — so both points
 where a removal becomes issued stamp the marker (the ack's transaction, and a `threadDone`-true

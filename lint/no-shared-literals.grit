@@ -66,6 +66,7 @@ or {
                 r"^['\"]NOT_STOPPABLE['\"]$",
                 r"^['\"]ORG_UNAVAILABLE['\"]$",
                 r"^['\"]PURGE_IN_PROGRESS['\"]$",
+                r"^['\"]RECLAIM_IN_PROGRESS['\"]$",
                 r"^['\"]REPO_CLONING['\"]$",
                 r"^['\"]REPO_NAME_CONFLICT['\"]$",
                 r"^['\"]REPO_SELECTED['\"]$",

@@ -140,8 +140,9 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
 
 // The user's reopening of a done task (issue #327): done's inverse. Person-gated like done/remove
 // — a person's verdict on a task no worker holds — and it takes no lease token for the same
-// reason. The store refuses atomically: a task that was never done, and one whose worktree a
-// reclaim already removed (a follow-up would have nothing to resume in), are both conflicts.
+// reason. The store refuses atomically: a task that was never done, one whose worktree a reclaim
+// already removed (a follow-up would have nothing to resume in), and one whose worktree is being
+// removed right now (retry once the reclaim settles) are all conflicts.
 export async function handleReopen(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute(orgs, request, reply);
     if (!route) return reply;
@@ -161,6 +162,12 @@ export async function handleReopen(orgs: OrgRegistry, request: FastifyRequest, r
         return reply.code(HTTP_CONFLICT).send({
             error: "The task's worktree was already reclaimed",
             code: ERROR_CODES.WORKTREE_RECLAIMED,
+        });
+    }
+    if (result.value === 'reclaiming') {
+        return reply.code(HTTP_CONFLICT).send({
+            error: "A driver is removing the task's worktree — retry once the reclaim settles",
+            code: ERROR_CODES.RECLAIM_IN_PROGRESS,
         });
     }
     return reply.code(HTTP_OK).send({ id, reopened: true });

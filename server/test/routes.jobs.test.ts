@@ -1529,6 +1529,15 @@ describe('POST /api/jobs/:id/remove', () => {
             expect(response.json().code).toBe('WORKTREE_RECLAIMED');
         });
 
+        // A driver is mid-removal: retry once the reclaim settles rather than reopening over a
+        // tree that is about to come down.
+        it('refuses while a reclaim is in flight', async () => {
+            const instance = await harnessWith(stubStore({ reopen: 'reclaiming' }));
+            const response = await post(instance, `/api/jobs/${ID}/reopen`, {});
+            expect(response.statusCode).toBe(409);
+            expect(response.json().code).toBe('RECLAIM_IN_PROGRESS');
+        });
+
         it('answers 404 for a task that does not exist', async () => {
             const instance = await harnessWith(stubStore({ reopen: 'missing' }));
             expect((await post(instance, `/api/jobs/${ID}/reopen`, {})).statusCode).toBe(404);
