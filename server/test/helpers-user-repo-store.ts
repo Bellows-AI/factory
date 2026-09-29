@@ -110,9 +110,11 @@ export function memoryUserRepoStore(options?: { blockingTasks?: BlockingTasks })
         async select(userId, repos) {
             // Same refusal the SQL store decides under its lock: a checkout stamped `purging`
             // cannot be re-selected underneath its deletion.
-            const purging = repos
-                .filter((repo) => find(userId, repo)?.status === 'purging')
-                .map((repo) => repo.name)
+            // By NAME, like the SQL lock: the checkout directory is keyed by name.
+            const names = new Set(repos.map((repo) => repo.name));
+            const purging = rows
+                .filter((r) => r.userId === userId && names.has(r.name) && r.status === 'purging')
+                .map((r) => r.name)
                 .sort();
             if (purging.length) throw new PurgeConflictError(purging);
             for (const repo of repos) applySelection(rows, at, userId, repo);

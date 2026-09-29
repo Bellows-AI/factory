@@ -52,6 +52,19 @@ describe('the manual purge (memory store)', () => {
         expect(await store.orphaned(ALICE)).toHaveLength(1);
     });
 
+    it("refuses another owner's same-named repo while one is purging, because they are one directory", async () => {
+        const store = memoryUserRepoStore();
+        await store.select(ALICE, [web]);
+        await store.select(ALICE, []);
+        await store.stampPurge(ALICE, web);
+
+        // The SQL lock matches repo NAME only — the checkout directory is keyed by name.
+        const attempt = store.select(ALICE, [{ owner: 'other', name: 'web' }]);
+        await expect(attempt).rejects.toBeInstanceOf(PurgeConflictError);
+        await expect(attempt).rejects.toMatchObject({ names: ['web'] });
+        expect(await store.orphaned(ALICE)).toHaveLength(1);
+    });
+
     it('deletes only a row that is still deselected and purging, once', async () => {
         const store = memoryUserRepoStore();
         await store.select(ALICE, [web]);

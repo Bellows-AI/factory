@@ -51,27 +51,53 @@ const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).tr
 const refused = (r) => ({ ok: false, reason: r });
 
 /**
+ * The .git entry at a path, or null only when the entry is genuinely absent: ENOENT (nothing
+ * there) or ENOTDIR (a parent of the path is not a directory). lstat, never existsSync — a
+ * dangling .git symlink IS an entry (somebody's broken git tree), and reading it as "no .git"
+ * is what would send a tree holding uncommitted files down a bare-leftover rmSync.
+ */
+function dotGitEntry(p) {
+    try {
+        return fs.lstatSync(p + '/.git');
+    } catch (e) {
+        if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') throw e;
+        return null;
+    }
+}
+
+/**
+ * Whether the .git entry is the pointer file a task worktree of this clone carries: a FILE
+ * whose gitdir line names this clone's admin dir. A .git DIRECTORY is a standalone repo parked
+ * at the path, and a dangling symlink is a pointer that resolves to nothing — not honest either
+ * way. An absent resolve or read (ENOENT/ENOTDIR) is exactly that dishonesty; every other
+ * error is a real failure and propagates to the verdict.
+ */
+function honestWorktreePointer(p) {
+    try {
+        return (
+            fs.statSync(p + '/.git').isFile() &&
+            fs
+                .readFileSync(p + '/.git', 'utf8')
+                .split('\n')
+                .some((l) => {
+                    const gitdir = l.startsWith('gitdir: ') ? l.slice('gitdir: '.length).trim() : null;
+                    return gitdir !== null && gitdir.startsWith(repo + '/.git/worktrees/');
+                })
+        );
+    } catch (e) {
+        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false;
+        throw e;
+    }
+}
+
+/**
  * The clone is gone. Settle the tree from what the tree itself knows, and nothing else:
  * a registered task worktree carries a .git FILE whose gitdir names this clone's admin dir.
  */
 function reclaimWithoutClone(wtExists) {
     if (!wtExists) return { ok: true, removed: false };
-    const dotGit = wt + '/.git';
-    if (fs.existsSync(dotGit)) {
-        // A task worktree's .git is a FILE (a pointer at the clone's admin dir). A .git
-        // DIRECTORY is a standalone repo parked at the path — somebody's git tree either way,
-        // and the same refusal as ever: the clone being gone is a reason to be more careful,
-        // not less. statSync keeps the EISDIR from becoming a generic crash verdict.
-        const honest =
-            fs.statSync(dotGit).isFile() &&
-            fs
-                .readFileSync(dotGit, 'utf8')
-                .split('\n')
-                .some((l) => {
-                    const gitdir = l.startsWith('gitdir: ') ? l.slice('gitdir: '.length).trim() : null;
-                    return gitdir !== null && gitdir.startsWith(repo + '/.git/worktrees/');
-                });
-        if (!honest) {
+    if (dotGitEntry(wt)) {
+        if (!honestWorktreePointer(wt)) {
             return refused(
                 'refusing to remove ' +
                     wt +
@@ -98,7 +124,7 @@ function reclaim() {
             .filter((l) => l.startsWith('worktree '))
             .map((l) => l.slice('worktree '.length))
             .includes(wt);
-    if (!registered && wtExists && fs.existsSync(wt + '/.git')) {
+    if (!registered && wtExists && dotGitEntry(wt)) {
         // The refusal is terminal: returning it here means the prune below never runs, so the
         // single verdict this script prints is the refusal itself.
         return refused(

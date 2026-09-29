@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createFactsCache } from '../src/workspace/facts.js';
+import { type FactsCache, createFactsCache } from '../src/workspace/facts.js';
 import { PURGE_TIMEOUT_MS, removeTree, createPurger } from '../src/workspace/purge.js';
 import { memoryUserRepoStore } from './helpers-user-repo-store.js';
 
@@ -45,6 +45,25 @@ async function seedDeselected(store: ReturnType<typeof memoryUserRepoStore>) {
 function makeCheckout() {
     mkdirSync(checkout, { recursive: true });
     writeFileSync(join(checkout, 'file.txt'), 'work\n');
+}
+
+/**
+ * The real cache with a tripwire on invalidate, so a test can pin the call itself — the failing
+ * paths leave the entry in place, and reading it back would race the refresh that repopulates it.
+ */
+function spyInvalidation(): { facts: FactsCache; invalidated: string[] } {
+    const facts = createFactsCache();
+    const invalidated: string[] = [];
+    return {
+        facts: {
+            get: (dir) => facts.get(dir),
+            invalidate: (dir) => {
+                invalidated.push(dir);
+                facts.invalidate(dir);
+            },
+        },
+        invalidated,
+    };
 }
 
 describe('removeTree', () => {
@@ -209,6 +228,29 @@ describe('the purger', () => {
         expect(existsSync(checkout)).toBe(true);
     });
 
+    it('invalidates the facts even when the removal fails', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const { facts, invalidated } = spyInvalidation();
+        const purger = createPurger({
+            store,
+            root,
+            orgId: ORG,
+            facts,
+            remove: async () => {
+                throw new Error('rm: permission denied');
+            },
+        });
+
+        await purger.purge(ALICE, web);
+        await purger.settle();
+
+        // The row landed on failed, but the tree at this path is already partly gone: the old
+        // measurements must not answer for it.
+        expect(invalidated).toContain(checkout);
+    });
+
     it('survives failing to RECORD the failure — the detached chain never rejects', async () => {
         // The finisher runs detached after the 202. A database that is down fails the removal
         // recording AND the failure recording; letting either rejection escape the chain would
@@ -239,6 +281,27 @@ describe('the purger', () => {
         await purger.settle();
 
         expect((await store.orphaned(ALICE))[0]?.status).toBe('purging');
+    });
+
+    it('invalidates the facts even when recording the deletion throws', async () => {
+        // remove() resolved — the directory is gone — but the row delete failed. A re-select
+        // re-clones into the same path and must not inherit the predecessor's measurements.
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const failing: typeof store = {
+            ...store,
+            deletePurged: async () => {
+                throw new Error('database is down');
+            },
+        };
+        const { facts, invalidated } = spyInvalidation();
+        const purger = createPurger({ store: failing, root, orgId: ORG, facts, remove: async () => {} });
+
+        await purger.purge(ALICE, web);
+        await purger.settle();
+
+        expect(invalidated).toContain(checkout);
     });
 
     it('holds the stamp until the removal child is observed to exit', async () => {
@@ -315,6 +378,27 @@ describe('the purger', () => {
         const [row] = await store.orphaned(ALICE);
         expect(row.status).toBe('failed');
         expect(row.error).toBe('rm: device busy');
+    });
+
+    it('invalidates the facts when a recovery removal fails', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        await store.stampPurge(ALICE, web);
+        const { facts, invalidated } = spyInvalidation();
+        const purger = createPurger({
+            store,
+            root,
+            orgId: ORG,
+            facts,
+            remove: async () => {
+                throw new Error('rm: device busy');
+            },
+        });
+
+        await purger.recoverInterrupted();
+
+        expect(invalidated).toContain(checkout);
     });
 
     it('never plans to touch the sibling .worktrees directory', async () => {

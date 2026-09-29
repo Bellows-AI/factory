@@ -128,9 +128,6 @@ export function createPurger(deps: {
                 // than swallow it.
                 log(`purge of ${repo.name}: the row moved behind the deletion; the checkout will re-clone`);
             }
-            // In both branches the tree at this path is gone or about to be re-cloned: the old
-            // measurements must not answer for the next tree.
-            facts.invalidate(dir);
         } catch (error) {
             const message = firstLine(error);
             log(`purge of ${repo.name} failed: ${message}`);
@@ -143,6 +140,10 @@ export function createPurger(deps: {
             } catch (e) {
                 log(`purge of ${repo.name}: could not record the failure: ${(e as Error).message}`);
             }
+        } finally {
+            // Whatever happened, the tree at this path is gone, partly gone, or about to be
+            // re-cloned: the old measurements must not answer for it.
+            facts.invalidate(dir);
         }
     };
 
@@ -187,7 +188,6 @@ export function createPurger(deps: {
                     // between the child's exit and the row delete leaves behind.
                     await remove(dir);
                     await store.deletePurged(row.userId, row);
-                    facts.invalidate(dir);
                     log(`finished interrupted purge of ${row.userId}/${row.name}`);
                 } catch (error) {
                     const message = firstLine(error);
@@ -200,6 +200,10 @@ export function createPurger(deps: {
                     } catch (e) {
                         log(`purge of ${row.name}: could not record the failure: ${(e as Error).message}`);
                     }
+                } finally {
+                    // Every exit path invalidates, as in finishPurge: the tree at this path is
+                    // gone, partly gone, or about to be re-cloned.
+                    facts.invalidate(dir);
                 }
             }
         },

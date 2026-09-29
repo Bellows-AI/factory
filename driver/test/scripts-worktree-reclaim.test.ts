@@ -1,5 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -110,6 +120,27 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
         expect(existsSync(wt)).toBe(false);
     });
 
+    it('refuses an unregistered tree whose .git is a dangling symlink', () => {
+        // existsSync reads a dangling symlink as "no .git at all", which would send the tree
+        // down the bare-leftover branch and rmSync a directory holding uncommitted files.
+        // A .git entry that exists on lstat is a git tree either way — refused, not deleted.
+        const stale = addWorktree(STALE);
+        rmSync(stale, { recursive: true });
+        const refused = wtPath(UNREGISTERED);
+        mkdirSync(refused, { recursive: true });
+        symlinkSync('/nonexistent/factory-admin', join(refused, '.git'));
+        writeFileSync(join(refused, 'PRECIOUS.md'), 'uncommitted work\n');
+
+        const { stdout, verdict } = remove(refused);
+
+        expect(stdout.trim().split('\n').filter(Boolean)).toHaveLength(1);
+        expect(verdict.ok).toBe(false);
+        expect(verdict.reason).toContain('not a registered worktree');
+        expect(readFileSync(join(refused, 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
+        expect(lstatSync(join(refused, '.git')).isSymbolicLink()).toBe(true);
+        expect(git(clone, 'worktree', 'list', '--porcelain')).toContain(`worktree ${stale}`);
+    });
+
     it('is a no-op when there is nothing at the path', () => {
         expect(remove(wtPath(ROOT)).verdict).toEqual({ ok: true, removed: false });
     });
@@ -168,6 +199,25 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
 
             expect(remove(wt).verdict).toEqual({ ok: true, removed: true });
             expect(existsSync(wt)).toBe(false);
+        });
+
+        it('refuses a tree whose .git is a dangling symlink, with no clone to prove it against', () => {
+            // The purge scenario of the review: with the clone gone, a dangling .git symlink
+            // reads as "no .git" and the bare-leftover branch would delete the tree and every
+            // uncommitted file in it. The entry exists on lstat, so the verdict is the refusal.
+            const refused = wtPath(UNREGISTERED);
+            mkdirSync(refused, { recursive: true });
+            symlinkSync('/nonexistent/factory-admin', join(refused, '.git'));
+            writeFileSync(join(refused, 'PRECIOUS.md'), 'uncommitted work\n');
+            rmSync(clone, { recursive: true, force: true });
+
+            const { stdout, verdict } = remove(refused);
+
+            expect(stdout.trim().split('\n').filter(Boolean)).toHaveLength(1);
+            expect(verdict.ok).toBe(false);
+            expect(verdict.reason).toContain('not a registered worktree');
+            expect(readFileSync(join(refused, 'PRECIOUS.md'), 'utf8')).toBe('uncommitted work\n');
+            expect(lstatSync(join(refused, '.git')).isSymbolicLink()).toBe(true);
         });
 
         it('is a no-op when neither the clone nor the worktree is there', () => {
