@@ -1,0 +1,29 @@
+-- Whether the task worktree has been removed already — the durable signal reopen (issue #327)
+-- needs to answer "can this done task still be followed up".
+--
+-- The reclaim row in task_reclaim could not carry this: ack DELETES the row once the tree is
+-- down, and the verdict-time reclaim (a threadDone-true complete, docs/jobs.md) never queues a
+-- row at all — the driver removes the tree directly on the answer. "Done + all-terminal + no
+-- reclaim row" was therefore ambiguous between tree present and tree gone, and a reopen that
+-- guessed wrong either resurrects a task with no worktree to resume in or refuses one that could
+-- have continued. This column is the board's own record, stamped at the two points where a
+-- removal becomes issued:
+--
+-- - ackReclaimRow, in the ack's transaction beside the row delete — the queue path;
+-- - completeJob, in the verdict's transaction beside the threadDone aggregate — the verdict path.
+--
+-- Root rows only (every thread carries root_job_id, 022), and it lives on the job table rather
+-- than task_reclaim because it must outlive the row it describes and predate the row it never had.
+-- Null means no removal was ever issued — the state reopen may reverse. First writer wins
+-- (coalesce at both stamp sites): the stamp is a fact about the tree, not a timestamp to refresh.
+--
+-- Not on the Job read model: no consumer; reopen reads it store-side.
+--
+-- The column starts at 045: removals that ran before it left no stamp to backfill from (the ack
+-- deleted its only trace, the verdict path never wrote one), so those threads reopen with a 200
+-- and a follow-up rebuilds the tree from the surviving branch — the same recovery an in-flight
+-- removal already gets.
+--
+-- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+
+alter table job add column if not exists worktree_reclaimed_at timestamptz;

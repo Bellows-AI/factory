@@ -83,6 +83,13 @@ const expireLease = (id: string) => sql`update job set lease_expires_at = now() 
 const row = (id: string) =>
     sql<{ status: string; attempts: number; claimed_by: string | null; started_at: Date | null }[]>`
         select status, attempts, claimed_by, started_at from job where id = ${id}
+        `;
+
+/** The thread's queued worktree reclaims, addressed by the root — done/remove queue them, reopen withdraws them. */
+const reclaimRows = (rootJobId: string) =>
+    sql<{ root_job_id: string; repo: string | null; workspace_path: string | null }[]>`
+        select root_job_id, repo, workspace_path from task_reclaim
+        where org_id = ${ORG} and root_job_id = ${rootJobId}
     `;
 describe.skipIf(!enabled)('follow-ups and done', () => {
     /**
@@ -464,12 +471,6 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
      * finds the done in place (the case pinned in the done-ness describe below).
      */
     describe('done queues the worktree reclaim', () => {
-        const reclaimRows = (rootJobId: string) =>
-            sql<{ root_job_id: string; repo: string | null; workspace_path: string | null }[]>`
-                select root_job_id, repo, workspace_path from task_reclaim
-                where org_id = ${ORG} and root_job_id = ${rootJobId}
-            `;
-
         it('queues a reclaim for an already-terminal thread, addressed by the root', async () => {
             const root = await finishWithSession('drive me', { repo: 'acme/web', executor: null });
             const followUp = await mustFollowUp(root, 'first adjustment', null);
@@ -531,6 +532,181 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             await store.markDone(root, null);
 
             expect(await reclaimRows(root)).toHaveLength(1);
+        });
+    });
+
+    /**
+     * Reopen (issue #327) is done's inverse: it clears the stamp every member carries and
+     * withdraws a reclaim that has not run yet, so a task closed by mistake can be followed up
+     * again. Once the tree is gone there is nothing for a follow-up to resume in, and the
+     * `worktree_reclaimed_at` marker on the root is what says so — the queue row alone could not,
+     * because ack DELETES the row and the verdict-time reclaim never queues one.
+     */
+    describe('reopen', () => {
+        const reclaimedAt = (rootJobId: string) =>
+            sql<{ worktree_reclaimed_at: Date | null }[]>`
+                select worktree_reclaimed_at from job where org_id = ${ORG} and id = ${rootJobId}
+            `;
+
+        it('clears done_at and done_by on every member, and a second reopen answers not_done', async () => {
+            const [closer] = await sql<{ id: string }[]>`
+                insert into app_user (github_user_id, github_login) values (6101, 'closer') returning id
+            `;
+            const root = await finishWithSession('drive me');
+            const followUp = await mustFollowUp(root, 'first adjustment', null);
+            const claim = await store.claim('w1', LEASE_SECONDS);
+            expect(claim?.id).toBe(followUp.id);
+            await store.complete(followUp.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+            await store.markDone(followUp.id, closer!.id);
+
+            expect(await store.reopen(root)).toEqual({ result: 'ok' });
+
+            expect(await store.get(root)).toMatchObject({ doneAt: null, doneBy: null });
+            expect(await store.get(followUp.id)).toMatchObject({ doneAt: null, doneBy: null });
+            // Reopen is deliberately NOT idempotent: the second call names the state the first left.
+            expect(await store.reopen(root)).toBe('not_done');
+        });
+
+        it('withdraws the queued reclaim row before the driver ever sees it', async () => {
+            const root = await finishWithSession('drive me');
+            await store.markDone(root, null);
+            expect(await reclaimRows(root)).toHaveLength(1);
+
+            expect(await store.reopen(root)).toEqual({ result: 'ok' });
+
+            expect(await reclaimRows(root)).toHaveLength(0);
+            expect(await store.claimReclaim('w1', LEASE_SECONDS)).toBeNull();
+        });
+
+        it('keeps the tree for a done thread that is still moving, and the follow-up works again', async () => {
+            const root = await finishWithSession('drive me');
+            await mustFollowUp(root, 'first adjustment', null);
+            // Done on a moving thread queued nothing (the describe above pins that).
+            await store.markDone(root, null);
+            expect(await reclaimRows(root)).toHaveLength(0);
+
+            expect(await store.reopen(root)).toEqual({ result: 'ok' });
+
+            // The TASK_DONE refusal is gone: the conversation can be followed up again.
+            await mustFollowUp(root, 'second adjustment', null);
+        });
+
+        // The documented recovery (docs/jobs.md): a moving thread's early done cleared, the
+        // member's verdict then finds no done anywhere — threadDone false, the tree stays for
+        // the follow-up instead of being reclaimed by the verdict.
+        it('lets the verdict keep the tree once a moving thread is reopened', async () => {
+            const root = await finishWithSession('drive me');
+            const followUp = await mustFollowUp(root, 'first adjustment', null);
+            await store.markDone(root, null);
+
+            expect(await store.reopen(root)).toEqual({ result: 'ok' });
+
+            const claim = await store.claim('w1', LEASE_SECONDS);
+            expect(claim?.id).toBe(followUp.id);
+            expect(
+                await store.complete(followUp.id, claim!.leaseToken, {
+                    status: 'succeeded',
+                    exitCode: 0,
+                    output: null,
+                })
+            ).toEqual({ result: 'ok', threadDone: false });
+        });
+
+        it('refuses not_done for a thread nobody closed, and missing for an absent id', async () => {
+            const id = await finishWithSession('echo hi');
+
+            expect(await store.reopen(id)).toBe('not_done');
+            expect(await store.reopen(ABSENT)).toBe('missing');
+        });
+
+        // A live reclaim claim means a driver is mid-removal: reopening over it would answer 200
+        // for a tree that is about to come down (the review race on #367). The person retries once
+        // the reclaim settles — ack (marker set → reclaimed) or lease expiry, which is how a
+        // crashed worker's claim is relinquished everywhere else in this system (#152's rule).
+        it('refuses while a worker holds a live claim, and an expired claim withdraws', async () => {
+            const root = await finishWithSession('drive me');
+            await store.markDone(root, null);
+            const claim = await store.claimReclaim('w1', LEASE_SECONDS);
+            expect(claim).not.toBeNull();
+
+            expect(await store.reopen(root)).toBe('reclaiming');
+            expect(await reclaimRows(root)).toHaveLength(1);
+            expect((await store.get(root))?.doneAt).not.toBeNull();
+
+            // The expired lease reverts the row to withdrawable: the reopen lands, the row is
+            // gone, and the slow worker's later ack finds nothing.
+            await sql`update task_reclaim set lease_expires_at = now() - interval '1 second'
+                where org_id = ${ORG} and root_job_id = ${root}`;
+            expect(await store.reopen(root)).toEqual({ result: 'ok' });
+            expect(await reclaimRows(root)).toHaveLength(0);
+            expect(await store.ackReclaim(claim!.id, 'w1')).toBe('missing');
+        });
+
+        it('refuses reclaimed once the ack landed, and the marker sits on the root', async () => {
+            const root = await finishWithSession('drive me');
+            await store.markDone(root, null);
+            const claim = await store.claimReclaim('w1', LEASE_SECONDS);
+            expect(await store.ackReclaim(claim!.id, 'w1')).toBe('ok');
+
+            expect((await reclaimedAt(root))[0]?.worktree_reclaimed_at).not.toBeNull();
+            expect(await store.reopen(root)).toBe('reclaimed');
+        });
+
+        it('refuses reclaimed after the verdict-time reclaim was issued', async () => {
+            const root = await finishWithSession('drive me');
+            const followUp = await mustFollowUp(root, 'first adjustment', null);
+            expect(await store.markDone(root, null)).toMatchObject({ status: 'succeeded' });
+
+            // The thread's last completing verdict answers threadDone — the driver removes the
+            // tree directly on it, with no queue row and no ack — and that verdict is where the
+            // board records the removal as issued.
+            const claim = await store.claim('w1', LEASE_SECONDS);
+            expect(claim?.id).toBe(followUp.id);
+            expect(
+                await store.complete(followUp.id, claim!.leaseToken, {
+                    status: 'succeeded',
+                    exitCode: 0,
+                    output: null,
+                })
+            ).toEqual({ result: 'ok', threadDone: true });
+
+            expect(await store.reopen(root)).toBe('reclaimed');
+        });
+
+        it('waits on the thread advisory lock, like remove — no check-then-clear window', async () => {
+            const root = await finishWithSession('drive me');
+            await store.markDone(root, null);
+
+            let lockTaken: (() => void) | null = null;
+            const locked = new Promise<void>((resolve) => {
+                lockTaken = resolve;
+            });
+            let release: (() => void) | null = null;
+            const held = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            const blocker = sql.begin(async (tx) => {
+                await tx`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`;
+                lockTaken!();
+                await held;
+            });
+            blocker.catch(() => {});
+            await locked;
+
+            // The timer is the assertion device, the same one the follow-up lock test uses:
+            // reopen must still be waiting when it fires, not deciding against a snapshot taken
+            // before the lock was even granted.
+            const reopen = store.reopen(root);
+            const STILL_LOCKED_TIMEOUT_MS = 450;
+            const outcome = await Promise.race([
+                reopen,
+                new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
+            ]);
+            expect(outcome).toBe('still_locked');
+
+            release!();
+            await blocker;
+            expect(await reopen).toEqual({ result: 'ok' });
         });
     });
 

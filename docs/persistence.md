@@ -64,6 +64,16 @@ restart with a warm database serves real data on the first request rather than a
   "not a failure" (a success, or a pre-column row) and there is no backfill, by the same reasoning
   043 states: a historical tail usually does not name a kind, and guessing one would manufacture
   history.
+- **`045_job_worktree_reclaimed.sql` is one nullable timestamp that replaces an absence the board
+  could not otherwise see.** `job.worktree_reclaimed_at` records that a thread's task worktree
+  removal has been ISSUED — stamped at the reclaim ack (whose row delete was the only trace, and
+  the trace deleted itself) and at a `threadDone`-true verdict (which orders the driver to remove
+  the tree directly, with no queue row at all). Without it, "done + all-terminal + no reclaim row"
+  was ambiguous between tree present and tree gone, and reopen (#327) would have had to guess
+  which. Null is "no removal was ever issued" — the only state reopen may reverse. Root rows only,
+  first-writer coalesce at both write sites; not on the `Job` read model, because reopen reads it
+  store-side and nothing else consumes it. The column starts at 045 — removals that ran before it
+  are unknowable and their threads reopen with a 200, recovering through branch recreation.
 
 **Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
 `npm test`**. That is the price of keeping the default suite offline and database-free; they are

@@ -462,6 +462,23 @@ export type RemoveResult =
     | 'missing'
     | 'conflict';
 
+/**
+ * What a reopen did.
+ *
+ * - `ok`          the thread's done stamp is cleared and any queued worktree reclaim withdrawn —
+ *                 the task can be followed up again.
+ * - `missing`     no such job in this organization.
+ * - `not_done`    no member of the thread carries the done stamp — nothing to reopen. Reopen is
+ *                 deliberately NOT idempotent: the second call answers this, the state the first
+ *                 left behind.
+ * - `reclaimed`   the worktree was already removed (the reclaim row acked, or a threadDone verdict
+ *                 issued the removal) — a follow-up would have nothing to resume in.
+ * - `reclaiming`  a driver holds a LIVE claim on the reclaim — the tree is being removed right
+ *                 now. Retry once the claim settles: an ack stamps the marker (`reclaimed`), an
+ *                 expired lease reverts the row to withdrawable (`ok`).
+ */
+export type ReopenResult = { result: 'ok' } | 'missing' | 'not_done' | 'reclaimed' | 'reclaiming';
+
 /** A worktree reclaim a driver just leased. Acking by id removes the row. `leaseExpiresAt` is the
  * expiry the claim granted, read back from the row it was persisted on — the holder keeps the row
  * to it whatever later pollers ask for. */
@@ -615,6 +632,23 @@ export interface JobStore {
      * removed_by on job would be written and immediately deleted.
      */
     removeThread(id: string, removedBy: string | null): Promise<RemoveResult>;
+    /**
+     * The user's reopening of a done task (issue #327): clears the done stamp on EVERY member of
+     * the thread and withdraws a queued task_reclaim row, so a task closed by mistake can be
+     * followed up again — `createFollowUp`'s `done_at is null` predicate is what this reverses.
+     * Decided under the same per-thread advisory lock the claim and remove take, so the checks,
+     * the withdraw and the clear see every earlier claim of the thread commit; the withdraw only
+     * takes rows no worker holds a LIVE claim on, and re-verifies after the delete, so a row
+     * claimed mid-transaction is refused rather than yanked from under its worker.
+     *
+     * Refuses once the worktree is gone (`reclaimed` — the `worktree_reclaimed_at` marker, 045:
+     * stamped at the ack and at a threadDone verdict), and while a reclaim is in flight
+     * (`reclaiming` — a live claim on the row; the lease expiry is what relinquishes a crashed
+     * worker's claim), because a follow-up resumes a session in the tree it ran in. Not
+     * idempotent: reopening a task that is not done answers `not_done`, and so does the second
+     * reopen.
+     */
+    reopen(id: string): Promise<ReopenResult>;
     /** The driver's poll of the worktree-reclaim queue. The oldest claimable row, or null —
      * claimable by the expiry a previous claim GRANTED it, never by the polling worker's own
      * leaseSeconds. */

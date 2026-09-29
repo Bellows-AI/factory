@@ -155,6 +155,9 @@ describe('the route table', () => {
         [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
         [`/api/jobs/${JOB_ID}/retry`, 'user'],
         [`/api/jobs/${JOB_ID}/done`, 'user'],
+        // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
+        // token un-closing tasks it never held would move audit rows for no run it owns.
+        [`/api/jobs/${JOB_ID}/reopen`, 'user'],
         // Stop and remove are person's actions too. The driver is told to stop through the
         // heartbeat it already holds, never through a stop route of its own; and a worker token
         // removing the audit rows of jobs it never held would be the thread-read hole (#47) again.
