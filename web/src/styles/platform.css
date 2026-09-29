@@ -1,0 +1,21 @@
+/* ---------- Platform conditions (issue 189) ----------
+ * Not themes: both blocks sit unlayered so they outrank every layer above them. */
+
+@media (prefers-reduced-motion: reduce) {
+    /* The lamp is the one ambient motion, and this stills it at full strength — running and
+       stopping stay live through their text, the dot shape and the static halo. No transition
+       exists to quiet: every state change on the page is already instantaneous. */
+    .sidenav-dot-running,
+    .sidenav-dot-stopping {
+        animation: none;
+    }
+}
+
+@media (forced-colors: active) {
+    /* The system repaint recolors every token — borders, fills and text all survive it. What
+       would silently vanish is the accent ring, so keyboard focus is pinned to the system's
+       highlight color. */
+    :where(a, button, input, select, textarea, summary, .updated-at):focus-visible {
+        outline-color: Highlight;
+    }
+}

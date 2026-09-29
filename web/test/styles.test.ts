@@ -52,12 +52,12 @@ const blockSpans = (css: string, openRe: RegExp, missing: string): Array<[number
     return spans;
 };
 
-/** Both token blocks — dark `:root` and light `:root[data-theme]` — the only legal homes for
- * color literals. A light theme (issue 117's toggle ships the palette in 148) is a second
- * `:root` block, nothing more. */
+/** Both token blocks — dark `:root` and light `:root[data-theme]`, in `styles/tokens.css` — the
+ * only legal homes for color literals. A light theme (issue 117's toggle ships the palette in
+ * 148) is a second `:root` block, nothing more. */
 const tokenSpans = (css: string): Array<[number, number]> => {
-    const spans = blockSpans(css, /^:root[^{\n]*\{/gm, 'styles.css token block never closes');
-    expect(spans.length, 'styles.css has no token blocks').toBeGreaterThan(0);
+    const spans = blockSpans(css, /^:root[^{\n]*\{/gm, 'styles/tokens.css token block never closes');
+    expect(spans.length, 'styles/tokens.css has no token blocks').toBeGreaterThan(0);
     return spans;
 };
 
@@ -65,7 +65,25 @@ const tokenSpans = (css: string): Array<[number, number]> => {
  * tokens rather than consuming them, so the definition guards read it, but the use guard does
  * not — a `--color-*` row pointing at `var(--surface)` is not a call site. */
 const themeSpans = (css: string): Array<[number, number]> =>
-    blockSpans(css, /^@theme[^{\n]*\{/gm, 'styles.css @theme block never closes');
+    blockSpans(css, /^@theme[^{\n]*\{/gm, 'styles/tokens.css @theme block never closes');
+
+/** Every shipped stylesheet in cascade order: the entry plus each local file its `@import`s
+ * names. The graph is flat — the ownership suite pins that no file but the entry imports. */
+const readShipped = (): Array<{ rel: string; text: string }> => {
+    const files = [{ rel: 'styles.css', text: readFileSync(join(webSrc, 'styles.css'), 'utf8') }];
+    for (const match of files[0]!.text.matchAll(/^@import "(\.[^"]+)";$/gm)) {
+        const rel = match[1]!.replace(/^\.\//, '');
+        files.push({ rel, text: readFileSync(join(webSrc, rel), 'utf8') });
+    }
+    return files;
+};
+
+/** The style system as one text, local imports replaced by the files they name — the cascade the
+ * browser sees, so order-sensitive checks survive the #321 split. */
+const shippedCss = (): string =>
+    readShipped()
+        .map((f) => (f.rel === 'styles.css' ? f.text.replace(/^@import "[^"]+";$/gm, '') : f.text))
+        .join('\n');
 
 const walkFiles = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -88,7 +106,7 @@ const rules = (css: string): Array<[string, string]> => {
 };
 
 /** One file's color-literal violations: every match of either color syntax that falls outside
- * the token spans (`styles.css` only has any; every other file has none, so its spans are
+ * the token spans (`styles/tokens.css` only has any; every other file has none, so its spans are
  * empty and every match is a violation). Split out of the `it` below so its own nested loops do
  * not add to that callback's cognitive complexity. */
 const colorViolationsIn = (rel: string, text: string, spans: Array<[number, number]>): string[] => {
@@ -102,16 +120,64 @@ const colorViolationsIn = (rel: string, text: string, spans: Array<[number, numb
     return violations;
 };
 
+/** The compact-shell 44px floor is owned where the control is owned (#321): shared controls in
+ * `styles/touch-targets.css` — the components layer's last file, so the floor still outranks
+ * every equal-specificity rule — and each lane's controls in that lane's own trailing segment,
+ * so a lane adds a target by editing only its own file. The lists are disjoint; the ownership
+ * suite holds them that way. */
+const SHARED_TOUCH_TARGETS = [
+    '.appbar-trigger',
+    '.mobile-nav-close',
+    '.mobile-nav .sidenav-link',
+    '.mobile-nav .sidenav-sublink',
+    '.mobile-nav .sidenav-newtask',
+    '.select-trigger',
+    '.page-header-actions button',
+];
+const LANE_TOUCH_TARGETS: Record<string, string[]> = {
+    'styles/regions/inbox.css': [
+        '.inbox-tab',
+        '.inbox-search input',
+        '.inbox-search select',
+        '.inbox-search button',
+        '.inbox-new',
+        '.inbox-chip-remove',
+        '.inbox-clear',
+        '.inbox-footer button',
+        '.inbox-error button',
+        '.inbox-banner-body button',
+    ],
+    'styles/regions/composer.css': [
+        '.composer-start button',
+        '.composer-param-input',
+        '.composer-example',
+        '.composer-notices-dismiss',
+    ],
+    'styles/regions/task-detail.css': ['.chat-resume', '.task-actions button', '.task-remove-actions button'],
+    'styles/regions/settings.css': [
+        '.env-tab',
+        '.settings-toggle',
+        '.repo-search input',
+        '.repo-search button',
+        '.repo-table button',
+        '.repo-save',
+        '.settings-actions button',
+        '.unsaved-actions button',
+    ],
+    'styles/regions/dashboard.css': ['.range-draft input', '.range-draft-actions button', '.legend-button'],
+    'styles/regions/entry.css': ['.login-button', '.onboarding-actions button'],
+};
+
 describe('the stylesheet', () => {
     it('keeps every color literal inside the token blocks', () => {
-        // Comments are scanned too: prose in styles.css never quotes a raw color value —
+        // Comments are scanned too: prose in the stylesheets never quotes a raw color value —
         // a value a comment needs belongs in docs/design-system.md, which is not scanned.
         const violations: string[] = [];
         for (const path of walkFiles(webSrc)) {
             if (!/\.(css|ts|tsx)$/.test(path)) continue;
             const text = readFileSync(path, 'utf8');
             const rel = path.slice(webSrc.length + 1);
-            const spans = rel === 'styles.css' ? tokenSpans(text) : [];
+            const spans = rel === 'styles/tokens.css' ? tokenSpans(text) : [];
             violations.push(...colorViolationsIn(rel, text, spans));
         }
         expect(violations).toEqual([]);
@@ -133,7 +199,7 @@ describe('the stylesheet', () => {
     });
 
     it('defines every var() the stylesheet references', () => {
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         // The token blocks and the @theme blocks together are what may be referenced: a
         // var(--font-mono) call site resolves against the static @theme block.
         const defined = new Set(
@@ -147,7 +213,7 @@ describe('the stylesheet', () => {
     });
 
     it('uses every token it defines', () => {
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         // Scanned with the @theme blocks cut out: their `--color-*: var(--token)` rows are
         // plumbing, not call sites, and would let an unused token hide behind its own exposure.
         let scanned = css;
@@ -187,7 +253,7 @@ describe('the stylesheet', () => {
     it('defines the same tokens in both theme blocks', () => {
         // Both blocks style the same <html>, so a token present in one but not the other does not
         // error — the light theme would silently render the dark value. Parity is the guard.
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         const names = tokenSpans(css).map(
             ([start, end]) => new Set([...css.slice(start, end).matchAll(/--([a-zA-Z][\w-]*)\s*:/g)].map((m) => m[1]))
         );
@@ -198,8 +264,9 @@ describe('the stylesheet', () => {
     });
 
     it('is the Tailwind v4 entry with the andon theme adopted (#148)', () => {
-        const css = readFileSync(join(webSrc, 'styles.css'), 'utf8');
-        expect(css).toMatch(/^@import "tailwindcss";/m);
+        const entry = readFileSync(join(webSrc, 'styles.css'), 'utf8');
+        expect(entry).toMatch(/^@import "tailwindcss";/m);
+        const css = shippedCss();
         expect(css).toMatch(/^:root\[data-theme="light"]\s*\{/m);
         // The theme's one ambient motion is a breathing lamp; the old blink is gone.
         expect(css).not.toMatch(/@keyframes blink\b/);
@@ -207,13 +274,12 @@ describe('the stylesheet', () => {
     });
 
     it('keeps fonts self-hosted (CSP: font-src self)', () => {
-        const text =
-            readFileSync(join(webSrc, 'styles.css'), 'utf8') + readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
+        const text = shippedCss() + readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
         expect(text).not.toMatch(/fonts\.googleapis\.com|gstatic\.com/);
     });
 
     it('lays each metric card out as a 40px icon disc beside its figure (issue 283)', () => {
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
         expect(body('.usage-group')).toMatch(/flex-direction:\s*row/);
         expect(body('.usage-disc')).toMatch(/width:\s*40px/);
@@ -225,7 +291,7 @@ describe('the stylesheet', () => {
     });
 
     it('sets Usage by user and Recent tasks side by side only from 1200px (issue 283)', () => {
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         const wide = css.slice(css.indexOf('@media (min-width: 1200px)'));
         expect(wide).toMatch(/^@media \(min-width: 1200px\)\s*\{\s*\.two-up\s*\{[^}]*grid-auto-flow:\s*column/);
         // Stacked, the one track is capped at the container: a bare implicit track sizes to the
@@ -241,7 +307,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         // through `font: inherit`. The chart tick is the one documented exception: the
         // narrowest plot's mono ticks sit at 11px, with collision checked by the overflow
         // matrix — it must stay exercised, not silently grow or shrink.
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         const sizes = rules(css)
             .map(([prelude, body]) => [prelude, body.match(/font-size:\s*(\d+(?:\.\d+)?)px/)?.[1]] as const)
             .filter(([, size]) => size !== undefined)
@@ -258,7 +324,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
     it('holds the lamp still under prefers-reduced-motion (#189)', () => {
         // The one ambient animation goes static when the platform asks for reduced motion;
         // running/stopping stay live through their text, dot shape and static halo.
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         const blocks = blockSpans(
             css,
             /@media \(prefers-reduced-motion: reduce\)\s*\{/g,
@@ -272,7 +338,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
     it('survives forced-colors: active (#189)', () => {
         // The system repaint recolors every token surface; what would silently vanish is the
         // accent focus ring, so it is pinned to the system highlight color.
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         const blocks = blockSpans(css, /@media \(forced-colors: active\)\s*\{/g, 'forced-colors block never closes');
         expect(blocks.length, 'one forced-colors block').toBe(1);
         const block = css.slice(...blocks[0]!);
@@ -282,7 +348,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
     it('gives interactive controls a 36px desktop floor (#189)', () => {
         // Padding alone lands the default button at 35px; the floor makes every button, tab,
         // input and select clear 36. The compact shell restates 44 for touch in its media query.
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         const flat = (prelude: string) => prelude.replace(/\s+/g, ' ');
         for (const selector of ['button', "input:not([type='checkbox']):not([type='radio']), select", '.inbox-tab']) {
             const bodies = rules(css)
@@ -296,44 +362,41 @@ describe('the stylesheet — sizing and motion (#189)', () => {
     });
 
     it('clears 44px touch targets across the compact shell (#189)', () => {
-        // The ≤900px rule lists every control the narrow shell must clear; new mobile-visible
-        // controls join the list, they do not get their own one-off rule.
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
-        const blocks = blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, 'compact-shell media block never closes');
-        const rule = blocks
-            .map(([start, end]) => css.slice(start, end).match(/([^{}]+)\{[^{}]*min-height:\s*44px[^{}]*\}/))
-            .find(Boolean);
-        expect(rule, 'the 44px target rule').toBeTruthy();
-        const prelude = rule![1]!;
-        for (const selector of [
-            '.appbar-trigger',
-            '.mobile-nav-close',
-            '.mobile-nav .sidenav-link',
-            '.mobile-nav .sidenav-sublink',
-            '.mobile-nav .sidenav-newtask',
-            '.select-trigger',
-            '.range-draft input',
-            '.range-draft-actions button',
-            '.page-header-actions button',
-            '.inbox-tab',
-            '.inbox-search input',
-            '.inbox-search select',
-            '.inbox-search button',
-            '.chat-resume',
-            '.task-actions button',
-            '.task-remove-actions button',
-            '.unsaved-actions button',
-            '.env-tab',
-            '.composer-start button',
-            '.composer-param-input',
-            '.legend-button',
-            '.repo-search input',
-            '.repo-search button',
-            '.repo-table button',
-            '.repo-save',
-            '.settings-actions button',
-        ]) {
-            expect(prelude.includes(selector), `${selector} in the 44px target list`).toBe(true);
+        // Each control clears the floor through its OWN owner's compact-shell segment — the
+        // shared list for shared controls, the lane's trailing segment for lane controls (#321).
+        // A new mobile-visible control joins its owner's list, never a one-off rule.
+        const cssByRel = new Map(readShipped().map((f) => [f.rel, stripComments(f.text)] as const));
+        const assignments: Array<[string, string]> = [
+            ...SHARED_TOUCH_TARGETS.map((selector) => ['styles/touch-targets.css', selector] as [string, string]),
+            ...Object.entries(LANE_TOUCH_TARGETS).flatMap(([rel, selectors]) =>
+                selectors.map((selector) => [rel, selector] as [string, string])
+            ),
+        ];
+        // Every 44px rule inside the compact-shell media blocks, as [prelude, matched text] —
+        // matchAll, so a second 44px rule hiding later in a block is still seen.
+        const rulesWith44 = (css: string) =>
+            blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, 'compact-shell media block never closes').flatMap(
+                ([start, end]) =>
+                    [...css.slice(start, end).matchAll(/([^{}]+)\{[^{}]*min-height:\s*44px[^{}]*\}/g)].map(
+                        (match) => [match[1]!, match[0]] as [string, string]
+                    )
+            );
+        for (const [rel] of assignments) expect(cssByRel.has(rel), `${rel} ships`).toBe(true);
+        for (const [rel, selector] of assignments) {
+            const owned = rulesWith44(cssByRel.get(rel)!).filter(([, text]) => text.includes(selector));
+            expect(owned.length, `${selector} clears 44px in its owner ${rel}`).toBeGreaterThan(0);
+        }
+        // And no other file claims one — the segments stay disjoint, so the owner map above is
+        // the whole truth about where a control's floor is set.
+        for (const [rel, selector] of assignments) {
+            for (const [otherRel, otherCss] of cssByRel) {
+                if (otherRel === rel) continue;
+                const claims = rulesWith44(otherCss).filter((match) => match[1]!.includes(selector));
+                expect(
+                    claims.map(([, text]) => text),
+                    `${selector} owned by ${rel}, also in ${otherRel}`
+                ).toEqual([]);
+            }
         }
     });
 
@@ -352,25 +415,136 @@ describe('the stylesheet — sizing and motion (#189)', () => {
     });
 
     it('never transitions, so a theme flip cannot pass through an intermediate palette', () => {
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         expect(css.match(/transition\s*:[^;{}]*/gi) ?? []).toEqual([]);
     });
 });
 
+describe('the style system file ownership (#321)', () => {
+    // The entry's import list, in order — this IS the cascade: the Tailwind engine, the
+    // self-hosted faces, the token blocks, the base layer, the shared primitives, the six lane
+    // regions in their historical order, the shared touch-target floor, and the unlayered
+    // platform conditions that outrank every layer.
+    const ENTRY_IMPORTS = [
+        'tailwindcss',
+        './styles/fonts.css',
+        './styles/tokens.css',
+        './styles/base.css',
+        './styles/primitives.css',
+        './styles/regions/inbox.css',
+        './styles/regions/composer.css',
+        './styles/regions/task-detail.css',
+        './styles/regions/settings.css',
+        './styles/regions/dashboard.css',
+        './styles/regions/entry.css',
+        './styles/touch-targets.css',
+        './styles/platform.css',
+    ];
+
+    it('ships one deliberate import order (#321)', () => {
+        const entry = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        // The entry is an import list and nothing else: CSS @import must precede every other
+        // statement, so a rule that lives here is an accident of position, not a decision.
+        expect(entry, 'the entry holds no rules').not.toContain('{');
+        expect([...entry.matchAll(/^@import "([^"]+)";$/gm)].map((m) => m[1])).toEqual(ENTRY_IMPORTS);
+        // The graph is flat: only the entry imports, so the list above is the whole cascade.
+        for (const { rel, text } of readShipped().slice(1)) {
+            expect(stripComments(text).match(/^[ \t]*@import\b/gm) ?? [], `${rel} must not import`).toEqual([]);
+        }
+        // Each construct keeps its one home — a lane file defines lane rules, and the
+        // platform/a11y overrides stay exactly where their precedence is deliberate.
+        const expectOnlyIn = (pattern: RegExp, home: string, label: string) => {
+            for (const { rel, text } of readShipped()) {
+                const hits = [...stripComments(text).matchAll(pattern)];
+                if (rel === home) expect(hits.length, `${label} lives in ${home}`).toBeGreaterThan(0);
+                else expect(hits, `${label} outside ${home} (found in ${rel})`).toEqual([]);
+            }
+        };
+        expectOnlyIn(/^[ \t]*@font-face\s*\{/gm, 'styles/fonts.css', '@font-face');
+        expectOnlyIn(/^[ \t]*:root[^{\n]*\{/gm, 'styles/tokens.css', 'the token blocks');
+        expectOnlyIn(/^[ \t]*@theme[^{\n]*\{/gm, 'styles/tokens.css', '@theme');
+        expectOnlyIn(/^[ \t]*@utility\s/gm, 'styles/primitives.css', '@utility');
+        expectOnlyIn(/^[ \t]*@layer base\s*\{/gm, 'styles/base.css', '@layer base');
+        expectOnlyIn(
+            /^[ \t]*@media \(prefers-reduced-motion: reduce\)\s*\{/gm,
+            'styles/platform.css',
+            'the reduced-motion block'
+        );
+        expectOnlyIn(
+            /^[ \t]*@media \(forced-colors: active\)\s*\{/gm,
+            'styles/platform.css',
+            'the forced-colors block'
+        );
+        // The platform conditions stay unlayered — being outside every layer is what lets them
+        // outrank all of them. Every other shipped file either opens @layer components exactly
+        // once (primitives, the lanes, the shared touch targets — a lane that LOST its wrapper
+        // would leave its rules unlayered, outranking the whole system) or must not open it at
+        // all; the entry cannot hold one anyway (the no-braces assertion above).
+        for (const { rel, text } of readShipped()) {
+            const opens = stripComments(text).match(/^[ \t]*@layer components\s*\{/gm) ?? [];
+            const opensComponents = [
+                'styles/primitives.css',
+                'styles/touch-targets.css',
+                ...ENTRY_IMPORTS.filter((name) => name.startsWith('./styles/regions/')).map((name) =>
+                    name.replace('./', '')
+                ),
+            ];
+            if (opensComponents.includes(rel)) {
+                expect(opens.length, `${rel} opens @layer components exactly once`).toBe(1);
+            } else {
+                expect(opens, `${rel} must not open @layer components`).toEqual([]);
+            }
+        }
+    });
+
+    it('keeps each lane touch-target segment final in its file (#321)', () => {
+        // Nothing in a lane file may follow its 44px segment — not even a rule in another media
+        // query, which at its own width would win over the segment the way the old monolith's
+        // end-of-layer block never allowed. With the disjoint owner map and touch-targets.css
+        // importing last, this reconstructs the pre-split precedence: the floor outranks every
+        // equal-specificity rule in its own lane file.
+        for (const { rel, text } of readShipped()) {
+            if (!rel.startsWith('styles/regions/')) continue;
+            const css = stripComments(text);
+            const blocks = blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, `${rel}: media block never closes`);
+            if (blocks.length === 0) continue;
+            const [, segmentEnd] = blocks[blocks.length - 1]!;
+            const after = css.slice(segmentEnd).replace(/\s+/g, '');
+            expect(after, `${rel}: nothing may follow the touch-target segment but the layer's closing brace`).toBe(
+                '}'
+            );
+            expect(
+                css.slice(...blocks[blocks.length - 1]!),
+                `${rel}'s last compact-shell block is its touch-target segment`
+            ).toMatch(/min-height:\s*44px/);
+        }
+    });
+});
+
 describe('the design-system inventory', () => {
-    // Both assertions read docs/design-system.md, so the inventory is enforced, not aspirational:
-    // a new UI unit or a new class fails the suite until the document names it.
-    const doc = readFileSync(docPath, 'utf8');
+    // Both assertions read the design-system docs — this document plus every lane doc beside it
+    // (docs/design-system/*.md), which is where a lane's rows live (#321) — so the inventory is
+    // enforced, not aspirational: a new UI unit or a new class fails the suite until one of them
+    // names it.
+    const regionDocDir = fileURLToPath(new URL('../../docs/design-system', import.meta.url));
+    const docs = [
+        docPath,
+        ...readdirSync(regionDocDir)
+            .sort()
+            .map((name) => join(regionDocDir, name)),
+    ]
+        .map((path) => readFileSync(path, 'utf8'))
+        .join('\n');
 
     it('inventories every UI unit under web/src', () => {
         const units = ['components', 'panels', 'pages', 'charts'].flatMap((dir) =>
             walkFiles(join(webSrc, dir)).map((path) => basename(path))
         );
-        expect(units.filter((name) => !doc.includes(name))).toEqual([]);
+        expect(units.filter((name) => !docs.includes(name))).toEqual([]);
     });
 
     it('documents every class the stylesheet defines', () => {
-        const css = stripComments(readFileSync(join(webSrc, 'styles.css'), 'utf8'));
+        const css = stripComments(shippedCss());
         // The text before every opening brace is a selector prelude — collected at any depth, so
         // a class defined only inside @media lands on the inventory's books like the rest.
         const defined = new Set<string>();
@@ -380,8 +554,8 @@ describe('the design-system inventory', () => {
         // Custom utilities carry no leading dot in their prelude, so they are collected here —
         // lamp-glow fails the inventory until the document names it, like any class.
         for (const match of css.matchAll(/@utility\s+([a-zA-Z][\w-]*)/g)) defined.add(match[1]);
-        // A presence check, not a parse: doc.includes matches substrings, so the guard catches an
-        // undocumented class, not an undocumented rule about it.
-        expect([...defined].filter((name) => !doc.includes(name))).toEqual([]);
+        // A presence check, not a parse: docs.includes matches substrings, so the guard catches
+        // an undocumented class, not an undocumented rule about it.
+        expect([...defined].filter((name) => !docs.includes(name))).toEqual([]);
     });
 });

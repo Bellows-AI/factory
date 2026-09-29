@@ -1,0 +1,442 @@
+/* Region: task-detail — the task page: layout, exchanges, runs, verification, verdicts and the
+   outcome rail. Owned by the task-detail lane; shared primitives live in ../primitives.css,
+   contracts in docs/design-system.md. */
+@layer components {
+
+    /* The tasks pages. */
+
+    /* The task detail page: the outcome rail and the main column (conversation → run history →
+       verification → services → published work → follow-up), fed by the newest run. The DOM
+       reads the rail first; from 1024px the grid puts the main column on the left and the rail
+       in a 320px right one, and below that the rail is a two-column summary above the main
+       column — DOM order is visual order at every width, only the grid changes. */
+    .task-layout {
+        align-items: start;
+        display: grid;
+        gap: 24px;
+        grid-template-areas: 'outcome' 'main';
+        grid-template-columns: 1fr;
+    }
+
+    .task-outcome {
+        grid-area: outcome;
+    }
+
+    .task-main {
+        display: grid;
+        gap: 16px;
+        grid-area: main;
+        min-width: 0;
+    }
+
+    @media (min-width: 1024px) {
+        .task-layout {
+            grid-template-areas: 'main outcome';
+            grid-template-columns: minmax(0, 1fr) 320px;
+        }
+    }
+
+    /* The header's second line: #id · Opened … by (avatar) login · repo. */
+    .task-meta-line {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+    }
+
+    .task-opened-by {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .task-opened-by .avatar {
+        height: 20px;
+        line-height: 20px;
+        width: 20px;
+    }
+
+    /* Two status-table rows the pill tones do not carry alone: a review wait's edge, and the
+       done check in the run lamp's green. */
+    .task-pill-wait {
+        border: 1px solid var(--line-strong);
+    }
+
+    .task-pill-done > .icon {
+        color: var(--lamp-run);
+    }
+
+    /* What the primary action does and does not do — the row's last line, as wide as the controls
+       above it. `width: 0` keeps the sentence out of the row's intrinsic width (the header's
+       actions slot sizes to its content), and `min-width: 100%` then fills the row and wraps. */
+    .task-action-help {
+        font-size: 13px;
+        margin: 0;
+        min-width: 100%;
+        width: 0;
+    }
+
+    .task-closed {
+        margin: 0;
+    }
+
+    /* The run history: recorded stamps only, a quiet rail down the left. */
+    .task-history {
+        border-left: 1px solid var(--line);
+        display: grid;
+        gap: 12px;
+        list-style: none;
+        margin: 0 0 0 8px;
+        padding: 0 0 0 16px;
+    }
+
+    .task-history-item {
+        display: flex;
+        gap: 12px;
+        justify-content: space-between;
+    }
+
+    .task-history-item time {
+        color: var(--ink-muted);
+        font-size: 13px;
+        white-space: nowrap;
+    }
+
+    /* The verification panel: a focus target, so the rail's "View checks" lands the caret here. */
+    .task-verification:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+    }
+
+    .task-verification-counts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0;
+    }
+
+    /* A gate's output: its own sunken mono well, lines kept whole and scrolled, not wrapped. */
+    .gate-output-wrap {
+        display: grid;
+        gap: 8px;
+        justify-items: end;
+        padding: 8px 12px 12px;
+    }
+
+    .gate-output-wrap > .run-well {
+        justify-self: stretch;
+        min-width: 0;
+    }
+
+    .chat-output.gate-output {
+        background: var(--surface-sunken);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 18px;
+        overflow: auto;
+        padding: 8px 12px;
+        white-space: pre;
+        word-break: normal;
+    }
+
+    .task-copy {
+        align-items: center;
+        display: inline-flex;
+        gap: 4px;
+        font-size: 13px;
+    }
+
+    /* The published branch: a mono chip beside its copy button. */
+    .task-branch {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        display: inline-flex;
+        font-family: var(--font-mono);
+        font-size: 13px;
+        gap: 6px;
+        min-height: 28px;
+        overflow-wrap: anywhere;
+        padding: 0 8px;
+    }
+
+    /* The outcome's disclosure head: the native marker keeps signalling expandability (the
+       summary stays live at every width), and the heading reads like a panel head. */
+    .task-outcome > summary {
+        cursor: pointer;
+    }
+
+    .task-outcome > summary > h2 {
+        display: inline;
+        font-size: 15px;
+        margin: 0;
+    }
+
+    /* Below 1024px the rail is a two-column summary above the main column; in the 320px rail —
+       and on a phone, where two key/value columns cannot hold a label — it is one column. */
+    .task-outcome-body {
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 16px;
+        grid-template-columns: 1fr;
+        margin-top: 12px;
+        padding-top: 12px;
+    }
+
+    .task-outcome-body > section {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    @media (min-width: 600px) {
+        .task-outcome-body {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (min-width: 1024px) {
+        .task-outcome-body {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    .chat-exchange {
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+    }
+
+    /* The run article's section labels — Request / Follow-up, Agent response / Agent activity,
+       Checks and published work. Shared recipe with the outcome's group labels. */
+    .run-label,
+    .task-outcome-label {
+        color: var(--ink-muted);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        line-height: 16px;
+        margin: 0 0 8px;
+        text-transform: uppercase;
+    }
+
+    .run-label {
+        margin-top: 14px;
+    }
+
+    /* The prompt is the member's words as prose — normal text, line breaks kept, not mono just
+       because it is agent input. */
+    .msg-user {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    /* The stored agent summary — the terminal response, flowing prose like the prompt. */
+    .run-summary {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    /* The raw-output disclosure: collapsed behind a summary, expanded when it is all there is. */
+    .run-output > summary {
+        cursor: pointer;
+        margin: 6px 0;
+    }
+
+    /* The output well's focus ring lives on the pre, because the pre is what scrolls — focus
+       and scroll target must be the same element for keyboard arrows to move the log. */
+    .chat-output:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 4px;
+    }
+
+    /* The published-work line: the branch chip, its copy button, the PR link beside them. */
+    .run-publish {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0;
+    }
+
+    .msg-meta {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 6px 0 0;
+    }
+
+    .chat-exit {
+        color: var(--lamp-stop);
+        font-family: var(--font-mono);
+        font-size: 12px;
+    }
+
+    /* The running attempt's sampled vitals — the "is it stuck or working" strip above the output. */
+
+    .chat-runtime {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 0 0 8px;
+    }
+
+    .chat-activity {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* The task's live summary — "what the agent is doing" — one line in the page header's meta
+       while the newest run is going. The same mono, muted treatment as the sidebar's activity
+       row; `min-width: 0` lets this nowrap flex child actually clip instead of stretching the
+       row, since a flex item's default min-width would size it to the full line. */
+    .task-summary {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        margin: 0;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* The verification gates the newest run has run or is running — current/last only. */
+    .chat-gate-list {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .chat-gate-list li + li {
+        border-top: 1px solid var(--line);
+    }
+
+    .chat-gate-list summary {
+        cursor: pointer;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 10px;
+    }
+
+    .chat-output {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        font-size: 12px;
+        margin: 0;
+        max-height: 320px;
+        overflow-y: auto;
+        padding: 8px 10px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .chat-resume,
+    .chat-toggle {
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        color: var(--ink);
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+        padding: 1px 8px;
+    }
+
+    /* The user's verdict on a finished task. Same greens as a ready checkout: it is a good state, and
+       it is one no run can reach by itself. */
+    .chat-done {
+        border-color: var(--ok-border);
+        color: var(--lamp-run);
+    }
+
+    /* Stop wears the same amber as a queued run: a request in flight, not yet a verdict. The darkened
+       pill is its request-landed state — the run is coming down but has not parked yet. */
+    .chat-stop {
+        border-color: var(--warn-border);
+        color: var(--lamp-wait);
+    }
+
+    /* Remove is the thread's end: the red a failed run wears, because it is the same finality. */
+    .chat-remove {
+        border-color: var(--bad-border);
+        color: var(--lamp-stop);
+    }
+
+    /* The tinted verdicts hover on their own lamp's wash: their status text is measured on the
+       washes, never on the strong surface every other button's hover fills with. */
+    button.chat-done:hover:not(:disabled) {
+        background: var(--ok-wash);
+    }
+
+    button.chat-stop:hover:not(:disabled) {
+        background: var(--warn-wash);
+    }
+
+    button.chat-remove:hover:not(:disabled) {
+        background: var(--bad-wash);
+    }
+
+    /* The task head's row of controls and its overall wall clock — every button the task can take,
+        at the very top, where the turn transcript below carries none. `flex: none` keeps a long task
+        title from squeezing the buttons; the title wraps instead. The row itself wraps too, so a
+        360px screen drops Mark done and the overflow under Stop run rather than clipping them. */
+    .task-actions {
+        align-items: center;
+        display: flex;
+        flex: none;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    /* The overall wall clock in the head: a neutral reading, not a verdict — muted mono like the
+        activity line, never the exit code's red. */
+    .task-clock {
+        color: var(--ink-muted);
+        font-family: var(--font-mono);
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    /* The remove confirmation (issue 178): the one dialog the task's own actions can raise. The
+        shared `dialog` panel carries the skin; this keeps it small, because the copy it carries
+        is three sentences and two answers. */
+    .task-remove {
+        max-width: 440px;
+    }
+
+    .task-remove-title {
+        font-size: 15px;
+        margin: 0 0 8px;
+    }
+
+    .task-remove-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+    }
+
+    /* ── task-detail touch targets (44px, issue 189) ── */
+    @media (max-width: 900px) {
+        .chat-resume,
+        .task-actions button,
+        .task-remove-actions button {
+            align-items: center;
+            display: inline-flex;
+            min-height: 44px;
+            min-width: 44px;
+        }
+    }
+}

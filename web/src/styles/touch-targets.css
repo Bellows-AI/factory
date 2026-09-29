@@ -1,0 +1,25 @@
+/*
+ * The shared compact-shell touch targets (issue 189): the one ≤900px 44px rule for the controls
+ * every page shares — app bar, drawer, selectors, page-header actions. Last components file, so
+ * the floor outranks every lane's own control rules at equal specificity. A lane's own controls
+ * carry their 44px segment at the end of the lane's file; a control that lands here is one the
+ * whole shell owns.
+ */
+@layer components {
+    @media (max-width: 900px) {
+        /* Touch targets: 44px is the smallest reliable finger target, and every shared control
+            of the compact shell clears it (issue 189). */
+        .appbar-trigger,
+        .mobile-nav-close,
+        .mobile-nav .sidenav-link,
+        .mobile-nav .sidenav-sublink,
+        .mobile-nav .sidenav-newtask,
+        .select-trigger,
+        .page-header-actions button {
+            align-items: center;
+            display: inline-flex;
+            min-height: 44px;
+            min-width: 44px;
+        }
+    }
+}
