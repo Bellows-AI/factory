@@ -10,6 +10,7 @@ import {
     validateCompleteFields,
     validateListQuery,
     validatePublication,
+    validateWaitQuery,
     validateWorkerField,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
@@ -223,6 +224,24 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
     const route = await resolveJobRoute(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
+
+    // The settle long-poll (issue #323): `?waitFor=terminal&timeout=<s>` holds the request —
+    // store-side, one indexed re-read every 250ms — until the thread's chain head reaches a
+    // terminal status or an open PR wait stands on it, or the (capped) timeout elapses, then
+    // answers the usual job shape either way; the client re-issues on a timeout. An unknown id
+    // is a 404 without any hold.
+    const wait = validateWaitQuery(request.query as { waitFor?: unknown; timeout?: unknown });
+    if (!wait.ok) return bad(reply, wait.code, wait.message);
+    const timeoutMs = wait.value?.timeoutMs;
+    if (timeoutMs !== undefined) {
+        const settled = await guard(
+            reply,
+            (e) => request.log.error({ err: e }, 'job wait failed'),
+            () => store.waitForSettle(id, timeoutMs)
+        );
+        if (!settled.ok) return reply;
+        if (settled.value === null) return notFoundJob(reply);
+    }
 
     const job = await guard(
         reply,

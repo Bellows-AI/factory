@@ -25,12 +25,15 @@ import {
     PR_URL_LIMIT,
     STATUSES,
     SUMMARY_LIMIT,
+    WAIT_TIMEOUT_DEFAULT_S,
+    WAIT_TIMEOUT_MAX_S,
     WORKER_NAME_LIMIT,
     executorReason,
     leaseSeconds,
     notFoundJob,
 } from './job-limits.js';
 import { repoReason } from './helpers.js';
+import { MS_PER_SECOND } from './auth-shared.js';
 
 /**
  * Field-by-field body/query validation for the job routes — everything that turns an untrusted
@@ -444,4 +447,41 @@ export function validateListQuery(query: {
         return { ok: false, code: ERROR_CODES.BAD_REPO, message: reason ?? 'repo must be owner/name' };
     }
     return { ok: true, value: { status: query.status as JobStatus | 'terminal' | undefined, repo, limit } };
+}
+
+/**
+ * The settle long-poll's query (issue #323): `waitFor` takes the one value `terminal`, and
+ * `timeout` is whole seconds `1..${WAIT_TIMEOUT_MAX_S}` — smaller is refused, larger is clamped
+ * to the server-side cap rather than refused, since the ask is "as long as you allow". Absent,
+ * `timeout` waits the default. A value without `waitFor=terminal` is refused — there is no
+ * second valid spelling of "don't wait" beside leaving the parameters off, and a typo must not
+ * read as one. `null` on success means no wait was requested: the read answers as it always did.
+ */
+export function validateWaitQuery(query: {
+    waitFor?: unknown;
+    timeout?: unknown;
+}): { ok: true; value: { timeoutMs: number } | null } | { ok: false; code: string; message: string } {
+    const waitFor = query.waitFor;
+    if (waitFor === undefined && query.timeout === undefined) return { ok: true, value: null };
+    if (waitFor === undefined) {
+        return { ok: false, code: ERROR_CODES.BAD_TIMEOUT, message: 'timeout requires waitFor=terminal' };
+    }
+    if (waitFor !== 'terminal') {
+        return { ok: false, code: ERROR_CODES.BAD_WAIT_FOR, message: "waitFor must be 'terminal'" };
+    }
+    const timeout = query.timeout;
+    if (timeout === undefined) {
+        return { ok: true, value: { timeoutMs: WAIT_TIMEOUT_DEFAULT_S * MS_PER_SECOND } };
+    }
+    // One shape check, one refusal: not a string (a repeated key arrives as an array), not all
+    // digits (fractional, signed, empty, space-prefixed), or the digit `0` — all the same
+    // "not an integer 1..N" answer. A digit string past the cap clamps below, never NaNs.
+    if (typeof timeout !== 'string' || !/^\d+$/.test(timeout) || Number(timeout) < 1) {
+        return {
+            ok: false,
+            code: ERROR_CODES.BAD_TIMEOUT,
+            message: `timeout must be an integer 1..${WAIT_TIMEOUT_MAX_S} (seconds)`,
+        };
+    }
+    return { ok: true, value: { timeoutMs: Math.min(Number(timeout), WAIT_TIMEOUT_MAX_S) * MS_PER_SECOND } };
 }

@@ -727,6 +727,15 @@ export interface JobStore {
     thread(id: string): Promise<Job[] | null>;
     get(id: string): Promise<Job | null>;
     /**
+     * The settle long-poll (issue #323): holds until the named job's THREAD settles — the chain
+     * head (the newest member, created then id, the sidenav's rule) reaches a terminal status, or
+     * an open PR wait (036) stands on the thread — the same predicate `listTasksOf` buckets by,
+     * so a waiting client and the sidenav can never disagree about "still moving". Answers
+     * `{ settled: true }` the moment a read says settled, `{ settled: false }` once `timeoutMs`
+     * has elapsed, and null — without holding — when the org holds no such job.
+     */
+    waitForSettle(id: string, timeoutMs: number): Promise<{ settled: boolean } | null>;
+    /**
      * Newest first. `output` is not selected — it is unbounded and no list view shows it — and
      * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose
      * `activity` line is the live summary the nav and task view render (issue #61).
