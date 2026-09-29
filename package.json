@@ -6,17 +6,19 @@
         "core",
         "server",
         "web",
-        "driver"
+        "driver",
+        "cli"
     ],
     "engines": {
         "node": ">=22"
     },
     "scripts": {
-        "build": "npm run build -w core && npm run build -w server && npm run build -w web && npm run build -w driver",
+        "build": "npm run build -w core && npm run build -w server && npm run build -w web && npm run build -w driver && npm run build -w cli",
         "dev": "npm run build -w core && concurrently -n server,web -c blue,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
         "dev:server": "npm run dev -w server",
         "dev:web": "npm run dev -w web",
         "driver": "npm run dev -w driver",
+        "cli": "npm run dev -w cli",
         "start": "node --env-file-if-exists=.env server/dist/index.js",
         "pretest": "npm run build -w core",
         "test": "vitest run",

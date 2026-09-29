@@ -6,6 +6,7 @@
         { "path": "./server/tsconfig.test.json" },
         { "path": "./web" },
         { "path": "./driver" },
+        { "path": "./cli" },
         { "path": "./e2e" }
     ]
 }

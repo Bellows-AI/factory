@@ -17,6 +17,7 @@ or {
         r".*/driver/src/executors\.ts$",
         r".*/driver/src/http\.ts$",
         r".*/driver/src/labels\.ts$",
+        r".*/cli/src/http\.ts$",
         r".*/test/.*",
         r".*/test-db/.*",
         r".*/e2e/.*"

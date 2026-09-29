@@ -36,7 +36,7 @@ docs and tests, never discovered by a user. When you touch `driver/`, ask "what 
 | `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/factory/`, `charts/factory-local-state/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh`, `scripts/test-k8s.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
-| `server/src/routes/jobs.ts`, `db/job-store*.ts`, `006_jobs.sql`, `driver/*` | [docs/jobs.md](docs/jobs.md) |
+| `server/src/routes/jobs.ts`, `db/job-store*.ts`, `006_jobs.sql`, `driver/*`, `cli/*` | [docs/jobs.md](docs/jobs.md) |
 | `driver/src/helpers.ts`, `k8s-helper-runner.ts`, `loop-helpers.ts`, `Runner.runHelper`, `BoardJob.helperPlans` | [docs/jobs.md](docs/jobs.md) ("Block-helper steps") |
 | `server/src/db/master-prompt.ts`, `driver/src/master-prompt.ts`, `BoardJob.masterPrompt`, the Claude/OpenCode argv it feeds | [docs/jobs.md](docs/jobs.md) ("The master prompt") |
 | `workflow`, `027_workflows.sql`, `db/workflow-*.ts`, `routes/workflows.ts`, the claim's `publish` flag | [docs/workflows.md](docs/workflows.md) |
@@ -65,7 +65,7 @@ npm run dev            # builds core, then API on 127.0.0.1:8080 + Vite on 5173 
 npm run dev:server     # tsx watch, server only
 npm run dev:web        # vite only (needs the API running for /api)
 
-npm run build          # core -> server -> web -> driver, in that order
+npm run build          # core -> server -> web -> driver -> cli, in that order
 npm start              # node --env-file-if-exists=.env server/dist/index.js (requires build)
 
 # The job driver: claims jobs from the board and spawns the runner selected by each task's executor
@@ -74,16 +74,21 @@ npm start              # node --env-file-if-exists=.env server/dist/index.js (re
 # share). It talks to the board over HTTP only — never to the database — so JOB_BOARD_URL is all it
 # needs to find.
 npm run driver
+# The board's CLI: queue and inspect tasks without the dashboard. A plain HTTP client shaped like
+# the driver — FACTORY_URL names the board, FACTORY_TOKEN carries a personal access token
+# (fat_…, minted from the settings page, issue #70), and against an AUTH_MODE=none board the
+# token is simply unset. Three commands: job create, job list, job investigate <id>.
+npm run cli            # npm run dev -w cli — pass arguments after --, e.g. npm run cli -- job list
 
 npm test               # vitest run — offline, no token, no quota, no database, no docker
 npm run test:executors # focused offline board/driver/runner/telemetry suites
 npm run test:coverage:executors # the same surface with executor-specific coverage thresholds
-npm run typecheck      # tsc -b across all four project references (plus server/tsconfig.test.json,
+npm run typecheck      # tsc -b across all project references (plus server/tsconfig.test.json,
                        # which typechecks server/test-db and its harness — the suites drift quietly otherwise,
                        # and e2e/tsconfig.json, which covers the Playwright specs and playwright.config.ts:
                        # nothing else compiles them, and `verify:ui` needs a browser and two databases to
                        # find out)
-npm run lint           # biome check — lint + format verification over the four packages and e2e/, offline
+npm run lint           # biome check — lint + format verification over the five packages and e2e/, offline
 npm run format         # biome format --write — fixes format drift
 npm run lint:fix       # biome check --write — fixes what lint flags
 
@@ -186,7 +191,7 @@ Prefer watching one package (`npx vitest watch core/test`) over the whole suite.
 again, look for orphaned `node (vitest N)` workers (parent = 1) left by a killed session —
 `pkill -f 'node (vitest'` clears them.
 
-Biome is the linter and formatter: `biome.json` at the root, covering the four packages, `e2e/`
+Biome is the linter and formatter: `biome.json` at the root, covering the five packages, `e2e/`
 (which shares the test override — magic numbers and function length are not a spec's problem) and the
 root config files. `npm run lint` is `biome check .` — lint and format verification in one offline
 pass — and `npm run format` is the fixer. The enforced style is the one the tree was already
@@ -275,12 +280,12 @@ built before the server or web can typecheck or run** — that is why `npm run d
 `npm run build` build it first. A stale `core/dist` produces type errors that look like source
 bugs. Fix with `npm run build -w core`.
 
-`driver` is the exception: it depends on nothing, `core` included, and its tsconfig has no project
-references. That is deliberate — it is a client of the HTTP board, and sharing types with the server
-would give a process that only needs `fetch` and `docker` the whole server dependency tree, plus a
-build order. If a type has to be shared, copy it.
+`driver` and `cli` are the exceptions: they depend on nothing, `core` included, and their tsconfigs
+have no project references. That is deliberate — they are clients of the HTTP board, and sharing types
+with the server would give a process that only needs `fetch` (and for the driver, `docker`) the whole
+server dependency tree, plus a build order. If a type has to be shared, copy it.
 
-All four packages are ESM with `verbatimModuleSyntax`; relative imports carry a `.js`
+All five packages are ESM with `verbatimModuleSyntax`; relative imports carry a `.js`
 extension even in `.tsx` files.
 
 **Container scripts are files, never inline strings.** Every script the driver hands to a
@@ -303,7 +308,7 @@ verbatim — trailing whitespace is code: the constant is trimmed at load, and t
 pins the exact spawn shape and exit status, not a lookalike. Test the bytes that ship.
 
 Tests import `core/src` directly (`../src/metrics.js`), so `core/test` does not need the build.
-`vitest.config.ts` includes `core/test`, `server/test`, `driver/test` and `web/test`. The web
+`vitest.config.ts` includes `core/test`, `server/test`, `driver/test`, `cli/test` and `web/test`. The web
 suite is mostly a **render smoke test** — it renders the telemetry panels with `react-dom/server`,
 so no DOM and no browser is needed, but it will not tell you the SPA looks right — plus
 non-component suites (executor config validation, tab transitions).
