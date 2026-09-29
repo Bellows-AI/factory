@@ -15,7 +15,15 @@ function watchConsole(page: Page): string[] {
         if (msg.type() === 'error') problems.push(`console: ${msg.text()}`);
     });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
-    page.on('requestfailed', (r) => problems.push(`requestfailed: ${r.url()}`));
+    page.on('requestfailed', (r) => {
+        // A poll the app cancelled itself reports net::ERR_ABORTED: leaving a settings route
+        // unmounts its pollers, and `useWorkspace` aborts their fetches through an AbortSignal.
+        // That is the cleanup working, not something a member would ever see. The reason is
+        // carried on every other failure so the next one reads as itself rather than a bare URL.
+        const reason = r.failure()?.errorText ?? 'unknown';
+        if (reason === 'net::ERR_ABORTED') return;
+        problems.push(`requestfailed: ${r.url()} (${reason})`);
+    });
     return problems;
 }
 
