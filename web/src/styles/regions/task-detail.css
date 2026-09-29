@@ -432,11 +432,27 @@
     @media (max-width: 900px) {
         .chat-resume,
         .task-actions button,
-        .task-remove-actions button {
+        .task-remove-actions button,
+        .task-outcome > summary,
+        .run-output > summary,
+        .chat-gate-list summary {
             align-items: center;
             display: inline-flex;
             min-height: 44px;
             min-width: 44px;
+        }
+
+        /* A disclosure summary keeps its native marker only under `list-item` (issue 287), so it
+           centers its line in the 44px box instead of taking the list's inline-flex. */
+        .task-outcome > summary,
+        .run-output > summary {
+            align-content: center;
+            display: list-item;
+        }
+
+        /* A gate row stays a full-width flex row. */
+        .chat-gate-list summary {
+            display: flex;
         }
     }
 }

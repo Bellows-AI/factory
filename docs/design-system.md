@@ -222,6 +222,14 @@ three heading levels; the rest are the named primitives' own rules.
 
 The application-wide interaction contracts (issue 189). `web/test/styles.test.ts` pins them as
 static suites; `e2e/polish.spec.ts` measures the rendered values in both themes.
+`e2e/matrix.spec.ts` (issue 287) walks every route family at 320/390/768/1024/1440 in both
+themes and asserts, page by page, no page-level horizontal scroll (`scrollWidth <= innerWidth`),
+named controls, polled counts outside live regions, keyboard reach with a ring at every stop
+(forced colors too), 44px compact targets, stillness under reduced motion, AA text contrast as
+rendered, and dialog focus containment and return. It writes the tables of
+`artifacts/ui/matrix/MATRIX.md`; `docs/plans/bellows-redesign-2026-09-26/MATRIX.md` keeps them
+beside hand-written findings, coverage notes and the reproduce command, so a refresh replaces
+the tables and keeps those sections.
 
 - **Type floors.** Decision-bearing text — navigation, task information, form labels and
   helpers, statuses, metadata — never renders under 12px; buttons, inputs, selects and tabs

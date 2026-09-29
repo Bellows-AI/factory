@@ -473,9 +473,12 @@
         color: var(--ink-muted);
     }
 
+    /* A value may be one unbroken run (a worktree path, a login): it breaks anywhere rather than
+       widening its column past a 320px page (issue 287). */
     .kv dd {
         margin: 0;
         font-family: var(--font-mono);
+        overflow-wrap: anywhere;
     }
 
     .limits {

@@ -133,6 +133,7 @@ const SHARED_TOUCH_TARGETS = [
     '.mobile-nav .sidenav-newtask',
     '.select-trigger',
     '.page-header-actions button',
+    'table.data button',
 ];
 const LANE_TOUCH_TARGETS: Record<string, string[]> = {
     'styles/regions/inbox.css': [
@@ -153,7 +154,14 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.composer-example',
         '.composer-notices-dismiss',
     ],
-    'styles/regions/task-detail.css': ['.chat-resume', '.task-actions button', '.task-remove-actions button'],
+    'styles/regions/task-detail.css': [
+        '.chat-resume',
+        '.task-actions button',
+        '.task-remove-actions button',
+        '.task-outcome > summary',
+        '.run-output > summary',
+        '.chat-gate-list summary',
+    ],
     'styles/regions/settings.css': [
         '.env-tab',
         '.settings-toggle',
@@ -163,9 +171,25 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.repo-save',
         '.settings-actions button',
         '.unsaved-actions button',
+        '.env-add',
+        '.env-advanced-toggle',
+        '.env-raw input',
+        '.env-raw select',
+        '.env-raw button',
     ],
-    'styles/regions/dashboard.css': ['.range-draft input', '.range-draft-actions button', '.legend-button'],
-    'styles/regions/entry.css': ['.login-button', '.onboarding-actions button'],
+    'styles/regions/dashboard.css': [
+        '.range-draft input',
+        '.range-draft-actions button',
+        '.legend-button',
+        '.chart-disclosure summary',
+    ],
+    'styles/regions/entry.css': [
+        '.login-button',
+        '.onboarding-actions button',
+        '.token-create input',
+        '.token-create button',
+        '.onboarding-org-summary',
+    ],
 };
 
 describe('the stylesheet', () => {
@@ -359,6 +383,39 @@ describe('the stylesheet — sizing and motion (#189)', () => {
                 `${selector} carries a 36px min-height`
             ).toBe(true);
         }
+    });
+
+    it('keeps each listed disclosure summary its native marker and each gate row a flex row (#287)', () => {
+        // A lane's 44px rule sets inline-flex, which drops a summary's disclosure marker and
+        // shrinks a gate row to its content; the same segment restores both, after the list.
+        const cssByRel = new Map(readShipped().map((f) => [f.rel, stripComments(f.text)] as const));
+        const restored = (rel: string, selectors: string[], declaration: RegExp) => {
+            const css = cssByRel.get(rel)!;
+            return blockSpans(css, /@media \(max-width: 900px\)\s*\{/g, 'compact-shell media block never closes').some(
+                ([start, end]) => {
+                    const block = css.slice(start, end);
+                    const floor = block.search(/min-height:\s*44px/);
+                    return [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(
+                        (match) =>
+                            floor >= 0 &&
+                            match.index! > floor &&
+                            declaration.test(match[2]!) &&
+                            selectors.every((selector) => match[1]!.includes(selector))
+                    );
+                }
+            );
+        };
+        for (const [rel, selectors] of [
+            ['styles/regions/dashboard.css', ['.chart-disclosure summary']],
+            ['styles/regions/task-detail.css', ['.task-outcome > summary', '.run-output > summary']],
+            ['styles/regions/entry.css', ['.onboarding-org-summary']],
+        ] as const) {
+            expect(restored(rel, [...selectors], /display:\s*list-item/), `${selectors} keep list-item`).toBe(true);
+        }
+        expect(
+            restored('styles/regions/task-detail.css', ['.chat-gate-list summary'], /display:\s*flex/),
+            'the gate row stays flex'
+        ).toBe(true);
     });
 
     it('clears 44px touch targets across the compact shell (#189)', () => {

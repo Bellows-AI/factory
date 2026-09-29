@@ -1,9 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
-import type { Locator, Page } from '@playwright/test';
-import { AUTH_PORT } from '../playwright.config.js';
-import { withExecutor } from './executor.js';
 import {
     agentFailedThread,
     doneThread,
@@ -18,7 +15,6 @@ import {
     parkedReviewWaitThread,
     publishedThread,
     queuedThread,
-    routeThread,
     runningThread,
     sessionlessThread,
     stoppedThread,
@@ -26,8 +22,18 @@ import {
     type ThreadJob,
     wokenContinuationThread,
 } from './fixtures/threads.js';
-import { THEMES, type Theme, VIEWPORTS } from './screenshot-matrix.js';
-import { finishSignIn } from './signin.js';
+import {
+    COMPOSER_SHOT,
+    DASHBOARD_SHOT,
+    ENTRY_SHOTS,
+    INBOX_SHOT,
+    SETTINGS_SHOTS,
+    SLOW,
+    type Shot,
+    shotFile,
+    threadShot,
+} from './routes.js';
+import { THEMES, VIEWPORTS } from './screenshot-matrix.js';
 
 /**
  * The "before" half of every redesign before/after comparison (issue 271): every route family ×
@@ -43,32 +49,6 @@ import { finishSignIn } from './signin.js';
  */
 
 const OUT = 'artifacts/ui/baseline';
-const AUTH_BASE = `http://127.0.0.1:${AUTH_PORT}`;
-/** The seeded board's cold stats fetch, and a sign-in round trip, can both take a while. */
-const SLOW = 60_000;
-
-interface Shot {
-    /** The route family — the filename's first segment. */
-    route: string;
-    /** The state shown — the second segment; `default` where the route has one. */
-    state: string;
-    /** What the page rendered from: a `fixtures/threads.ts` export, or the board itself. */
-    fixture: string;
-    /** Navigate, and return the element whose presence means the page has rendered. */
-    open: (page: Page) => Promise<Locator>;
-}
-
-const heading = (page: Page, name: string) => page.getByRole('heading', { level: 1, name, exact: true });
-
-const onOpenBoard = (route: string, path: string, name: string): Shot => ({
-    route,
-    state: 'default',
-    fixture: 'seed',
-    open: async (page) => {
-        await page.goto(path);
-        return heading(page, name);
-    },
-});
 
 /** Every thread state `fixtures/threads.ts` builds (issue 270), rendered through the detail page. */
 const THREADS: [state: string, fixture: string, jobs: readonly ThreadJob[]][] = [
@@ -93,85 +73,13 @@ const THREADS: [state: string, fixture: string, jobs: readonly ThreadJob[]][] = 
 ];
 
 const SHOTS: Shot[] = [
-    {
-        route: 'dashboard',
-        state: 'default',
-        fixture: 'seed',
-        open: async (page) => {
-            await page.goto('/');
-            return page.locator('.usage-summary, .usage-empty').first();
-        },
-    },
-    {
-        route: 'inbox',
-        state: 'default',
-        fixture: 'seed',
-        open: async (page) => {
-            await page.goto('/tasks');
-            return page.locator('.inbox-tabs');
-        },
-    },
-    {
-        route: 'composer',
-        state: 'default',
-        fixture: 'seed + e2e/executor.ts',
-        open: async (page) => {
-            await withExecutor(page);
-            await page.goto('/tasks/new');
-            return heading(page, 'New task');
-        },
-    },
-    ...THREADS.map(
-        ([state, fixture, jobs]): Shot => ({
-            route: 'task-detail',
-            state,
-            fixture,
-            open: async (page) => {
-                await routeThread(page, jobs);
-                await page.goto(`/tasks/${jobs[0]!.id}`);
-                return page.locator('.task-layout');
-            },
-        })
-    ),
-    onOpenBoard('settings-overview', '/settings', 'Configuration overview'),
-    onOpenBoard('settings-organization', '/settings/organization', 'Organization'),
-    onOpenBoard('settings-workspace', '/settings/workspace', 'Workspace'),
-    onOpenBoard('settings-repos', '/settings/repos', 'Repositories'),
-    onOpenBoard('settings-executors', '/settings/executors', 'Executors'),
-    onOpenBoard('settings-workflows', '/settings/workflows', 'Workflows'),
-    {
-        route: 'signin',
-        state: 'default',
-        fixture: 'auth board, anonymous',
-        open: async (page) => {
-            await page.goto(`${AUTH_BASE}/`);
-            return page.locator('.login-gate');
-        },
-    },
-    {
-        route: 'onboarding',
-        state: 'default',
-        fixture: 'auth board, stub IdP (reselect)',
-        open: async (page) => {
-            await page.goto(`${AUTH_BASE}/api/auth/github?reselect=1`);
-            return page.locator('.onboarding');
-        },
-    },
-    {
-        route: 'account',
-        state: 'default',
-        fixture: 'auth board, stub IdP (signed in)',
-        open: async (page) => {
-            await page.goto(`${AUTH_BASE}/`);
-            await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
-            await finishSignIn(page);
-            await page.goto(`${AUTH_BASE}/account`);
-            return heading(page, 'Account');
-        },
-    },
+    DASHBOARD_SHOT,
+    INBOX_SHOT,
+    COMPOSER_SHOT,
+    ...THREADS.map(([state, fixture, jobs]) => threadShot(state, fixture, jobs)),
+    ...SETTINGS_SHOTS,
+    ...ENTRY_SHOTS,
 ];
-
-const fileOf = (shot: Shot, theme: Theme, width: number) => `${shot.route}_${shot.state}_${theme}_${width}.png`;
 
 test.describe('baseline gallery', () => {
     test.beforeAll(() => mkdirSync(OUT, { recursive: true }));
@@ -181,7 +89,7 @@ test.describe('baseline gallery', () => {
     test.afterAll(() => {
         const shots = SHOTS.flatMap((shot) =>
             THEMES.flatMap((theme) =>
-                VIEWPORTS.map((viewport) => ({ shot, theme, viewport, file: fileOf(shot, theme, viewport.width) }))
+                VIEWPORTS.map((viewport) => ({ shot, theme, viewport, file: shotFile(shot, theme, viewport.width) }))
             )
         )
             .filter(({ file }) => existsSync(`${OUT}/${file}`))
@@ -208,7 +116,7 @@ test.describe('baseline gallery', () => {
     for (const shot of SHOTS) {
         for (const theme of THEMES) {
             for (const viewport of VIEWPORTS) {
-                const file = fileOf(shot, theme, viewport.width);
+                const file = shotFile(shot, theme, viewport.width);
                 test(file, async ({ page }) => {
                     await page.setViewportSize(viewport);
                     await page.emulateMedia({ colorScheme: theme });
