@@ -381,6 +381,100 @@ kind walkthrough. Decisions that look like cruft and are not:
    key: the driver puts the attempt pair itself — `RUNNER_JOB_ID` and `RUNNER_LEASE_TOKEN`, the
    job and the lease it claimed — into every runner pod's per-attempt Secret, so the reports
    authenticate as the attempt rather than as the deployment.
+- **The workspaces claim is the one thing the chart cannot provision for you.** Its defaults are a
+  kind assumption; what a cloud cluster's default class is documented to do with them is two
+  separate quiet stalls — see [The workspaces volume](#the-workspaces-volume), which states what is
+  read off this repository and what is only taken from AWS's documentation.
+
+## The workspaces volume
+
+The claim the checkouts live on is the chart's only hard platform requirement, and its two
+defaults — `workspaces.accessModes: [ReadWriteMany]` and `workspaces.storageClass: ''`, meaning
+the cluster's default class — are true of a kind cluster and of nothing on EKS. Both failures are
+quiet, which is why they are written down here rather than discovered.
+
+**Two kinds of claim live in this section, and they are not equally solid.** What this repository
+does — which pods mount the claim, as which uid, with which `subPath`, and what happens when the
+tree is missing — is read off the source and stated flatly. Everything about AWS — what EKS's
+default StorageClass is, what the EFS CSI driver does with `fsGroup`, what a dynamically
+provisioned access point is owned by, what an access point's parameters achieve — is taken from
+AWS's own documentation and **has not been observed on a real EKS cluster** from here. Those are
+stated prerequisites, not a measured result, and `docs/limits.md` records the gap. Nothing in this
+section — the sentence above it included — is a report of a run that happened.
+
+**It must be `ReadWriteMany`, and the default class on EKS is not.** The dashboard mounts the
+claim's root and every pod the driver specs mounts the same claim at its own `subPath`, so the
+volume is read and written by many pods on many nodes at once. EKS's default StorageClass is EBS:
+`ReadWriteOnce` and single-AZ. The claim never binds, the dashboard Deployment sits `Pending`, and
+the driver — which never mounts the volume itself — keeps claiming jobs whose runner pods can
+mount nothing.
+
+**It must be writable by uid 1000, and nothing in this repository makes it so.** The dashboard and
+driver pods run `runAsUser: 1000 / runAsGroup: 1000`; runner, sync, reclaim, publish, helper and
+readout pods run the executor image's `USER node`, which is uid 1000; gate Jobs set 1000
+explicitly. **No `fsGroup` is set anywhere** — `fsGroup` is a pod-level field, and the chart's
+pod-level `securityContext` blocks are inline in `deployment.yaml`, `driver-deployment.yaml` and
+`collector.yaml`, none of which carry one. Neither does `driver/src/k8s-podspec.ts`, which holds
+the shared Job skeleton — the one place a pod-level `securityContext` is emitted for every pod the
+driver specs, whose workspaces mounts are composed next door in `k8s-auxspec.ts`. Adding one would
+not help on EFS: the EFS CSI driver does not
+apply `fsGroup` to an RWX NFS mount, so the only thing that makes the tree writable is the
+**access point's POSIX user**. Dynamic provisioning's default access-point root is `root:root`
+`0700`.
+
+What that costs, in the order an operator meets it: sign-in still **succeeds** — provisioning is
+deliberately non-fatal (`docs/workspace.md`: a full disk must not become "you cannot log in") — so
+the only trace is one `workspace provisioning failed` line in the dashboard log. The member tree
+`<orgId>/<userId>` is never created, `GET`/`PUT /api/workspace` fail behind the route's guard, and
+every runner pod for that member is left waiting on a `subPath` that does not exist — the
+`ContainerCreating` stall the `subPath` paragraph above describes, which `driver/src/k8s-podspec.ts`
+records as the kubelet failing a missing `subPath` loudly. Nothing crashes; the board just stops
+producing work.
+
+### EFS prerequisites
+
+Stated, not observed — see the caveat above and its entry in [limits.md](limits.md):
+
+1. **The EFS CSI driver**, installed as an add-on. Its controller needs IRSA — a service account
+   annotated with an IAM role allowing the access-point and file-system calls; the node role is
+   not enough.
+2. **An EFS file system with a mount target in every subnet the nodes run in.** A node in a subnet
+   with no mount target cannot mount the volume at all, and on EKS that is how a working install
+   becomes an intermittent one as the autoscaler picks a new AZ.
+3. **A `StorageClass` whose access points are owned by uid 1000**, which is the whole fix for the
+   permission half:
+
+   ```yaml
+   apiVersion: storage.k8s.io/v1
+   kind: StorageClass
+   metadata:
+       name: efs-sc
+   provisioner: efs.csi.aws.com
+   parameters:
+       provisioningMode: efs-ap
+       fileSystemId: fs-xxxxxxxxxxxxxxxxx
+       directoryPerms: "0775"
+       uid: "1000"
+       gid: "1000"
+   ```
+
+   Then `workspaces.storageClass: efs-sc`; `workspaces.accessModes` stays at its `ReadWriteMany`
+   default. A static PV over an access point created by hand with the same POSIX user works
+   equally well.
+
+### The single-AZ EBS fallback, and why it is not reachable
+
+If one availability zone is acceptable, EBS gp3 with `workspaces.accessModes: [ReadWriteOnce]`
+serves the same volume, and `fsGroup` *would* work there — the EBS CSI driver applies it to a
+block filesystem. The cost is availability: every pod that mounts the claim must land in that one
+AZ, so a zone outage is a full outage, and the dashboard, the driver and every runner compete for
+one node's attachment.
+
+It is **not reachable today** regardless. Pinning all three to one AZ needs a nodeSelector on the
+runner pods, and pods the driver specs have **no scheduling knob** — `nodeSelector`, `tolerations`
+and `affinity` are chart values that apply to chart pods only, and the admission policy forbids
+`nodeName`. See issue #361. Until those values exist and are forwarded through the driver, EFS is
+the only shape that runs.
 
 ## Variables
 

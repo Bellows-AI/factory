@@ -37,5 +37,12 @@ Read before: reporting a number as measured, or "fixing" something in this list.
   no row covers yet still accumulates with a null field. Telemetry depends on the executor image
   emitting into a reachable collector: the opencode image's plugin points at the compose network's
   `collector`, and off it the runs go unrecorded (see [telemetry.md](telemetry.md)).
+- **The EFS path for the workspaces claim is stated, never observed.** Every AWS-side claim in
+  [kubernetes.md](kubernetes.md)'s "The workspaces volume" — EKS's default StorageClass, what the
+  EFS CSI driver does with `fsGroup` on an RWX NFS mount, what a dynamically provisioned access
+  point is owned by, and that an `efs-ap` class with `uid`/`gid` 1000 fixes it — comes from AWS's
+  documentation. Nothing in this repository has run on EKS: `scripts/test-k8s.sh` refuses every
+  non-kind context, so the cloud lane does not exist. The claim that closes this is one real
+  sign-in provisioning a member tree plus one runner pod writing into its `subPath`, on EFS.
 - n is small. Weekly points are noisy and a single large session moves a total — which is exactly
   why the page says so instead of smoothing it.

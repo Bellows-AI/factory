@@ -82,8 +82,15 @@ database:
     waitTimeoutSeconds: 300
 
 # The checkouts. Default ReadWriteMany because the dashboard pod and every runner pod share one
-# claim across nodes; values-local.yaml overrides ReadWriteOnce (single node). A default
-# StorageClass that cannot serve the mode fails scheduling loudly, not silently.
+# claim across nodes. Locally the claim is not this chart's at all: values-local.yaml points
+# existingClaim at the factory-local-state release, whose own claim is ReadWriteOnce because a
+# single-node provisioner cannot serve ReadWriteMany.
+#
+# storageClass empty means the cluster's default class, which must serve BOTH ReadWriteMany and a
+# volume root writable by uid 1000. EKS's default (single-AZ ReadWriteOnce EBS) is documented to
+# serve neither, and each failure is quiet: a PVC that never binds, or a member tree that is never
+# provisioned. The EFS prerequisites are in docs/kubernetes.md, "The workspaces volume" — stated
+# from AWS's documentation, never observed from here (docs/limits.md).
 workspaces:
     storageSize: 20Gi
     accessModes:
