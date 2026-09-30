@@ -274,16 +274,39 @@ board, say), that is a new decision, made then.
 `charts/factory/` — see [its README](../charts/factory/README.md) for the object list and the
 kind walkthrough. Decisions that look like cruft and are not:
 
-- **The app chart deploys no database.** Production points `database.url` at a managed TimescaleDB;
-  the URL carries the password, so it lands in the dashboard Secret as `database-url` and reaches
-  the pod by `secretKeyRef`, and the template refuses to render without one. There is no
+- **The app chart deploys no database.** Production points `database.url` at a database the chart
+  does not manage; the URL carries the password, so it lands in the dashboard Secret as
+  `database-url` and reaches the pod by `secretKeyRef`, and the template refuses to render without
+  one when it is the thing creating that Secret — under `secret.existingSecret` the key has to be
+  there already, and it is the one key the pod spec does not mark optional. There is no
   `timescale.enabled` switch to leave on by accident.
+- **The database is TimescaleDB today, and will be plain PostgreSQL — `metric_point` loses the
+  hypertable (#356).** "Managed TimescaleDB" used to be written here unqualified, which reads to a
+  cloud operator as "RDS". It is not: `server/migrations/001_init.sql` opens with
+  `create extension if not exists timescaledb` and calls `create_hypertable('metric_point', …)`, and
+  **neither RDS nor Aurora PostgreSQL offers that extension** — the first migration fails outright.
+  So until the change below lands, a cloud install needs Timescale Cloud or a TimescaleDB you run
+  yourself, and the local-state chart's Deployment is what serves `make start`.
+
+  The decision is to **drop the extension** rather than take on a vendor or a StatefulSet:
+  `metric_point` becomes a plain declaratively-partitioned table and `create_hypertable` retires,
+  after which the chart runs on any managed PostgreSQL and the VPC has no database peering to
+  design. It is cheap because the extension barely earns its place — Timescale-specific SQL is
+  exactly those two lines of `001_init.sql`. There is no retention policy and no compression, the
+  views in `002_views.repeatable.sql` are *deliberately* not continuous aggregates, and
+  `time_bucket()` has no callers at all: bucketing lives in core (`docs/metrics.md`), not in the
+  database. Nothing in the query path changes. **#371 is that work**; beyond the SQL it carries the
+  partition-creation strategy (the one thing a hypertable did for free), the migration runner's
+  non-transactional carve-out (`server/src/db/migrate.ts`, which exists because `create extension`
+  and `create_hypertable` misbehave inside a transaction) and the hypertable assertion in
+  `server/test-db/telemetry.sql.test.ts`.
 - **Local state is its own release: `charts/factory-local-state`.** A plain TimescaleDB Deployment
   (not the upstream chart — one deployment, one claim, mirroring compose) plus the workspaces
   claim, installed as `factory-state`; `values-local.yaml` names both objects (`database.url`,
   `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
   and the checkouts that database records — the two are kept together, since rows describing a
-  worktree that is gone are worse than no rows. `make reset` removes the state release too.
+  worktree that is gone are worse than no rows. `make reset` removes the state release too. Its
+  image is a superset of PostgreSQL, so #371 does not break it; swapping it is cleanup there.
 - **The chart renders `AUTH_MODE=github` as a literal, and has no `auth.mode` value.** The chart's
   dashboard holds checkouts and serves a route that runs shell commands, so there is no open mode
   to select — not even locally, where "the ClusterIP is the perimeter" once justified one. There is
@@ -291,6 +314,13 @@ kind walkthrough. Decisions that look like cruft and are not:
   `auth.oauthClientId`, the OAuth client secret, a 32-character session secret and a 32-character
   `secret.jobBoardToken` are refused at render time when missing; the driver's `JOB_BOARD_TOKEN`
   reference is not `optional`, because a driver without it would poll into 401s forever.
+- **The chart can put an Ingress in front, and nothing else.** `ingress.enabled`, off by default
+  (the ClusterIP is the perimeter, docs/security.md), renders one Ingress fronting the dashboard
+  Service with `className`/`annotations`/`hosts`/`tls` passed through verbatim — the annotations
+  are the cloud-specific part (ALB on EKS; see the chart README for the set that works), so the
+  template carries no cloud fields. When enabled, the render is refused unless `auth.publicUrl`'s
+  host is among `ingress.hosts`: GitHub redirects to publicUrl and the Ingress answers hosts —
+  independent values, checked to agree rather than one derived from the other.
 - **The local profile carries no credentials; `.env` does.** `values-local.yaml` holds only the
   local shape (image tags, the state release's objects, the runner images);
   `scripts/k8s-local-values.mjs` reads the repo-root `.env` — the App, the OAuth client, the

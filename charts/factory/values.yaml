@@ -44,6 +44,27 @@ dashboard:
             cpu: 100m
             memory: 256Mi
 
+# The optional public origin: an Ingress fronting the dashboard's ClusterIP service. Off by
+# default, because the port carries the job board and an unauthenticated POST /api/jobs is remote
+# code execution (docs/security.md) — the operator deliberately puts something in front, and
+# enabling this is that decision made once in values instead of copied by hand every install.
+# No cloud-specific fields here: the annotations ARE the cloud-specific part (ALB, nginx, …),
+# passed through verbatim; the chart README carries the annotation set that works on EKS. When
+# enabled, validate.yaml refuses a render whose auth.publicUrl host is not among hosts — GitHub
+# redirects to auth.publicUrl, and an origin the Ingress does not answer is a sign-in that never
+# comes back.
+ingress:
+    enabled: false
+    # Empty omits spec.ingressClassName, so the cluster's default IngressClass serves the Ingress.
+    className: ''
+    annotations: {}
+    # REQUIRED when enabled (render-time refusal): the hosts the Ingress answers.
+    hosts: []
+    # Passed through verbatim to spec.tls. secretName is optional in each entry — an ALB
+    # terminates ACM certificates by annotation and needs none; an in-cluster controller names
+    # the Secret holding its certificate.
+    tls: []
+
 auth:
     # GitHub sign-in, always: this deployment holds checkouts and serves POST /api/jobs, which runs
     # shell commands, so the chart renders AUTH_MODE=github and has no open mode to select.
@@ -67,8 +88,11 @@ telemetry:
     ingestToken: ''
 
 database:
-    # The chart deploys no database: point this at a managed TimescaleDB (metric_point is a
-    # hypertable). REQUIRED when the chart creates the Secret — the URL carries the password, so it
+    # The chart deploys no database: point this at a managed TimescaleDB. Not any managed Postgres
+    # — 001_init.sql runs `create extension timescaledb` and makes metric_point a hypertable, so RDS
+    # and Aurora fail the first migration. The extension requirement is decided against (#356) and
+    # retires in #371, after which this reads "any managed PostgreSQL".
+    # REQUIRED when the chart creates the Secret — the URL carries the password, so it
     # lands there as `database-url` and reaches the pod by secretKeyRef. With
     # `secret.existingSecret`, put the `database-url` key in that Secret instead. Local clusters
     # get one from charts/factory-local-state (values-local.yaml points here).

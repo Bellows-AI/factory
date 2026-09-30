@@ -11,9 +11,9 @@ import {
     workflowsFor,
 } from './job-context.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
+import { validateArtifactBody } from './job-field-validation-artifacts.js';
 import {
     type ResolvedWorkflow,
-    validateArtifactBody,
     validateCommandField,
     validateExecutorField,
     validateGates,

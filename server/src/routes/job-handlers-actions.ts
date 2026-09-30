@@ -6,14 +6,17 @@ import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
 import { pickBucketMs } from '../telemetry/run-activity.js';
 import {
     followUpRefusal,
-    validateArtifactReadQuery,
+    retryRefusal,
+    waitControlRefusal,
+} from './job-refusals.js';
+import { validateArtifactReadQuery } from './job-field-validation-artifacts.js';
+import {
     validateCommandField,
     validateCompleteFields,
     validateListQuery,
     validatePublication,
     validateWaitQuery,
     validateWorkerField,
-    waitControlRefusal,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
@@ -23,6 +26,7 @@ import {
     HTTP_ACCEPTED,
     HTTP_CONFLICT,
     HTTP_CREATED,
+    HTTP_FORBIDDEN,
     HTTP_NOT_FOUND,
     HTTP_NO_CONTENT,
     HTTP_OK,
@@ -58,6 +62,79 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return followUpRefusal(reply, created.value);
     return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
+}
+
+// The person's action a sessionless finished task needs (issue #326): re-run the thread head's
+// command as a FRESH attempt in the same thread — no session resumed, so follow-up's
+// `409 NO_SESSION` dead end (a driver that died before reporting, a refused start) has an in-
+// place exit that keeps the thread and its worktree. Nothing is taken from the body — the
+// command, repo, executor and thread all come from the thread head at insert — and the store
+// decides every refusal atomically with the insert, exactly as the follow-up's does. No lease
+// token: the task is finished, nobody holds it.
+export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    // Read off the authenticated request, never off the body — the create route's rule about
+    // impersonation applies word for word here.
+    const createdBy = callerOf(request)?.user.id ?? null;
+
+    const created = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job retry failed'),
+        () => store.createRetry(id, createdBy)
+    );
+    if (!created.ok) return reply;
+    if (typeof created.value === 'string') return retryRefusal(reply, created.value);
+    return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
+}
+
+// The edit of a queued task's command (issue #329): same id, same thread, where a stop plus a
+// re-create would have burned both. The store decides every refusal atomically with the write —
+// queued rows only, author only, workflow rows refused (their command is interpolated prompt
+// text and the raw chat line was never stored) — so a row claimed as the request arrives
+// answers 409 NOT_QUEUED instead of editing a run's input underneath its worker.
+export async function handleEditJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const fields = body(request.body);
+    const commandResult = validateCommandField(fields.command);
+    if (!commandResult.ok) return bad(reply, ERROR_CODES.BAD_COMMAND, commandResult.message);
+
+    // Read off the authenticated request, never off the body — the create route's rule about
+    // impersonation applies word for word here.
+    const caller = callerOf(request)?.user.id ?? null;
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job edit failed'),
+        () => store.editCommand(id, commandResult.value, caller)
+    );
+    if (!result.ok) return reply;
+    if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'workflow') {
+        return reply.code(HTTP_CONFLICT).send({
+            error: "The task's command is built by its workflow's prompt",
+            code: ERROR_CODES.WORKFLOW_COMMAND_FROZEN,
+        });
+    }
+    if (result.value === 'forbidden') {
+        return reply.code(HTTP_FORBIDDEN).send({
+            error: 'Only the account that queued the task can edit its command',
+            code: ERROR_CODES.FORBIDDEN,
+        });
+    }
+    if (result.value.result === 'not_queued') {
+        return reply.code(HTTP_CONFLICT).send({
+            error: `Task is ${result.value.status} — only a queued task's command can be edited`,
+            code: ERROR_CODES.NOT_QUEUED,
+            status: result.value.status,
+        });
+    }
+    return reply.code(HTTP_OK).send({ id, status: 'queued', command: result.value.command });
 }
 
 // The user's verdict that the task is done — the one no run can make. Idempotent in the store, so

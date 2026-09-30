@@ -439,6 +439,20 @@ export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'los
 export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
 
 /**
+ * Why a retry was refused (issue #326). The follow-up set MINUS `no_session` — retry exists
+ * exactly for the sessionless finished task, so a session is never one of its preconditions.
+ *
+ * - `missing`      no such job in this organization.
+ * - `not_finished` the task is still queued or running — its run is not over.
+ * - `task_done`    the user has declared the task done; the conversation is closed.
+ * - `forbidden`    the task was queued by a different account. A retry runs in the thread's
+ *                  worktree, which lives in the author's checkout tree — the author-scoped rule
+ *                  follow-up takes, minus the session reason.
+ * - `purging`      the task repo's checkout row is being deleted (issue #92).
+ */
+export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+
+/**
  * What a stop request did.
  *
  * - `stopped`   the row was settled `stopped` in place — it was queued (never started), or it
@@ -456,6 +470,27 @@ export type StopResult =
     | { result: 'requested'; cancelRequestedAt: string }
     | 'missing'
     | { result: 'conflict'; status: JobStatus };
+
+/**
+ * What a queued-command edit (issue #329) did.
+ *
+ * - `ok`         the command was replaced. The new command rides the answer so the route can
+ *                echo it without a second read.
+ * - `missing`    no such job in this organization.
+ * - `not_queued` the row has been claimed — or already ended — and the command is the run's
+ *                input now. The status the store answered with rides along so the route can
+ *                name it.
+ * - `workflow`   the row's command was built by interpolating a workflow node's prompt — the
+ *                raw chat line was never stored, so there is nothing to edit from.
+ * - `forbidden`  the task was queued by a different account (author-scoped like the follow-up:
+ *                the command runs in the author's checkout tree).
+ */
+export type EditCommandResult =
+    | { result: 'ok'; command: string }
+    | 'missing'
+    | { result: 'not_queued'; status: JobStatus }
+    | 'workflow'
+    | 'forbidden';
 
 /**
  * What a task removal did.
@@ -606,6 +641,36 @@ export interface JobStore {
         command: string,
         createdBy: string | null
     ): Promise<{ id: string } | FollowUpRefusal>;
+    /**
+     * Queues a fresh attempt of the thread head's command (issue #326): a new job in the SAME
+     * thread — the thread's `root_job_id`, with the head's command, repo, executor and workflow
+     * name copied at insert — that resumes NOTHING: no `parent_job_id`, no session. The claim
+     * delivers it like any first fresh run (`resumeSessionId: null`, `followUp: false`), and
+     * the worktree is the thread's own, keyed by the root. This is the recovery path for a
+     * finished run whose session was never reported — the shape follow-up refuses
+     * `409 NO_SESSION` — and it is deliberate that a session is never one of its
+     * preconditions.
+     *
+     * Atomic and conditional like the follow-up insert: the preconditions (terminal, not done,
+     * the caller's own task) ride the named row's select with its `for update` lock, so the
+     * refusals are decided in the same statement that would have created the row. The checkout
+     * purge guard (`refuseIfCheckoutPurging`) runs first, on the named row's repo label.
+     */
+    createRetry(id: string, createdBy: string | null): Promise<{ id: string } | RetryRefusal>;
+    /**
+     * Edits a queued task's command in place (issue #329): same id, same thread, where a stop
+     * plus a re-create would have burned both. Queued rows only — the `job` row is an audit
+     * record of what RAN, and a row that has run nothing has nothing audited to overwrite.
+     * Author-scoped like the follow-up, null-safe both ways (`is not distinct from`): a null
+     * caller may only edit an authorless row, the state every pre-accounts task is in.
+     *
+     * Workflow rows refuse (`workflow`): their command IS the interpolated entry prompt, and
+     * the raw chat line that built it was never stored. Decided atomically against the claim:
+     * the conditional UPDATE takes the row's lock, so a claim that commits while the edit
+     * waits turns the edit's answer into `not_queued`, and an edit that commits first is what
+     * the claim's `RETURNING command` hands the driver.
+     */
+    editCommand(id: string, command: string, caller: string | null): Promise<EditCommandResult>;
     /**
      * The user's verdict that the task is done. Terminal tasks only — a moving run is not the
      * user's to finish. Idempotent: marking a done task done again answers the same instant, and

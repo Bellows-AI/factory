@@ -11,6 +11,7 @@ import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db
 import type {
     ArtifactKind,
     CancelWaitResult,
+    EditCommandResult,
     FollowUpRefusal,
     JobStore,
     LeaseResult,
@@ -18,6 +19,7 @@ import type {
     ReclaimClaim,
     RemoveResult,
     ReopenResult,
+    RetryRefusal,
     StopResult,
     StoredArtifact,
 } from '../src/db/job-store-types.js';
@@ -42,6 +44,7 @@ afterEach(async () => {
 const ID = '11111111-1111-4111-8111-111111111111';
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
+const RETRY_ID = '66666666-6666-4666-8666-666666666666';
 
 interface StoreStub extends JobStore {
     created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
@@ -72,6 +75,8 @@ interface StoreStub extends JobStore {
     artifactReads: { id: string; kind: ArtifactKind; attempt: number | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
+    retries: { id: string; createdBy: string | null }[];
+    edited: { id: string; command: string; caller: string | null }[];
     markedDone: { id: string; doneBy: string | null }[];
     gatesReported: { id: string; results: GateReport[] }[];
     gatesReread: { id: string }[];
@@ -105,6 +110,9 @@ function stubStore(
         job?: Job | null;
         thread?: Job[] | null;
         followUp?: FollowUpRefusal;
+        retry?: RetryRefusal;
+        /** What the store answers a queued-command edit with; ok echoes the new command back. */
+        edit?: EditCommandResult;
         /** What the store answers a create with; 'purging' is the manual purge's refusal (#92). */
         create?: 'purging';
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
@@ -148,6 +156,8 @@ function stubStore(
         gatesReread: [],
         publishTokens: [],
         followUps: [],
+        retries: [],
+        edited: [],
         markedDone: [],
         gatesReported: [],
         stopped: [],
@@ -181,6 +191,16 @@ function stubStore(
             boom();
             stub.followUps.push({ parentId, command, createdBy: createdBy ?? null });
             return options.followUp ?? { id: FOLLOW_UP_ID };
+        },
+        async createRetry(id, createdBy) {
+            boom();
+            stub.retries.push({ id, createdBy: createdBy ?? null });
+            return options.retry ?? { id: RETRY_ID };
+        },
+        async editCommand(id, command, caller) {
+            boom();
+            stub.edited.push({ id, command, caller: caller ?? null });
+            return options.edit ?? { result: 'ok', command };
         },
         async markDone(id, doneBy) {
             boom();
@@ -337,6 +357,9 @@ async function harnessWith(jobs?: StoreStub, workflows?: WorkflowStore, telemetr
 
 const post = (instance: FastifyInstance, url: string, payload: unknown) =>
     instance.inject({ method: 'POST', url, payload: payload as object });
+
+const patch = (instance: FastifyInstance, url: string, payload: unknown) =>
+    instance.inject({ method: 'PATCH', url, payload: payload as object });
 
 /**
  * A github-mode harness whose registry lists one organization PER board stub — the shape a worker
@@ -1896,6 +1919,9 @@ describe('lifecycle actor attribution', () => {
     const postAs = (instance: FastifyInstance, url: string, cookie: string, payload: unknown = {}) =>
         instance.inject({ method: 'POST', url, payload: payload as object, headers: { cookie } });
 
+    const patchAs = (instance: FastifyInstance, url: string, cookie: string, payload: unknown = {}) =>
+        instance.inject({ method: 'PATCH', url, payload: payload as object, headers: { cookie } });
+
     it('create records the signed-in caller as the author', async () => {
         const { instance, store, caller, cookie } = await signedInHarness();
 
@@ -1912,6 +1938,24 @@ describe('lifecycle actor attribution', () => {
 
         expect(response.statusCode).toBe(201);
         expect(store.followUps).toEqual([{ parentId: ID, command: 'again, tighter', createdBy: caller.user.id }]);
+    });
+
+    it('retry records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await postAs(instance, `/api/jobs/${ID}/retry`, cookie);
+
+        expect(response.statusCode).toBe(201);
+        expect(store.retries).toEqual([{ id: ID, createdBy: caller.user.id }]);
+    });
+
+    it('edit records the signed-in caller', async () => {
+        const { instance, store, caller, cookie } = await signedInHarness();
+
+        const response = await patchAs(instance, `/api/jobs/${ID}`, cookie, { command: 'now, tighter' });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.edited).toEqual([{ id: ID, command: 'now, tighter', caller: caller.user.id }]);
     });
 
     it('stop records the signed-in caller', async () => {
@@ -2158,6 +2202,144 @@ describe('POST /api/jobs/:id/follow-up', () => {
         const response = await post(instance, '/api/jobs/nope/follow-up', { command: 'again' });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_ID');
+    });
+});
+
+describe('POST /api/jobs/:id/retry', () => {
+    // Retry takes NOTHING from the body: the command is the thread head's, copied at insert, and
+    // everything else about the run comes from the thread. A stale body is ignored, never read.
+    it('queues a retry taking nothing from the body', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/retry`, { command: 'ignored', executor: 'ignored' });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json()).toEqual({ id: RETRY_ID, status: 'queued' });
+        expect(store.retries).toEqual([{ id: ID, createdBy: null }]);
+    });
+
+    // A retry is a person's action on a finished run: there is no lease token to present and
+    // none would mean anything.
+    it('takes no lease token', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(201);
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ retry: 'missing' }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(404);
+    });
+
+    // Author-scoped like follow-up: the retry runs in the author's checkout tree.
+    it('answers 403 for a task queued by another account', async () => {
+        const instance = await harnessWith(stubStore({ retry: 'forbidden' }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(403);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
+    it.each([
+        ['a task that is still moving', 'not_finished', 'NOT_FINISHED'],
+        ['a task the user has marked done', 'task_done', 'TASK_DONE'],
+        ['a checkout that is being deleted', 'purging', 'PURGE_IN_PROGRESS'],
+    ])('answers 409 for %s', async (_label, verdict, code) => {
+        const instance = await harnessWith(stubStore({ retry: verdict as RetryRefusal }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id before touching the store', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs/nope/retry', {});
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+});
+
+describe('PATCH /api/jobs/:id', () => {
+    // The queued task's command is editable in place (issue #329): same id, same thread, no
+    // stop-and-recreate. The store decides every refusal atomically with the write.
+    it('edits a queued task\u2019s command', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await patch(instance, `/api/jobs/${ID}`, { command: 'now run the fast tests' });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, status: 'queued', command: 'now run the fast tests' });
+        expect(store.edited).toEqual([{ id: ID, command: 'now run the fast tests', caller: null }]);
+    });
+
+    it.each([
+        ['a missing command', {}],
+        ['an empty command', { command: '' }],
+        ['whitespace only', { command: '   ' }],
+        ['a non-string command', { command: 42 }],
+        ['an oversized command', { command: 'x'.repeat(16_385) }],
+    ])('refuses %s', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await patch(instance, `/api/jobs/${ID}`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_COMMAND');
+    });
+
+    it('answers 404 for a task that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ edit: 'missing' }));
+        expect((await patch(instance, `/api/jobs/${ID}`, { command: 'again' })).statusCode).toBe(404);
+    });
+
+    // Once claimed the command is the run's input — a moving task is not editable, and the
+    // refusal names the status the store answered with.
+    it('answers 409 NOT_QUEUED once claimed, naming its status', async () => {
+        const instance = await harnessWith(stubStore({ edit: { result: 'not_queued', status: 'running' } }));
+        const response = await patch(instance, `/api/jobs/${ID}`, { command: 'again' });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('NOT_QUEUED');
+        expect(response.json().status).toBe('running');
+    });
+
+    // Author-scoped like the follow-up: the command would run in the author's checkout tree.
+    it('answers 403 for a task queued by another account', async () => {
+        const instance = await harnessWith(stubStore({ edit: 'forbidden' }));
+        const response = await patch(instance, `/api/jobs/${ID}`, { command: 'again' });
+        expect(response.statusCode).toBe(403);
+        expect(response.json().code).toBe('FORBIDDEN');
+    });
+
+    // A workflow row's command is the interpolated entry prompt — the raw chat line was never
+    // stored, so there is nothing to edit from. Refused, not re-interpolated.
+    it('answers 409 for a workflow row whose command a prompt built', async () => {
+        const instance = await harnessWith(stubStore({ edit: 'workflow' }));
+        const response = await patch(instance, `/api/jobs/${ID}`, { command: 'again' });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('WORKFLOW_COMMAND_FROZEN');
+    });
+
+    it('answers 503 when the store is down, so the caller retries', async () => {
+        const instance = await harnessWith(stubStore({ fail: true }));
+        const response = await patch(instance, `/api/jobs/${ID}`, { command: 'again' });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    it('refuses a malformed id before touching the store', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await patch(instance, '/api/jobs/nope', { command: 'again' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+        expect(store.edited).toEqual([]);
     });
 });
 

@@ -77,8 +77,11 @@ npm run driver
 # The board's CLI: queue and inspect tasks without the dashboard. A plain HTTP client shaped like
 # the driver — FACTORY_URL names the board, FACTORY_TOKEN carries a personal access token
 # (fat_…, minted from the settings page, issue #70), and against an AUTH_MODE=none board the
-# token is simply unset. Three commands: job create, job list, job investigate <id>.
-npm run cli            # npm run dev -w cli — pass arguments after --, e.g. npm run cli -- job list
+# token is simply unset. The whole lifecycle: job create, list, investigate, wait, follow-up,
+# stop, done, remove. Invoke it through ONE npm layer: a root script wrapping this one would be a
+# second npm, and the inner one swallows --timeout/--json/--yes as its own configuration, dropping
+# the flag silently rather than failing.
+npm run dev -w cli -- job list --limit 5
 
 npm test               # vitest run — offline, no token, no quota, no database, no docker
 npm run test:executors # focused offline board/driver/runner/telemetry suites

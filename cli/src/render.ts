@@ -1,7 +1,7 @@
-import type { BoardJobRecord } from './board.js';
+import type { BoardJobRecord, JobDone, JobRemoved, JobStopped } from './board.js';
 
 /**
- * Human renderers for the three commands. Pure text in, text out — no board access, no console:
+ * Human renderers for the lifecycle commands. Pure text in, text out — no board access, no console:
  * `run.ts` routes every string through the writers it was handed, so tests can read what would
  * have been printed. `--json` bypasses all of this and prints the payloads as JSON instead.
  */
@@ -18,6 +18,27 @@ const LABEL_WIDTH = 10;
 /** The one-line answer to a create: the 201 body is exactly these two fields. */
 export function renderCreated(created: { id: string; status: string }): string {
     return `${created.status} ${created.id}`;
+}
+
+/**
+ * The answer to a stop, and the two fates it has. A 202 leaves the run alive under its worker,
+ * so "stopped" would be a lie: the stamp is what happened, and the settle lands moments later.
+ */
+export function renderStopped(stopped: JobStopped): string {
+    if (stopped.cancelRequestedAt) {
+        return `stop requested ${stopped.cancelRequestedAt} ${stopped.id} — the worker settles it at its next heartbeat`;
+    }
+    return `${stopped.status} ${stopped.id}`;
+}
+
+/** The answer to a done: the user's stamp, beside the run's own untouched verdict. */
+export function renderDone(done: JobDone): string {
+    return `done ${done.doneAt ?? DASH} ${done.id} (run ${done.status})`;
+}
+
+/** The answer to a remove. The thread is gone, so the id is all there is left to name. */
+export function renderRemoved(removed: JobRemoved): string {
+    return `removed ${removed.id}`;
 }
 
 function commandPreview(command: string): string {

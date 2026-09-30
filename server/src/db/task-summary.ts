@@ -115,14 +115,17 @@ export function decodeCursor(raw: string, expected: TaskCursorFilters): TaskCurs
 type ResolvedTask = { summary: TaskSummary; bucket: TaskBucket };
 
 /**
- * One entry per root row; a follow-up whose root is absent has no command or author to
- * summarize, so it is skipped rather than invented. The head is the thread's newest member —
- * created first, id descending on a tie — the same resolution the sidenav's chainHead applies.
+ * One entry per root row; a member whose root is absent has no command or author to
+ * summarize, so it is skipped rather than invented. The root is `id === rootJobId` — NOT
+ * `followUpTo === null`, which would also match a retry row (issue #326): a retry is a thread
+ * member with no parent, appended to the conversation, and must fold into its thread rather
+ * than spawn a second task. The head is the thread's newest member — created first, id
+ * descending on a tie — the same resolution the sidenav's chainHead applies.
  */
 function resolveTaskThreads(jobs: readonly Job[]): ResolvedTask[] {
     const threads = new Map<string, { root: Job; head: Job }>();
     for (const row of jobs) {
-        if (row.followUpTo === null) threads.set(row.id, { root: row, head: row });
+        if (row.id === row.rootJobId) threads.set(row.id, { root: row, head: row });
     }
     for (const row of jobs) {
         const thread = threads.get(row.rootJobId);
