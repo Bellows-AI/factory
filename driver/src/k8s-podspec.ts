@@ -40,6 +40,18 @@ interface EnvVar {
     valueFrom?: { secretKeyRef: { name: string; key: string; optional?: boolean } };
 }
 
+/** One side of the `resources` block: cpu and/or memory, kubernetes quantity strings verbatim. */
+export interface ResourceList {
+    cpu?: string;
+    memory?: string;
+}
+
+/** The `resources` block itself: requests and/or limits, each side present only when configured. */
+export interface PodResources {
+    requests?: ResourceList;
+    limits?: ResourceList;
+}
+
 /**
  * The batch/v1 Job object. Structural on purpose: this package depends on nothing, so there is no
  * kubernetes types package to import and none is missed — the API server validates the rest.
@@ -68,6 +80,7 @@ export interface RunnerJobSpec {
                     name: string;
                     image: string;
                     imagePullPolicy: string;
+                    resources?: PodResources;
                     env: EnvVar[];
                     args: string[];
                     volumeMounts: { name: string; mountPath: string; subPath: string }[];
@@ -243,6 +256,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             // `Always` and would reach for a registry, past the image the node
                             // already holds — which is how the docker runner finds it.
                             imagePullPolicy: config.imagePullPolicy,
+                            ...resourcesField(config),
                             env,
                             args,
                             volumeMounts: [
@@ -327,6 +341,7 @@ export interface AuxJobSpec {
                     name: string;
                     image: string;
                     imagePullPolicy: string;
+                    resources?: PodResources;
                     /** One gate run: `sh -c` with the command as the single argv element. */
                     command?: string[];
                     workingDir?: string;
@@ -380,6 +395,32 @@ export function pullSecretsField(config: DriverConfig): { imagePullSecrets?: { n
 }
 
 /**
+ * The configured resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
+ * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT) on a pod spec. Absent entirely when none are
+ * configured, so the BestEffort pod a cluster saw before this existed is unchanged. Requests and
+ * limits are independent slots: requests make the pod Burstable and are what Karpenter and the
+ * Cluster Autoscaler size for; limits render only when set, because a memory limit on an agent
+ * run turns a big build into an OOM kill mid-work — the requests-only posture the dashboard pod
+ * keeps deliberately. The values travel verbatim; the config validated their shape at boot.
+ */
+export function resourcesField(config: DriverConfig): { resources?: PodResources } {
+    const { cpuRequest, cpuLimit, memoryRequest, memoryLimit } = config.runnerResources;
+    const requests: ResourceList = {
+        ...(cpuRequest ? { cpu: cpuRequest } : {}),
+        ...(memoryRequest ? { memory: memoryRequest } : {}),
+    };
+    const limits: ResourceList = {
+        ...(cpuLimit ? { cpu: cpuLimit } : {}),
+        ...(memoryLimit ? { memory: memoryLimit } : {}),
+    };
+    const resources: PodResources = {
+        ...(Object.keys(requests).length > 0 ? { requests } : {}),
+        ...(Object.keys(limits).length > 0 ? { limits } : {}),
+    };
+    return Object.keys(resources).length > 0 ? { resources } : {};
+}
+
+/**
  * The skeleton every aux Job builder shares: `factory.job`/`factory.lease` labels (twice — Job
  * and pod template), no ServiceAccount token, `backoffLimit: 0` (the board owns retries, never
  * the kubelet), the finished-Job TTL, and the workspaces PVC as the one named volume. Each
@@ -408,7 +449,10 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     ...pullSecretsField(config),
                     ...(input.securityContext ? { securityContext: input.securityContext } : {}),
                     ...(input.dnsConfig ? { dnsConfig: input.dnsConfig } : {}),
-                    containers: [input.container],
+                    // One spread covers every aux Job — the gates, the readouts, the sync, the
+                    // reclaim, the publish steps, the block helpers — the same way
+                    // pullSecretsField above covers their image pulls.
+                    containers: [{ ...input.container, ...resourcesField(config) }],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },

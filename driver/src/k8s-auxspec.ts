@@ -10,9 +10,11 @@ import {
     jobsPath,
     pullSecretsField,
     releaseLabel,
+    resourcesField,
     serviceSubdomain,
     workspaceMount,
     type AuxJobSpec,
+    type PodResources,
 } from './k8s-podspec.js';
 import { JOB_ID, LOG_TAIL_LINES, MS_PER_SECOND } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
@@ -288,6 +290,7 @@ export function servicePodSpec(
             name: string;
             image: string;
             imagePullPolicy: string;
+            resources?: PodResources;
             env: { name: string; value: string }[];
         }[];
     };
@@ -317,6 +320,7 @@ export function servicePodSpec(
                     name: spec.name,
                     image: spec.image,
                     imagePullPolicy: config.imagePullPolicy,
+                    ...resourcesField(config),
                     env: spec.environment.map(({ key, value }) => {
                         if (!SERVICE_ENV_KEY.test(key)) {
                             throw new Error(

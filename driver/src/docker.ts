@@ -1,7 +1,7 @@
 import { GATE_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type DriverConfig, executorImage } from './config.js';
+import { type DriverConfig, cpuQuantityToCores, executorImage, memoryQuantityToBytes } from './config.js';
 import type { BoardJob } from './board.js';
 import {
     UUID,
@@ -307,6 +307,23 @@ export const envFilePath = (job: BoardJob): string => {
 };
 
 /**
+ * The runner's resource caps (issue #360): the configured limits as docker's own flags, the
+ * memory request as the soft `--memory-reservation` floor. Quantities are translated once, in
+ * config.ts — the same values the kubernetes pod specs render verbatim. There is no cpu-request
+ * flag by decision: docker has no absolute CPU floor (`--cpu-shares` is a relative weight), and
+ * capping a runner at its request would throttle builds the kubernetes side leaves free. Empty
+ * when nothing is configured — the dev daemon stays unthrottled.
+ */
+export function runnerResourceArgs(config: DriverConfig): string[] {
+    const { cpuLimit, memoryLimit, memoryRequest } = config.runnerResources;
+    const args: string[] = [];
+    if (cpuLimit) args.push('--cpus', cpuQuantityToCores(cpuLimit));
+    if (memoryLimit) args.push('--memory', memoryQuantityToBytes(memoryLimit));
+    if (memoryRequest) args.push('--memory-reservation', memoryQuantityToBytes(memoryRequest));
+    return args;
+}
+
+/**
  * Pushes the runner's credential onto the argv: the driver's passEnv names plus the claim's
  * `--env-file`.
  */
@@ -394,6 +411,10 @@ export function dockerArgs(
     if (job.gates?.gates?.length) {
         args.push('--add-host', 'host.docker.internal:host-gateway');
     }
+
+    // Issue #360 on this side too: the configured requests/limits as resource flags, before the
+    // credentials. Nothing configured renders nothing — the argv is exactly what it always was.
+    args.push(...runnerResourceArgs(config));
 
     pushRunnerCredentialArgs(args, config, job, envFile);
 
