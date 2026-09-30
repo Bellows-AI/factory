@@ -89,6 +89,72 @@ actually serves it — with this ALB set, `https://factory.example.com`, no port
 controller (nginx and friends) drop the `alb.*` annotations and name the certificate's Secret in
 `tls` instead.
 
+## Images on a remote cluster
+
+The chart's image defaults — `factory-ai`, `factory-driver`,
+`driver.executorImages.claudeCode`/`opencode` as `claude-executor`/`opencode-executor` — are bare
+names for the kind walkthrough below, where `kind load docker-image` side-loads them and
+`IfNotPresent` resolves against the node. On a remote cluster a bare name resolves to
+`docker.io/library/<name>` and every pod lands in `ImagePullBackOff` — including the runner pods,
+because the executor images reach the driver as opaque strings, not pod-spec fields. When an
+image cannot be pulled, the run fails fast naming it (`readImagePullStatus`, issue #302) instead
+of burning the job's deadline.
+
+Set one value, `global.imageRegistry`, and every image reference the chart renders — dashboard,
+driver, collector and both executor images — carries it:
+
+```bash
+helm install factory charts/factory \
+    --set global.imageRegistry=ghcr.io/$OWNER \
+    --set dashboard.image.tag=$TAG --set driver.image.tag=$TAG \
+    --set driver.executorImages.claudeCode=claude-executor:$TAG \
+    --set driver.executorImages.opencode=opencode-executor:$TAG \
+    …  # database.url, auth.*, secret.*, github.* as everywhere else
+```
+
+`dashboard.image.tag`/`driver.image.tag` default to the chart's `appVersion`; the executor values
+should carry their own tag (tagless reads `:latest`). `IfNotPresent` stays right: the tags are
+pinned, so the kubelet pulls a missing image once and reuses it after. A value that already names
+a registry (`ghcr.io/other/factory-ai`) under a set prefix is refused at render time — the prefix
+composes with bare repositories only. `database.waitImage` is the one image the prefix does not
+touch: it is a full reference (`postgres:17-alpine` by default) an operator sets whole.
+
+The registry the images come from is a decision, not a chart value. The recommended path is
+**GitHub Container Registry with public packages**: push rights come from a GitHub token — no
+cloud OIDC or role setup — and public packages let nodes pull anonymously, with no
+`imagePullSecrets` and no node-role change. (Private packages work too: the chart's
+`imagePullSecrets` reach every chart pod and every pod the driver specs.) The release workflow
+builds the dashboard image today but publishes nothing (`docs/ci.md` defers registry publishing),
+so the push is a by-hand step from a checkout:
+
+```bash
+OWNER=your-org   # lowercase: GHCR paths are lowercase even when the org's display name is not
+TAG=v1.2.3
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$OWNER" --password-stdin  # a PAT with write:packages
+docker build -f docker/Dockerfile --target runtime -t "ghcr.io/$OWNER/factory-ai:$TAG" .
+docker build -f docker/driver.Dockerfile -t "ghcr.io/$OWNER/factory-driver:$TAG" .
+make runners RUNNER_CLAUDE="ghcr.io/$OWNER/claude-executor:$TAG" \
+             RUNNER_OPENCODE="ghcr.io/$OWNER/opencode-executor:$TAG"
+# The collector is pinned from Docker Hub, and under a prefix its rendered reference is prefixed
+# too — there is no unprefixed escape hatch (an absolute repository under a set prefix is refused
+# at render) — so the mirror below is part of the push, not an optional step.
+docker pull otel/opentelemetry-collector-contrib:0.161.0
+docker tag otel/opentelemetry-collector-contrib:0.161.0 \
+    "ghcr.io/$OWNER/otel/opentelemetry-collector-contrib:0.161.0"
+for image in factory-ai factory-driver claude-executor opencode-executor; do
+    docker push "ghcr.io/$OWNER/$image:$TAG"
+done
+docker push "ghcr.io/$OWNER/otel/opentelemetry-collector-contrib:0.161.0"
+```
+
+Then make each package public (GitHub → Your org → Packages → the package → Package settings →
+Change visibility), so nodes pull without credentials.
+
+The collector mirror is what makes every prefixed install work: the kubelet pulls
+`ghcr.io/$OWNER/otel/opentelemetry-collector-contrib:0.161.0` and never touches Docker Hub. A
+cluster without Docker Hub egress needs the same for `database.waitImage` — point it at a
+mirrored full reference, since it is the one image the prefix never touches.
+
 ## A local cluster, end to end
 
 With [kind](https://kind.sigs.k8s.io/):

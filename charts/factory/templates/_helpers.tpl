@@ -27,14 +27,32 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- end -}}
 
 {{/*
-An image reference from `{repository, tag}`, the tag defaulting to the chart's appVersion — so a
-chart version names the exact build it deploys, and an upgrade to a new build changes the pod
-spec and rolls the pods. Usage: include "factory.image" (list $ .Values.dashboard.image)
+A repository under the release's registry prefix: global.imageRegistry composed in front of the
+bare name, or the name verbatim when no registry is set (the kind story, where images are
+side-loaded). This is the one place the registry decision is made, so it cannot be half-applied —
+the executor images are plain strings the driver receives, not pod-spec fields a template could
+forget. Usage: include "factory.imageReference" (list $ .Values.driver.executorImages.claudeCode)
+*/}}
+{{- define "factory.imageReference" -}}
+{{- $root := index . 0 -}}
+{{- $repository := index . 1 -}}
+{{- if $root.Values.global.imageRegistry -}}
+{{- printf "%s/%s" $root.Values.global.imageRegistry $repository -}}
+{{- else -}}
+{{- $repository -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+An image reference from `{repository, tag}`, the repository under the registry prefix
+(factory.imageReference) and the tag defaulting to the chart's appVersion — so a chart version
+names the exact build it deploys, and an upgrade to a new build changes the pod spec and rolls the
+pods. Usage: include "factory.image" (list $ .Values.dashboard.image)
 */}}
 {{- define "factory.image" -}}
 {{- $root := index . 0 -}}
 {{- $image := index . 1 -}}
-{{- printf "%s:%s" $image.repository (default $root.Chart.AppVersion $image.tag) -}}
+{{- printf "%s:%s" (include "factory.imageReference" (list $root $image.repository)) (default $root.Chart.AppVersion $image.tag) -}}
 {{- end -}}
 
 {{/*
