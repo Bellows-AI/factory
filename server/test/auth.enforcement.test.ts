@@ -149,9 +149,11 @@ describe('the route table', () => {
         // again, one level up.
         ['/api/tasks', 'user'],
         [`/api/jobs/${JOB_ID}`, 'user'],
-        // Both are person's actions on a finished task — a follow-up asks for adjustments, done
-        // declares the task finished by hand — and both fall through to `user`.
+        // All three are person's actions on a finished task — a follow-up asks for adjustments,
+        // retry re-runs the thread head's command fresh, done declares the task finished by
+        // hand — and all fall through to `user`.
         [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
+        [`/api/jobs/${JOB_ID}/retry`, 'user'],
         [`/api/jobs/${JOB_ID}/done`, 'user'],
         // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
         // token un-closing tasks it never held would move audit rows for no run it owns.

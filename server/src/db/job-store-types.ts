@@ -415,6 +415,20 @@ export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'los
 export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
 
 /**
+ * Why a retry was refused (issue #326). The follow-up set MINUS `no_session` — retry exists
+ * exactly for the sessionless finished task, so a session is never one of its preconditions.
+ *
+ * - `missing`      no such job in this organization.
+ * - `not_finished` the task is still queued or running — its run is not over.
+ * - `task_done`    the user has declared the task done; the conversation is closed.
+ * - `forbidden`    the task was queued by a different account. A retry runs in the thread's
+ *                  worktree, which lives in the author's checkout tree — the author-scoped rule
+ *                  follow-up takes, minus the session reason.
+ * - `purging`      the task repo's checkout row is being deleted (issue #92).
+ */
+export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+
+/**
  * What a stop request did.
  *
  * - `stopped`   the row was settled `stopped` in place — it was queued (never started), or it
@@ -603,6 +617,22 @@ export interface JobStore {
         command: string,
         createdBy: string | null
     ): Promise<{ id: string } | FollowUpRefusal>;
+    /**
+     * Queues a fresh attempt of the thread head's command (issue #326): a new job in the SAME
+     * thread — the thread's `root_job_id`, with the head's command, repo, executor and workflow
+     * name copied at insert — that resumes NOTHING: no `parent_job_id`, no session. The claim
+     * delivers it like any first fresh run (`resumeSessionId: null`, `followUp: false`), and
+     * the worktree is the thread's own, keyed by the root. This is the recovery path for a
+     * finished run whose session was never reported — the shape follow-up refuses
+     * `409 NO_SESSION` — and it is deliberate that a session is never one of its
+     * preconditions.
+     *
+     * Atomic and conditional like the follow-up insert: the preconditions (terminal, not done,
+     * the caller's own task) ride the named row's select with its `for update` lock, so the
+     * refusals are decided in the same statement that would have created the row. The checkout
+     * purge guard (`refuseIfCheckoutPurging`) runs first, on the named row's repo label.
+     */
+    createRetry(id: string, createdBy: string | null): Promise<{ id: string } | RetryRefusal>;
     /**
      * Edits a queued task's command in place (issue #329): same id, same thread, where a stop
      * plus a re-create would have burned both. Queued rows only — the `job` row is an audit
