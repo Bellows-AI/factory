@@ -1,0 +1,43 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+The one thing the chart can put in front of the dashboard's ClusterIP: an Ingress, off by default
+(docs/security.md — enabling it is the operator's deliberate decision, moved from every install's
+copy-paste into values). The annotations pass through verbatim because they ARE the cloud-specific
+part — on EKS the AWS Load Balancer Controller reads alb.ingress.kubernetes.io/* (see the chart
+README for the set that works); an in-cluster controller terminates tls itself. validate.yaml
+refuses a render whose auth.publicUrl host is not among ingress.hosts: GitHub redirects to
+publicUrl, and an origin the Ingress does not answer is a sign-in that never comes back.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+    name: {{ include "factory.fullname" . }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: dashboard
+    {{- with .Values.ingress.annotations }}
+    annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+spec:
+    {{- with .Values.ingress.className }}
+    ingressClassName: {{ . }}
+    {{- end }}
+    {{- with .Values.ingress.tls }}
+    tls:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    rules:
+        {{- range .Values.ingress.hosts }}
+        - host: {{ . | quote }}
+          http:
+              paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                        service:
+                            name: {{ include "factory.fullname" $ }}
+                            port:
+                                number: {{ $.Values.dashboard.port }}
+        {{- end }}
+{{- end }}

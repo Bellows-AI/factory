@@ -1,6 +1,8 @@
 {{/*
 Render-time refusals for configurations the server would otherwise refuse at boot, one crash loop
-later. Every check mirrors a loadConfig rule (server/src/config.ts) and names the value to set.
+later. Every check mirrors a loadConfig rule (server/src/config.ts) — or a chart-side
+impossibility, like a Secret nothing creates or an Ingress that answers no host its operator's
+origin lives on — and names the value to set.
 Values that live in `secret.existingSecret` cannot be seen from here — the server still names
 those at boot, which is why every such key is `optional` in the pod spec: a missing key reads as
 the server's own message, never as an opaque CreateContainerConfigError.
@@ -10,6 +12,18 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- end }}
 {{- if not .Values.auth.publicUrl }}
 {{- fail "auth.publicUrl is required: the origin GitHub redirects back to" }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.hosts }}
+{{- fail "ingress.hosts is required when ingress.enabled: the Ingress would answer no host at all" }}
+{{- end }}
+{{- $publicHost := regexFind "//[^:/]+" .Values.auth.publicUrl | trimPrefix "//" }}
+{{- if not $publicHost }}
+{{- fail (printf "auth.publicUrl must be an absolute origin (scheme://host) when ingress.enabled: no host could be read from %q" .Values.auth.publicUrl) }}
+{{- end }}
+{{- if not (has $publicHost .Values.ingress.hosts) }}
+{{- fail (printf "auth.publicUrl host %q is not among ingress.hosts: GitHub redirects to auth.publicUrl and the Ingress answers ingress.hosts" $publicHost) }}
+{{- end }}
 {{- end }}
 {{- if not .Values.auth.oauthClientId }}
 {{- fail "auth.oauthClientId is required" }}
