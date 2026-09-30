@@ -4,11 +4,7 @@ import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
 import { pickBucketMs } from '../telemetry/run-activity.js';
-import {
-    followUpRefusal,
-    retryRefusal,
-    waitControlRefusal,
-} from './job-refusals.js';
+import { followUpRefusal, retryRefusal, waitControlRefusal } from './job-refusals.js';
 import { validateArtifactReadQuery } from './job-field-validation-artifacts.js';
 import {
     validateCommandField,

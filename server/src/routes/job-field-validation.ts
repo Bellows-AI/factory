@@ -1,5 +1,4 @@
 import { COMMAND_LIMIT, ERROR_CODES } from '@factory-ai/core';
-import type { FastifyReply } from 'fastify';
 import type { FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
@@ -8,15 +7,13 @@ import {
     interpolate,
     nodeOf,
 } from '../db/workflow-schema.js';
-import { bad, body } from './helpers.js';
+import { body } from './helpers.js';
 import {
     AGENT_TURNS_MAX,
     BRANCH_LIMIT,
     CONTEXT_COST_MAX,
     CONTEXT_TOKENS_MAX,
     GATE_NAME_LIMIT,
-    HTTP_CONFLICT,
-    HTTP_FORBIDDEN,
     LEASE_SECONDS_MAX,
     LIST_LIMIT_DEFAULT,
     LIST_LIMIT_MAX,
@@ -30,7 +27,6 @@ import {
     WORKER_NAME_LIMIT,
     executorReason,
     leaseSeconds,
-    notFoundJob,
 } from './job-limits.js';
 import { repoReason } from './helpers.js';
 import { MS_PER_SECOND } from './auth-shared.js';
