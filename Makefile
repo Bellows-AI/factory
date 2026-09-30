@@ -74,7 +74,8 @@ runners: runners-build
 # release and reaps the runner Jobs (created at runtime by the driver, so not the release's) —
 # database and checkouts survive, and the next `make start` picks them up. `make reset` is `stop`
 # plus the state release and its claims: an empty database next start. `make cleanup` deletes the
-# kind cluster itself.
+# kind cluster itself. A state release installed before #371 is the one thing `make start` will not
+# upgrade — see `state-preflight`.
 
 CLUSTER ?= factory
 K8S_RELEASE ?= dev
@@ -87,7 +88,22 @@ LOCAL_VALUES = K8S_PORT=$(K8S_PORT) node scripts/k8s-local-values.mjs
 # Whatever the chart pins — read from the render, so the image loaded is the image the pod names.
 COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/factory -f charts/factory/values-local.yaml -f - --show-only templates/collector.yaml 2>/dev/null | awk '$$1 == "image:" { print $$2; exit }')
 
-.PHONY: build start stop reset
+.PHONY: build start state-preflight stop reset
+
+# The one upgrade `make start` must not perform. A pre-#371 state release holds the database in a
+# Deployment beside a standalone PVC named `<release>-timescale`; this chart holds it in a
+# StatefulSet whose volumeClaimTemplate mints `data-<release>-timescale-0`. The old PVC is a
+# resource the new manifest does not contain and carries no `helm.sh/resource-policy: keep`, so
+# `helm upgrade --install` deletes it — and the data — and the StatefulSet then starts on an empty
+# claim. `make start` promises a re-run keeps the release's data, so it refuses instead: destroying
+# a local database is a thing the user types, and `make reset` is how they type it.
+state-preflight:
+	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_STATE_RELEASE)-timescale >/dev/null 2>&1; then \
+		echo "make start: $(K8S_STATE_RELEASE) is a pre-#371 release — the database is a Deployment"; \
+		echo "  with a standalone PVC. Upgrading it deletes that claim and every row in it."; \
+		echo "  Run 'make reset' to drop the local state, then 'make start' again."; \
+		exit 1; \
+	fi
 
 # Update a running cluster with new code. The collector is static — start's pull left it in the
 # node — so only the code and runner images are rebuilt and re-loaded. Runner pods are minted per
@@ -116,6 +132,7 @@ start:
 	@$(LOCAL_VALUES) >/dev/null
 	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --name $(CLUSTER)
 	@kubectl config use-context kind-$(CLUSTER)
+	$(MAKE) state-preflight
 	@echo 'building the images on the host daemon'
 	docker build -f docker/Dockerfile --target runtime -t $(IMAGE) .
 	docker build -f docker/driver.Dockerfile -t $(DRIVER_IMAGE) .

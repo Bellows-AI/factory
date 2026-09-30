@@ -316,6 +316,14 @@ kind walkthrough. Decisions that look like cruft and are not:
   StatefulSet carries no `available` condition, so `make start` and `scripts/test-k8s.sh` wait on it
   with `kubectl rollout status` while the three Deployments keep the condition wait.
 
+  **`make start` refuses to upgrade a pre-#371 state release** (`state-preflight`, the Makefile).
+  The old release's standalone PVC is a resource this manifest does not contain and carries no
+  `helm.sh/resource-policy: keep`, so `helm upgrade --install` would delete it — and its data —
+  and bring the StatefulSet up on a fresh claim. That contradicts start's promise that a re-run
+  keeps the release's data, so the target stops on a `deployment/factory-state-timescale` it finds
+  and names `make reset` as the way through. The check is a Deployment lookup rather than a chart
+  version, because the Deployment is exactly the shape that cannot be upgraded.
+
   Dropping Timescale cost nothing because it earned nothing: there was no retention policy and no
   compression, the views in `002_views.repeatable.sql` are *deliberately* not continuous
   aggregates, and `time_bucket()` never had a caller. The query path is unchanged. The migration
