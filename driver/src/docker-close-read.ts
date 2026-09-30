@@ -5,7 +5,6 @@
  */
 
 import type { BoardJob } from './board.js';
-import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
 import {
     CACHE_WATCH_TURNS,
     mergeOpencodeOutcome,
@@ -14,14 +13,21 @@ import {
     readOpencodeWithRetries,
     readsAgentTurns,
     parseClaudeCloseRead,
+    parseTranscriptRead,
     parseOpencodeCacheProbe,
     cacheCollapse,
 } from './close-read.js';
 import { type DriverConfig, executorImage } from './config.js';
-import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
+import {
+    claudeTurnsScript,
+    claudeTranscriptScript,
+    opencodeCacheProbeScript,
+    opencodeTranscriptScript,
+} from './container-scripts.js';
+import { UUID, workspacePath, transcriptDir, opencodeDbPath, runWorkingDir } from './claim.js';
 import type { ExecDocker } from './docker-runner-support.js';
 import { workspacesMountArgs, opencodeSessionReadoutArgs, CLOSE_READ_DEADLINE_MS } from './docker.js';
-import type { RunOutcome, RunSession } from './runner.js';
+import { ARTIFACT_LIMIT, type RunOutcome, type RunSession } from './runner.js';
 import { OPENCODE } from './executors.js';
 
 /**
@@ -88,6 +94,68 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
     ];
 }
 
+/**
+ * The full `docker run` argv that exports a finished claude-code run's transcript (issue #325) —
+ * the twin of `claudeTurnsArgs` above, reading the same file with the same delta bound, but
+ * answering the transcript's own JSONL instead of a count. The byte cap travels as an env VALUE
+ * (this module's constant, so the cap cannot drift between the script and the upload).
+ */
+export function claudeTranscriptArgs(
+    config: DriverConfig,
+    job: BoardJob,
+    sessionId: string,
+    startedAt: string
+): string[] {
+    if (!UUID.test(sessionId)) {
+        throw new Error(`refusing to export the transcript of a session id that is not a uuid: ${sessionId}`);
+    }
+    return [
+        'run',
+        '--rm',
+        ...workspacesMountArgs(config, workspacePath(job)),
+        '-e',
+        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
+        '-e',
+        `CLAUDE_SESSION_ID=${sessionId}`,
+        '-e',
+        `RUN_STARTED_AT=${startedAt}`,
+        '-e',
+        `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
+        '--entrypoint',
+        'node',
+        executorImage(config, job.executorType),
+        '-e',
+        claudeTranscriptScript,
+    ];
+}
+
+/**
+ * The full `docker run` argv that exports a finished opencode run's transcript (issue #325) —
+ * the twin of `opencodeSessionReadoutArgs` (docker.ts), reading the same database with the same
+ * directory scope and delta bound, answering the reshaped message view the script prints.
+ */
+export function opencodeTranscriptArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
+    const db = opencodeDbPath(config, job);
+    return [
+        'run',
+        '--rm',
+        ...workspacesMountArgs(config, workspacePath(job)),
+        '-e',
+        `OPENCODE_DB=${db}`,
+        '-e',
+        `OPENCODE_DIR=${runWorkingDir(config, job)}`,
+        '-e',
+        `RUN_STARTED_MS=${Date.parse(startedAt)}`,
+        '-e',
+        `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
+        '--entrypoint',
+        'node',
+        executorImage(config, job.executorType),
+        '-e',
+        opencodeTranscriptScript,
+    ];
+}
+
 /** What every close-time read needs: how to reach the daemon, and which run it is reading. */
 export interface CloseReadContext {
     execDocker: ExecDocker;
@@ -97,11 +165,40 @@ export interface CloseReadContext {
 }
 
 /**
+ * The transcript artifact of one finished run (issue #325): one throwaway container running the
+ * executor's export script, the answer parsed to `{content, truncated}` — or nothing, when the
+ * read failed, answered nothing, or its argv could not be built (a missing workspace path — the
+ * same assertion the turn read already made and refused on). Best-effort like every close-time
+ * read: a failed export costs the attempt its transcript artifact, never its verdict.
+ */
+async function readTranscriptArtifact(
+    outcome: RunOutcome,
+    ctx: CloseReadContext,
+    buildArgs: () => string[]
+): Promise<void> {
+    let args: string[];
+    try {
+        args = buildArgs();
+    } catch {
+        return;
+    }
+    const read = await ctx.execDocker(args, { timeout: CLOSE_READ_DEADLINE_MS }).then(
+        (out) => parseTranscriptRead(out.stdout),
+        () => null
+    );
+    if (read) {
+        outcome.transcript = read.content;
+        outcome.transcriptTruncated = read.truncated;
+    }
+}
+
+/**
  * Fills in what opencode's own exit code cannot answer: the session id the loop had none to
  * report at spawn, the finish reason (a zero exit with a finish reason that is not `stop` is the
  * model's context limit, or an abort, cutting a task short), and the context stats — all read
  * from the database the run just closed. A failed read is not a failed run: it costs the task
- * its follow-ups and this verdict-check, never its verdict.
+ * its follow-ups and this verdict-check, never its verdict. The transcript artifact rides the
+ * same close (issue #325), one more throwaway read over the same database.
  */
 async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext): Promise<void> {
     const readOnce = () =>
@@ -111,6 +208,7 @@ async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext
         );
     const { scraped, reason } = await readOpencodeWithRetries(readOnce, (ms) => new Promise((r) => setTimeout(r, ms)));
     mergeOpencodeOutcome(outcome, scraped, reason);
+    await readTranscriptArtifact(outcome, ctx, () => opencodeTranscriptArgs(ctx.config, ctx.job, ctx.startedAt));
 }
 
 /**
@@ -135,6 +233,10 @@ async function applyClaudeCloseRead(
         );
     outcome.agentTurns = read.turns;
     if (read.summary) outcome.summary = read.summary;
+    // The transcript artifact (issue #325), from the same file the count came from.
+    await readTranscriptArtifact(outcome, ctx, () =>
+        claudeTranscriptArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt)
+    );
 }
 
 /**

@@ -1,18 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import type { Board, BoardJob, FailureKind, LeaseState } from './board.js';
+import type { BoardJob } from './board.js';
 import type { RunOutcome, RunSession } from './runner.js';
-import type { HelperFailureReport } from './helpers.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, releaseGateSession, runDeclaredGates } from './loop-gates.js';
 import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-attempt.js';
-import type { TimeoutActivity, GateRunNote } from './timeout-note.js';
-import { timeoutNote } from './timeout-note.js';
+import type { GateRunNote } from './timeout-note.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
-import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
+import { TRANSIENT_SYNC_REASON, type SyncResult } from './publish.js';
+import { publishIfDue, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
+import { uploadRunArtifacts } from './artifacts.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -275,6 +275,9 @@ async function settleNonFinish(
     if (state.stopped) {
         await settle();
         await reportScrapedSession(rt, job, executorType, outcome);
+        // The artifacts ride the same pre-park window the session report does (issue #325):
+        // the park lands the row terminal, and an upload refused after it is a lost artifact.
+        await uploadRunArtifacts(rt, job, outcome);
         const verdict = await rt.board.suspend(job);
         log(
             verdict === 'lost'
@@ -326,6 +329,11 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     }
 
     await reportScrapedSession(rt, job, executorType, outcome);
+    // The artifacts upload HERE (issue #325): while the lease is still live — settle() has
+    // deliberately not been called — and before the gates, so a gate suite that runs minutes
+    // cannot push the upload past a reclaim. Best-effort throughout; a failed upload costs
+    // retention, never the run.
+    await uploadRunArtifacts(rt, job, outcome);
     // The session minted and reported before the spawn never ran — no transcript exists under it,
     // so a follow-up resuming it would find no conversation. A resumed session is the parent's
     // and stays.
@@ -344,193 +352,6 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     if (gateSession && !outcome.refused) failure = await runDeclaredGates(rt, job, gateSession, state);
 
     return { done: false, outcome, failure, endedAt };
-}
-
-/** Whether the finish reason names a run that stopped talking before it was done. */
-function isPrematureFinish(outcome: RunOutcome): boolean {
-    const finish = outcome.finishReason;
-    // A cache-killed run was cut mid-tool-call, so its finish reason reads as one more
-    // premature stop — the cache note already says the whole story.
-    return typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost;
-}
-
-/** What decides whether a finished run is publish-due: its own outcome plus every failure kind. */
-interface PublishGate {
-    outcome: RunOutcome;
-    failure: GateFailure | null;
-    helperFailure: HelperFailureReport | null;
-}
-
-/**
- * Publishes a succeeded, ungated-or-passed run — the deterministic end of a task. Answers null
- * when the run does not qualify (a failure, a timeout, a premature stop, or publish disabled).
- */
-async function publishIfDue(rt: LoopRuntime, job: BoardJob, gate: PublishGate): Promise<PublishResult | null> {
-    const { outcome, failure, helperFailure } = gate;
-    const { board, runner, log } = rt;
-    if (
-        outcome.exitCode !== 0 ||
-        outcome.timedOut ||
-        isPrematureFinish(outcome) ||
-        failure ||
-        helperFailure ||
-        job.publish === false ||
-        !runner.publishGit
-    ) {
-        return null;
-    }
-    // The claim's GITHUB_TOKEN was minted at claim time, and a run can outlive its hour. Ask the
-    // board for a publish-fresh one; null keeps the claim env, the shape every short run still
-    // publishes with.
-    const publishToken = await board.publishToken(job);
-    if (!publishToken) {
-        log(`job ${job.id}: publish-token ask answered nothing fresh — publishing with the claim env`);
-    }
-    return runner.publishGit(job, publishToken ?? undefined);
-}
-
-/** The publication identity to ride the verdict, only when the publish really happened and landed. */
-function publicationOf(
-    published: PublishResult | null
-): NonNullable<Parameters<Board['complete']>[1]['publication']> | null {
-    if (
-        published?.published &&
-        published.repository &&
-        published.prNumber &&
-        published.prUrl &&
-        published.branch &&
-        published.baseBranch
-    ) {
-        return {
-            repo: published.repository,
-            prNumber: published.prNumber,
-            prUrl: published.prUrl,
-            headBranch: published.branch,
-            baseBranch: published.baseBranch,
-        };
-    }
-    return null;
-}
-
-/** What one attempt's conclusion needs to build and report its verdict. */
-interface FinishCtx {
-    job: BoardJob;
-    outcome: RunOutcome;
-    failure: GateFailure | null;
-    helperFailure: HelperFailureReport | null;
-    published: PublishResult | null;
-    /** When the run ended — the stamp the timeout note's ages are measured from. */
-    endedAt: number;
-    /** The pump's liveness read at the moment the run ended — the timeout note's raw material. */
-    activity: TimeoutActivity;
-    /** The ad-hoc gate server's latest verdicts, read before the session's teardown clears them. */
-    gateRuns: readonly GateRunNote[];
-}
-
-/** The structured failure kind a verdict's terminal conditions name, in precedence order. */
-export function verdictFailureKind(
-    finish: Pick<FinishCtx, 'outcome' | 'failure' | 'helperFailure'>,
-    publishUnlanded: boolean,
-    status: 'succeeded' | 'failed'
-): FailureKind | null {
-    if (finish.outcome.timedOut) return 'timeout';
-    if (finish.outcome.cacheLost) return 'cache_lost';
-    if (finish.failure) return 'gate';
-    if (finish.helperFailure) return 'helper';
-    if (publishUnlanded) return 'publish';
-    // Everything else that lands failed — a non-zero exit, a premature finish, a refused
-    // `.bellows.yaml` — is the runner erroring. A success carries no kind at all.
-    return status === 'failed' ? 'runner_error' : null;
-}
-
-/** The verdict output text, annotated with every terminal condition worth telling the author about. */
-function buildOutput(rt: LoopRuntime, finish: FinishCtx, publishUnlanded: boolean): string {
-    const { job, outcome, failure, helperFailure, published } = finish;
-    const { config, log } = rt;
-    let output = outcome.timedOut
-        ? `${outcome.output}\n${timeoutNote(config.jobTimeoutMs, finish.activity, finish.gateRuns, finish.endedAt)}`
-        : outcome.output;
-    if (published?.published) {
-        output = `${output}\n[driver] published ${published.branch}${published.prUrl ? ` — ${published.prUrl}` : ''}`;
-    }
-    if (published && published.ok && !published.published) {
-        // A silent no-op is how a missing `docker run` once hid behind "the checkout has not
-        // been cloned yet" — the reason is the only way to tell an ordinary clean tree from a
-        // publisher that cannot see the tree at all.
-        log(`job ${job.id}: nothing to publish: ${published.reason}`);
-    }
-    if (publishUnlanded) {
-        output = `${output}\n[driver] publish failed — the work did not land: ${published?.reason}`;
-    }
-    if (outcome.cacheLost) {
-        output =
-            `${output}\n[driver] killed — the model provider stopped serving prompt cache: ` +
-            `${outcome.cacheLost}. Every turn was re-reading the whole context, so the run was ` +
-            'burning its time budget without progressing. Retry when the cache is healthy again, or on another model.';
-    }
-    if (isPrematureFinish(outcome)) {
-        // The finish reason says the run stopped talking; the session's last provider error,
-        // when the scrape lifted one, says WHY.
-        const cause = outcome.providerError ? ` The session's last provider error: ${outcome.providerError}.` : '';
-        output =
-            `${output}\n[driver] the agent's run ended before it finished (opencode finish reason: "${outcome.finishReason}") — ` +
-            `exit 0, but no completed final message.${cause} Re-queue the task, or follow up to continue the session.`;
-    }
-    if (failure) {
-        output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
-    }
-    if (helperFailure) {
-        output =
-            `${output}\n[driver] helper "${helperFailure.helperId}" failed ` +
-            `(${helperFailure.result.reason}): ${helperFailure.result.message}`;
-    }
-    return output;
-}
-
-/** Reports the run's final verdict to the board, after settle() and any publish attempt. */
-async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
-    const { job, outcome, failure, helperFailure, published } = finish;
-    const { log } = rt;
-    const publishUnlanded = published !== null && !published.ok;
-    const status =
-        outcome.exitCode === 0 &&
-        !outcome.timedOut &&
-        !outcome.cacheLost &&
-        !failure &&
-        !helperFailure &&
-        !isPrematureFinish(outcome) &&
-        !publishUnlanded
-            ? 'succeeded'
-            : 'failed';
-    const exitCode = failure ? failure.exitCode : outcome.exitCode;
-    const output = buildOutput(rt, finish, publishUnlanded);
-    const publication = publicationOf(published);
-    const failureKind = verdictFailureKind(finish, publishUnlanded, status);
-
-    const verdict = await report(rt, job, {
-        status,
-        exitCode,
-        output,
-        contextTokens: outcome.contextTokens ?? null,
-        contextCostUsd: outcome.costUsd ?? null,
-        // A number only: an unmeasured read stays off the report and the board stores null.
-        ...(typeof outcome.agentTurns === 'number' ? { agentTurns: outcome.agentTurns } : {}),
-        // The run's last words, when the close-time read lifted them; absent stays absent.
-        ...(outcome.summary ? { summary: outcome.summary } : {}),
-        // The structured failure reason (issue #339); a success reports no kind at all.
-        ...(failureKind ? { failureKind } : {}),
-        ...(publication ? { publication } : {}),
-    });
-    log(
-        verdict === 'lost'
-            ? `job ${job.id}: finished ${status}, but the board had already reclaimed it`
-            : `job ${job.id}: ${status} (exit ${exitCode}${failure ? ', gates' : ''}${helperFailure ? ', helper' : ''})`
-    );
-}
-
-/** The verdict is reported, then the task worktree reclaim barrier is armed — see `report` in loop.ts. */
-async function report(rt: LoopRuntime, job: BoardJob, result: Parameters<Board['complete']>[1]): Promise<LeaseState> {
-    return rt.report(job, result);
 }
 
 /** The ad-hoc gate history one attempt's timeout note quotes, read before the session's teardown. */

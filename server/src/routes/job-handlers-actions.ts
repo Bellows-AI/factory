@@ -4,20 +4,20 @@ import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
 import { pickBucketMs } from '../telemetry/run-activity.js';
+import { followUpRefusal, retryRefusal, waitControlRefusal } from './job-refusals.js';
+import { validateArtifactReadQuery } from './job-field-validation-artifacts.js';
 import {
-    followUpRefusal,
-    retryRefusal,
     validateCommandField,
     validateCompleteFields,
     validateListQuery,
     validatePublication,
     validateWaitQuery,
     validateWorkerField,
-    waitControlRefusal,
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { UUID } from '../config.js';
+import type { ArtifactKind } from '../db/job-store-types.js';
 import {
     HTTP_ACCEPTED,
     HTTP_CONFLICT,
@@ -468,6 +468,51 @@ export async function handleThread(orgs: OrgRegistry, request: FastifyRequest, r
     if (!jobs.ok) return reply;
     if (jobs.value === null) return notFoundJob(reply);
     return reply.code(HTTP_OK).send({ jobs: jobs.value });
+}
+
+// The run artifacts' read routes (issue #325): GET /api/jobs/:id/log and
+// /api/jobs/:id/transcript, one handler parameterized by kind. Person routes — resolved through
+// `resolveJobRoute` exactly like the job read they extend, so the org is the caller's credential's,
+// and a stored artifact is answerable only inside the org whose job produced it. Paging is
+// character-based query params (`?attempt=&offset=&limit=`), the JSON envelope this API uses
+// everywhere — no HTTP Range. An absent artifact is a 404, never a fabricated empty page: "the
+// driver uploaded nothing" and "there is no such job" differ only in the error text, and neither
+// is data.
+export async function handleArtifactRead(
+    orgs: OrgRegistry,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    kind: ArtifactKind
+) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const parsed = validateArtifactReadQuery(request.query as { attempt?: unknown; offset?: unknown; limit?: unknown });
+    if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
+
+    const artifact = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job artifact read failed'),
+        () => store.readArtifact(id, kind, parsed.value.attempt)
+    );
+    if (!artifact.ok) return reply;
+    if (artifact.value === null) return notFoundJob(reply);
+
+    // The page is a slice of the stored content; `totalCharacters` is how a client knows whether
+    // more is behind the offset. Offset past the end answers an empty page, not an error — the
+    // ordinary end-of-stream of a paged read.
+    const { offset, limit } = parsed.value;
+    return reply.code(HTTP_OK).send({
+        jobId: id,
+        kind,
+        attempt: artifact.value.attempt,
+        truncated: artifact.value.truncated,
+        offset,
+        limit,
+        totalCharacters: artifact.value.content.length,
+        content: artifact.value.content.slice(offset, offset + limit),
+    });
 }
 
 export async function handleListJobs(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {

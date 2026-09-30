@@ -1,5 +1,4 @@
 import { COMMAND_LIMIT, ERROR_CODES } from '@factory-ai/core';
-import type { FastifyReply } from 'fastify';
 import type { FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
@@ -8,15 +7,13 @@ import {
     interpolate,
     nodeOf,
 } from '../db/workflow-schema.js';
-import { bad, body } from './helpers.js';
+import { body } from './helpers.js';
 import {
     AGENT_TURNS_MAX,
     BRANCH_LIMIT,
     CONTEXT_COST_MAX,
     CONTEXT_TOKENS_MAX,
     GATE_NAME_LIMIT,
-    HTTP_CONFLICT,
-    HTTP_FORBIDDEN,
     LEASE_SECONDS_MAX,
     LIST_LIMIT_DEFAULT,
     LIST_LIMIT_MAX,
@@ -30,7 +27,6 @@ import {
     WORKER_NAME_LIMIT,
     executorReason,
     leaseSeconds,
-    notFoundJob,
 } from './job-limits.js';
 import { repoReason } from './helpers.js';
 import { MS_PER_SECOND } from './auth-shared.js';
@@ -387,79 +383,6 @@ export function validatePublication(
             baseBranch: baseBranch as string,
         },
     };
-}
-
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
-
-/** The refusal answers both wait-control verbs (issue #328) share; the ok paths differ per route. */
-export type WaitControlRefusal = 'missing' | 'forbidden' | 'no_wait';
-
-export function waitControlRefusal(reply: FastifyReply, reason: WaitControlRefusal) {
-    switch (reason) {
-        case 'missing':
-            return notFoundJob(reply);
-        case 'forbidden':
-            return reply.code(HTTP_FORBIDDEN).send({
-                error: 'Only the account that queued the task can control its wait',
-                code: ERROR_CODES.FORBIDDEN,
-            });
-        case 'no_wait':
-            return reply
-                .code(HTTP_CONFLICT)
-                .send({ error: 'The task has no open wait', code: ERROR_CODES.NO_OPEN_WAIT });
-    }
-}
-
-export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
-    switch (reason) {
-        case 'missing':
-            return notFoundJob(reply);
-        case 'not_finished':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
-        case 'task_done':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: ERROR_CODES.TASK_DONE });
-        case 'no_session':
-            return reply
-                .code(HTTP_CONFLICT)
-                .send({ error: 'The finished run has no agent session to continue', code: ERROR_CODES.NO_SESSION });
-        case 'forbidden':
-            return bad(
-                reply,
-                ERROR_CODES.FORBIDDEN,
-                'Only the account that queued the task can follow it up',
-                HTTP_FORBIDDEN
-            );
-        case 'purging':
-            return reply.code(HTTP_CONFLICT).send({
-                error: "The task's checkout is being deleted from disk",
-                code: ERROR_CODES.PURGE_IN_PROGRESS,
-            });
-    }
-}
-
-export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
-
-export function retryRefusal(reply: FastifyReply, reason: RetryRefusal) {
-    switch (reason) {
-        case 'missing':
-            return notFoundJob(reply);
-        case 'not_finished':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
-        case 'task_done':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: ERROR_CODES.TASK_DONE });
-        case 'forbidden':
-            return bad(
-                reply,
-                ERROR_CODES.FORBIDDEN,
-                'Only the account that queued the task can retry it',
-                HTTP_FORBIDDEN
-            );
-        case 'purging':
-            return reply.code(HTTP_CONFLICT).send({
-                error: "The task's checkout is being deleted from disk",
-                code: ERROR_CODES.PURGE_IN_PROGRESS,
-            });
-    }
 }
 
 export function validateListQuery(query: {

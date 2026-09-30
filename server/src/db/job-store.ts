@@ -30,7 +30,15 @@ import {
     pokeThreadWait,
 } from './job-store-actions.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
-import { threadOf, getJob, waitForSettleOf, listJobs, listTasksOf, leasesOf } from './job-store-reads.js';
+import {
+    threadOf,
+    getJob,
+    waitForSettleOf,
+    listJobs,
+    listTasksOf,
+    leasesOf,
+    readArtifactOf,
+} from './job-store-reads.js';
 import {
     wallTickFragment,
     authorJoinFragment,
@@ -49,7 +57,89 @@ import {
     rereadGatesJob,
     publishTokenJob,
     completeJob,
+    artifactReport,
 } from './job-store-worker.js';
+
+/**
+ * The worker-report method bindings — the claim-to-verdict half of the store. Split out of
+ * `createJobStore` purely so that factory stays under its line budget; the gate (the migrations
+ * wait) closes over the same way. `readArtifact` rides this group only because it shares the
+ * context and the gate — it is a person read with no lease guard, unlike every write here.
+ */
+function workerMethods(
+    ctx: JobStoreContext,
+    gate: () => Promise<void>
+): Pick<
+    JobStore,
+    | 'claim'
+    | 'heartbeat'
+    | 'session'
+    | 'progress'
+    | 'gates'
+    | 'rereadGates'
+    | 'artifact'
+    | 'readArtifact'
+    | 'publishToken'
+    | 'complete'
+    | 'leases'
+> {
+    return {
+        async claim(worker, leaseSeconds) {
+            await gate();
+            return claimJob(ctx, worker, leaseSeconds);
+        },
+
+        async heartbeat(id, leaseToken, leaseSeconds) {
+            await gate();
+            return heartbeatJob(ctx, id, leaseToken, leaseSeconds);
+        },
+
+        async session(id, leaseToken, sessionId) {
+            await gate();
+            return sessionReport(ctx, id, leaseToken, sessionId);
+        },
+
+        async progress(id, leaseToken, output, runtime: RuntimeVitals | null = null) {
+            await gate();
+            return progressReport(ctx, id, leaseToken, { output, runtime });
+        },
+
+        async gates(id, leaseToken, results) {
+            await gate();
+            return gatesReport(ctx, id, leaseToken, results);
+        },
+
+        async rereadGates(id, leaseToken) {
+            await gate();
+            return rereadGatesJob(ctx, id, leaseToken);
+        },
+
+        async artifact(id, leaseToken, upload) {
+            await gate();
+            return artifactReport(ctx, id, leaseToken, upload);
+        },
+
+        async readArtifact(id, kind, attempt) {
+            await gate();
+            return readArtifactOf(ctx, id, kind, attempt);
+        },
+
+        async publishToken(id, leaseToken) {
+            await gate();
+            return publishTokenJob(ctx, id, leaseToken);
+        },
+
+        async complete(id, leaseToken, result) {
+            await gate();
+            return completeJob(ctx, id, leaseToken, result);
+        },
+
+        async leases(ids) {
+            await gate();
+            return leasesOf(ctx, ids);
+        },
+    };
+}
 
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a
@@ -97,6 +187,8 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
  */
 function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobStore {
     return {
+        ...workerMethods(ctx, gate),
+
         async create(command, createdBy, target) {
             await gate();
             return createJobRow(ctx, command, createdBy, target);
@@ -125,41 +217,6 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async stop(id, stoppedBy) {
             await gate();
             return stopJob(ctx, id, stoppedBy);
-        },
-
-        async claim(worker, leaseSeconds) {
-            await gate();
-            return claimJob(ctx, worker, leaseSeconds);
-        },
-
-        async heartbeat(id, leaseToken, leaseSeconds) {
-            await gate();
-            return heartbeatJob(ctx, id, leaseToken, leaseSeconds);
-        },
-
-        async session(id, leaseToken, sessionId) {
-            await gate();
-            return sessionReport(ctx, id, leaseToken, sessionId);
-        },
-
-        async progress(id, leaseToken, output, runtime: RuntimeVitals | null = null) {
-            await gate();
-            return progressReport(ctx, id, leaseToken, { output, runtime });
-        },
-
-        async gates(id, leaseToken, results) {
-            await gate();
-            return gatesReport(ctx, id, leaseToken, results);
-        },
-
-        async rereadGates(id, leaseToken) {
-            await gate();
-            return rereadGatesJob(ctx, id, leaseToken);
-        },
-
-        async publishToken(id, leaseToken) {
-            await gate();
-            return publishTokenJob(ctx, id, leaseToken);
         },
 
         async suspend(id, leaseToken) {
@@ -195,16 +252,6 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async ackReclaim(id, worker) {
             await gate();
             return ackReclaimRow(ctx, id, worker);
-        },
-
-        async leases(ids) {
-            await gate();
-            return leasesOf(ctx, ids);
-        },
-
-        async complete(id, leaseToken, result) {
-            await gate();
-            return completeJob(ctx, id, leaseToken, result);
         },
 
         async thread(id) {

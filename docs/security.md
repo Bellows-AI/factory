@@ -103,6 +103,16 @@ spawn — never through the driver process's own environment, where member-contr
 steer the docker CLI on the host — and an agent can always `printenv` inside its own container:
 masking runner output would be decoration on top of a boundary that does not exist.
 
+**The run artifacts never echo a claim env value, and the pins say so.** The full-run log and
+agent transcript stored per attempt (issue #325, `docs/jobs.md`) are built from the runner's own
+stdio and the volume transcript — the 0600 env file is written around the spawn, read by the
+daemon, and removed at the close; no artifact read ever touches it. The driver suite pins this
+where the bytes are made: the full log must be STRICTLY EQUAL to the runner's own stream (any
+driver-side injection — an env value included — would break the equality), and the argv/script
+pins assert no board-derived value ever travels in a script's text. The `printenv` boundary
+above is unchanged — an agent can still print its own environment into its own log, which is
+exactly why the constraint is on this driver's code, not on the runner's output.
+
 **The driver mounts `/var/run/docker.sock`, which is root on the host.** A process holding that
 socket can start a container with the host filesystem mounted, so it is not "docker access", it is
 uid 0. It once sat behind a compose profile so `docker compose up` could not start it by surprise;

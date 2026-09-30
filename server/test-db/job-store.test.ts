@@ -403,6 +403,127 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     /**
+     * The run artifacts (issue #325): the driver's close-time uploads of the full-run log and the
+     * agent transcript, and the reads that serve them. Lease-guarded like every worker write;
+     * keyed (kind, attempt) so two attempts never overwrite each other; retained exactly as long
+     * as the job row.
+     */
+    it('stores and reads run artifacts per attempt, newest-first by default', async () => {
+        const { id } = await queue('echo hi');
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        const token = claim!.leaseToken;
+
+        expect(
+            await store.artifact(id, token, { kind: 'log', attempt: 1, content: 'attempt one log', truncated: false })
+        ).toBe('ok');
+        // Upsert, never append: a retried upload overwrites its own row.
+        expect(
+            await store.artifact(id, token, {
+                kind: 'log',
+                attempt: 1,
+                content: 'attempt one log, retried',
+                truncated: true,
+            })
+        ).toBe('ok');
+        expect(
+            await store.artifact(id, token, {
+                kind: 'transcript',
+                attempt: 1,
+                content: '[{"role":"assistant"}]',
+                truncated: false,
+            })
+        ).toBe('ok');
+
+        // Null attempt reads the newest stored one, per kind — the two kinds never shadow.
+        expect(await store.readArtifact(id, 'log', null)).toEqual({
+            attempt: 1,
+            truncated: true,
+            content: 'attempt one log, retried',
+        });
+        expect(await store.readArtifact(id, 'transcript', null)).toEqual({
+            attempt: 1,
+            truncated: false,
+            content: '[{"role":"assistant"}]',
+        });
+        expect(await store.readArtifact(id, 'log', 1)).toMatchObject({ content: 'attempt one log, retried' });
+        expect(await store.readArtifact(id, 'log', 9)).toBeNull();
+        expect(await store.readArtifact(id, 'log', null)).toBeTruthy();
+    });
+
+    it('keeps a second attempt artifact beside the first', async () => {
+        const { id } = await queue('echo hi');
+        const first = await store.claim('w1', LEASE_SECONDS);
+        await store.artifact(id, first!.leaseToken, {
+            kind: 'log',
+            attempt: 1,
+            content: 'first attempt',
+            truncated: false,
+        });
+        await expireLease(id);
+        const second = await store.claim('w2', LEASE_SECONDS);
+        await store.artifact(id, second!.leaseToken, {
+            kind: 'log',
+            attempt: 2,
+            content: 'second attempt',
+            truncated: false,
+        });
+
+        expect(await store.readArtifact(id, 'log', 1)).toMatchObject({ content: 'first attempt' });
+        expect(await store.readArtifact(id, 'log', null)).toMatchObject({ attempt: 2, content: 'second attempt' });
+    });
+
+    it('refuses an artifact from a worker whose lease was reclaimed, or a job that does not exist', async () => {
+        const { id } = await queue('echo hi');
+        const stale = await store.claim('w1', LEASE_SECONDS);
+        await expireLease(id);
+        const winner = await store.claim('w2', LEASE_SECONDS);
+
+        expect(
+            await store.artifact(id, stale!.leaseToken, {
+                kind: 'log',
+                attempt: 1,
+                content: 'from the zombie',
+                truncated: false,
+            })
+        ).toBe('lost');
+        expect(
+            await store.artifact(ABSENT, stale!.leaseToken, {
+                kind: 'log',
+                attempt: 1,
+                content: 'nowhere',
+                truncated: false,
+            })
+        ).toBe('missing');
+        // The refusal wrote nothing — the winner's row is the only one a reader can find.
+        expect(await store.readArtifact(id, 'log', null)).toBeNull();
+        await store.artifact(id, winner!.leaseToken, {
+            kind: 'log',
+            attempt: 2,
+            content: 'the live one',
+            truncated: false,
+        });
+        expect(await store.readArtifact(id, 'log', null)).toMatchObject({ content: 'the live one' });
+    });
+
+    it('deletes a thread’s artifacts with the thread (remove)', async () => {
+        const { id } = await queue('echo hi');
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        await store.artifact(id, claim!.leaseToken, {
+            kind: 'log',
+            attempt: 1,
+            content: 'gone with the row',
+            truncated: false,
+        });
+        // Remove refuses a running member — settle the run first.
+        await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+
+        const removed = await store.removeThread(id, null);
+        if (typeof removed !== 'object' || removed.result !== 'ok') throw new Error('remove refused');
+
+        expect(await store.readArtifact(id, 'log', null)).toBeNull();
+    });
+
+    /**
      * The vitals ride the tail's own route, replaced on every sample and left alone when a round
      * has none — a missed sample costs freshness, not the last good answer. Cleared on the next
      * claim: the sample describes the attempt that reported it, and a new container starts
