@@ -420,6 +420,17 @@ kind walkthrough. Decisions that look like cruft and are not:
   replica with `strategy: Recreate`. Startup and readiness read `/api/ready` — 503 until the
   migrations land, 503 for good if they gave up — so a pod whose schema never arrived is restarted
   instead of left Ready; liveness stays on `/api/health`, which touches no database.
+- **Voluntary disruption is two decisions, both written down (issue #362).** The driver-specced
+  pods' opt-in is `driver.runnerDoNotDisrupt` (`RUNNER_DO_NOT_DISRUPT`): both disruption
+  annotations on every pod the driver specs, off by default because an undisruptable pod pins its
+  node for up to `jobTimeoutMs` — an operator's cost-benefit, not the chart's. The chart's own
+  pods get PDBs in `templates/pdb.yaml`: the dashboard `maxUnavailable: 1` — one `Recreate`
+  replica means a drain is a brief gap, while `minAvailable: 1` could never be satisfied
+  mid-eviction and would block every drain and nodegroup update forever — and the driver
+  `minAvailable: 1` only above one replica, where a single-replica PDB would block drains exactly
+  the same way. The driver's own pod carries no do-not-disrupt annotation: a never-exiting
+  Deployment pinned to a node holds it indefinitely, strictly worse than a runner's
+  timeout-bounded pin.
 - **Images carry tags.** `dashboard.image.tag`/`driver.image.tag` default to the chart's
   `appVersion`, so an upgrade to a new build changes the pod spec and rolls; the collector is
   pinned, its config keys moving between releases. `values-local.yaml` uses `latest`, the tag the
@@ -475,6 +486,7 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `K8S_CLUSTER_DOMAIN` | `cluster.local` | The cluster's DNS domain. The runner and gate pods resolve a declared service's bare name through the search domain `<attempt subdomain>.<namespace>.svc.<domain>`, and a search domain is absolute. The chart forwards `driver.clusterDomain`. |
 | `DRIVER_HEARTBEAT_FILE` | unset | A file the driver rewrites every 10s from a timer, so a liveness probe can tell a turning event loop from a wedged one — the driver serves no HTTP. Timer-driven on purpose: a drain stops polling for as long as its jobs take. The chart sets `/tmp/heartbeat` and probes its age. Executor-neutral. |
 | `RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | The runner image's pull policy. Kubernetes reads a missing or `:latest` tag as `Always`, which reaches past the node's local images for a registry copy of `claude-executor` — where the docker runner would have used what the daemon holds. The chart passes `driver.imagePullPolicy` through. |
+| `RUNNER_DO_NOT_DISRUPT` | unset | Opts every pod the driver specs — runner, aux Jobs, declared services — out of voluntary disruption: both `karpenter.sh/do-not-disrupt: "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` on the pod's metadata (Karpenter reads pods, not Job objects), because Karpenter consolidation and cluster-autoscaler scale-down evicting a runner mid-job means the work is redone under a higher `attempts` (issue #362). The guarantee stops there: a Spot interruption reclaims the node regardless — Karpenter explicitly excludes interruption from `do-not-disrupt`, and it does not drain on rebalance recommendations — and an external drain (`kubectl drain`, a managed-nodegroup upgrade) proceeds all the same, so a two-hour job can still be redone. Off by default, and the cost is real: an undisruptable pod pins its node for as long as the run lasts — up to `DRIVER_JOB_TIMEOUT_MS` — so an operator on on-demand-only nodes may not want it. The chart forwards `driver.runnerDoNotDisrupt`. |
 
 Refused combination, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each
 watch tick is one throwaway container on the docker daemon, and the kubernetes form would be a Job

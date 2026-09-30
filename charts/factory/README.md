@@ -31,6 +31,7 @@ installer allowed to create cluster-scoped admission policies. Images default to
 | `Deployment <release>-factory-driver` + the shared `ServiceAccount`/`Role`/`RoleBinding` | The "operator for runners": watches the board and reconciles one runner Job per claimed job. The Role is namespace-scoped and carries only the calls the runner makes — create/delete Jobs (runners, gate runs and the services readout), create/delete the per-attempt env Secret, create/get/delete the per-job checkout-claim ConfigMap that makes the re-claim fence atomic, create/delete/list pods (service fleets; list is discovery), create/delete Services (a service's DNS name), read pod logs. Never a ClusterRole, and never `pods/exec`. The driver also runs the **orphan reaper** (`driver.reapIntervalMs` / `driver.reapGraceMs`, issue #301): a periodic sweep of service objects whose owning job is terminal, board-unknown, or running under another lease — no new verbs needed, the grants above already cover it. The gate endpoint is advertised at the driver pod's own IP (`GATE_ADVERTISE_URL=http://$(POD_IP)`), so more than one driver replica is safe. Liveness is a heartbeat file the driver touches every 10s. |
 | `ValidatingAdmissionPolicy <namespace>-<release>-factory-driver-{pods,objects}` + bindings | The fence the Role cannot draw (`isolation.admissionPolicy`). RBAC cannot scope by name, so `create pods` would be `read every Secret` in the namespace — the dashboard's App key included — and `delete secrets` would reach them all. Bound to the driver's ServiceAccount: pod specs may reference only the driver's per-attempt Secrets (`factory-{job,sync,publish,helper,gate}-…-env`), the runner credentials and the chart's pull secrets; no hostPath, host namespaces, privilege or ServiceAccount token; creates and deletes only of objects labelled `factory.job`; Secrets only Opaque, Services only headless. |
 | `NetworkPolicy <release>-factory-runners` | Confines every pod this release's driver specs (`isolation.networkPolicy`): ingress only from each other, egress to DNS (port 53 only to the `k8s-app: kube-dns` pods in kube-system and `isolation.dnsCidrs`, default NodeLocal DNSCache's 169.254.20.10/32 — list your resolver there if your cluster DNS carries other labels, or runners lose DNS), this release's dashboard/collector/driver, each other, and anything outside `isolation.blockedCidrs` — the private ranges and the cloud metadata endpoint. Inert without a CNI that enforces NetworkPolicy. |
+| `PodDisruptionBudget <release>-factory` and `PodDisruptionBudget <release>-factory-driver` | The voluntary-disruption policy for the chart's own pods (issue #362) — see "Node churn". The dashboard's always renders (`maxUnavailable: 1`); the driver's only above one replica (`minAvailable: 1`). |
 | `Deployment/Service/ConfigMap <release>-factory-collector` | The OTLP collector. Runner pods export to it over the cluster network — the driver names it in every spec via `RUNNER_OTEL_ENDPOINT` — and it forwards to this release's dashboard ingest route with the same processors the compose collector runs. |
 | `Job factory-runner-…` (per job, at runtime) | One runner pod, `restartPolicy: Never`, `backoffLimit: 0` — the cluster never re-runs a job; the board owns retries. `automountServiceAccountToken: false`, so a runner holds no API credentials. The name is `factory-runner-<hash16(id and lease token)>` — the apiserver stamps a Job's name onto its pod template as the `job-name` label, and label values cap at 63 bytes, which the raw id-and-token form exceeds. |
 | `PersistentVolumeClaim <release>-factory-workspaces` | The checkouts. The dashboard writes them, every runner mounts the same claim. `ReadWriteMany` by default. Not created when `workspaces.existingClaim` names one — the local profile names the state release's. Annotated `helm.sh/resource-policy: keep`: `helm uninstall` leaves it. |
@@ -90,6 +91,32 @@ auth:
 actually serves it — with this ALB set, `https://factory.example.com`, no port. For an in-cluster
 controller (nginx and friends) drop the `alb.*` annotations and name the certificate's Secret in
 `tls` instead.
+
+## Node churn
+
+A Karpenter consolidation, a spot interruption or a managed-nodegroup upgrade evicts whatever runs
+on the node it takes — and a runner pod evicted mid-job means the work is redone: the lease
+expires, the board re-offers, the replacement fences the checkout. Nothing is corrupted, which is
+exactly why the churn is easy to miss; the only trace is a higher `attempts`.
+
+- `driver.runnerDoNotDisrupt` (default off) annotates **every pod the driver specs** — runners,
+  sync/reclaim/publish/helper/gate Jobs, the readouts, and the declared services — with
+  `karpenter.sh/do-not-disrupt: "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict:
+  "false"`, so consolidation and scale-down leave a running job alone. The cost is stated where
+  the decision is made: an undisruptable pod pins its node for as long as the run lasts — up to
+  `driver.jobTimeoutMs`, two hours by default — so an operator running only on-demand nodes may
+  legitimately leave it off. Spot interruptions and external drains are not protected: neither
+  annotation stops a `kubectl drain`, a nodegroup upgrade's eviction, or Spot itself going away.
+- The chart's own pods get PodDisruptionBudgets. The dashboard's always renders with
+  `maxUnavailable: 1`, deliberately not `minAvailable: 1`: it runs exactly one `Recreate` replica,
+  a drain evicts it, it reschedules, the board is back — while `minAvailable: 1` on one replica
+  can never be satisfied mid-eviction and would wedge every drain and nodegroup update in the
+  namespace forever. The driver's PDB renders only above `driver.replicas: 1`
+  (`minAvailable: 1` — one replica drains inside its termination grace while the other keeps
+  claiming); at one replica the driver's protection is its SIGTERM drain, and the PDB would block
+  drains exactly like a dashboard `minAvailable` would. The driver's own pod never gets the
+  do-not-disrupt annotation: a never-exiting Deployment pinned to a node holds it indefinitely,
+  strictly worse than a runner's timeout-bounded pin.
 
 ## Images on a remote cluster
 

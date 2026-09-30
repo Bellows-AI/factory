@@ -6,6 +6,7 @@ import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
 import type { HelperDescriptor, HelperPlan } from './helpers.js';
 import {
     auxJobSpec,
+    doNotDisruptField,
     hash16,
     jobsPath,
     pullSecretsField,
@@ -278,7 +279,12 @@ export function servicePodSpec(
 ): {
     apiVersion: 'v1';
     kind: 'Pod';
-    metadata: { name: string; labels: Record<string, string> };
+    metadata: {
+        name: string;
+        labels: Record<string, string>;
+        /** The disruption opt-out (doNotDisruptField) — a bare Pod's own metadata. */
+        annotations?: Record<string, string>;
+    };
     spec: {
         restartPolicy: 'Never';
         automountServiceAccountToken: false;
@@ -307,7 +313,7 @@ export function servicePodSpec(
     return {
         apiVersion: 'v1',
         kind: 'Pod',
-        metadata: { name: servicePodName(job, spec.name), labels },
+        metadata: { name: servicePodName(job, spec.name), labels, ...doNotDisruptField(config) },
         spec: {
             restartPolicy: 'Never',
             automountServiceAccountToken: false,

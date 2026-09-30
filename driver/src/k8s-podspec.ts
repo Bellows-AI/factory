@@ -58,7 +58,11 @@ export interface RunnerJobSpec {
         activeDeadlineSeconds: number;
         ttlSecondsAfterFinished: number;
         template: {
-            metadata: { labels: Record<string, string> };
+            metadata: {
+                labels: Record<string, string>;
+                /** The disruption opt-out (doNotDisruptField) — the POD's metadata, never the Job's. */
+                annotations?: Record<string, string>;
+            };
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
@@ -226,7 +230,10 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             activeDeadlineSeconds: Math.max(1, Math.round(config.jobTimeoutMs / MS_PER_SECOND)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) } },
+                metadata: {
+                    labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) },
+                    ...doNotDisruptField(config),
+                },
                 spec: {
                     restartPolicy: 'Never',
                     // The runner gets no ServiceAccount token: automounting one would hand the
@@ -319,7 +326,11 @@ export interface AuxJobSpec {
         activeDeadlineSeconds: number;
         ttlSecondsAfterFinished: number;
         template: {
-            metadata: { labels: Record<string, string> };
+            metadata: {
+                labels: Record<string, string>;
+                /** The disruption opt-out (doNotDisruptField) — the POD's metadata, never the Job's. */
+                annotations?: Record<string, string>;
+            };
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
@@ -394,20 +405,38 @@ export function pullSecretsField(config: DriverConfig): { imagePullSecrets?: { n
  * schedules onto. Absent field by field when unset, so the spec an untainted cluster sees is
  * unchanged. Docker has no twin — the daemon decides placement, there is nothing to forward.
  */
-export function schedulingField(config: DriverConfig): {
+export interface SchedulingField {
     nodeSelector?: Record<string, string>;
     tolerations?: Record<string, unknown>[];
     affinity?: Record<string, unknown>;
-} {
-    const field: {
-        nodeSelector?: Record<string, string>;
-        tolerations?: Record<string, unknown>[];
-        affinity?: Record<string, unknown>;
-    } = {};
+}
+
+export function schedulingField(config: DriverConfig): SchedulingField {
+    const field: SchedulingField = {};
     if (config.runnerNodeSelector) field.nodeSelector = config.runnerNodeSelector;
     if (config.runnerTolerations) field.tolerations = config.runnerTolerations;
     if (config.runnerAffinity) field.affinity = config.runnerAffinity;
     return field;
+}
+
+/**
+ * The voluntary-disruption opt-out (issue #362), as pod metadata: both keys, because Karpenter
+ * consolidation reads `karpenter.sh/do-not-disrupt` while the cluster-autoscaler's scale-down
+ * reads `cluster-autoscaler.kubernetes.io/safe-to-evict`, and to an operator they are one switch,
+ * not a vendor choice. Neither survives an explicit `kubectl drain` — a drain evicts through the
+ * disruption API, which consults only PodDisruptionBudgets — and this annotation is not offered
+ * for the chart's own pods, whose answer is pdb.yaml. Absent entirely when RUNNER_DO_NOT_DISRUPT
+ * is off, so the spec an operator who has not opted in sees is unchanged — an undisruptable pod
+ * pins its node for as long as the run lasts, which is the operator's decision to make, not the
+ * driver's.
+ */
+export const DO_NOT_DISRUPT_ANNOTATIONS: Record<string, string> = {
+    'karpenter.sh/do-not-disrupt': 'true',
+    'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
+};
+
+export function doNotDisruptField(config: DriverConfig): { annotations?: Record<string, string> } {
+    return config.runnerDoNotDisrupt ? { annotations: { ...DO_NOT_DISRUPT_ANNOTATIONS } } : {};
 }
 
 /**
@@ -432,7 +461,7 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
             activeDeadlineSeconds: input.deadlineSeconds,
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels },
+                metadata: { labels, ...doNotDisruptField(config) },
                 spec: {
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,

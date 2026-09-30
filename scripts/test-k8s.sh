@@ -608,6 +608,36 @@ expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpo
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
 
+# Node churn vs long runs (issue #362). The do-not-disrupt opt-out is off by default in both
+# profiles — an undisruptable runner pod pins its node for as long as its job runs — and the
+# PDBs are always on: the dashboard drains with at most one unavailable, the driver is protected
+# only above one replica, where a single-replica minAvailable would block drains forever.
+expect_not_contains 'no do-not-disrupt switch renders by default (local profile)' \
+    "$(cat "$work/rendered.yaml")" 'RUNNER_DO_NOT_DISRUPT'
+expect_not_contains 'no do-not-disrupt switch renders by default (production defaults)' "$gh" 'RUNNER_DO_NOT_DISRUPT'
+dnd="$(gh_render --set driver.runnerDoNotDisrupt=1)"
+expect_contains 'the opt-in forwards the do-not-disrupt switch' "$dnd" 'name: RUNNER_DO_NOT_DISRUPT'
+expect_contains 'the opt-in carries the value the operator set' "$dnd" 'value: "1"'
+
+[ "$(grep -c 'kind: PodDisruptionBudget' <<<"$(cat "$work/rendered.yaml")")" -eq 1 ] &&
+    ok 'the dashboard PDB renders in the local profile' ||
+    bad 'the dashboard PDB renders in the local profile' 'expected exactly one PDB'
+[ "$(grep -c 'kind: PodDisruptionBudget' <<<"$gh")" -eq 1 ] &&
+    ok 'the dashboard PDB renders at the production defaults' ||
+    bad 'the dashboard PDB renders at the production defaults' "$(grep -c 'kind: PodDisruptionBudget' <<<"$gh") PDBs"
+expect_contains 'the dashboard PDB allows one unavailable' "$gh" 'maxUnavailable: 1'
+expect_not_contains 'no driver PDB below two replicas' "$gh" 'minAvailable: 1'
+two="$(gh_render --set driver.replicas=2)"
+[ "$(grep -c 'kind: PodDisruptionBudget' <<<"$two")" -eq 2 ] &&
+    ok 'the driver PDB renders above one replica' ||
+    bad 'the driver PDB renders above one replica' "$(grep -c 'kind: PodDisruptionBudget' <<<"$two") PDBs"
+expect_contains 'the driver PDB keeps one replica through a drain' "$two" 'minAvailable: 1'
+driver_pdb="$(awk '/^# Source: factory\/templates\/pdb.yaml/ { n++ } n == 2 && /^---$/ { exit } n == 2 { print }' <<<"$two")"
+expect_contains 'the driver PDB selects the driver component' "$driver_pdb" 'component: driver'
+helm lint charts/factory "${GH_SETS[@]}" --set driver.replicas=2 >/dev/null 2>&1 &&
+    ok 'helm lint passes above one driver replica' ||
+    bad 'helm lint passes above one driver replica' 'lint failed'
+
 # --- Phase two: the cluster -------------------------------------------------------------------
 
 if [ "${1:-}" != '--cluster' ]; then

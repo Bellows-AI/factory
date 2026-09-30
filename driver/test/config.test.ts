@@ -129,6 +129,16 @@ describe('the driver config: executor and endpoints', () => {
         ]);
     });
 
+    // Node churn must not redo a two-hour run (issue #362): this switch opts every pod the
+    // driver specs out of voluntary disruption. Off by default — an undisruptable pod pins its
+    // node for as long as the run lasts, and an operator on on-demand nodes may not want that.
+    it('treats only an explicit value as a request to opt out of disruption', () => {
+        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: '1' }).runnerDoNotDisrupt).toBe(true);
+        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: '0' }).runnerDoNotDisrupt).toBe(false);
+        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: 'false' }).runnerDoNotDisrupt).toBe(false);
+        expect(loadDriverConfig({ RUNNER_DO_NOT_DISRUPT: '' }).runnerDoNotDisrupt).toBe(false);
+    });
+
     it('leaves DRIVER_HEARTBEAT_FILE off unless set', () => {
         expect(loadDriverConfig({}).heartbeatFile).toBeNull();
         expect(loadDriverConfig({ DRIVER_HEARTBEAT_FILE: '/tmp/heartbeat' }).heartbeatFile).toBe('/tmp/heartbeat');

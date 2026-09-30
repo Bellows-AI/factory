@@ -78,6 +78,13 @@ spec:
                       # The search domain a declared service's bare name resolves through.
                       - name: K8S_CLUSTER_DOMAIN
                         value: {{ $.Values.driver.clusterDomain | quote }}
+                      {{- if $.Values.driver.runnerDoNotDisrupt }}
+                      # Annotate every pod the driver specs out of voluntary disruption
+                      # (RUNNER_DO_NOT_DISRUPT) — the cost of an undisruptable pod is stated in
+                      # the values entry.
+                      - name: RUNNER_DO_NOT_DISRUPT
+                        value: {{ $.Values.driver.runnerDoNotDisrupt | quote }}
+                      {{- end }}
                       # The claim's worker name. Defaulted it is `driver-<pid>` — pid 1 in every
                       # container, so every replica would claim as `driver-1`, and the board's
                       # claimed_by fences (the reclaim ack among them) could not tell them apart.
