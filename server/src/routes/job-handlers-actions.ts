@@ -6,6 +6,7 @@ import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
 import { pickBucketMs } from '../telemetry/run-activity.js';
 import {
     followUpRefusal,
+    retryRefusal,
     validateCommandField,
     validateCompleteFields,
     validateListQuery,
@@ -56,6 +57,32 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     );
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return followUpRefusal(reply, created.value);
+    return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
+}
+
+// The person's action a sessionless finished task needs (issue #326): re-run the thread head's
+// command as a FRESH attempt in the same thread — no session resumed, so follow-up's
+// `409 NO_SESSION` dead end (a driver that died before reporting, a refused start) has an in-
+// place exit that keeps the thread and its worktree. Nothing is taken from the body — the
+// command, repo, executor and thread all come from the thread head at insert — and the store
+// decides every refusal atomically with the insert, exactly as the follow-up's does. No lease
+// token: the task is finished, nobody holds it.
+export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    // Read off the authenticated request, never off the body — the create route's rule about
+    // impersonation applies word for word here.
+    const createdBy = callerOf(request)?.user.id ?? null;
+
+    const created = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job retry failed'),
+        () => store.createRetry(id, createdBy)
+    );
+    if (!created.ok) return reply;
+    if (typeof created.value === 'string') return retryRefusal(reply, created.value);
     return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
 }
 

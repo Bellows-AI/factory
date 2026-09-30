@@ -259,6 +259,76 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(await store.markDone(parent, null)).toMatchObject({ status: 'succeeded' });
     });
 
+    // The per-thread advisory lock (the one the claim, remove, reopen and done take) is the
+    // other half of that atomicity: the follow-up's insert must serialize against a racing
+    // done on ANY member, not only on the parent row it locks.
+    it('blocks a follow-up while another transaction holds the thread lock', async () => {
+        const parent = await finishWithSession('drive me');
+
+        let lockTaken: (() => void) | null = null;
+        const locked = new Promise<void>((resolve) => {
+            lockTaken = resolve;
+        });
+        let release: (() => void) | null = null;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const blocker = sql.begin(async (tx) => {
+            await tx`select pg_advisory_xact_lock(hashtextextended(${parent}::text, 0))`;
+            lockTaken!();
+            await held;
+        });
+        blocker.catch(() => {});
+        await locked;
+
+        const followUp = store.createFollowUp(parent, 'again', null);
+        const STILL_LOCKED_TIMEOUT_MS = 450;
+        const outcome = await Promise.race([
+            followUp,
+            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
+        ]);
+        expect(outcome).toBe('still_locked');
+
+        release!();
+        await blocker;
+        expect(await followUp).toMatchObject({ id: expect.any(String) });
+    });
+
+    // Done joins the same serialization point: a done must not land inside another member's
+    // decision window (a follow-up insert, a retry check, a remove or a reopen), and waiting
+    // here is what makes the whole thread's bookkeeping one-at-a-time.
+    it('blocks markDone while another transaction holds the thread lock', async () => {
+        const parent = await finishWithSession('drive me');
+
+        let lockTaken: (() => void) | null = null;
+        const locked = new Promise<void>((resolve) => {
+            lockTaken = resolve;
+        });
+        let release: (() => void) | null = null;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const blocker = sql.begin(async (tx) => {
+            await tx`select pg_advisory_xact_lock(hashtextextended(${parent}::text, 0))`;
+            lockTaken!();
+            await held;
+        });
+        blocker.catch(() => {});
+        await locked;
+
+        const done = store.markDone(parent, null);
+        const STILL_LOCKED_TIMEOUT_MS = 450;
+        const outcome = await Promise.race([
+            done,
+            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
+        ]);
+        expect(outcome).toBe('still_locked');
+
+        release!();
+        await blocker;
+        expect(await done).toMatchObject({ status: 'succeeded' });
+    });
+
     // Without a session on the parent there is nothing to continue — an opencode run, for one, or a
     // claude-code run that died before its driver could report. Running the follow-up fresh would
     // look like a continuation while starting from nothing.
