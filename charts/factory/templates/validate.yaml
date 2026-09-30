@@ -47,3 +47,30 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- fail "github.appPrivateKey is required alongside github.appId" }}
 {{- end }}
 {{- end }}
+{{- if .Values.global.imageRegistry }}
+{{- /* The prefix is a registry PATH (`ghcr.io/<owner>` — GHCR namespaces images under the owner),
+so an interior slash is the norm. What cannot render is anything that makes the composed
+reference malformed: a trailing slash (`ghcr.io/owner/` composes `ghcr.io/owner//factory-ai`), a
+doubled slash — a pasted URL's scheme among them — a `scheme:/` typo, surrounding whitespace, or
+any uppercase at all: docker's reference grammar is lowercase-only. A colon is otherwise left
+alone — it is how a bare registry host spells its port (`registry:5000`). All of these are
+invalid docker references the kubelet would only name after install. */}}
+{{- if or (hasSuffix "/" .Values.global.imageRegistry) (contains "//" .Values.global.imageRegistry) (contains ":/" .Values.global.imageRegistry) (ne .Values.global.imageRegistry (trim .Values.global.imageRegistry)) (ne .Values.global.imageRegistry (lower .Values.global.imageRegistry)) }}
+{{- fail "global.imageRegistry must be a lowercase registry path such as ghcr.io/<owner>: no trailing or doubled slash, no scheme, no surrounding whitespace" }}
+{{- end }}
+{{- $repositories := dict
+    "dashboard.image.repository" .Values.dashboard.image.repository
+    "driver.image.repository" .Values.driver.image.repository
+    "collector.image.repository" .Values.collector.image.repository
+    "driver.executorImages.claudeCode" .Values.driver.executorImages.claudeCode
+    "driver.executorImages.opencode" .Values.driver.executorImages.opencode }}
+{{- range $path, $repository := $repositories }}
+{{- /* The component before the first `/` qualifies as a registry by docker's own rule — it
+contains a `.` or a `:` (or is `localhost`) — so a tag's colon with no slash after it
+(`claude-executor:v1.2.3`) is not a false positive. database.waitImage is excluded on purpose:
+it is never prefixed, always a full reference. */}}
+{{- if regexMatch "^([^/]*[.:][^/]*|localhost)/" $repository }}
+{{- fail (printf "global.imageRegistry is set and %s (%q) already names a registry: set the bare repository and let the prefix compose, or leave global.imageRegistry empty" $path $repository) }}
+{{- end }}
+{{- end }}
+{{- end }}
