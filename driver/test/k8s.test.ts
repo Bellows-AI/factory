@@ -6824,11 +6824,13 @@ describe('K8S_RELEASE on pod templates', () => {
     });
 });
 
-// Node consolidation, a spot interruption or a managed-nodegroup upgrade evicts a running runner
+// Karpenter consolidation or a cluster-autoscaler scale-down voluntarily evicts a running runner
 // pod mid-job (issue #362): nothing is corrupted — the lease expires, the board re-offers — but
 // the work is redone, silently, visible only as a higher `attempts`. RUNNER_DO_NOT_DISRUPT is the
-// opt-out, and both annotation keys travel together: Karpenter reads the first, the
-// cluster-autoscaler the second, and they are one switch. Every pod the driver specs carries it —
+// opt-out from that voluntary disruption, and both annotation keys travel together: Karpenter
+// reads the first, the cluster-autoscaler the second, and they are one switch. It is not a shield
+// against everything: a Spot interruption or an external drain (a managed-nodegroup upgrade,
+// kubectl drain) reclaims the pod regardless. Every pod the driver specs carries the annotations —
 // a declared service's eviction ruins the attempt exactly like the runner's does.
 describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
     const ANNOTATIONS = {

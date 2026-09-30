@@ -128,11 +128,14 @@ export interface DriverConfig {
      * Opts every pod this driver specs (runner, aux Jobs, declared services) out of voluntary
      * disruption under the kubernetes executor (RUNNER_DO_NOT_DISRUPT): both
      * `karpenter.sh/do-not-disrupt` and `cluster-autoscaler.kubernetes.io/safe-to-evict`, so
-     * consolidation, scale-down and spot rebalance leave a run alone. Off by default, and the
-     * cost is stated where the decision is made: an undisruptable pod pins its node for as long
-     * as its run lasts — up to jobTimeoutMs, two hours by default — so an operator running only
-     * on-demand nodes may legitimately leave it off. It does not stop an explicit
-     * `kubectl drain`; nothing but moving the work can.
+     * Karpenter consolidation and cluster-autoscaler scale-down leave a run alone. The guarantee
+     * stops there: a Spot interruption reclaims the node regardless — Karpenter explicitly
+     * excludes interruption from do-not-disrupt, and it does not drain on rebalance
+     * recommendations — and an external drain (kubectl drain, a managed-nodegroup upgrade)
+     * proceeds all the same. Off by default, and the cost is stated where the decision is made:
+     * an undisruptable pod pins its node for as long as its run lasts — up to jobTimeoutMs, two
+     * hours by default — so an operator running only on-demand nodes may legitimately leave it
+     * off.
      */
     runnerDoNotDisrupt: boolean;
     /**
