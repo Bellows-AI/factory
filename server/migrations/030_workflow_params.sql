@@ -11,6 +11,6 @@
 -- (and the composer-less follow-up) reads them from the root, so editing a definition's params
 -- mid-flight changes later tasks, never a running thread.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 alter table job add column if not exists workflow_params jsonb;

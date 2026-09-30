@@ -9,7 +9,7 @@
 -- repair off; the ceiling matches the review-reconciliation block's maxRounds (1-10) plus the off
 -- value, the same bound the route validates — a database fact and a route convention that agree.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header: without
+-- This file must contain NO `create extension`, per 005's header: without
 -- them postgres wraps the whole body in an implicit transaction, so a crashed run rolls back whole
 -- instead of leaving half a schema behind.
 

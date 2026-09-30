@@ -4,8 +4,8 @@
 -- Normalized rather than a jsonb blob: the child lists feed distributions and are queried, and
 -- a blob makes every future question a rewrite of the writer.
 --
--- Deliberately NOT hypertables. A PR is dimensional — updated in place for months after it is
--- created. Hypertables are for genuine append-only series, and metric_point is the only one.
+-- Deliberately NOT partitioned. A PR is dimensional — updated in place for months after it is
+-- created. Time partitioning is for genuine append-only series, and metric_point is the only one.
 --
 -- `provider` is in every primary key: a repo path is not unique across forges ("group/proj"
 -- can exist on gitlab.com and on a self-hosted instance), and a mirrored repo must read as two

@@ -15,7 +15,7 @@
 -- on disk, so deleting it would hide growth. This row tracks no disk state: dropping it loses
 -- nothing but the pasted JSON, which the whole-list PUT already replaces wholesale.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header: without
+-- This file must contain NO `create extension`, per 005's header: without
 -- them postgres wraps the whole body in an implicit transaction, so a crashed run rolls back whole
 -- instead of leaving half a schema behind.
 

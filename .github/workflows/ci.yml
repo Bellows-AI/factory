@@ -58,9 +58,9 @@ jobs:
         timeout-minutes: 40
         services:
             timescale:
-                # The image docker-compose.yml pins: 001_init.sql needs the timescaledb extension
-                # and a hypertable, which plain postgres cannot do.
-                image: timescale/timescaledb:latest-pg17
+                # The image docker-compose.yml pins. Plain postgres since #371: the schema names
+                # no extension, so the service name is all that is left of TimescaleDB here.
+                image: postgres:17
                 env:
                     POSTGRES_USER: factory
                     POSTGRES_PASSWORD: factory

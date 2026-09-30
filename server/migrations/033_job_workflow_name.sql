@@ -14,7 +14,7 @@
 -- workflow rows that still exist, propagating the root's recovered name down the thread via
 -- root_job_id (022), and rows whose definition is already gone stay null.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 alter table job add column if not exists workflow_name text;
 

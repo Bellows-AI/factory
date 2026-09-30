@@ -67,11 +67,32 @@ async function branch(row: {
 }
 
 describe.skipIf(!enabled)('migrations', () => {
-    it('makes metric_point a hypertable', async () => {
-        const rows = await sql<{ hypertable_name: string }[]>`
-            select hypertable_name from timescaledb_information.hypertables
+    it('range-partitions metric_point on time, with no extension behind it', async () => {
+        const [table] = await sql<{ strategy: string; key: string }[]>`
+            select partstrat as strategy, pg_get_partkeydef(partrelid) as key
+            from pg_partitioned_table where partrelid = 'metric_point'::regclass
         `;
-        expect(rows.map((r) => r.hypertable_name)).toContain('metric_point');
+        expect(table?.strategy).toBe('r');
+        expect(table?.key).toBe('RANGE ("time")');
+    });
+
+    it('covers every timestamp with a DEFAULT partition, so no insert can be rejected', async () => {
+        const partitions = await sql<{ name: string; bound: string }[]>`
+            select c.relname as name, pg_get_expr(c.relpartbound, c.oid) as bound
+            from pg_inherits i join pg_class c on c.oid = i.inhrelid
+            where i.inhparent = 'metric_point'::regclass
+        `;
+        expect(partitions).toEqual([{ name: 'metric_point_default', bound: 'DEFAULT' }]);
+
+        // Backfill imports arbitrarily old transcripts and an OTLP client's clock can skew
+        // ahead; a range table with no covering partition rejects both.
+        const session = `partition-${randomUUID()}`;
+        await point({ session, field: 'tokens_input', value: 1, time: '2001-01-01T00:00:00Z' });
+        await point({ session, field: 'tokens_input', value: 1, time: '2099-01-01T00:00:00Z' });
+        const [row] = await sql<{ n: number }[]>`
+            select count(*)::int as n from metric_point where session_id = ${session}
+        `;
+        expect(row?.n).toBe(2);
     });
 
     it('is idempotent, recording each versioned file once', async () => {

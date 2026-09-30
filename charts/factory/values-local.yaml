@@ -32,7 +32,7 @@ dashboard:
 database:
     url: postgres://factory:factory@factory-state-timescale:5432/factory_dev
     # The database pod already pulled this image onto the one node, so the wait costs no pull.
-    waitImage: timescale/timescaledb:latest-pg17
+    waitImage: postgres:17
 
 workspaces:
     existingClaim: factory-state-workspaces

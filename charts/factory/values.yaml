@@ -88,10 +88,9 @@ telemetry:
     ingestToken: ''
 
 database:
-    # The chart deploys no database: point this at a managed TimescaleDB. Not any managed Postgres
-    # — 001_init.sql runs `create extension timescaledb` and makes metric_point a hypertable, so RDS
-    # and Aurora fail the first migration. The extension requirement is decided against (#356) and
-    # retires in #371, after which this reads "any managed PostgreSQL".
+    # The chart deploys no database: point this at any managed PostgreSQL 17 — RDS and Aurora
+    # included. The schema loads no extension since #371; metric_point is a declaratively-
+    # partitioned table, not a hypertable.
     # REQUIRED when the chart creates the Secret — the URL carries the password, so it
     # lands there as `database-url` and reaches the pod by secretKeyRef. With
     # `secret.existingSecret`, put the `database-url` key in that Secret instead. Local clusters
