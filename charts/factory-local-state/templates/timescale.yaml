@@ -1,10 +1,28 @@
 {{/*
 The local database — the same plain Postgres container compose runs, not the upstream Helm
-chart: one deployment, one claim, no subchart dependency. Plain Postgres, no extension: since
+chart: one StatefulSet, one claim, no subchart dependency. Plain Postgres, no extension: since
 #371 metric_point is a declaratively-partitioned table. Production does not run this; it points
-the factory chart's `database.url` at a managed instance. The object name `<release>-timescale`
-outlives the extension — renaming it is a sweep of test-k8s.sh, the Makefile and values-local.yaml,
-and buys nothing.
+the factory chart's `database.url` at a managed instance.
+
+A StatefulSet rather than a Deployment because the claim belongs to the database, not beside it:
+`volumeClaimTemplates` ties the volume to the pod identity, so the set can never be scaled or
+rolled into a second writer on one ReadWriteOnce claim — the invariant a Deployment could only
+ask for with `strategy: Recreate`. The claim it mints is `data-<release>-timescale-0`, which is
+why the Makefile and scripts/test-k8s.sh select claims by label rather than by name.
+
+The claim outlives the release. Helm deleted the standalone PVC on uninstall; a StatefulSet's
+claims are Retain by default and `kubectl delete sts` does not touch them, which is the intent
+here — the state release exists so the database survives an app reinstall. `make reset` is what
+removes it, by the instance label the template stamps on.
+
+`volumeClaimTemplates` is immutable once the set exists, so changing `timescale.storageSize`
+fails the next `helm upgrade` — and therefore `make start` — rather than resizing anything. Resize
+the PVC in place, or `make reset` and lose the data.
+
+The object name `<release>-timescale` outlives the extension: `database.url` names the Service,
+and renaming it would reach values-local.yaml, the Makefile and scripts/test-k8s.sh for nothing.
+The Service is a plain ClusterIP rather than headless — `serviceName` only governs per-pod DNS,
+and nothing addresses the pod directly.
 */}}
 apiVersion: v1
 kind: Service
@@ -23,22 +41,8 @@ spec:
         {{- include "state.labels" . | nindent 8 }}
         app.kubernetes.io/component: timescale
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-    name: {{ .Release.Name }}-timescale
-    labels:
-        {{- include "state.labels" . | nindent 8 }}
-        app.kubernetes.io/component: timescale
-spec:
-    accessModes:
-        - ReadWriteOnce
-    resources:
-        requests:
-            storage: {{ .Values.timescale.storageSize }}
----
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
     name: {{ .Release.Name }}-timescale
     labels:
@@ -46,9 +50,15 @@ metadata:
         app.kubernetes.io/component: timescale
 spec:
     replicas: 1
-    strategy:
-        # One replica holding one claim: a rolling update would try to run two writers on it.
-        type: Recreate
+    serviceName: {{ .Release.Name }}-timescale
+    # One replica holding one ReadWriteOnce claim. Both values below are the API defaults, written
+    # out because they are the invariant: a RollingUpdate on a StatefulSet terminates the old pod
+    # and waits for it before creating the replacement, so an image change can never put two
+    # writers on the volume — what `strategy: Recreate` bought a Deployment, here by construction.
+    # OrderedReady is the matching promise for scale, which at one replica is a no-op.
+    podManagementPolicy: OrderedReady
+    updateStrategy:
+        type: RollingUpdate
     selector:
         matchLabels:
             {{- include "state.labels" . | nindent 12 }}
@@ -84,7 +94,18 @@ spec:
                   volumeMounts:
                       - name: data
                         mountPath: /var/lib/postgresql/data
-            volumes:
-                - name: data
-                  persistentVolumeClaim:
-                      claimName: {{ .Release.Name }}-timescale
+    volumeClaimTemplates:
+        - metadata:
+              name: data
+              # Stamped deliberately: the claim a volumeClaimTemplate mints carries only what is
+              # written here, and `make reset` and the test script both select claims by
+              # `app.kubernetes.io/instance` rather than by a name that now ends in `-0`.
+              labels:
+                  {{- include "state.labels" . | nindent 18 }}
+                  app.kubernetes.io/component: timescale
+          spec:
+              accessModes:
+                  - ReadWriteOnce
+              resources:
+                  requests:
+                      storage: {{ .Values.timescale.storageSize }}

@@ -33,9 +33,11 @@ restart with a warm database serves real data on the first request rather than a
   crash-loops the service. The schema would be stale regardless: 001 is already recorded in
   `schema_migrations`, so an old database stays a hypertable and is never converted. So:
   `docker compose down -v` before `docker compose up`, which discards `factory_dev` with the
-  volume. On a local cluster the same applies to the `<release>-timescale` PVC, which survives
-  `make stop` by design — delete it, or the database pod crash-loops after the image change.
-  Disposable databases recreate themselves.
+  volume. On a local cluster the same applies to the database claim, which survives `make stop` by
+  design — `make reset` deletes it, or `kubectl delete pvc -l app.kubernetes.io/instance=factory-state`
+  by hand. Select it by that label rather than by name: it belongs to a StatefulSet's
+  `volumeClaimTemplate`, so it is called `data-<release>-timescale-0`. Leave it and the database pod
+  crash-loops after the image change. Disposable databases recreate themselves.
 - **`metric_point`'s DEFAULT partition is the whole partitioning strategy, and removing it breaks
   every write.** A range-partitioned table rejects any row no partition covers — a failure mode the
   hypertable did not have — and neither writer can promise a range: `npm run backfill` imports

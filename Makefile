@@ -132,11 +132,13 @@ start:
 	# values did not change rolls nothing out and a re-run would keep the stale pods. Restart both
 	# workloads so every start runs what the build above just loaded.
 	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver
-	@echo 'waiting for the deployments (a cold node pulls the database image for minutes)'
+	@echo 'waiting for the workloads (a cold node pulls the database image for minutes)'
 	kubectl wait --for=condition=available \
 		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver \
-		deployment/$(K8S_STATE_RELEASE)-timescale deployment/$(K8S_RELEASE)-factory-collector \
+		deployment/$(K8S_RELEASE)-factory-collector \
 		--timeout=600s
+	# The database is a StatefulSet, which carries no `available` condition.
+	kubectl rollout status statefulset/$(K8S_STATE_RELEASE)-timescale --timeout=600s
 	@echo
 	@echo "board on http://127.0.0.1:$(K8S_PORT) — sign in with GitHub, then queue a job and watch it"
 	@echo 'run through a pod on the real runner images.'
@@ -153,9 +155,17 @@ stop:
 # `stop` first, and not only for the order of the words: a runner pod still mounting the
 # workspaces claim holds it under pvc-protection, and the claim delete waits for that — it would
 # block forever on a pod whose delete had not been issued yet.
+# The claim delete is not belt-and-braces: the database's claim belongs to a StatefulSet's
+# volumeClaimTemplate, which helm does not delete with the release, so this line is the only thing
+# that removes the data. It selects by label because the minted name is `data-<release>-timescale-0`.
 reset: stop
 	helm uninstall $(K8S_STATE_RELEASE) || true
-	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" || true
+	# --wait=false then wait for the delete, rather than one blocking delete: the database pod is
+	# still terminating, and a blocking delete spends its grace period before the claim is even
+	# marked. The wait is what makes the next `make start` safe — an RWO volume still attached to
+	# a dying pod holds the fresh pod in Pending.
+	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --wait=false || true
+	kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --timeout=120s || true
 
 # The kind cluster itself, `stop` being only the release: this takes the node down with every
 # volume bound to it — checkouts, database, history. Everything `make start` needs it rebuilds

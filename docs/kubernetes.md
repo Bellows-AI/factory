@@ -295,9 +295,20 @@ kind walkthrough. Decisions that look like cruft and are not:
 
   **An existing local database must be destroyed, not upgraded.** A data directory initialised by
   `timescale/timescaledb` preloads the library in its own `postgresql.conf`, so `postgres:17`
-  exits at startup and the pod crash-loops — delete the `<release>-timescale` PVC (it outlives
-  `make stop` deliberately) along with the image change. `docs/persistence.md` carries the same
-  warning for compose.
+  exits at startup and the pod crash-loops — delete the database claim (it outlives `make stop`
+  deliberately) along with the image change. `make reset` is that delete;
+  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state` is it by hand. Select by label,
+  not by name: the claim is the StatefulSet's `volumeClaimTemplate`, so it is named
+  `data-<release>-timescale-0`. `docs/persistence.md` carries the same warning for compose.
+
+  **The database claim is a StatefulSet's, which changes what uninstall means.** Helm deleted the
+  standalone PVC with the release; a `volumeClaimTemplate` claim is Retain by default and survives
+  `helm uninstall`, so `make reset`'s explicit delete is now the only thing that removes the data
+  rather than a second safety net. The set is also what makes "one writer" structural instead of
+  requested: `strategy: Recreate` on a Deployment asked for it; `replicas: 1` on a StatefulSet whose
+  claim is bound to the pod identity means an update cannot produce a second writer at all. A
+  StatefulSet carries no `available` condition, so `make start` and `scripts/test-k8s.sh` wait on it
+  with `kubectl rollout status` while the three Deployments keep the condition wait.
 
   Dropping Timescale cost nothing because it earned nothing: there was no retention policy and no
   compression, the views in `002_views.repeatable.sql` are *deliberately* not continuous
@@ -305,8 +316,8 @@ kind walkthrough. Decisions that look like cruft and are not:
   runner keeps its non-transactional shape (`server/src/db/migrate.ts`) — postgres already wraps
   each multi-statement file in an implicit transaction, so an explicit one would only pull the
   `schema_migrations` insert into that scope.
-- **Local state is its own release: `charts/factory-local-state`.** A plain Postgres Deployment
-  (not the upstream chart — one deployment, one claim, mirroring compose) plus the workspaces
+- **Local state is its own release: `charts/factory-local-state`.** A plain Postgres **StatefulSet**
+  (not the upstream chart — one replica, one claim, mirroring compose) plus the workspaces
   claim, installed as `factory-state`; `values-local.yaml` names both objects (`database.url`,
   `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
   and the checkouts that database records — the two are kept together, since rows describing a

@@ -304,11 +304,35 @@ else
     ok 'the app chart refuses to render without database.url'
 fi
 
-# The state chart: one database writer on one claim, so its Deployment recreates rather than rolls.
+# The state chart: one database writer on one claim, held by a StatefulSet so the claim belongs to
+# the pod identity and no update can put a second writer on it.
 state="$(helm template "$STATE_RELEASE" charts/factory-local-state --namespace "$NAMESPACE")"
 expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-timescale"
 expect_contains 'the state chart names the workspaces claim'  "$state" "name: $STATE_RELEASE-workspaces"
-expect_contains 'the state database never runs two writers'   "$state" 'type: Recreate'
+expect_contains 'the state database is a StatefulSet'         "$state" 'kind: StatefulSet'
+expect_contains 'the database claim is the set’s own'         "$state" 'volumeClaimTemplates:'
+expect_contains 'the set is addressed by the database service' "$state" "serviceName: $STATE_RELEASE-timescale"
+expect_contains 'the set runs one writer'                     "$state" '
+    replicas: 1
+    serviceName:'
+# The claim a volumeClaimTemplate mints is named after the template, not the release, so the
+# instance label is the only handle `make reset` and this script's cleanup have on it — and a
+# volumeClaimTemplate's PVC carries only the labels written in its own metadata. Asserted against
+# the template block alone: every other object in this chart renders that label too, so the whole
+# document as a haystack would pass with the block deleted.
+vct="$(printf '%s\n' "$state" | sed -n '/^    volumeClaimTemplates:/,$p')"
+expect_contains 'the database claim is the template’s own'      "$vct" 'name: data'
+expect_contains 'the database claim carries the instance label' "$vct" \
+    "app.kubernetes.io/instance: $STATE_RELEASE"
+# Exactly one standalone claim — the workspaces one. The database's is the set's, so a second
+# `kind: PersistentVolumeClaim` would mean the old Deployment-era claim came back beside it and
+# helm would delete the data on uninstall again.
+claims="$(printf '%s\n' "$state" | grep -c '^kind: PersistentVolumeClaim' || true)"
+if [ "$claims" = 1 ]; then
+    ok 'the workspaces claim is the only standalone claim'
+else
+    bad 'the workspaces claim is the only standalone claim' "found $claims"
+fi
 
 # --- The review hardening: every item pinned so a revert fails here, not in production ---------
 
@@ -593,15 +617,19 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
 }
 installed=1
 
-# The timescale deployment is waited for deliberately: the dashboard listens the moment its
+# The timescale StatefulSet is waited for deliberately: the dashboard listens the moment its
 # process is up — health answers, availability reports — but its migrations only start landing
 # once the database accepts connections, and the server gives up retrying after ~45s. On a cold
 # kind node the database image is still being pulled through containerd in that window, so
 # queueing before it is available fails every POST no matter how long the queue step polls.
+# A StatefulSet carries no `available` condition, so the database is waited for by rollout
+# status rather than being folded into the condition wait with the three Deployments.
 kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
-    "deployment/$STATE_RELEASE-timescale" "deployment/$RELEASE-factory-collector" \
+    "deployment/$RELEASE-factory-collector" \
     -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
+    kubectl rollout status "statefulset/$STATE_RELEASE-timescale" \
+        -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
@@ -674,7 +702,7 @@ const t = "fat_" + c.randomBytes(32).toString("base64url");
 process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
 ')
 member="k8s-test-$(openssl rand -hex 6)"
-minted="$(kubectl exec -i -n "$NAMESPACE" "deployment/$STATE_RELEASE-timescale" -- \
+minted="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-timescale" -- \
     psql -q -v ON_ERROR_STOP=1 -v "member=$member" -v "hash=$token_hash" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 with o as (
