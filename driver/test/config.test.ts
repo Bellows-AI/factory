@@ -133,6 +133,48 @@ describe('the driver config: executor and endpoints', () => {
         expect(loadDriverConfig({}).heartbeatFile).toBeNull();
         expect(loadDriverConfig({ DRIVER_HEARTBEAT_FILE: '/tmp/heartbeat' }).heartbeatFile).toBe('/tmp/heartbeat');
     });
+
+    // Issue #361: the scheduling knobs every driver-specced pod lands with. The chart forwards
+    // them as JSON (`toJson`), so this loader parses JSON — and refuses anything else, because the
+    // API server would reject a bad shape only at job-create time, which is attempt-burning: this
+    // loader exists to move failures to startup, same as the EXECUTOR enum.
+    it('reads RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY as JSON, null unless set', () => {
+        expect(loadDriverConfig({}).runnerNodeSelector).toBeNull();
+        expect(loadDriverConfig({}).runnerTolerations).toBeNull();
+        expect(loadDriverConfig({}).runnerAffinity).toBeNull();
+        const configured = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            RUNNER_NODE_SELECTOR: '{"dedicated":"factory-runners"}',
+            RUNNER_TOLERATIONS:
+                '[{"key":"dedicated","operator":"Equal","value":"factory-runners","effect":"NoSchedule"}]',
+            RUNNER_AFFINITY:
+                '{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"dedicated","operator":"In","values":["factory-runners"]}]}]}}}',
+        });
+        expect(configured.runnerNodeSelector).toEqual({ dedicated: 'factory-runners' });
+        expect(configured.runnerTolerations).toEqual([
+            { key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' },
+        ]);
+        expect(configured.runnerAffinity).toEqual({
+            nodeAffinity: {
+                requiredDuringSchedulingIgnoredDuringExecution: {
+                    nodeSelectorTerms: [
+                        { matchExpressions: [{ key: 'dedicated', operator: 'In', values: ['factory-runners'] }] },
+                    ],
+                },
+            },
+        });
+    });
+
+    it('refuses malformed or wrong-typed runner scheduling rather than falling back', () => {
+        expect(() => loadDriverConfig({ RUNNER_NODE_SELECTOR: 'not json' })).toThrow(/RUNNER_NODE_SELECTOR/);
+        expect(() => loadDriverConfig({ RUNNER_NODE_SELECTOR: '[]' })).toThrow(/RUNNER_NODE_SELECTOR/);
+        expect(() => loadDriverConfig({ RUNNER_NODE_SELECTOR: '{"rack":3}' })).toThrow(/RUNNER_NODE_SELECTOR/);
+        expect(() => loadDriverConfig({ RUNNER_TOLERATIONS: '{}' })).toThrow(/RUNNER_TOLERATIONS/);
+        expect(() => loadDriverConfig({ RUNNER_TOLERATIONS: '["NoSchedule"]' })).toThrow(/RUNNER_TOLERATIONS/);
+        expect(() => loadDriverConfig({ RUNNER_AFFINITY: '[]' })).toThrow(/RUNNER_AFFINITY/);
+        // Empty is unset, as it is for every other variable here.
+        expect(loadDriverConfig({ RUNNER_NODE_SELECTOR: '' }).runnerNodeSelector).toBeNull();
+    });
 });
 
 describe('the driver config: policy and gates', () => {

@@ -198,6 +198,26 @@ export interface DriverConfig {
      * action the board state already decided; it never decides one.
      */
     reapGraceMs: number;
+    /**
+     * The nodeSelector every pod this driver specs lands with, under the kubernetes executor
+     * (RUNNER_NODE_SELECTOR, a JSON object). The chart's own pods get theirs from the top-level
+     * `nodeSelector` value; these are the runner node group's — the tainted, IMDS-hardened nodes
+     * agent-written code is meant to land on and nothing else (issue #361). Null (unset) places
+     * pods wherever the workspaces claim can attach, as before. Docker has no twin: the daemon
+     * decides placement, there is nothing to forward.
+     */
+    runnerNodeSelector: Record<string, string> | null;
+    /**
+     * The tolerations every pod this driver specs lands with (RUNNER_TOLERATIONS, a JSON array) —
+     * the other half of the tainted runner node group. Null forwards nothing.
+     */
+    runnerTolerations: Record<string, unknown>[] | null;
+    /**
+     * The affinity every pod this driver specs lands with (RUNNER_AFFINITY, a JSON object) —
+     * pod anti-affinity across zones is the shape an EKS runner group usually wants beside the
+     * selector. Null forwards nothing.
+     */
+    runnerAffinity: Record<string, unknown> | null;
 }
 
 /** The deployment image paired with one task-selected executor type. */
@@ -359,6 +379,65 @@ function optionalText(raw: string | undefined): string | null {
     return (raw ?? '').trim() || null;
 }
 
+/** How much of a rejected scheduling value rides the refusal message — a preview, not the whole value. */
+const ERROR_PREVIEW_CHARS = 64;
+
+/**
+ * A JSON-encoded value (the chart forwards scheduling shapes with `toJson`), or null when unset.
+ * Malformed JSON or the wrong top-level kind is fatal here, never at job-create: the API server
+ * would refuse a bad pod spec per attempt, and this loader exists to move failures to startup —
+ * the same posture as the EXECUTOR and pull-policy enums. Everything below the top level stays
+ * the API server's job: no speculative validation of a shape kubernetes owns.
+ */
+function parsedJsonValue(raw: string | undefined, label: string): unknown {
+    const value = (raw ?? '').trim();
+    if (!value) return null;
+    try {
+        return JSON.parse(value);
+    } catch {
+        throw new Error(`${label} must be JSON, got "${value.slice(0, ERROR_PREVIEW_CHARS)}"`);
+    }
+}
+
+function jsonObject(raw: string | undefined, label: string): Record<string, unknown> | null {
+    const parsed = parsedJsonValue(raw, label);
+    if (parsed === null) return null;
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`${label} must be a JSON object, got "${(raw ?? '').trim().slice(0, ERROR_PREVIEW_CHARS)}"`);
+    }
+    return parsed as Record<string, unknown>;
+}
+
+function jsonArray(raw: string | undefined, label: string): Record<string, unknown>[] | null {
+    const parsed = parsedJsonValue(raw, label);
+    if (parsed === null) return null;
+    // A list of OBJECTS (tolerations) — an array of scalars renders a pod spec the API server can
+    // only refuse per attempt, so the element kind is checked too. Deeper than that stays
+    // kubernetes's job.
+    if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'object' && entry !== null)) {
+        throw new Error(
+            `${label} must be a JSON array of objects, got "${(raw ?? '').trim().slice(0, ERROR_PREVIEW_CHARS)}"`
+        );
+    }
+    return parsed as Record<string, unknown>[];
+}
+
+/** A nodeSelector: kubernetes demands string values, and a YAML number (`--set foo.bar=3`) is a refusal at boot, never a burned attempt. */
+function jsonNodeSelector(raw: string | undefined, label: string): Record<string, string> | null {
+    const parsed = parsedJsonValue(raw, label);
+    if (parsed === null) return null;
+    if (
+        typeof parsed !== 'object' ||
+        Array.isArray(parsed) ||
+        !Object.values(parsed).every((value) => typeof value === 'string')
+    ) {
+        throw new Error(
+            `${label} must be a JSON object of string values, got "${(raw ?? '').trim().slice(0, ERROR_PREVIEW_CHARS)}"`
+        );
+    }
+    return parsed as Record<string, string>;
+}
+
 export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     const boardUrl = text(env.JOB_BOARD_URL, 'JOB_BOARD_URL', DEFAULTS.boardUrl).replace(/\/+$/, '');
     assertHttpUrl(boardUrl, 'JOB_BOARD_URL');
@@ -461,6 +540,9 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             min: 0,
             max: 24 * MS_PER_HOUR,
         }),
+        runnerNodeSelector: jsonNodeSelector(env.RUNNER_NODE_SELECTOR, 'RUNNER_NODE_SELECTOR'),
+        runnerTolerations: jsonArray(env.RUNNER_TOLERATIONS, 'RUNNER_TOLERATIONS'),
+        runnerAffinity: jsonObject(env.RUNNER_AFFINITY, 'RUNNER_AFFINITY'),
     };
 }
 

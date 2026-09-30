@@ -47,7 +47,9 @@ Every chart pod runs as non-root on a read-only root filesystem with all capabil
 the `RuntimeDefault` seccomp profile; only the driver mounts a ServiceAccount token. A changed
 chart Secret or collector config rolls the pods that read it (`checksum/*` annotations).
 `imagePullSecrets`, `nodeSelector`, `tolerations`, `affinity` and `podAnnotations` apply to every
-chart pod; `imagePullSecrets` is also forwarded to every pod the driver specs.
+chart pod; `imagePullSecrets` is also forwarded to every pod the driver specs, and so are
+`runner.nodeSelector`, `runner.tolerations` and `runner.affinity` (as JSON) — the runner group the
+agent pods land on, chart pods never do.
 
 ## Exposing the dashboard
 

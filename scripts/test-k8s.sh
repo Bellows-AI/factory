@@ -492,6 +492,24 @@ pulled="$(gh_render --set 'imagePullSecrets={regcred}')"
 expect_contains 'chart pods name the pull secret'      "$pulled" 'name: "regcred"'
 expect_contains 'the driver forwards the pull secret'  "$pulled" 'value: "regcred"'
 
+# The runner group's scheduling knobs (issue #361): forwarded to the driver as JSON, which is how
+# they reach every pod it specs. Unset, nothing renders — an untainted cluster sees the same spec
+# as before.
+expect_not_contains 'no runner scheduling var renders on defaults' "$gh" 'name: RUNNER_NODE_SELECTOR'
+expect_not_contains 'no runner tolerations var renders on defaults' "$gh" 'name: RUNNER_TOLERATIONS'
+expect_not_contains 'no runner affinity var renders on defaults' "$gh" 'name: RUNNER_AFFINITY'
+scheduled="$(gh_render --set runner.nodeSelector.dedicated=factory-runners \
+    --set 'runner.tolerations[0].key=dedicated' --set 'runner.tolerations[0].operator=Equal' \
+    --set 'runner.tolerations[0].value=factory-runners' --set 'runner.tolerations[0].effect=NoSchedule' \
+    --set 'runner.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=1')"
+expect_contains 'the driver is handed the runner node selector as JSON' "$scheduled" \
+    'value: "{\"dedicated\":\"factory-runners\"}"'
+expect_contains 'the driver is handed the runner tolerations as JSON' "$scheduled" \
+    'value: "[{\"effect\":\"NoSchedule\",\"key\":\"dedicated\",\"operator\":\"Equal\",\"value\":\"factory-runners\"}]"'
+expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" 'name: RUNNER_AFFINITY'
+expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" \
+    'value: "{\"podAntiAffinity\":{\"preferredDuringSchedulingIgnoredDuringExecution\":[{\"weight\":1}]}}"'
+
 # The runner Secret has a key for every forwarded name, valued or not.
 runner_secret="$(gh_render --set-string "runner.env=ONE\,TWO" --set runner.credentials.ONE=x)"
 expect_contains 'the runner Secret keys every forwarded name' "$runner_secret" 'TWO: ""'

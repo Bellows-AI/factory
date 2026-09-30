@@ -6807,6 +6807,52 @@ describe('RUNNER_IMAGE_PULL_SECRETS', () => {
     });
 });
 
+// Issue #361: the chart's scheduling knobs reach the chart's own pods only; these are the runner
+// group's — the tainted node group agent-written code is meant to land on and nothing else. Every
+// pod the driver specs carries them: the runner, each aux Job (sync shown — they all share
+// `auxJobSpec`) and each service pod, exactly as RUNNER_IMAGE_PULL_SECRETS above does.
+describe('RUNNER NODE SELECTOR / TOLERATIONS / AFFINITY', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const scheduled = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        RUNNER_NODE_SELECTOR: '{"dedicated":"factory-runners"}',
+        RUNNER_TOLERATIONS: '[{"key":"dedicated","operator":"Equal","value":"factory-runners","effect":"NoSchedule"}]',
+        RUNNER_AFFINITY:
+            '{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1,"podAffinityTerm":{"topologyKey":"topology.kubernetes.io/zone","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"factory"}}}}]}}',
+    });
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const nodeSelector = { dedicated: 'factory-runners' };
+    const tolerations = [{ key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' }];
+
+    it('schedules the runner, aux and service pods onto the configured node group', () => {
+        const runner = runnerJobSpec(scheduled, job, { id: SESSION, resume: false }).spec.template.spec;
+        expect(runner.nodeSelector).toEqual(nodeSelector);
+        expect(runner.tolerations).toEqual(tolerations);
+        expect(runner.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+        const sync = syncJobSpec(scheduled, repoJob, null).spec.template.spec;
+        expect(sync.nodeSelector).toEqual(nodeSelector);
+        expect(sync.tolerations).toEqual(tolerations);
+        expect(sync.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+        const servicePod = servicePodSpec(scheduled, job, service).spec;
+        expect(servicePod.nodeSelector).toEqual(nodeSelector);
+        expect(servicePod.tolerations).toEqual(tolerations);
+        expect(servicePod.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+    });
+
+    it('leaves the fields off entirely when none are configured', () => {
+        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
+        expect(spec().spec.template.spec).not.toHaveProperty('nodeSelector');
+        expect(spec().spec.template.spec).not.toHaveProperty('tolerations');
+        expect(spec().spec.template.spec).not.toHaveProperty('affinity');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('nodeSelector');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('tolerations');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('affinity');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('nodeSelector');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('tolerations');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('affinity');
+    });
+});
+
 // The chart's runner NetworkPolicy selects by release, so every pod the driver specs must carry
 // the release label — not only the runner Job object, which is what bulk cleanup reads.
 describe('K8S_RELEASE on pod templates', () => {
