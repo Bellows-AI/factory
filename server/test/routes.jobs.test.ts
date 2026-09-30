@@ -1430,15 +1430,18 @@ describe('POST /api/jobs/:id/artifact', () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
 
+        // Marked head and tail so the kept half is identifiable: the cut drops the head, the
+        // contract the read routes document ("the head bytes were dropped, not stored elsewhere").
+        const content = `HEAD${'x'.repeat(600 * 1024)}TAIL`;
         const response = await post(instance, `/api/jobs/${ID}/artifact`, {
             leaseToken: TOKEN,
             kind: 'log',
             attempt: 1,
-            content: 'x'.repeat(600 * 1024),
+            content,
         });
 
         expect(response.statusCode).toBe(200);
-        expect(store.artifacts[0]?.content).toHaveLength(512 * 1024);
+        expect(store.artifacts[0]?.content).toBe(content.slice(-512 * 1024));
         expect(store.artifacts[0]?.truncated).toBe(true);
     });
 });

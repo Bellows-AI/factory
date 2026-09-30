@@ -702,10 +702,11 @@ describe('the transcript export reads (issue #325)', () => {
 
     /**
      * The parser both executors' transcript reads answer through: marker sniffed and stripped,
-     * plain JSONL through untouched, the driver's own cap re-applied to whatever arrived, and
-     * the failure line — or an empty answer — costing the artifact, never inventing content.
+     * plain JSONL through untouched, the driver's own cap re-applied at whole-line granularity —
+     * a record that cannot fit whole is skipped, never split into a partial JSONL line — and the
+     * failure line, or an empty answer, costs the artifact; content is never invented.
      */
-    it('parses the export: marker stripped, content kept, failure lines and silence answer null', () => {
+    it('parses the export: marker stripped, whole lines kept within the cap, failure lines answer null', () => {
         // Plain content, no marker.
         expect(parseTranscriptRead('{"a":1}\n{"b":2}\n')).toEqual({ content: '{"a":1}\n{"b":2}', truncated: false });
         // The marker is sniffed and stripped, and its flag rides the answer.
@@ -722,11 +723,19 @@ describe('the transcript export reads (issue #325)', () => {
             content: 'node: nothing to run',
             truncated: false,
         });
-        // Over the driver's own cap: re-tailed, and the flag earned.
-        const big = `${'x'.repeat(ARTIFACT_LIMIT + 10)}\n`;
-        const kept = parseTranscriptRead(big);
-        expect(kept?.truncated).toBe(true);
-        expect(kept === null || kept.content.length <= ARTIFACT_LIMIT).toBe(true);
+        // Over the cap, whole lines only: an oversized newest record is skipped — never split —
+        // the older lines that fit are kept, and the flag is earned, not guessed.
+        const old = '{"old":1}';
+        const oversized = 'x'.repeat(ARTIFACT_LIMIT + 10);
+        expect(parseTranscriptRead(`${old}\n${oversized}\n`)).toEqual({ content: old, truncated: true });
+        // The kept total, separators included, stays within the cap: a line that fits only by
+        // splitting its neighbor is dropped with it.
+        const almost = 'y'.repeat(ARTIFACT_LIMIT - 10);
+        const kept = parseTranscriptRead(`{"head":1}\n${almost}\n${almost}\n`);
+        expect(kept).toEqual({ content: almost, truncated: true });
+        expect(kept === null || Buffer.byteLength(kept.content, 'utf8') <= ARTIFACT_LIMIT).toBe(true);
+        // Nothing fits whole: no artifact at all, never a partial record.
+        expect(parseTranscriptRead(`${oversized}\n`)).toBeNull();
     });
 });
 

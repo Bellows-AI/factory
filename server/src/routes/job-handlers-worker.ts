@@ -270,10 +270,12 @@ export async function handleArtifact(orgs: OrgRegistry, request: FastifyRequest,
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
 
     // Sliced, not refused — the point is retention, not protocol discipline. The slice is in
-    // characters (the OUTPUT_LIMIT precedent; the honest driver byte-caps before upload), and
-    // the flag is forced when the route cut what the driver thought fit: the reader must be
-    // able to trust it.
-    const content = parsed.value.content.slice(0, ARTIFACT_LIMIT);
+    // characters (the OUTPUT_LIMIT precedent; the honest driver byte-caps before upload) and
+    // keeps the TAIL — the driver's cut is tail-kept, and the read routes promise the head bytes
+    // were dropped, not stored elsewhere. The flag is forced when the route cut what the driver
+    // thought fit: the reader must be able to trust it.
+    const raw = parsed.value.content;
+    const content = raw.length > ARTIFACT_LIMIT ? raw.slice(raw.length - ARTIFACT_LIMIT) : raw;
     const truncated = parsed.value.truncated || content.length < parsed.value.content.length;
 
     const result = await guard(
