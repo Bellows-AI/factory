@@ -3,8 +3,15 @@
 The Factory stack on Kubernetes: the dashboard (API + SPA on one port), the workspaces claim the
 checkouts live on, and the driver — whose runners are batch Jobs in the namespace the release is
 installed to, selected with `EXECUTOR=kubernetes`. The chart deploys **no database**: `database.url`
-names a managed TimescaleDB and is required. Local clusters get one, plus a workspaces claim that
-survives an app reinstall, from the separate [`factory-local-state`](../factory-local-state) chart.
+is required when the chart creates the Secret, and with `secret.existingSecret` that Secret must
+carry `database-url` instead. Either way the URL must, **today**, name a PostgreSQL that can load
+the `timescaledb` extension — `server/migrations/001_init.sql` runs `create extension timescaledb`
+and makes `metric_point` a hypertable, so RDS and Aurora PostgreSQL reject the first migration. The
+extension requirement is decided against and on its way out (issue #356): `metric_point` becomes a
+plain declaratively-partitioned table and the extension retires, after which any managed PostgreSQL
+serves the chart. Issue #371 is that work — until it lands, read "managed TimescaleDB", not "managed
+Postgres". Local clusters get a database, plus a workspaces claim that survives an app reinstall,
+from the separate [`factory-local-state`](../factory-local-state) chart.
 
 Configuration is the repository's usual environment-only contract (`docs/configuration.md`): the
 chart is a way to set the containers' environment, not a second config system. Every value maps to
