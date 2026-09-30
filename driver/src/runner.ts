@@ -98,6 +98,24 @@ export interface RunOutcome {
      * the recently-completed view shows what a task did without opening its output.
      */
     summary?: string | null;
+    /**
+     * The run's full output, tail-kept at ARTIFACT_LIMIT bytes (issue #325) — the artifact the
+     * loop uploads to the board at close, where the rolling tail the verdict carries is only the
+     * end of the run. Absent when the runner captured none (a refused start, a kubernetes pod
+     * whose log was already gone) — no artifact is uploaded, never an empty one.
+     */
+    fullLog?: string;
+    /** True when the full-log accumulator cut bytes off the head to hold the cap. */
+    logTruncated?: boolean;
+    /**
+     * The agent session transcript of THIS run (the per-run delta, the same bound the turn
+     * count keeps), exported from the executor's own records at close — claude's session JSONL,
+     * opencode's reshaped message view — tail-kept at ARTIFACT_LIMIT bytes. Absent when no read
+     * ran or answered: no artifact, never an empty one.
+     */
+    transcript?: string;
+    /** True when the transcript export dropped its head to hold the cap. */
+    transcriptTruncated?: boolean;
 }
 
 /**
@@ -214,6 +232,15 @@ const OUTPUT_LIMIT_KIB = 64;
 export const OUTPUT_LIMIT = OUTPUT_LIMIT_KIB * BYTES_PER_KIB;
 
 /**
+ * The full-run log and transcript artifact cap (issue #325): how much of a run's output the
+ * driver keeps for the board's artifact upload, tail-kept — a run that fails says why at the
+ * end, and the head is banner. The server's route re-bounds the stored content to the same
+ * figure; the value is copied there, per this package's zero-dependency rule.
+ */
+const ARTIFACT_LIMIT_KIB = 512;
+export const ARTIFACT_LIMIT = ARTIFACT_LIMIT_KIB * BYTES_PER_KIB;
+
+/**
  * The tail of a runner's output that is safe to put on a complete POST. The board refuses a body
  * over its 128 KiB limit, and JSON escaping can inflate text up to six bytes per byte of log — a
  * control character becomes `\u0001` — so the bound is 16 KiB of UTF-8: 96 KiB fully escaped, plus
@@ -242,6 +269,17 @@ export function tailBytes(text: string, limit: number): string {
 /** The tail of a runner's log that fits a complete POST, whatever the log contained. */
 export function reportTail(logText: string): string {
     return tailBytes(logText, REPORT_BYTE_LIMIT);
+}
+
+/**
+ * Tail-keeps `text` to `limit` UTF-8 bytes, answering whether a cut happened — the accumulator
+ * and artifact reads' shape (issue #325), where the truncated flag must be earned by an actual
+ * cut, never guessed. The same byte-true rule as `tailBytes`, plus the flag.
+ */
+export function tailKept(text: string, limit: number): { content: string; truncated: boolean } {
+    const bytes = ENCODER.encode(text);
+    if (bytes.length <= limit) return { content: text, truncated: false };
+    return { content: DECODER.decode(bytes.subarray(bytes.length - limit)), truncated: true };
 }
 
 /**

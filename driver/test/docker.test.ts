@@ -18,15 +18,22 @@ import {
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { currentActivity, reportTail, stripAnsi, tailBytes } from '../src/runner.js';
-import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
+import {
+    claudeTurnsArgs,
+    claudeTranscriptArgs,
+    opencodeCacheProbeArgs,
+    opencodeTranscriptArgs,
+} from '../src/docker-close-read.js';
 import {
     CACHE_WATCH_TURNS,
     cacheCollapse,
     parseClaudeCloseRead,
     parseOpencodeCacheProbe,
     parseOpencodeRunOutcome,
+    parseTranscriptRead,
     readsAgentTurns,
 } from '../src/close-read.js';
+import { ARTIFACT_LIMIT } from '../src/runner.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
@@ -635,6 +642,94 @@ describe('which runs get a close-time turn read', () => {
     });
 });
 
+describe('the transcript export reads (issue #325)', () => {
+    /**
+     * The transcript artifact's argv pins — the twins of the two readout pins above, same
+     * throwaway shape, same env-only parameter rule, the byte cap riding as a VALUE so the cap
+     * cannot drift between the script and the upload.
+     */
+    it('claude: reads the transcript off the workspaces volume, cap and delta by env, never in the script text', () => {
+        const line = claudeTranscriptArgs(loadDriverConfig({}), job, SESSION, START);
+        expect(line.slice(0, 14)).toEqual([
+            'run',
+            '--rm',
+            '--mount',
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            '-e',
+            `CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            '-e',
+            `CLAUDE_SESSION_ID=${SESSION}`,
+            '-e',
+            `RUN_STARTED_AT=${START}`,
+            '-e',
+            `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
+            '--entrypoint',
+            'node',
+        ]);
+        expect(line.slice(14, 16)).toEqual(['claude-executor', '-e']);
+        const script = line[16] as string;
+        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
+        expect(script).not.toContain(SESSION);
+        expect(script).toContain('process.env.TRANSCRIPT_LIMIT_BYTES');
+    });
+
+    it('claude: refuses a session id that is not a uuid', () => {
+        expect(() => claudeTranscriptArgs(loadDriverConfig({}), job, '../../etc/passwd', START)).toThrow(/not a uuid/);
+    });
+
+    it('opencode: reads the session database by env, scoped to the run working directory', () => {
+        const line = opencodeTranscriptArgs(loadDriverConfig({}), opencodeJob, START);
+        expect(line.slice(0, 14)).toEqual([
+            'run',
+            '--rm',
+            '--mount',
+            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            '-e',
+            `OPENCODE_DB=/workspaces/bellows/${USER}/.opencode/opencode/opencode.db`,
+            '-e',
+            // A command-only job starts at the member root — the directory opencode records.
+            `OPENCODE_DIR=/workspaces/bellows/${USER}`,
+            '-e',
+            `RUN_STARTED_MS=${Date.parse(START)}`,
+            '-e',
+            `TRANSCRIPT_LIMIT_BYTES=${ARTIFACT_LIMIT}`,
+            '--entrypoint',
+            'node',
+        ]);
+        const script = line[16] as string;
+        expect(script).not.toContain(`/workspaces/bellows/${USER}`);
+    });
+
+    /**
+     * The parser both executors' transcript reads answer through: marker sniffed and stripped,
+     * plain JSONL through untouched, the driver's own cap re-applied to whatever arrived, and
+     * the failure line — or an empty answer — costing the artifact, never inventing content.
+     */
+    it('parses the export: marker stripped, content kept, failure lines and silence answer null', () => {
+        // Plain content, no marker.
+        expect(parseTranscriptRead('{"a":1}\n{"b":2}\n')).toEqual({ content: '{"a":1}\n{"b":2}', truncated: false });
+        // The marker is sniffed and stripped, and its flag rides the answer.
+        expect(parseTranscriptRead('{"truncated":true,"droppedLines":3}\n{"b":2}\n')).toEqual({
+            content: '{"b":2}',
+            truncated: true,
+        });
+        // A marker with content under the cap: truncated stays true, no second cut.
+        // The failure line, alone: no artifact, never an error line uploaded as content.
+        expect(parseTranscriptRead('{"error":"no transcript for session x"}\n')).toBeNull();
+        // Silence and garbage: no artifact.
+        expect(parseTranscriptRead('')).toBeNull();
+        expect(parseTranscriptRead('node: nothing to run\n')).toEqual({
+            content: 'node: nothing to run',
+            truncated: false,
+        });
+        // Over the driver's own cap: re-tailed, and the flag earned.
+        const big = `${'x'.repeat(ARTIFACT_LIMIT + 10)}\n`;
+        const kept = parseTranscriptRead(big);
+        expect(kept?.truncated).toBe(true);
+        expect(kept === null || kept.content.length <= ARTIFACT_LIMIT).toBe(true);
+    });
+});
+
 describe('an opencode runner', () => {
     const oc = (env: NodeJS.ProcessEnv = {}) =>
         dockerArgs(loadDriverConfig(env), opencodeJob, null, { envFile: '/tmp/env-file' });
@@ -821,7 +916,8 @@ describe('an opencode runner', () => {
         );
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        expect(calls).toBe(2);
+        // Two readout tries, plus the transcript export's own container (issue #325).
+        expect(calls).toBe(3);
         expect(outcome.sessionId).toBe('ses_f86188c3dffeZGYO4yZq4atba9');
         expect(outcome.readoutError).toBeUndefined();
     });
@@ -842,7 +938,8 @@ describe('an opencode runner', () => {
         );
 
         const outcome = await runner.run({ ...opencodeJob, followUp: false }, null);
-        expect(calls).toBe(3);
+        // Three readout tries, plus the transcript export's own container (issue #325).
+        expect(calls).toBe(4);
         expect(outcome.sessionId ?? null).toBeNull();
         expect(outcome.readoutError).toBe('no such column: role');
     });
@@ -1536,6 +1633,60 @@ describe('the docker runner', () => {
         );
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
+    });
+
+    // The full-log accumulator (issue #325): everything the stream printed, tail-kept at the
+    // artifact cap — the artifact the loop uploads at close, of which the verdict's rolling tail
+    // is only the end. The refused-start path carries neither.
+    it('carries the full log on the outcome, capped tail-true, beside the unchanged report tail', async () => {
+        // Past the artifact cap (512 KiB), so the accumulator really has to cut.
+        const fullOutput = `${'head\n'.repeat(20)}${'body line\n'.repeat(60_000)}`;
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            child(fullOutput, '', 0),
+            noContainer
+        );
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+        // The full log is the whole stream tail-kept at the cap: its last line survives, its
+        // head was cut, and the flag says so.
+        expect(outcome.logTruncated).toBe(true);
+        expect(outcome.fullLog?.endsWith('body line\n')).toBe(true);
+        expect(outcome.fullLog === undefined || outcome.fullLog.length <= ARTIFACT_LIMIT + 4).toBe(true);
+        // The rolling tail is unchanged: still the report's 16 KiB window.
+        expect(outcome.output.length).toBeLessThanOrEqual(16 * 1024);
+        expect(outcome.output.endsWith('body line\n')).toBe(true);
+    });
+
+    it('keeps the full log byte-true under the cap when the run never exceeded it', async () => {
+        const fullOutput = 'short run\n';
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            child(fullOutput, '', 0),
+            noContainer
+        );
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome.fullLog).toBe('short run\n');
+        expect(outcome.logTruncated).toBe(false);
+    });
+
+    // The security constraint the issue states (docs/security.md): forwarded env secrets must
+    // not leak into the stored artifacts. The full log is the child's own stream and NOTHING
+    // else — pinned by strict equality, so any driver-side injection on the artifact path (the
+    // env file's values included) would break it.
+    it('makes the full log exactly the stream — no claim env value can enter the artifact', async () => {
+        const stdout = 'plain run output\nwith a second line\n';
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            child(stdout, '', 0),
+            noContainer
+        );
+        const outcome = await runner.run(
+            { ...job, env: { SENTINEL_SECRET: 'shh-do-not-store' } },
+            { id: SESSION, resume: false }
+        );
+        expect(outcome.fullLog).toBe(stdout);
+        expect(outcome.fullLog).not.toContain('shh-do-not-store');
     });
 
     it('reads a container that ran and exited 125 as a verdict, not an infrastructure refusal', async () => {

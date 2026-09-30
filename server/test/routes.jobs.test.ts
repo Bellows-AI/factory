@@ -9,6 +9,7 @@ import { validateWaitQuery } from '../src/routes/job-field-validation.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-types.js';
 import type {
+    ArtifactKind,
     CancelWaitResult,
     FollowUpRefusal,
     JobStore,
@@ -18,6 +19,7 @@ import type {
     RemoveResult,
     ReopenResult,
     StopResult,
+    StoredArtifact,
 } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
 import { DEFAULT_ENTRY_NODE, DEFAULT_WORKFLOW_NAME, compileDefaultWorkflow } from '../src/db/default-workflow.js';
@@ -64,6 +66,10 @@ interface StoreStub extends JobStore {
     }[];
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
+    /** The artifact uploads the worker routes landed, with the exact content they were handed. */
+    artifacts: { id: string; kind: ArtifactKind; attempt: number; content: string; truncated: boolean }[];
+    /** The artifact reads the person routes made, with the kind and attempt they asked for. */
+    artifactReads: { id: string; kind: ArtifactKind; attempt: number | null }[];
     suspended: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     markedDone: { id: string; doneBy: string | null }[];
@@ -108,6 +114,8 @@ function stubStore(
         suspendStatus?: JobStatus;
         stop?: StopResult;
         remove?: RemoveResult;
+        /** What `readArtifact` answers; null → 404. */
+        storedArtifact?: StoredArtifact | null;
         cancelWait?: CancelWaitResult;
         pokeWait?: PokeWaitResult;
         reopen?: ReopenResult;
@@ -134,6 +142,8 @@ function stubStore(
         completed: [],
         sessions: [],
         progressed: [],
+        artifacts: [],
+        artifactReads: [],
         suspended: [],
         gatesReread: [],
         publishTokens: [],
@@ -239,6 +249,16 @@ function stubStore(
             boom();
             stub.progressed.push({ id, output, runtime });
             return options.verdict ?? 'ok';
+        },
+        async artifact(id, _token, upload) {
+            boom();
+            stub.artifacts.push({ id, ...upload });
+            return options.verdict ?? 'ok';
+        },
+        async readArtifact(id, kind, attempt) {
+            boom();
+            stub.artifactReads.push({ id, kind, attempt });
+            return options.storedArtifact ?? null;
         },
         async complete(
             id: string,
@@ -1318,6 +1338,186 @@ describe('POST /api/jobs/:id/output', () => {
         });
 
         expect(store.progressed[0]?.runtime?.activity).toHaveLength(512);
+    });
+});
+
+// The run artifacts (issue #325): the driver's close-time upload of the full-run log and the
+// agent transcript, and the person reads that serve them to an investigating client. The store
+// side is a real-database suite; these pin the HTTP contract.
+describe('POST /api/jobs/:id/artifact', () => {
+    it('stores an upload and answers the triple it stored', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/artifact`, {
+            leaseToken: TOKEN,
+            kind: 'log',
+            attempt: 2,
+            content: 'line one\nline two\n',
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, kind: 'log', attempt: 2 });
+        expect(store.artifacts).toEqual([
+            { id: ID, kind: 'log', attempt: 2, content: 'line one\nline two\n', truncated: false },
+        ]);
+    });
+
+    it('passes the truncated flag through when the driver set it', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        await post(instance, `/api/jobs/${ID}/artifact`, {
+            leaseToken: TOKEN,
+            kind: 'transcript',
+            attempt: 1,
+            content: '{"truncated":true}',
+            truncated: true,
+        });
+
+        expect(store.artifacts[0]?.truncated).toBe(true);
+    });
+
+    it('rejects an upload from a worker whose lease was reclaimed', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'lost' }));
+        const response = await post(instance, `/api/jobs/${ID}/artifact`, {
+            leaseToken: TOKEN,
+            kind: 'log',
+            attempt: 1,
+            content: 'late',
+        });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('LEASE_LOST');
+    });
+
+    it('answers 404 for a job that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'missing' }));
+        const response = await post(instance, `/api/jobs/${ID}/artifact`, {
+            leaseToken: TOKEN,
+            kind: 'log',
+            attempt: 1,
+            content: 'x',
+        });
+        expect(response.statusCode).toBe(404);
+    });
+
+    it.each([
+        ['a malformed lease token', { leaseToken: 'nope', kind: 'log', attempt: 1, content: 'x' }, 'BAD_TOKEN'],
+        ['an unknown kind', { leaseToken: TOKEN, kind: 'core', attempt: 1, content: 'x' }, 'BAD_ARTIFACT'],
+        ['a missing kind', { leaseToken: TOKEN, attempt: 1, content: 'x' }, 'BAD_ARTIFACT'],
+        ['a zero attempt', { leaseToken: TOKEN, kind: 'log', attempt: 0, content: 'x' }, 'BAD_ATTEMPT'],
+        ['a fractional attempt', { leaseToken: TOKEN, kind: 'log', attempt: 1.5, content: 'x' }, 'BAD_ATTEMPT'],
+        ['a non-string attempt', { leaseToken: TOKEN, kind: 'log', attempt: '1', content: 'x' }, 'BAD_ATTEMPT'],
+        ['a missing content', { leaseToken: TOKEN, kind: 'log', attempt: 1 }, 'BAD_ARTIFACT'],
+        ['a non-string content', { leaseToken: TOKEN, kind: 'log', attempt: 1, content: 42 }, 'BAD_ARTIFACT'],
+        [
+            'a string truncated flag',
+            { leaseToken: TOKEN, kind: 'log', attempt: 1, content: 'x', truncated: 'yes' },
+            'BAD_ARTIFACT',
+        ],
+    ])('refuses %s', async (_label, payload, code) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/artifact`, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe(code);
+        expect(store.artifacts).toEqual([]);
+    });
+
+    // The driver sends an already-tail-kept artifact; this is the backstop, exactly as the
+    // output tail has one. A cut forces `truncated` beside it, so a reader can trust the flag.
+    it('truncates oversized content before it reaches the store, forcing the flag', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/artifact`, {
+            leaseToken: TOKEN,
+            kind: 'log',
+            attempt: 1,
+            content: 'x'.repeat(600 * 1024),
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.artifacts[0]?.content).toHaveLength(512 * 1024);
+        expect(store.artifacts[0]?.truncated).toBe(true);
+    });
+});
+
+describe('GET /api/jobs/:id/log and /transcript', () => {
+    const artifact = (content: string): StoredArtifact => ({ attempt: 2, truncated: true, content });
+
+    it.each([
+        ['log', 'log'],
+        ['transcript', 'transcript'],
+    ] as const)('answers the paging envelope for %s', async (route, kind) => {
+        const store = stubStore({ storedArtifact: artifact('hello world') });
+        const instance = await harnessWith(store);
+
+        const response = await instance.inject(`/api/jobs/${ID}/${route}`);
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+            jobId: ID,
+            kind,
+            attempt: 2,
+            truncated: true,
+            offset: 0,
+            limit: 65_536,
+            totalCharacters: 11,
+            content: 'hello world',
+        });
+        expect(store.artifactReads).toEqual([{ id: ID, kind, attempt: null }]);
+    });
+
+    it('slices by offset and limit', async () => {
+        const store = stubStore({ storedArtifact: artifact('abcdefghij') });
+        const instance = await harnessWith(store);
+
+        const response = await instance.inject(`/api/jobs/${ID}/log?offset=2&limit=4`);
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ offset: 2, limit: 4, totalCharacters: 10, content: 'cdef' });
+    });
+
+    it('honors an explicit attempt, and answers an empty page past the end', async () => {
+        const store = stubStore({ storedArtifact: artifact('abc') });
+        const instance = await harnessWith(store);
+
+        const byAttempt = await instance.inject(`/api/jobs/${ID}/log?attempt=1`);
+        expect(byAttempt.statusCode).toBe(200);
+        expect(store.artifactReads[0]).toEqual({ id: ID, kind: 'log', attempt: 1 });
+
+        const pastEnd = await instance.inject(`/api/jobs/${ID}/log?offset=99`);
+        expect(pastEnd.statusCode).toBe(200);
+        expect(pastEnd.json()).toMatchObject({ content: '', totalCharacters: 3 });
+    });
+
+    it('answers 404 when nothing was uploaded for the kind', async () => {
+        const instance = await harnessWith(stubStore({ storedArtifact: null }));
+        const response = await instance.inject(`/api/jobs/${ID}/log`);
+        expect(response.statusCode).toBe(404);
+        expect(response.json().code).toBe('NOT_FOUND');
+    });
+
+    it('answers 404 for a job that does not exist', async () => {
+        const instance = await harnessWith(stubStore({ storedArtifact: null }));
+        const response = await instance.inject(`/api/jobs/${ID}/log`);
+        expect(response.statusCode).toBe(404);
+    });
+
+    it.each([
+        ['a zero attempt', '?attempt=0', 'BAD_ATTEMPT'],
+        ['a negative attempt', '?attempt=-1', 'BAD_ATTEMPT'],
+        ['a non-numeric attempt', '?attempt=one', 'BAD_ATTEMPT'],
+        ['a negative offset', '?offset=-1', 'BAD_OFFSET'],
+        ['a non-numeric offset', '?offset=soon', 'BAD_OFFSET'],
+        ['a zero limit', '?limit=0', 'BAD_LIMIT'],
+        ['an oversized limit', '?limit=99999999', 'BAD_LIMIT'],
+    ])('refuses %s', async (_label, query, code) => {
+        const instance = await harnessWith(stubStore({ storedArtifact: artifact('abc') }));
+        const response = await instance.inject(`/api/jobs/${ID}/log${query}`);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe(code);
     });
 });
 

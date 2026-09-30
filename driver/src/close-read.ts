@@ -9,6 +9,7 @@
 import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
 import type { RunOutcome, RunSession } from './runner.js';
+import { ARTIFACT_LIMIT, tailKept } from './runner.js';
 import { CLAUDE_CODE } from './executors.js';
 
 /** What the readout answers: the session the run used, how it ended, and the context it reached. */
@@ -161,6 +162,39 @@ export function parseClaudeCloseRead(stdout: string): { turns: number | null; su
     } catch {
         return { turns: null, summary: null };
     }
+}
+
+/**
+ * What a transcript export answered (issue #325): the content to upload and whether the cap cut
+ * it, or null when the read answered nothing — a missing transcript, an unreadable database, a
+ * failed container. The scripts print an optional truncation marker line FIRST
+ * (`{"truncated":true,...}`), then the export's own JSONL; this sniffs and strips the marker,
+ * re-caps the remainder with the driver's own byte bound (the scripts carry the same figure as
+ * an env value, but the driver's copy is the one the upload is bound by), and answers null for
+ * anything that leaves no content — no artifact, never an empty one.
+ */
+export function parseTranscriptRead(stdout: string): { content: string; truncated: boolean } | null {
+    const lines = stdout.split('\n').filter((line) => line.trim() !== '');
+    let truncated = false;
+    let start = 0;
+    if (lines[0]?.trim().startsWith('{')) {
+        try {
+            const first = JSON.parse(lines[0]) as { truncated?: unknown; error?: unknown };
+            if (first.truncated === true) {
+                truncated = true;
+                start = 1;
+            } else if (typeof first.error === 'string' && first.error && lines.length === 1) {
+                // The export's failure line, alone on the stream: no transcript, not content.
+                return null;
+            }
+        } catch {
+            // Not a marker: the first line is content.
+        }
+    }
+    const content = lines.slice(start).join('\n');
+    if (!content) return null;
+    const kept = tailKept(content, ARTIFACT_LIMIT);
+    return { content: kept.content, truncated: truncated || kept.truncated };
 }
 
 /**

@@ -13,6 +13,7 @@ import type {
     JobOutcome,
     JobStorePrs,
     GateReport,
+    ArtifactUpload,
 } from './job-store-types.js';
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
 import { enterRuntimeBoundary } from './workflow-blocks/runtime.js';
@@ -114,6 +115,34 @@ export async function gatesReport(
         where org_id = ${orgId} and id = ${id}
           and status = 'running' and lease_token = ${leaseToken}
     returning id
+    `;
+    if (rows[0]) return 'ok';
+    return (await exists(sql, orgId, id)) ? 'lost' : 'missing';
+}
+
+export async function artifactReport(
+    ctx: JobStoreContext,
+    id: string,
+    leaseToken: string,
+    upload: ArtifactUpload
+): ReturnType<JobStore['artifact']> {
+    const { sql, orgId } = ctx;
+    const { kind, attempt, content, truncated } = upload;
+    // The lease guard and the upsert are ONE statement: the insert selects from a CTE that
+    // answers only under a live lease, so a superseded worker's report inserts nothing —
+    // there is no window between the check and the write for a reclaim to slip through.
+    // Upsert, never append: a retried upload overwrites its own (kind, attempt) row.
+    const rows = await sql<{ attempt: number }[]>`
+        with live as (
+            select id from job
+            where org_id = ${orgId} and id = ${id}
+              and status = 'running' and lease_token = ${leaseToken}
+        )
+        insert into job_artifact (org_id, job_id, kind, attempt, content, truncated)
+        select ${orgId}, ${id}, ${kind}, ${attempt}, ${content}, ${truncated} from live
+        on conflict (org_id, job_id, kind, attempt) do update
+            set content = excluded.content, truncated = excluded.truncated
+        returning attempt
     `;
     if (rows[0]) return 'ok';
     return (await exists(sql, orgId, id)) ? 'lost' : 'missing';

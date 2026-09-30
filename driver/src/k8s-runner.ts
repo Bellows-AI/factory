@@ -7,6 +7,7 @@ import {
     opencodeReadFailed,
     parseClaudeCloseRead,
     parseOpencodeRunOutcome,
+    parseTranscriptRead,
     readOpencodeWithRetries,
 } from './close-read.js';
 import type { RunOutcome, RunSession, Runner } from './runner.js';
@@ -31,9 +32,11 @@ import {
 import { acquireClaim, prepare, launch, releaseClaim, type RunCleanup } from './k8s-fence.js';
 import {
     claudeTurnsJobSpec,
+    claudeTranscriptJobSpec,
     envBodyToData,
     jobsPath,
     opencodeReadoutJobSpec,
+    opencodeTranscriptJobSpec,
     runnerJobSpec,
     runnerName,
     secretBody,
@@ -165,6 +168,37 @@ async function scrapeClaudeCloseRead(
     }
 }
 
+/**
+ * The transcript artifact of one finished run (issue #325), as a Job: the executor's export
+ * script over the PVC, its answer parsed to `{content, truncated}` — or null when the read
+ * failed, answered nothing, or its spec could not be built (a missing workspace path, a
+ * non-uuid session — the same refusals the turn reads answer through their null contracts).
+ * Best-effort: a failed export costs the attempt its transcript artifact, never its verdict.
+ */
+async function scrapeTranscriptArtifact(
+    deps: K8sDeps,
+    buildSpec: () => ReturnType<typeof claudeTranscriptJobSpec> | ReturnType<typeof opencodeTranscriptJobSpec>
+): Promise<{ content: string; truncated: boolean } | null> {
+    let jobName: string;
+    let spec: ReturnType<typeof claudeTranscriptJobSpec> | ReturnType<typeof opencodeTranscriptJobSpec>;
+    try {
+        spec = buildSpec();
+        jobName = spec.metadata.name;
+    } catch {
+        return null;
+    }
+    try {
+        const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
+        if (created.status >= HTTP_ERROR_STATUS) return null;
+        const verdict = await auxVerdict(deps, jobName);
+        return parseTranscriptRead(verdict.output);
+    } catch {
+        return null;
+    } finally {
+        void deleteJob(deps, jobName);
+    }
+}
+
 async function attachOpencodeOutcome(
     deps: K8sDeps,
     job: BoardJob,
@@ -246,18 +280,34 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     await launch(deps, job, runnerJobSpec(deps.config, job, session), cleanup);
 
     const { timedOut, jobSucceeded } = await pollRunnerJobUntilTerminal(deps, job, onOutput);
-    const { exitCode, output } = await readRunnerVerdict(deps, job, jobSucceeded);
+    const { exitCode, output, fullLog, logTruncated } = await readRunnerVerdict(deps, job, jobSucceeded);
 
-    const outcome: RunOutcome = { exitCode, output, timedOut, started: true };
+    const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };
 
     if (job.executorType === OPENCODE) {
         await attachOpencodeOutcome(deps, job, startedAt, outcome);
+        // The transcript artifact (issue #325), from the same database the scrape read.
+        const transcript = await scrapeTranscriptArtifact(deps, () =>
+            opencodeTranscriptJobSpec(deps.config, job, startedAt)
+        );
+        if (transcript) {
+            outcome.transcript = transcript.content;
+            outcome.transcriptTruncated = transcript.truncated;
+        }
     }
 
     if (job.executorType === CLAUDE_CODE && session) {
         const read = await scrapeClaudeCloseRead(deps, job, session.id, startedAt);
         outcome.agentTurns = read.turns;
         if (read.summary) outcome.summary = read.summary;
+        // The transcript artifact (issue #325), from the same file the count came from.
+        const transcript = await scrapeTranscriptArtifact(deps, () =>
+            claudeTranscriptJobSpec(deps.config, job, session.id, startedAt)
+        );
+        if (transcript) {
+            outcome.transcript = transcript.content;
+            outcome.transcriptTruncated = transcript.truncated;
+        }
     }
     return outcome;
 }

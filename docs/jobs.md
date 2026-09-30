@@ -68,6 +68,9 @@ POST /api/jobs/claim {worker}   -> 200 {id, command, masterPrompt, leaseToken, l
      user asked to park this run (see Stop) — the kill order of a different kind
   POST /api/jobs/:id/output {leaseToken, output}  the newest output tail, ~every 2s, while it runs
   POST /api/jobs/:id/gates-reread {leaseToken}  once, after the startup sync (see Publishing)
+POST /api/jobs/:id/artifact {leaseToken, kind, attempt, content, truncated}
+  the full-run log and the agent transcript, once each, at close — before the verdict, or
+  before the suspend on a stop (issue #325; best-effort, 409 not a kill order)
 POST /api/jobs/leases {ids}                     the orphan reaper's batched lookup (see Auxiliary
                                                 services) — each known id's status and CURRENT
                                                 lease, absent for the ids the board does not know
@@ -852,6 +855,72 @@ task page's run and the inbox row; the command records what was asked, never wha
   transcript that is gone — all store null, never zero. A genuine zero-response run stores 0.
   The task statistics exclude a task with any unmeasured in-range run from the agent-turn
   distribution rather than sum it partially; its tokens and runs still count in theirs.
+
+## Run artifacts: the full log and the transcript (issue #325)
+
+**The rolling tail is a preview; the artifacts are the record.** `output` is a 64 KiB tail,
+replaced on every report and overwritten by the verdict — investigating a failed task from a
+client saw only the end of the run. So every attempt that ran to a close banks two more
+artifacts (046), uploaded by the driver at close while its lease is still live, and served by
+two person reads:
+
+- **`job_artifact` (`log`)** — the attempt's full runner output (stdout and stderr, one stream),
+  tail-kept at **512 KiB of UTF-8** (`ARTIFACT_LIMIT`, copied on both sides — the driver depends
+  on nothing). Docker accumulates it in the same `collect` that feeds the report tail; kubernetes
+  cuts it from the pod log the verdict read reads. The head is what a cut drops — a run that
+  fails says why at the end — and `truncated` is true when it happened. A refused start uploads
+  nothing: no log exists, and an empty artifact would claim one.
+- **`job_artifact` (`transcript`)** — the agent session transcript of THIS run, the same per-run
+  delta bound (`RUN_STARTED_AT` / `RUN_STARTED_MS`) the close-time turn counts keep. Claude's is
+  the session JSONL the CLI already wrote onto the workspaces volume (issue #55's store); opencode
+  has no file to point at, so the export is a reshaped view — one JSON line per message,
+  `{role, time, text}`, from the same sqlite database the readout walks. Both exports self-cap to
+  the same 512 KiB, line-aligned, and say what they dropped in a marker line the driver sniffs,
+  strips, and folds into the `truncated` flag. The read that produces it is one more close-time
+  read, best-effort by the same contract as the turn count: a failed export costs the artifact,
+  never the verdict.
+
+**One upload route, guarded like every worker write.** `POST /api/jobs/:id/artifact
+{leaseToken, kind, attempt, content, truncated}` — the guard and the upsert are one statement (a
+CTE that answers only under a live lease), so a superseded worker's report inserts nothing; keyed
+`(org, job, kind, attempt)`, so a retried upload overwrites its own row and two attempts never
+overwrite each other; upsert, never append. The upload lands before the verdict on the ordinary
+finish path and before the park on a stop — both while the lease is live — and is best-effort
+like every telemetry send: a failure is a log line, never a throw into the finish path, and a
+`409` from it is not a kill order (the `/output` rule). Content is sliced to the cap at the
+route, which forces `truncated` when it cut — the reader can trust the flag.
+
+**Retention is the job row's lifetime; there is no TTL sweeper.** `on delete cascade` from
+`job`, the same rule `output` and `gates` follow: Remove deletes the thread's artifacts with it,
+and nothing prunes a finished task's record behind its reader's back. The issue's TTL question
+is answered the way this board answers every retention question: the artifact is part of the
+audit row, and the row is the retention policy.
+
+**Reads are person reads, paged by characters.** `GET /api/jobs/:id/log` and
+`GET /api/jobs/:id/transcript`, resolved through the same route guard as the job read they
+extend — the org is the credential's, and an artifact is answerable only inside the org whose
+job produced it. `?attempt=` names an attempt (absent reads the newest stored, what an
+investigating reader wants by default); `?offset=`/`?limit=` page, JSON envelope, no HTTP
+`Range`; an offset past the end answers an empty page. `404` when nothing was uploaded — no
+artifact is fabricated, and "nothing retained" stays sayable.
+
+**Secrets stay out by construction, and the pins say so.** The artifacts are built from the
+runner's own stdio and the volume transcript; the claim env never enters either — the env file
+is written around the spawn and removed at the close, and no artifact read touches it. The
+driver suite pins this where the bytes are made: the full log must be STRICTLY EQUAL to the
+runner's own stream (any driver-side injection, an env value included, would break the
+equality), and the argv pins assert the export scripts' text carries no board-derived value.
+(An agent can still `printenv` inside its own container — docs/security.md's boundary — which
+is why masking was never the design; the constraint is that THIS driver's code never writes a
+credential into the store.)
+
+**Kubernetes parity, with one stated limit.** Both transcript exports run as aux Jobs over the
+PVC (`factory-ctrans-` / `factory-otrans-`, twins of the turns/readout Jobs), and the full log
+is cut from the same pod-log read the verdict uses — one close-time read shape per executor, on
+both platforms. The limit: a kubernetes runner Job whose pod is gone before the verdict read
+(deleted mid-run on a kill, reaped by its TTL) uploads no log — docker's streamed accumulator
+survives its container, a pod log does not survive its pod. The absent-artifact 404 is the
+documented answer, tested as the nothing-retained path.
 
 ## The structured failure kind
 

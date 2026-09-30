@@ -244,6 +244,9 @@ export async function dockerRunVerdict(
         output: string;
         timedOut: boolean;
         cacheLost: string | null;
+        /** The full-run log the accumulator kept (issue #325); absent when nothing ran. */
+        fullLog?: string;
+        logTruncated?: boolean;
     }
 ): Promise<RunOutcome> {
     let started = true;
@@ -264,6 +267,9 @@ export async function dockerRunVerdict(
         timedOut: ctx.timedOut,
         started,
         cacheLost: ctx.cacheLost,
+        // The artifact the loop uploads at close (issue #325); present only when the
+        // accumulator actually ran — a refused start has no log and uploads nothing.
+        ...(ctx.fullLog !== undefined ? { fullLog: ctx.fullLog, logTruncated: ctx.logTruncated === true } : {}),
     };
 }
 

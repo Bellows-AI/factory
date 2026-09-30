@@ -247,6 +247,30 @@ export interface Job {
 }
 
 /**
+ * One stored run artifact (issue #325, 046): the full-run log or the agent transcript of one
+ * attempt, uploaded by the driver at close while its lease is still live. Tail-kept and capped by
+ * the driver (512 KiB); `truncated` marks a cap cut. Retention is the job row's lifetime —
+ * `on delete cascade` from `job`, so Remove deletes the thread's artifacts with it, the same rule
+ * `output` and `gates` follow.
+ */
+export type ArtifactKind = 'log' | 'transcript';
+
+/** One artifact upload a worker reports (issue #325): the kind, its attempt, and the content. */
+export interface ArtifactUpload {
+    kind: ArtifactKind;
+    attempt: number;
+    content: string;
+    truncated: boolean;
+}
+
+export interface StoredArtifact {
+    /** The attempt the artifact belongs to; reads default to the newest stored. */
+    attempt: number;
+    truncated: boolean;
+    content: string;
+}
+
+/**
  * One declared block-helper step, resolved onto a claim (issue #207's transport, #122's first
  * producer): the driver's `HelperPlan` shape by wire convention — this package does not import
  * driver's types, and never needs to; the field names alone are the contract. `input` is resolved
@@ -728,6 +752,20 @@ export interface JobStore {
     ): Promise<
         { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | { result: 'lost' | 'missing' }
     >;
+    /**
+     * Stores one run artifact (issue #325, 046) — the full-run log or the agent transcript of the
+     * attempt, uploaded by the driver at close while its lease is still live. Lease-guarded like
+     * every other worker write, and the guard and the upsert are one statement, so a superseded
+     * worker can never write beside the winner: the insert only lands from a live-lease row.
+     * Upsert, never append — a retried upload overwrites its own (kind, attempt) row.
+     */
+    artifact(id: string, leaseToken: string, upload: ArtifactUpload): Promise<LeaseResult>;
+    /**
+     * One stored run artifact, for the read routes (issue #325). Null when the org holds no such
+     * artifact — an unknown job, an attempt that uploaded nothing, or a kind the driver never sent.
+     * A null `attempt` reads the newest stored one, which is almost always what a reader wants.
+     */
+    readArtifact(id: string, kind: ArtifactKind, attempt: number | null): Promise<StoredArtifact | null>;
     /**
      * A publish credential for the run's final push. The claim mints a full-hour installation
      * token and a run can outlive it — observed 2026-09-13 (job 43379d3a): a 1h33m run published

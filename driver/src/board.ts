@@ -262,6 +262,16 @@ export interface Board {
     /** Tells the board which agent session this attempt runs as; null clears one that never ran. */
     session(job: BoardJob, sessionId: string | null): Promise<LeaseState>;
     /**
+     * Uploads one run artifact (issue #325) — the full-run log or the agent transcript of this
+     * attempt — to the board, while the lease is still live. Best-effort by contract, like
+     * `progress`: a failure costs retention, never the run, and a `409` here is not a kill
+     * order — the upload is retention, never a verdict.
+     */
+    artifact(
+        job: BoardJob,
+        upload: { kind: 'log' | 'transcript'; attempt: number; content: string; truncated: boolean }
+    ): Promise<LeaseState>;
+    /**
      * Re-reads the gates the job's checkout declares NOW. The claim read the file before the
      * driver's startup sync freshened the checkout, so a repository whose gates file just arrived
      * would run ungated for its whole first task if the stale answer stood. Null — a refused,
@@ -545,6 +555,14 @@ export function createBoard({
             const response = await post(`/api/jobs/${job.id}/session`, {
                 leaseToken: job.leaseToken,
                 sessionId,
+            });
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
+        },
+
+        async artifact(job, upload) {
+            const response = await post(`/api/jobs/${job.id}/artifact`, {
+                leaseToken: job.leaseToken,
+                ...upload,
             });
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
