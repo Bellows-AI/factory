@@ -91,21 +91,21 @@ describe('parseBellows: shapes', () => {
         const services = [
             'services:',
             '    - name: timescale',
-            '      image: timescale/timescaledb:latest-pg17',
+            '      image: postgres:17',
             '      environment:',
             '          POSTGRES_PASSWORD: factory',
         ];
         expect(parseBellows([...gates, ...services].join('\n'))).toEqual([
             {
                 name: 'timescale',
-                image: 'timescale/timescaledb:latest-pg17',
+                image: 'postgres:17',
                 environment: [{ key: 'POSTGRES_PASSWORD', value: 'factory' }],
             },
         ]);
         expect(parseBellows([...services, ...gates].join('\n'))).toEqual([
             {
                 name: 'timescale',
-                image: 'timescale/timescaledb:latest-pg17',
+                image: 'postgres:17',
                 environment: [{ key: 'POSTGRES_PASSWORD', value: 'factory' }],
             },
         ]);

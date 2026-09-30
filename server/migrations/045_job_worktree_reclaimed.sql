@@ -24,6 +24,6 @@
 -- and a follow-up rebuilds the tree from the surviving branch — the same recovery an in-flight
 -- removal already gets.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 alter table job add column if not exists worktree_reclaimed_at timestamptz;

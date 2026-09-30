@@ -16,7 +16,7 @@
 -- and then lets the freed login be claimed by somebody else, so a schema keyed on the login is an
 -- account-takeover path rather than a convenience.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header: without
+-- This file must contain NO `create extension`, per 005's header: without
 -- them postgres wraps the whole body in an implicit transaction, so a crashed run rolls back whole
 -- instead of leaving half a schema behind. gen_random_uuid() is core since PG13 and compose pins 17.
 

@@ -2,7 +2,7 @@
 
 This is the coverage map for the board/driver/runner/telemetry control plane. It separates code
 coverage from boundary coverage: a high V8 percentage does not prove Docker, Kubernetes, Git,
-TimescaleDB, or the OTLP collector actually accepted the artifact handed to it.
+PostgreSQL, or the OTLP collector actually accepted the artifact handed to it.
 
 ## Fast gates
 
@@ -16,7 +16,7 @@ TimescaleDB, or the OTLP collector actually accepted the artifact handed to it.
 
 The focused coverage gate excludes `driver/src/index.ts`, content-injected scripts under
 `driver/src/scripts/`, and the Postgres telemetry store. V8 cannot attribute child-process code to
-the parent Vitest process, and the stores deliberately need TimescaleDB. Those paths are tested by
+the parent Vitest process, and the stores deliberately need a real PostgreSQL. Those paths are tested by
 the real-process/script suites and `test:db`; adding them as zeroes would make the percentage less
 truthful, not more strict.
 
@@ -55,7 +55,7 @@ suites, per the executor-parity rule in AGENTS.md.
 
 1. The real collector is not in either end-to-end assertion path. Add a synthetic runner export to
    `test:jobs` and `test:k8s --cluster`, pass it through the actual collector, then assert the
-   Timescale row and dashboard rollup. Include a dashboard restart inside the collector's 300-second
+   stored row and dashboard rollup. Include a dashboard restart inside the collector's 300-second
    retry window and prove one logical datapoint is stored once.
 2. The real Docker harness does not kill the driver after claim and prove a replacement fences the
    orphan before writing. The unit suite covers the sequence; the daemon boundary does not.

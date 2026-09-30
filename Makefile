@@ -1,6 +1,6 @@
 # The baked `runtime` image — what deploys, and what `docker compose up` deliberately does not run
 # (compose binds the working tree instead). `make baked` builds it and serves it against the
-# compose TimescaleDB, the same factory_dev the dev stack uses, via the OFFLINE entry — the same
+# compose database, the same factory_dev the dev stack uses, via the OFFLINE entry — the same
 # server, built with the code-only no-fetch arm, so two processes never sync one database;
 # AUTH_MODE=none + AUTH_ALLOW_PUBLIC_BIND=1 because the image bakes HOST=0.0.0.0, so the loopback
 # port publish is the perimeter. BAKED_PORT defaults to 8081 so it

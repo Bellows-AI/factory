@@ -8,7 +8,7 @@ environment:
 
 services:
     - name: timescale
-      image: timescale/timescaledb:latest-pg17
+      image: postgres:17
       environment:
           POSTGRES_USER: factory
           POSTGRES_PASSWORD: factory

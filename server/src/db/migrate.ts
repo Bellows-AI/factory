@@ -142,9 +142,12 @@ async function applyMigrations(sql: Sql, options: MigrateOptions, log: (message:
     for (const { version, sql: body, repeatable } of files()) {
         if (!repeatable && applied.has(version)) continue;
         log(`applying ${repeatable ? 'repeatable ' : ''}migration ${version}`);
-        // Not wrapped in a transaction with the insert: create_hypertable and
-        // create extension behave badly inside one, and every file is idempotent
-        // anyway, so a crash between the two costs one harmless re-run.
+        // Not wrapped in a transaction with the insert. Since #371 no file creates an extension,
+        // so the original reason is gone — but postgres already wraps each multi-statement
+        // `unsafe` body in an implicit transaction (005's header depends on it), so an explicit
+        // one would only add the insert below to that scope. Every file is idempotent and the
+        // insert is `on conflict do nothing`, so a crash between the two costs one harmless
+        // re-run, and joining them buys nothing worth a second transaction shape.
         await sql.unsafe(body);
         if (repeatable) continue;
         await sql`insert into schema_migrations (version) values (${version})

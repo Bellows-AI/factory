@@ -279,27 +279,33 @@ kind walkthrough. Decisions that look like cruft and are not:
   one when it is the thing creating that Secret — under `secret.existingSecret` the key has to be
   there already, and it is the one key the pod spec does not mark optional. There is no
   `timescale.enabled` switch to leave on by accident.
-- **The database is TimescaleDB today, and will be plain PostgreSQL — `metric_point` loses the
-  hypertable (#356).** "Managed TimescaleDB" used to be written here unqualified, which reads to a
-  cloud operator as "RDS". It is not: `server/migrations/001_init.sql` opens with
-  `create extension if not exists timescaledb` and calls `create_hypertable('metric_point', …)`, and
-  **neither RDS nor Aurora PostgreSQL offers that extension** — the first migration fails outright.
-  So until the change below lands, a cloud install needs Timescale Cloud or a TimescaleDB you run
-  yourself, and the local-state chart's Deployment is what serves `make start`.
+- **`database.url` names any managed PostgreSQL 17 — RDS and Aurora included (#356, done in
+  #371).** The schema loads **no extension**: `metric_point` is declared
+  `partition by range (time)` with a single DEFAULT partition, so a cloud install needs no
+  Timescale Cloud, no self-run TimescaleDB, and the VPC has no database peering to design.
 
-  The decision is to **drop the extension** rather than take on a vendor or a StatefulSet:
-  `metric_point` becomes a plain declaratively-partitioned table and `create_hypertable` retires,
-  after which the chart runs on any managed PostgreSQL and the VPC has no database peering to
-  design. It is cheap because the extension barely earns its place — Timescale-specific SQL is
-  exactly those two lines of `001_init.sql`. There is no retention policy and no compression, the
-  views in `002_views.repeatable.sql` are *deliberately* not continuous aggregates, and
-  `time_bucket()` has no callers at all: bucketing lives in core (`docs/metrics.md`), not in the
-  database. Nothing in the query path changes. **#371 is that work**; beyond the SQL it carries the
-  partition-creation strategy (the one thing a hypertable did for free), the migration runner's
-  non-transactional carve-out (`server/src/db/migrate.ts`, which exists because `create extension`
-  and `create_hypertable` misbehave inside a transaction) and the hypertable assertion in
-  `server/test-db/telemetry.sql.test.ts`.
-- **Local state is its own release: `charts/factory-local-state`.** A plain TimescaleDB Deployment
+  The DEFAULT partition is the whole strategy, and it is deliberate. A range-partitioned table
+  **rejects** any row no partition covers — a failure mode the hypertable did not have — and the
+  writers cannot promise a range: `npm run backfill` imports transcripts of arbitrary age and an
+  OTLP client's clock can skew ahead. Nothing prunes by partition here (the views filter on time;
+  bucketing lives in core, `docs/metrics.md`), so there is no read traded away. Attaching a real
+  range later is possible but not free: `attach partition` fails while the default holds a row the
+  new range covers, so it means moving those rows first. No `pg_partman`: an extension is the thing
+  this schema stopped requiring.
+
+  **An existing local database must be destroyed, not upgraded.** A data directory initialised by
+  `timescale/timescaledb` preloads the library in its own `postgresql.conf`, so `postgres:17`
+  exits at startup and the pod crash-loops — delete the `<release>-timescale` PVC (it outlives
+  `make stop` deliberately) along with the image change. `docs/persistence.md` carries the same
+  warning for compose.
+
+  Dropping Timescale cost nothing because it earned nothing: there was no retention policy and no
+  compression, the views in `002_views.repeatable.sql` are *deliberately* not continuous
+  aggregates, and `time_bucket()` never had a caller. The query path is unchanged. The migration
+  runner keeps its non-transactional shape (`server/src/db/migrate.ts`) — postgres already wraps
+  each multi-statement file in an implicit transaction, so an explicit one would only pull the
+  `schema_migrations` insert into that scope.
+- **Local state is its own release: `charts/factory-local-state`.** A plain Postgres Deployment
   (not the upstream chart — one deployment, one claim, mirroring compose) plus the workspaces
   claim, installed as `factory-state`; `values-local.yaml` names both objects (`database.url`,
   `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
@@ -336,7 +342,7 @@ kind walkthrough. Decisions that look like cruft and are not:
   client can poll away. A cold local node pulls the database image for minutes and a managed
   instance can be mid-failover, so an init container runs `pg_isready -d "$DATABASE_URL"` — the
   same URL, from the same Secret key, the server reads — until it passes. `database.waitImage` is
-  any image with the postgres client; the local profile reuses the timescale image already on the
+  any image with the postgres client; the local profile reuses the database image already on the
   node.
 - **The driver is fenced by admission, not by its Role alone.** Runners run agent-written code in
   the release's namespace — they have to: the workspaces claim is namespaced and the dashboard
