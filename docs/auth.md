@@ -315,7 +315,7 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
 | `GET /api/ready` | **open** — the kubelet's startup probe carries no credential. |
 | `/api/auth/*` | open. `/me` answers `200 {authenticated: false}` on its own — being what *tells* the SPA it is unauthenticated is its purpose, and a 401 there would be logged as a console error by the browser of everybody who has not signed in yet. |
 | the SPA's document and bundle | **open** — if `index.html` 401'd there would be nothing left to render a sign-in button in. The wall is on `/api/*`, never on the document. |
-| `/api/stats`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread][/activity]`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/reopen`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove`, `/api/jobs/:id/wait/cancel`, `/api/jobs/:id/wait/poke`, `/api/tokens` with its org and revoke variants | session cookie, or `Bearer fat_…` — an `oat_` bearer passes on this row's reads, and is `403` on the rest (see [Access tokens](#access-tokens)) |
+| `/api/stats`, `POST /api/jobs`, `GET /api/jobs[/:id][/thread][/activity]`, `PATCH /api/jobs/:id`, `/api/jobs/:id/follow-up`, `/api/jobs/:id/done`, `/api/jobs/:id/reopen`, `/api/jobs/:id/stop`, `/api/jobs/:id/remove`, `/api/jobs/:id/wait/cancel`, `/api/jobs/:id/wait/poke`, `/api/tokens` with its org and revoke variants | session cookie, or `Bearer fat_…` — an `oat_` bearer passes on this row's reads, and is `403` on the rest (see [Access tokens](#access-tokens)) |
 | `/api/jobs/claim`, `/api/jobs/leases`, `/heartbeat`, `/session`, `/output`, `/suspend`, `/complete`, `/gates`, `/gates-reread`, `/publish-token`, `/api/reclaims/claim`, `/api/reclaims/:id/ack` | `Bearer $JOB_BOARD_TOKEN` — the shared board secret |
 | OTLP | optional `X-Factory-Ingest-Token` |
 | `POST /api/sessions/branch` | github mode: the runner's attempt pair (`x-factory-job-id` + `x-factory-job-lease-token`) or `Bearer fat_…`; none mode: open. The deployment-wide ingest token does **not** authorize this write — see the ingest bullet below. |
@@ -327,7 +327,7 @@ that cannot hold a cookie; the CLI (#21) is why the personal kind exists.
   two *forms* of the same person/org credential, and only one is honoured: the bearer wins, because
   a CLI never sends a cookie and a browser never sends a bearer — when both arrive something between
   them is rewriting, and a failed or foreign bearer is a 401, never a fall-through to whoever the
-  cookie names. `/api/jobs/:id/follow-up`, `/done`, `/reopen`, `/stop` and
+  cookie names. `PATCH /api/jobs/:id`, `/api/jobs/:id/follow-up`, `/done`, `/reopen`, `/stop` and
   `/remove` are *human* routes: a finished task is over, and stopping
   or deleting one is a person's verdict — which is exactly what makes adjusting, closing,
   reopening, stopping and removing one a person's action. The reclaim queue is the opposite shape: it hands

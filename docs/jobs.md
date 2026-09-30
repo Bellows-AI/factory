@@ -120,7 +120,13 @@ claim and spawn — the window the task view renders as "Waiting for the executo
 that setup-phase poll: the driver stands down without spawning anything, and the row settles
 `stopped` at once (issue #126). `POST /api/jobs/:id/remove`
 deletes the whole thread and hands the driver the worktree to remove through a separate queue (see
-the sections below).
+the sections below). `PATCH /api/jobs/:id` edits a QUEUED row's command in place (issue #329) —
+same id, same thread, where a stop plus a re-create would have burned both: queued rows only, the
+author only, and the write is decided atomically against the claim (the conditional UPDATE takes
+the row's lock, so a row claimed as the edit arrives answers `409 NOT_QUEUED`, and an edit that
+commits first is what the claim's `RETURNING command` delivers — the driver reads the command at
+claim time and needs nothing new). Workflow rows refuse: their command is the interpolated entry
+prompt, and the raw chat line was never stored.
 
 **A `409` from heartbeat means the container must be killed.** Its lease expired, the job was
 handed to someone else, and nothing it reports will be accepted. The board cannot stop a worker —
@@ -930,7 +936,11 @@ below).
 
 **A follow-up is a NEW job row, never an edit of the parent.** `job` is an audit record of what ran
 (the `created_by` precedent), and overwriting the parent's command or output would erase the very
-run the user is following up on. The new row carries `parent_job_id` — it is one row per RUN, but
+run the user is following up on. The audit-record rule scopes the one edit that DOES exist
+(issue #329): `PATCH /api/jobs/:id` rewrites a QUEUED row's command — a row that has run nothing
+has nothing audited to overwrite — and refuses everything else (`409 NOT_QUEUED` once claimed,
+`409 WORKFLOW_COMMAND_FROZEN` for the prompt-built commands, `403 FORBIDDEN` for any account but
+the author's, null-safe both ways). The new row carries `parent_job_id` — it is one row per RUN, but
 still one TASK to the member: `GET /api/jobs/:id/thread` resolves any member's id to the whole
 chain, the task page renders it as one conversation, a follow-up extends the view in place instead
 of navigating away, and the sidenav lists thread roots only — copies of the parent's `repo`,
