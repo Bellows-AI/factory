@@ -448,6 +448,27 @@ export type StopResult =
     | { result: 'conflict'; status: JobStatus };
 
 /**
+ * What a queued-command edit (issue #329) did.
+ *
+ * - `ok`         the command was replaced. The new command rides the answer so the route can
+ *                echo it without a second read.
+ * - `missing`    no such job in this organization.
+ * - `not_queued` the row has been claimed — or already ended — and the command is the run's
+ *                input now. The status the store answered with rides along so the route can
+ *                name it.
+ * - `workflow`   the row's command was built by interpolating a workflow node's prompt — the
+ *                raw chat line was never stored, so there is nothing to edit from.
+ * - `forbidden`  the task was queued by a different account (author-scoped like the follow-up:
+ *                the command runs in the author's checkout tree).
+ */
+export type EditCommandResult =
+    | { result: 'ok'; command: string }
+    | 'missing'
+    | { result: 'not_queued'; status: JobStatus }
+    | 'workflow'
+    | 'forbidden';
+
+/**
  * What a task removal did.
  *
  * - `ok`        the whole thread is gone and a worktree reclaim is queued. The root the driver
@@ -612,6 +633,20 @@ export interface JobStore {
      * purge guard (`refuseIfCheckoutPurging`) runs first, on the named row's repo label.
      */
     createRetry(id: string, createdBy: string | null): Promise<{ id: string } | RetryRefusal>;
+    /**
+     * Edits a queued task's command in place (issue #329): same id, same thread, where a stop
+     * plus a re-create would have burned both. Queued rows only — the `job` row is an audit
+     * record of what RAN, and a row that has run nothing has nothing audited to overwrite.
+     * Author-scoped like the follow-up, null-safe both ways (`is not distinct from`): a null
+     * caller may only edit an authorless row, the state every pre-accounts task is in.
+     *
+     * Workflow rows refuse (`workflow`): their command IS the interpolated entry prompt, and
+     * the raw chat line that built it was never stored. Decided atomically against the claim:
+     * the conditional UPDATE takes the row's lock, so a claim that commits while the edit
+     * waits turns the edit's answer into `not_queued`, and an edit that commits first is what
+     * the claim's `RETURNING command` hands the driver.
+     */
+    editCommand(id: string, command: string, caller: string | null): Promise<EditCommandResult>;
     /**
      * The user's verdict that the task is done. Terminal tasks only — a moving run is not the
      * user's to finish. Idempotent: marking a done task done again answers the same instant, and

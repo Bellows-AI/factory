@@ -5,7 +5,7 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { exists, workspacePathFor, hasRunningMember } from './job-store-rows.js';
-import type { JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
+import type { EditCommandResult, JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
 import { wakeOneRound } from './workflow-blocks/runtime.js';
 
 export type CreateTarget = Parameters<JobStore['create']>[2];
@@ -342,6 +342,50 @@ async function retryRefusalOf(
     if (row.thread_done) return 'task_done';
     if (row.created_by !== createdBy) return 'forbidden';
     return 'forbidden';
+}
+
+/**
+ * editCommand's body (issue #329). One conditional UPDATE carries every precondition — queued,
+ * off-graph, the caller's own task — so an edit can never land on a row a worker already holds:
+ * the UPDATE takes the row's lock, and under READ COMMITTED whichever statement gets the lock
+ * second re-checks its predicates against the row's newest committed version. A claim that
+ * commits first turns the edit's 0-rows answer into `not_queued`; an edit that commits first is
+ * what the claim's `RETURNING command` delivers. No advisory lock — this touches ONE row, and
+ * the row lock is the serialization, exactly as stop's single statement already relies on it;
+ * the advisory lock is the pattern for thread-wide operations (claim, remove, reopen).
+ *
+ * The author predicate is null-safe (`is not distinct from`): a null caller may only edit an
+ * authorless row, and an authored row refuses a caller with no account. `workflow_node is null`
+ * is the prompt-built discriminator: a workflow root's and a queued continuation's command are
+ * interpolated prompt text, never the member's own words — there is no raw line to edit from.
+ * On 0 rows, one classification read answers which precondition failed — state before author,
+ * the follow-up refusal's ordering.
+ */
+export async function editJobCommand(
+    ctx: JobStoreContext,
+    id: string,
+    command: string,
+    caller: string | null
+): Promise<EditCommandResult> {
+    const { sql, orgId } = ctx;
+    return sql.begin(async (tx) => {
+        const rows = await tx<{ id: string }[]>`
+            update job set command = ${command}
+            where org_id = ${orgId} and id = ${id}
+              and status = 'queued'
+              and workflow_node is null
+              and created_by is not distinct from ${caller}
+            returning id
+        `;
+        if (rows[0]) return { result: 'ok', command };
+        const [row] = await tx<{ status: JobStatus; workflow_node: string | null; created_by: string | null }[]>`
+            select status, workflow_node, created_by from job where org_id = ${orgId} and id = ${id}
+        `;
+        if (!row) return 'missing';
+        if (row.status !== 'queued') return { result: 'not_queued', status: row.status };
+        if (row.workflow_node !== null) return 'workflow';
+        return 'forbidden';
+    });
 }
 
 export async function markJobDone(

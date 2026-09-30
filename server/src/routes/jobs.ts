@@ -15,6 +15,7 @@ import {
 import {
     handleCompleteJob,
     handleDone,
+    handleEditJob,
     handleFollowUp,
     handleGetJob,
     handleJobActivity,
@@ -89,6 +90,10 @@ export const jobRoutes =
         app.post('/api/jobs/:id/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRetry(orgs, request, reply)
         );
+        // The edit of a queued task's command (issue #329): person-gated like the follow-up it
+        // sits beside, no lease token — a queued task is nobody's. The command can be 16 KiB,
+        // so the create body limit.
+        app.patch('/api/jobs/:id', { bodyLimit: BODY_LIMIT }, (request, reply) => handleEditJob(orgs, request, reply));
         app.post('/api/jobs/:id/done', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDone(orgs, request, reply)
         );

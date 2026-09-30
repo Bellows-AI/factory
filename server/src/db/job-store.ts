@@ -20,6 +20,7 @@ import {
     createJobRow,
     createFollowUpRow,
     createRetryRow,
+    editJobCommand,
     markJobDone,
     reopenJob,
     stopJob,
@@ -67,8 +68,6 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         if (ready) await ready;
     };
 
-    // Every method's own body is a function in the sibling job-store-*.ts files (the header's map);
-    // this context is what each of them closes over.
     const ctx: JobStoreContext = {
         sql,
         orgId,
@@ -87,6 +86,16 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         publicationColumns: publicationColumnsFragment(sql),
     };
 
+    return jobStoreMethods(ctx, gate);
+}
+
+/**
+ * The store's methods, delegating one-to-one to the free functions the sibling job-store-*.ts
+ * files own (the header's map). Split from `createJobStore` so the factory stays thin: the
+ * context and the ready-gate are closed over here, and a new method is one more entry in this
+ * literal, never a line against the function-length ceiling.
+ */
+function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobStore {
     return {
         async create(command, createdBy, target) {
             await gate();
@@ -95,12 +104,17 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
 
         async createFollowUp(parentId, command, createdBy) {
             await gate();
-            return createFollowUpRow(sql, { orgId, parentId, command, createdBy });
+            return createFollowUpRow(ctx.sql, { orgId: ctx.orgId, parentId, command, createdBy });
         },
 
         async createRetry(id, createdBy) {
             await gate();
-            return createRetryRow(sql, { orgId, id, createdBy });
+            return createRetryRow(ctx.sql, { orgId: ctx.orgId, id, createdBy });
+        },
+
+        async editCommand(id, command, caller) {
+            await gate();
+            return editJobCommand(ctx, id, command, caller);
         },
 
         async markDone(id, doneBy) {

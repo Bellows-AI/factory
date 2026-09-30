@@ -20,14 +20,19 @@ one-row pipeline every task still shares, workflow or not.
 
 ## The CLI (`cli/`, issue #21)
 
-`npm run cli -- <args>` (or `node cli/dist/index.js` after a build) — a plain HTTP client shaped
-exactly like `driver/`: it depends on nothing, `core` included, and speaks to the board's person
-routes only. Three commands:
+`npm run dev -w cli -- <args>` (or `node cli/dist/index.js` after a build) — a plain HTTP client
+shaped exactly like `driver/`: it depends on nothing, `core` included, and speaks to the board's
+person routes only. The whole task lifecycle, one command per verb:
 
 ```
 factory job create <command...> [--repo owner/name] [--executor name]   POST /api/jobs
 factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]   GET /api/jobs
 factory job investigate <id> [--json]                                   GET /api/jobs/:id + /thread
+factory job wait <id> [--timeout <seconds>] [--json]                    GET /api/jobs/:id?waitFor=terminal
+factory job follow-up <id> <command...>                                 POST /api/jobs/:id/follow-up
+factory job stop <id>                                                   POST /api/jobs/:id/stop
+factory job done <id>                                                   POST /api/jobs/:id/done
+factory job remove <id> --yes                                           POST /api/jobs/:id/remove
 ```
 
 - **Config is two environment variables and nothing else.** `FACTORY_URL` names the board and is
@@ -35,18 +40,38 @@ factory job investigate <id> [--json]                                   GET /api
   tasks against whichever one answers. `FACTORY_TOKEN` carries a personal access token (`fat_…`,
   minted from the settings page — docs/auth.md "Access tokens", issue #70); the `Authorization`
   header is **omitted, never sent empty**, when it is unset, which is the common case against an
-  `AUTH_MODE=none` board. An `oat_` org token also authenticates, but only the two reads — a
-  create answers the board's own 403.
+  `AUTH_MODE=none` board. An `oat_` org token also authenticates, but only the reads — every
+  write answers the board's own 403.
 - **The board is the validator.** The CLI performs no command-length or repo-shape checks of its
   own — every refusal arrives as the board's `{error, code}` envelope and is printed to stderr
   with the code. The one client-side check is `--limit`, so an obvious typo never round-trips.
 - **`--` ends option parsing**, so a create command with flags of its own survives:
   `factory job create --repo owner/name -- npm test --watch`.
-- **Exit codes: 0 ok, 1 board or network failure, 2 usage or configuration.** `investigate`
+- **One npm layer, not two.** A root convenience script wrapping `npm run dev -w cli` is not
+  worth having: the inner npm claims `--timeout`, `--json`, `--yes` and friends as its own
+  configuration before the CLI ever sees them, so `npm run cli -- job list --limit 1` reached
+  `src/index.ts` as `job list 1` — a flag silently dropped, never an error. The script is gone;
+  spell it `npm run dev -w cli -- <args>`, or run the built `cli/dist/index.js` directly. The
+  `factory` name in the table above is the package's `bin`, not something on PATH.
+- **Exit codes: 0 ok, 1 board or network failure, 2 usage or configuration, 3 a wait that ended
+  with no terminal row.** 3 is its own code because "still running" is not a failure, and a
+  script that cannot tell the two apart reports healthy tasks as broken. `investigate`
   prints the job's header block (status, command, authorship, timing, session, gates, output
   tail) followed by every thread member with its command, verdict, session id and tail;
   `--json` prints the payloads as JSON — the `jobs` array for list, `{job, thread}` for
   investigate.
+- **`wait` re-issues the settle long-poll; it never sleeps.** `--timeout` is the TOTAL budget,
+  which the CLI spends as successive holds of at most the board's 60s cap, the last one asking
+  only for what is left. Two ways it ends without a verdict, both exit 3: the budget runs out, or
+  a hold comes back far short of what it asked for on a non-terminal row — which is the board
+  settling on an open workflow wait (`settleStateOf`), a state no amount of re-issuing moves.
+  Re-issuing on THAT is a request storm, which is the whole reason the early return is detected
+  rather than ignored.
+- **`remove` demands `--yes`.** It deletes the thread and cannot be undone, and this CLI has no
+  prompt to ask through, so the command line is where the intent is said out loud. `stop` needs
+  no such flag — it ends a turn, keeping the thread and its session — but note its two answers:
+  200 settles the row, while 202 means the stop was only STAMPED and the worker settles it at its
+  next heartbeat, so a 202 must not be reported as stopped.
 
 ## The driver contract
 
@@ -95,7 +120,13 @@ claim and spawn — the window the task view renders as "Waiting for the executo
 that setup-phase poll: the driver stands down without spawning anything, and the row settles
 `stopped` at once (issue #126). `POST /api/jobs/:id/remove`
 deletes the whole thread and hands the driver the worktree to remove through a separate queue (see
-the sections below).
+the sections below). `PATCH /api/jobs/:id` edits a QUEUED row's command in place (issue #329) —
+same id, same thread, where a stop plus a re-create would have burned both: queued rows only, the
+author only, and the write is decided atomically against the claim (the conditional UPDATE takes
+the row's lock, so a row claimed as the edit arrives answers `409 NOT_QUEUED`, and an edit that
+commits first is what the claim's `RETURNING command` delivers — the driver reads the command at
+claim time and needs nothing new). Workflow rows refuse: their command is the interpolated entry
+prompt, and the raw chat line was never stored.
 
 **A `409` from heartbeat means the container must be killed.** Its lease expired, the job was
 handed to someone else, and nothing it reports will be accepted. The board cannot stop a worker —
@@ -905,7 +936,11 @@ below).
 
 **A follow-up is a NEW job row, never an edit of the parent.** `job` is an audit record of what ran
 (the `created_by` precedent), and overwriting the parent's command or output would erase the very
-run the user is following up on. The new row carries `parent_job_id` — it is one row per RUN, but
+run the user is following up on. The audit-record rule scopes the one edit that DOES exist
+(issue #329): `PATCH /api/jobs/:id` rewrites a QUEUED row's command — a row that has run nothing
+has nothing audited to overwrite — and refuses everything else (`409 NOT_QUEUED` once claimed,
+`409 WORKFLOW_COMMAND_FROZEN` for the prompt-built commands, `403 FORBIDDEN` for any account but
+the author's, null-safe both ways). The new row carries `parent_job_id` — it is one row per RUN, but
 still one TASK to the member: `GET /api/jobs/:id/thread` resolves any member's id to the whole
 chain, the task page renders it as one conversation, a follow-up extends the view in place instead
 of navigating away, and the sidenav lists thread roots only — copies of the parent's `repo`,
