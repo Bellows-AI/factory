@@ -454,17 +454,18 @@ defaults — `workspaces.accessModes: [ReadWriteMany]` and `workspaces.storageCl
 the cluster's default class — are true of a kind cluster and of nothing on EKS. Both failures are
 quiet, which is why they are written down here rather than discovered.
 
-**Three kinds of claim live in this section, and they are not equally solid.** What this repository
-does — which pods mount the claim, as which uid, with which `subPath`, and what happens when the
-tree is missing — is read off the source and stated flatly. Two AWS-side facts were
-**read off a real EKS cluster** (`internal-utils`, eu-central-1, Kubernetes v1.34): that the
-default StorageClass is EBS-provisioned, and that a registered `CSIDriver` object proves nothing
-about whether a driver is installed. Everything else about AWS — what the EFS CSI driver does with
-`fsGroup`, what a dynamically provisioned access point is owned by, what an access point's
-parameters achieve — is taken from AWS's own documentation and has
-**not been observed on a real EKS cluster** from here, because no EFS file system existed to
-observe it against. `docs/limits.md` records which half is which. No end-to-end run of this chart
-on EFS has happened.
+**The AWS half of this section was measured, once, and the measurement has an edge.** What this
+repository does — which pods mount the claim, as which uid, with which `subPath`, and what happens
+when the tree is missing — is read off the source and stated flatly. The platform half was
+**observed on a real EKS cluster** on 2026-09-30 (`internal-utils`, eu-central-1, Kubernetes
+v1.34): the EFS prerequisites below were stood up, an `efs-ap` claim bound, and pods running as
+uid 1000 with no `fsGroup` provisioned a member tree on the volume root and wrote into it through
+a `subPath` from a second availability zone. [limits.md](limits.md) records what that run covered.
+
+The edge, stated rather than buried: those were **probe pods reproducing the access pattern, not
+the dashboard and a runner**. The storage contract is measured; the chart itself has
+still **never been installed on EKS**, so the sentences below about sign-in and about the board
+going quiet remain derived from the source, not watched.
 
 **It must be `ReadWriteMany`, and the default class on EKS is not.** The dashboard mounts the
 claim's root and every pod the driver specs mounts the same claim at its own `subPath`, so the
@@ -499,8 +500,8 @@ producing work.
 
 ### EFS prerequisites
 
-Stated from AWS's documentation except where marked observed — see the caveat above and the entry
-in [limits.md](limits.md):
+Stood up and observed on `internal-utils` — see the caveat above and the entry in
+[limits.md](limits.md):
 
 1. **The EFS CSI driver, actually running.** Its controller needs an IAM role carrying the
    access-point and file-system calls, bound either by IRSA (annotate the controller's service
@@ -536,6 +537,24 @@ in [limits.md](limits.md):
    Then `workspaces.storageClass: efs-sc`; `workspaces.accessModes` stays at its `ReadWriteMany`
    default. A static PV over an access point created by hand with the same POSIX user works
    equally well.
+
+### What the run proved
+
+On 2026-09-30, against the shape above on `internal-utils`:
+
+- The claim **bound in 16s**, RWX, and the provisioner minted an access point reporting
+  `Uid 1000`, `Gid 1000`, `OwnerUid 1000`, `Permissions 0775`. Those four are the whole fix — a
+  class without them mints `root:root 0700` instead.
+- A pod with `runAsUser: 1000` and **no `fsGroup`** ran `mkdir -p <org>/<user>` on the volume root
+  and wrote into it. Both directories came back owned `1000:1000`. That `mkdir` is the operation
+  that returns `EACCES` when the access point's POSIX user is wrong, and it is the one the
+  dashboard performs at sign-in.
+- A second pod **in the other availability zone** mounted `subPath: <org>/<user>`, read the file
+  the first had written, and wrote its own beside it — the runner's access pattern, across nodes,
+  which is what `ReadWriteMany` has to mean here.
+- The mount reported itself as `nfs4`. That is the direct confirmation of the `fsGroup` point
+  above: this is an RWX NFS mount, the shape the EFS CSI driver does not apply `fsGroup` to, and
+  nothing needed one because the access point already owned the tree.
 
 ### The single-AZ EBS fallback, and why it is not reachable
 

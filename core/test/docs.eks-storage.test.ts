@@ -66,20 +66,36 @@ describe('the workspaces volume prerequisites', () => {
         expect(kubernetes).toContain('no scheduling knob');
     });
 
-    it('does not claim the EFS path itself has been observed from this repository', () => {
-        expect(kubernetes).toContain('not been observed on a real EKS cluster');
-        expect(limits).toContain('The EFS path for the workspaces claim is mostly stated, not observed');
+    /**
+     * The storage contract was measured on a real cluster, so the document must say so and must
+     * name the cluster and the date — a measurement a later reader cannot date is a quotation.
+     */
+    it('records that the EFS shape was observed on a real EKS cluster', () => {
+        expect(kubernetes).toContain('observed on a real EKS cluster');
+        expect(kubernetes).toContain('internal-utils');
+        expect(kubernetes).toContain('2026-09-30');
+        expect(limits).toContain('internal-utils');
     });
 
     /**
-     * The other half of the same honesty rule: what WAS read off a real cluster must say so, and
-     * must name the cluster, so a later reader can tell a measurement from a quotation.
+     * And the edge of that measurement, which is the part most likely to be quietly dropped: the
+     * probes reproduced the access pattern, they were not the dashboard and not a runner Job. If
+     * this assertion ever has to be deleted, it should be because a real install was watched.
      */
-    it('marks the two claims that were read off a real EKS cluster', () => {
-        expect(kubernetes).toContain('read off a real EKS cluster');
-        expect(kubernetes).toContain('internal-utils');
-        expect(kubernetes).toContain('kubernetes.io/aws-ebs');
-        expect(limits).toContain('internal-utils');
+    it('still says the chart itself has never been installed on EKS', () => {
+        expect(kubernetes).toContain('never been installed on EKS');
+        expect(limits).toContain('What is still unobserved is the chart');
+        expect(chartReadme).toContain('never been installed on EKS');
+    });
+
+    /**
+     * The four access-point facts are the fix. A doc that keeps the prose but loses the numbers
+     * would read as advice instead of a recipe.
+     */
+    it('records the access point the run actually got', () => {
+        expect(kubernetes).toContain('`Uid 1000`');
+        expect(kubernetes).toContain('`Permissions 0775`');
+        expect(kubernetes).toContain('nfs4');
     });
 
     /**

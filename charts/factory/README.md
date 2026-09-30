@@ -52,10 +52,11 @@ chart pod; `imagePullSecrets` is also forwarded to every pod the driver specs.
 ## The workspaces volume
 
 The chart provisions the claim; it cannot provision what the claim needs from the cluster. Two
-requirements, both defaulted for a kind cluster and met by neither of EKS's defaults. **Every
-AWS-side statement below comes from AWS's documentation and has not been observed on a real EKS
-cluster from this repository** — they are prerequisites to satisfy, not a run that was watched
-(`docs/limits.md`):
+requirements, both defaulted for a kind cluster and met by neither of EKS's defaults. The EFS
+shape below was **stood up and observed on a real EKS cluster** on 2026-09-30 — claim bound,
+access point owned `1000:1000`, a uid-1000 pod provisioning a member tree that a pod in another AZ
+wrote into through its `subPath`. The chart itself has still never been installed on EKS; see
+`docs/limits.md` for that line:
 
 - **`ReadWriteMany`.** The dashboard mounts the volume root and every pod the driver specs mounts
   the same claim at its own `subPath`, from whichever node it landed on. `workspaces.storageClass`
