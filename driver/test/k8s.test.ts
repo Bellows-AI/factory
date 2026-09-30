@@ -6823,3 +6823,95 @@ describe('K8S_RELEASE on pod templates', () => {
         expect(servicePodSpec(released, job, service).metadata.labels).toMatchObject(instance);
     });
 });
+
+// Karpenter consolidation or a cluster-autoscaler scale-down voluntarily evicts a running runner
+// pod mid-job (issue #362): nothing is corrupted — the lease expires, the board re-offers — but
+// the work is redone, silently, visible only as a higher `attempts`. RUNNER_DO_NOT_DISRUPT is the
+// opt-out from that voluntary disruption, and both annotation keys travel together: Karpenter
+// reads the first, the cluster-autoscaler the second, and they are one switch. It is not a shield
+// against everything: a Spot interruption or an external drain (a managed-nodegroup upgrade,
+// kubectl drain) reclaims the pod regardless. Every pod the driver specs carries the annotations —
+// a declared service's eviction ruins the attempt exactly like the runner's does.
+describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
+    const ANNOTATIONS = {
+        'karpenter.sh/do-not-disrupt': 'true',
+        'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
+    };
+    const disruptable = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_DO_NOT_DISRUPT: '1' });
+    const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const NOOP_DESCRIPTOR = lookupHelper('noop')!;
+    const NONCE = '77777777-7777-4777-8777-777777777777';
+    const plan = (): HelperPlan => ({ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false });
+    const GATE_KEY = 'bellows/44444444-4444-4444-8444-444444444444/.worktrees/88888888-8888-4888-8888-888888888888';
+    const STARTED_AT = '2026-01-01T00:00:00.000Z';
+
+    it('annotates every pod the driver specs — runner, aux Jobs, declared services', () => {
+        // The annotations name the POD: Job specs carry them on the pod template (Karpenter reads
+        // pods, not Job objects); the bare service Pod carries them on its own metadata.
+        const jobSpecs: [string, { spec: { template: { metadata: { annotations?: object } } } }][] = [
+            ['the runner', runnerJobSpec(disruptable, job, { id: SESSION, resume: false })],
+            ['the sync', syncJobSpec(disruptable, repoJob, null)],
+            ['the reclaim', reclaimJobSpec(disruptable, repoJob)],
+            [
+                'the publish step',
+                publishStepJobSpec(disruptable, repoJob, {
+                    step: 1,
+                    publish: { label: 'git push', entrypoint: 'git', args: ['push'], env: false, inRepo: false },
+                    envSecret: null,
+                    repo: 'repo',
+                }),
+            ],
+            [
+                'the helper',
+                helperJobSpec(disruptable, repoJob, {
+                    plan: plan(),
+                    descriptor: NOOP_DESCRIPTOR,
+                    envSecret: null,
+                    nonce: NONCE,
+                }),
+            ],
+            [
+                'the gate',
+                gateJobSpec(disruptable, job, {
+                    key: GATE_KEY,
+                    image: 'node:20',
+                    gateName: 'test',
+                    command: 'true',
+                    run: 1,
+                    envSecretName: null,
+                    gateTimeoutMs: 60_000,
+                }),
+            ],
+            ['the bellows readout', bellowsJobSpec(disruptable, job)],
+            ['the claude turns readout', claudeTurnsJobSpec(disruptable, job, SESSION, STARTED_AT)],
+            ['the opencode session readout', opencodeReadoutJobSpec(disruptable, job, STARTED_AT)],
+            ['the claude transcript export', claudeTranscriptJobSpec(disruptable, job, SESSION, STARTED_AT)],
+            ['the opencode transcript export', opencodeTranscriptJobSpec(disruptable, job, STARTED_AT)],
+        ];
+        for (const [name, spec] of jobSpecs) {
+            expect(spec.spec.template.metadata.annotations, name).toEqual(ANNOTATIONS);
+            // Annotating the Job object itself would be cargo cult — Karpenter reads pods.
+            expect((spec as { metadata: { annotations?: object } }).metadata.annotations, name).toBeUndefined();
+        }
+        expect(servicePodSpec(disruptable, job, service).metadata.annotations).toEqual(ANNOTATIONS);
+    });
+
+    it('leaves the annotations off entirely when the switch is unset', () => {
+        expect(spec().spec.template.metadata).not.toHaveProperty('annotations');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.metadata).not.toHaveProperty('annotations');
+        expect(
+            gateJobSpec(plain, job, {
+                key: GATE_KEY,
+                image: 'node:20',
+                gateName: 'test',
+                command: 'true',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 60_000,
+            }).spec.template.metadata
+        ).not.toHaveProperty('annotations');
+        expect(servicePodSpec(plain, job, service).metadata).not.toHaveProperty('annotations');
+    });
+});

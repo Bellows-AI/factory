@@ -197,6 +197,13 @@ driver:
     # service's bare name through a search domain under it; change it only if the kubelet's
     # clusterDomain is not cluster.local.
     clusterDomain: cluster.local
+    # RUNNER_DO_NOT_DISRUPT: annotate every pod the driver specs — runners, aux Jobs, declared
+    # services — so Karpenter consolidation and cluster-autoscaler scale-down leave a running job
+    # alone (issue #362), instead of evicting it mid-run for the work to be redone silently under
+    # a higher `attempts`. Empty is off, and off is deliberate: an undisruptable pod pins its node
+    # for as long as the run lasts — up to jobTimeoutMs, two hours by default — so an operator
+    # running only on-demand nodes may not want it. It does not stop an explicit `kubectl drain`.
+    runnerDoNotDisrupt: ''
     resources:
         requests:
             cpu: 50m
