@@ -301,6 +301,30 @@ describe('memoryTaskList', () => {
         expect(page.items.map((item) => item.id)).toEqual([tid(2), tid(1)]);
     });
 
+    // A retry (issue #326) is a thread member with NO followUpTo — a fresh run of the thread
+    // head's command, appended to the conversation. It must fold into its thread like any other
+    // member, never spawn a second task.
+    it('folds a sessionless retry row into its thread instead of a second task', () => {
+        const jobs = [
+            ...task(
+                tid(1),
+                { status: 'succeeded', createdAt: at(60), finishedAt: at(55) },
+                {
+                    id: tid(11),
+                    status: 'failed',
+                    createdMinutesAgo: 40,
+                }
+            ),
+            job({ id: tid(12), rootJobId: tid(1), followUpTo: null, status: 'running', createdAt: at(10) }),
+        ];
+
+        const { navigation, page } = memoryTaskList(jobs, filters());
+
+        expect(page.items).toHaveLength(1);
+        expect(page.items[0]).toMatchObject({ id: tid(1), status: 'running' });
+        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
+    });
+
     it('keeps navigation counts and previews global while the page obeys the filters', () => {
         const jobs = [
             ...task(tid(1), { command: 'fix the login bug', status: 'running', createdAt: at(60), startedAt: at(59) }),

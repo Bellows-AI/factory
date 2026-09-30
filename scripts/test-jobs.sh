@@ -392,6 +392,31 @@ docker volume create "$VOLUME" >/dev/null &&
     exit 1
 }
 
+# Retry (issue #326): a finished run whose driver died before reporting a session — the state
+# follow-up refuses NO_SESSION — queues a fresh attempt of the thread head's command in the SAME
+# thread: no session resumed, the command delivered fresh, the same worktree root.
+retry_id="$(create_job 'retry me')"
+expect_status 'a queued task cannot be retried' 409 POST "/api/jobs/$retry_id/retry"
+retry_claim="$(body "$(api POST /api/jobs/claim '{"worker":"sessionless","leaseSeconds":300}')")"
+api POST "/api/jobs/$retry_id/complete" \
+    "{\"leaseToken\":\"$(field "$retry_claim" leaseToken)\",\"status\":\"failed\",\"exitCode\":1,\"output\":\"died\"}" >/dev/null
+expect_status 'a sessionless finished task cannot be followed up' 409 POST "/api/jobs/$retry_id/follow-up" \
+    '{"command":"continue this"}'
+retry_out="$(api POST "/api/jobs/$retry_id/retry")"
+if [ "$(status "$retry_out")" = '201' ]; then ok 'a sessionless finished task can be retried'; else
+    bad 'a sessionless finished task can be retried' "wanted 201, got $(status "$retry_out"): $(body "$retry_out")"; fi
+retry2_id="$(field "$(body "$retry_out")" id)"
+printf '%s\n' "$retry2_id" >>"$work/created-jobs"
+r2_claim="$(body "$(api POST /api/jobs/claim '{"worker":"retries","leaseSeconds":300}')")"
+expect_field 'the retry claim comes back'         "$r2_claim" id "$retry2_id"
+expect_field 'the retry re-runs the head command' "$r2_claim" command 'retry me'
+expect_field 'the retry stays in the thread'      "$r2_claim" rootJobId "$retry_id"
+expect_field 'the retry claims no session'        "$r2_claim" resumeSessionId ''
+expect_field 'the retry is not a follow-up'       "$r2_claim" followUp false
+expect_field 'the retry starts at attempt 1'      "$r2_claim" attempts 1
+api POST "/api/jobs/$retry2_id/complete" \
+    "{\"leaseToken\":\"$(field "$r2_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
+
 # --- The driver ------------------------------------------------------------------------------
 
 echo
