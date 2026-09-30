@@ -276,7 +276,9 @@ kind walkthrough. Decisions that look like cruft and are not:
 - **The app chart deploys no database.** Production points `database.url` at a database the chart
   does not manage; the URL carries the password, so it lands in the dashboard Secret as
   `database-url` and reaches the pod by `secretKeyRef`, and the template refuses to render without
-  one. There is no `timescale.enabled` switch to leave on by accident.
+  one when it is the thing creating that Secret — under `secret.existingSecret` the key has to be
+  there already, and it is the one key the pod spec does not mark optional. There is no
+  `timescale.enabled` switch to leave on by accident.
 - **The database is TimescaleDB today, and will be plain PostgreSQL — `metric_point` loses the
   hypertable (#356).** "Managed TimescaleDB" used to be written here unqualified, which reads to a
   cloud operator as "RDS". It is not: `server/migrations/001_init.sql` opens with
