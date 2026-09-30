@@ -296,10 +296,16 @@ kind walkthrough. Decisions that look like cruft and are not:
   **An existing local database must be destroyed, not upgraded.** A data directory initialised by
   `timescale/timescaledb` preloads the library in its own `postgresql.conf`, so `postgres:17`
   exits at startup and the pod crash-loops — delete the database claim (it outlives `make stop`
-  deliberately) along with the image change. `make reset` is that delete;
-  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state` is it by hand. Select by label,
-  not by name: the claim is the StatefulSet's `volumeClaimTemplate`, so it is named
-  `data-<release>-timescale-0`. `docs/persistence.md` carries the same warning for compose.
+  deliberately) along with the image change. `make reset` is that delete. By hand it is two steps,
+  and the order is the whole point: `helm uninstall factory-state` first — `make stop` leaves the
+  database StatefulSet running, and pvc-protection holds a claim its pod still mounts, so a delete
+  issued before the uninstall sits in `Terminating` forever — then
+  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=timescale`.
+  Select by label, not by name: the claim is the StatefulSet's `volumeClaimTemplate`, so it is named
+  `data-<release>-timescale-0`. Both labels, not just the instance: on its own that one also matches
+  `factory-state-workspaces`, the checkouts claim, which an image change has no business deleting.
+  (`make reset` drops the whole local state deliberately, so it selects by instance alone.)
+  `docs/persistence.md` carries the same warning for compose.
 
   **The database claim is a StatefulSet's, which changes what uninstall means.** Helm deleted the
   standalone PVC with the release; a `volumeClaimTemplate` claim is Retain by default and survives

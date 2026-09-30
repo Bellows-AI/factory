@@ -145,9 +145,13 @@ async function applyMigrations(sql: Sql, options: MigrateOptions, log: (message:
         // Not wrapped in a transaction with the insert. Since #371 no file creates an extension,
         // so the original reason is gone — but postgres already wraps each multi-statement
         // `unsafe` body in an implicit transaction (005's header depends on it), so an explicit
-        // one would only add the insert below to that scope. Every file is idempotent and the
-        // insert is `on conflict do nothing`, so a crash between the two costs one harmless
-        // re-run, and joining them buys nothing worth a second transaction shape.
+        // one would only add the insert below to that scope. The insert is `on conflict do
+        // nothing`, so re-running it is free — but the body is not universally replayable: 033
+        // and 039 end in an unguarded `alter table job add constraint … not valid`, which fails
+        // with 42710 the second time. A crash after the body commits and before the version row
+        // lands therefore wedges those two files, and `on conflict` cannot reach back to cover
+        // the earlier statement. The window is a lost insert, not a lost body; widening the
+        // transaction to close it is the fix if it ever bites.
         await sql.unsafe(body);
         if (repeatable) continue;
         await sql`insert into schema_migrations (version) values (${version})
@@ -166,8 +170,10 @@ async function applyMigrations(sql: Sql, options: MigrateOptions, log: (message:
 }
 
 /**
- * Applies pending migrations. Idempotent: every statement is `if not exists` or
- * `create or replace`, and applied versions are recorded, so a second run is a no-op.
+ * Applies pending migrations. A second run is a no-op because applied versions are recorded — not
+ * because every file could survive being replayed: 033 and 039 end in an unguarded
+ * `add constraint`, the window applyMigrations documents. Statements are `if not exists` or
+ * `create or replace` wherever postgres offers it, which is everywhere but those two.
  */
 export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> {
     const { attempts = 10, backoffMs = 1000, log = () => {} } = options;

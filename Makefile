@@ -164,8 +164,15 @@ reset: stop
 	# still terminating, and a blocking delete spends its grace period before the claim is even
 	# marked. The wait is what makes the next `make start` safe — an RWO volume still attached to
 	# a dying pod holds the fresh pod in Pending.
-	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --wait=false || true
-	kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --timeout=120s || true
+	# Nothing here is suppressed: an already-empty cluster is the one tolerated case, and it is
+	# spelled as "the selector matched nothing", not as `|| true`. A failed delete or a wait that
+	# times out on a claim stuck under pvc-protection must fail `reset` — reporting success there
+	# is what sends the next `make start` into a Pending pod.
+	pvcs=$$(kubectl get pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" -o name) || exit 1; \
+	if [ -n "$$pvcs" ]; then \
+		kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --wait=false && \
+		kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --timeout=120s; \
+	fi
 
 # The kind cluster itself, `stop` being only the release: this takes the node down with every
 # volume bound to it — checkouts, database, history. Everything `make start` needs it rebuilds

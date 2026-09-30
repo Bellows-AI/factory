@@ -34,8 +34,13 @@ restart with a warm database serves real data on the first request rather than a
   `schema_migrations`, so an old database stays a hypertable and is never converted. So:
   `docker compose down -v` before `docker compose up`, which discards `factory_dev` with the
   volume. On a local cluster the same applies to the database claim, which survives `make stop` by
-  design — `make reset` deletes it, or `kubectl delete pvc -l app.kubernetes.io/instance=factory-state`
-  by hand. Select it by that label rather than by name: it belongs to a StatefulSet's
+  design — `make reset` deletes it, or, by hand, `helm uninstall factory-state` and then
+  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=timescale`
+  (in that order: pvc-protection holds a claim its pod still mounts, and `make stop` leaves the
+  database running, so the delete alone sits in `Terminating` forever). The component half is not decoration: the instance label alone also matches
+  `factory-state-workspaces`, the checkouts claim, which this image change does not touch.
+  (`make reset` drops the whole local state on purpose, so it selects by instance alone.) Select the
+  claim by those labels rather than by name: it belongs to a StatefulSet's
   `volumeClaimTemplate`, so it is called `data-<release>-timescale-0`. Leave it and the database pod
   crash-loops after the image change. Disposable databases recreate themselves.
 - **`metric_point`'s DEFAULT partition is the whole partitioning strategy, and removing it breaks
