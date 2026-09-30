@@ -20,7 +20,7 @@
 -- Existing rows are backfilled in the order they are currently served, so the first list a member
 -- sees after this migration is the list they saw before it; the next save replaces the values.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header: without
+-- This file must contain NO `create extension`, per 005's header: without
 -- them postgres wraps the whole body in an implicit transaction, so a crashed run rolls back whole
 -- instead of leaving half a schema behind.
 

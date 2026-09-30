@@ -20,6 +20,38 @@ restart with a warm database serves real data on the first request rather than a
   nothing for an existing database and only lies about how the schema got there. Every schema change
   is a new file — 013 adding a check value and 023 removing the pull-request schema are the two
   precedents.
+- **`001_init.sql` is the one exception to that rule, taken deliberately in #371.** It used to
+  `create extension timescaledb` and call `create_hypertable('metric_point', …)`; it now declares
+  `metric_point` `partition by range (time)` with a single DEFAULT partition, and the schema names
+  no extension at all — which is what lets `database.url` point at RDS or Aurora. It was rewritten
+  rather than converted by a new file because a converting migration would have to rebuild the
+  table under every existing database, and the project ships no backward compatibility
+  (`AGENTS.md`). **An existing data directory must be destroyed, and the symptom if it is not is a
+  container that never starts.** A directory initialised by `timescale/timescaledb` carries
+  `shared_preload_libraries = 'timescaledb'` in its own `postgresql.conf`, and `postgres:17` cannot
+  load that library — it exits at startup ("could not access file \"timescaledb\"") and compose
+  crash-loops the service. The schema would be stale regardless: 001 is already recorded in
+  `schema_migrations`, so an old database stays a hypertable and is never converted. So:
+  `docker compose down -v` before `docker compose up`, which discards `factory_dev` with the
+  volume. On a local cluster the same applies to the database claim, which survives `make stop` by
+  design — `make reset` deletes it, or, by hand, `helm uninstall factory-state` and then
+  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=timescale`
+  (in that order: pvc-protection holds a claim its pod still mounts, and `make stop` leaves the
+  database running, so the delete alone sits in `Terminating` forever). The component half is not decoration: the instance label alone also matches
+  `factory-state-workspaces`, the checkouts claim, which this image change does not touch.
+  (`make reset` drops the whole local state on purpose, so it selects by instance alone.) Select the
+  claim by those labels rather than by name: it belongs to a StatefulSet's
+  `volumeClaimTemplate`, so it is called `data-<release>-timescale-0`. Leave it and the database pod
+  crash-loops after the image change. Disposable databases recreate themselves.
+- **`metric_point`'s DEFAULT partition is the whole partitioning strategy, and removing it breaks
+  every write.** A range-partitioned table rejects any row no partition covers — a failure mode the
+  hypertable did not have — and neither writer can promise a range: `npm run backfill` imports
+  transcripts of arbitrary age and an OTLP client's clock can run ahead of ours. Nothing prunes by
+  partition (the views filter on `time`; bucketing lives in core), so attaching real ranges later is
+  a performance decision, not a correctness one — and not a free one: `attach partition` **fails**
+  while the default holds a row the new range would cover, so it means moving those rows first.
+  Every unique index on the table must keep `time` among its columns — postgres requires the
+  partition key in each one, which is why `metric_point_dedup` was already legal.
 - **`023_drop_pull_requests.sql` is how a feature's schema is removed.** It drops
   `pull_request`, its four `pr_*` children, and `branch_commit`, `branch_history`, `sync_state` and
   `session_pr` — children listed before their parents, so the drops need no FK juggling. 004 and

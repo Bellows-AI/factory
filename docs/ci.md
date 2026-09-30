@@ -25,9 +25,9 @@ drift out of type without CI noticing.
 twice and drives a real chromium, which is too slow to gate every pull request. It provisions what
 `npm run verify:ui` cannot provision for itself:
 
-- a `timescale/timescaledb:latest-pg17` service — the same image `docker-compose.yml` pins, and a
-  test asserts the two stay equal. `001_init.sql` creates the timescaledb extension and a
-  hypertable, so plain postgres does not work.
+- a `postgres:17` service — the same image `docker-compose.yml` pins, and a test asserts the two
+  stay equal. Plain postgres since #371: the schema names no extension. The service is still
+  called `timescale`, because that name is what the scripts and `playwright.config.ts` reach for.
 - `factory_e2e` and `factory_auth_e2e`, created by hand: `e2e/reset-db.mjs` truncates but never
   creates, and `docker/init-databases.sh` only makes `factory_test`. Migrations run inside
   `npm run seed`, so empty databases are enough.
@@ -77,6 +77,6 @@ can make them deterministic, that is its own change, not a `continue-on-error` o
 
 A green pull request has not exercised these; run them locally before trusting a change to them:
 
-- `npm run test:db` — needs a `*_test` TimescaleDB.
+- `npm run test:db` — needs a `*_test` PostgreSQL 17.
 - `npm run test:jobs` — needs a docker daemon, four stub runner images and a free port 8129.
 - `npm run test:k8s` — needs helm, and kind for `--cluster`.

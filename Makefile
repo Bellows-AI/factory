@@ -1,6 +1,6 @@
 # The baked `runtime` image — what deploys, and what `docker compose up` deliberately does not run
 # (compose binds the working tree instead). `make baked` builds it and serves it against the
-# compose TimescaleDB, the same factory_dev the dev stack uses, via the OFFLINE entry — the same
+# compose database, the same factory_dev the dev stack uses, via the OFFLINE entry — the same
 # server, built with the code-only no-fetch arm, so two processes never sync one database;
 # AUTH_MODE=none + AUTH_ALLOW_PUBLIC_BIND=1 because the image bakes HOST=0.0.0.0, so the loopback
 # port publish is the perimeter. BAKED_PORT defaults to 8081 so it
@@ -74,7 +74,8 @@ runners: runners-build
 # release and reaps the runner Jobs (created at runtime by the driver, so not the release's) —
 # database and checkouts survive, and the next `make start` picks them up. `make reset` is `stop`
 # plus the state release and its claims: an empty database next start. `make cleanup` deletes the
-# kind cluster itself.
+# kind cluster itself. A state release installed before #371 is the one thing `make start` will not
+# upgrade — see `state-preflight`.
 
 CLUSTER ?= factory
 K8S_RELEASE ?= dev
@@ -87,7 +88,22 @@ LOCAL_VALUES = K8S_PORT=$(K8S_PORT) node scripts/k8s-local-values.mjs
 # Whatever the chart pins — read from the render, so the image loaded is the image the pod names.
 COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/factory -f charts/factory/values-local.yaml -f - --show-only templates/collector.yaml 2>/dev/null | awk '$$1 == "image:" { print $$2; exit }')
 
-.PHONY: build start stop reset
+.PHONY: build start state-preflight stop reset
+
+# The one upgrade `make start` must not perform. A pre-#371 state release holds the database in a
+# Deployment beside a standalone PVC named `<release>-timescale`; this chart holds it in a
+# StatefulSet whose volumeClaimTemplate mints `data-<release>-timescale-0`. The old PVC is a
+# resource the new manifest does not contain and carries no `helm.sh/resource-policy: keep`, so
+# `helm upgrade --install` deletes it — and the data — and the StatefulSet then starts on an empty
+# claim. `make start` promises a re-run keeps the release's data, so it refuses instead: destroying
+# a local database is a thing the user types, and `make reset` is how they type it.
+state-preflight:
+	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_STATE_RELEASE)-timescale >/dev/null 2>&1; then \
+		echo "make start: $(K8S_STATE_RELEASE) is a pre-#371 release — the database is a Deployment"; \
+		echo "  with a standalone PVC. Upgrading it deletes that claim and every row in it."; \
+		echo "  Run 'make reset' to drop the local state, then 'make start' again."; \
+		exit 1; \
+	fi
 
 # Update a running cluster with new code. The collector is static — start's pull left it in the
 # node — so only the code and runner images are rebuilt and re-loaded. Runner pods are minted per
@@ -116,6 +132,7 @@ start:
 	@$(LOCAL_VALUES) >/dev/null
 	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --name $(CLUSTER)
 	@kubectl config use-context kind-$(CLUSTER)
+	$(MAKE) state-preflight
 	@echo 'building the images on the host daemon'
 	docker build -f docker/Dockerfile --target runtime -t $(IMAGE) .
 	docker build -f docker/driver.Dockerfile -t $(DRIVER_IMAGE) .
@@ -132,11 +149,13 @@ start:
 	# values did not change rolls nothing out and a re-run would keep the stale pods. Restart both
 	# workloads so every start runs what the build above just loaded.
 	kubectl rollout restart deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver
-	@echo 'waiting for the deployments (a cold node pulls the database image for minutes)'
+	@echo 'waiting for the workloads (a cold node pulls the database image for minutes)'
 	kubectl wait --for=condition=available \
 		deployment/$(K8S_RELEASE)-factory deployment/$(K8S_RELEASE)-factory-driver \
-		deployment/$(K8S_STATE_RELEASE)-timescale deployment/$(K8S_RELEASE)-factory-collector \
+		deployment/$(K8S_RELEASE)-factory-collector \
 		--timeout=600s
+	# The database is a StatefulSet, which carries no `available` condition.
+	kubectl rollout status statefulset/$(K8S_STATE_RELEASE)-timescale --timeout=600s
 	@echo
 	@echo "board on http://127.0.0.1:$(K8S_PORT) — sign in with GitHub, then queue a job and watch it"
 	@echo 'run through a pod on the real runner images.'
@@ -153,9 +172,24 @@ stop:
 # `stop` first, and not only for the order of the words: a runner pod still mounting the
 # workspaces claim holds it under pvc-protection, and the claim delete waits for that — it would
 # block forever on a pod whose delete had not been issued yet.
+# The claim delete is not belt-and-braces: the database's claim belongs to a StatefulSet's
+# volumeClaimTemplate, which helm does not delete with the release, so this line is the only thing
+# that removes the data. It selects by label because the minted name is `data-<release>-timescale-0`.
 reset: stop
 	helm uninstall $(K8S_STATE_RELEASE) || true
-	kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" || true
+	# --wait=false then wait for the delete, rather than one blocking delete: the database pod is
+	# still terminating, and a blocking delete spends its grace period before the claim is even
+	# marked. The wait is what makes the next `make start` safe — an RWO volume still attached to
+	# a dying pod holds the fresh pod in Pending.
+	# Nothing here is suppressed: an already-empty cluster is the one tolerated case, and it is
+	# spelled as "the selector matched nothing", not as `|| true`. A failed delete or a wait that
+	# times out on a claim stuck under pvc-protection must fail `reset` — reporting success there
+	# is what sends the next `make start` into a Pending pod.
+	pvcs=$$(kubectl get pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" -o name) || exit 1; \
+	if [ -n "$$pvcs" ]; then \
+		kubectl delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --wait=false && \
+		kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$(K8S_STATE_RELEASE)" --timeout=120s; \
+	fi
 
 # The kind cluster itself, `stop` being only the release: this takes the node down with every
 # volume bound to it — checkouts, database, history. Everything `make start` needs it rebuilds

@@ -5,6 +5,6 @@
 -- UPDATE EXCLUSIVE — concurrent job writes proceed — and confirms every backfilled row satisfies
 -- the boundary they were backfilled under. Empty on a fresh database, instant on a used one.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 alter table job validate constraint job_workflow_name_ck;

@@ -4,8 +4,10 @@
 # factory chart create its own ReadWriteMany workspaces claim. Nothing here is a production shape.
 
 timescale:
-    # The same plain TimescaleDB container compose runs — metric_point is a hypertable.
-    image: timescale/timescaledb:latest-pg17
+    # The same plain Postgres container compose runs. The key keeps the name `timescale`
+    # because `<release>-timescale` is the object name values-local.yaml, the Makefile and
+    # scripts/test-k8s.sh all reach for; the extension itself is gone (#371).
+    image: postgres:17
     user: factory
     password: factory
     database: factory_dev

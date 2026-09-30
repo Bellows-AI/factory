@@ -43,7 +43,7 @@ export default defineConfig({
                 '**/*.d.ts',
                 'driver/src/index.ts',
                 'driver/src/scripts/**',
-                // These stores require the real Timescale suite rather than an offline fake.
+                // These stores require the real database suite rather than an offline fake.
                 'server/src/telemetry/postgres-client.ts',
                 'server/src/telemetry/store.ts',
             ],
