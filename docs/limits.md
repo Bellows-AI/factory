@@ -37,12 +37,17 @@ Read before: reporting a number as measured, or "fixing" something in this list.
   no row covers yet still accumulates with a null field. Telemetry depends on the executor image
   emitting into a reachable collector: the opencode image's plugin points at the compose network's
   `collector`, and off it the runs go unrecorded (see [telemetry.md](telemetry.md)).
-- **The EFS path for the workspaces claim is stated, never observed.** Every AWS-side claim in
-  [kubernetes.md](kubernetes.md)'s "The workspaces volume" — EKS's default StorageClass, what the
-  EFS CSI driver does with `fsGroup` on an RWX NFS mount, what a dynamically provisioned access
-  point is owned by, and that an `efs-ap` class with `uid`/`gid` 1000 fixes it — comes from AWS's
-  documentation. Nothing in this repository has run on EKS: `scripts/test-k8s.sh` refuses every
-  non-kind context, so the cloud lane does not exist. The claim that closes this is one real
-  sign-in provisioning a member tree plus one runner pod writing into its `subPath`, on EFS.
+- **The EFS path for the workspaces claim is mostly stated, not observed.** Two AWS-side claims in
+  [kubernetes.md](kubernetes.md)'s "The workspaces volume" were read off a real EKS cluster
+  (`internal-utils`, eu-central-1, v1.34): its default StorageClass is `gp3` on
+  `kubernetes.io/aws-ebs`, and its three-year-old `efs.csi.aws.com` `CSIDriver` object has no
+  controller behind it — which is why the prerequisite says to check for the controller's pods
+  rather than the registration. The rest still comes from AWS's documentation: what the EFS CSI
+  driver does with `fsGroup` on an RWX NFS mount, what a dynamically provisioned access point is
+  owned by, and that an `efs-ap` class with `uid`/`gid` 1000 fixes it. No EFS file system existed
+  in that account to test them against, and the chart has never been installed on EKS at all —
+  `scripts/test-k8s.sh` refuses every non-kind context, so the cloud lane does not exist. The claim
+  that closes this is one real sign-in provisioning a member tree plus one runner pod writing into
+  its `subPath`, on EFS.
 - n is small. Weekly points are noisy and a single large session moves a total — which is exactly
   why the page says so instead of smoothing it.

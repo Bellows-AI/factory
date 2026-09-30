@@ -66,7 +66,9 @@ cluster from this repository** — they are prerequisites to satisfy, not a run 
   and a dynamically provisioned one defaults to `root:root 0700`. The failure is silent: sign-in
   succeeds, the member tree is never created, and runner pods hang in `ContainerCreating`.
 
-On EKS: install the EFS CSI driver (its controller needs IRSA), create a file system with a mount
+On EKS: install the EFS CSI driver — and check its controller pods are actually running, not that
+a `CSIDriver` object exists, which can outlive the install by years — give that controller an IAM
+role by IRSA or EKS Pod Identity, create a file system with a mount
 target in every node subnet, and point `workspaces.storageClass` at a `StorageClass` with
 `provisioningMode: efs-ap`, `uid: "1000"`, `gid: "1000"`, `directoryPerms: "0775"`. The manifest,
 the single-AZ EBS fallback and why that fallback is not reachable yet are in

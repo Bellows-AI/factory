@@ -454,21 +454,26 @@ defaults — `workspaces.accessModes: [ReadWriteMany]` and `workspaces.storageCl
 the cluster's default class — are true of a kind cluster and of nothing on EKS. Both failures are
 quiet, which is why they are written down here rather than discovered.
 
-**Two kinds of claim live in this section, and they are not equally solid.** What this repository
+**Three kinds of claim live in this section, and they are not equally solid.** What this repository
 does — which pods mount the claim, as which uid, with which `subPath`, and what happens when the
-tree is missing — is read off the source and stated flatly. Everything about AWS — what EKS's
-default StorageClass is, what the EFS CSI driver does with `fsGroup`, what a dynamically
-provisioned access point is owned by, what an access point's parameters achieve — is taken from
-AWS's own documentation and **has not been observed on a real EKS cluster** from here. Those are
-stated prerequisites, not a measured result, and `docs/limits.md` records the gap. Nothing in this
-section — the sentence above it included — is a report of a run that happened.
+tree is missing — is read off the source and stated flatly. Two AWS-side facts were
+**read off a real EKS cluster** (`internal-utils`, eu-central-1, Kubernetes v1.34): that the
+default StorageClass is EBS-provisioned, and that a registered `CSIDriver` object proves nothing
+about whether a driver is installed. Everything else about AWS — what the EFS CSI driver does with
+`fsGroup`, what a dynamically provisioned access point is owned by, what an access point's
+parameters achieve — is taken from AWS's own documentation and has
+**not been observed on a real EKS cluster** from here, because no EFS file system existed to
+observe it against. `docs/limits.md` records which half is which. No end-to-end run of this chart
+on EFS has happened.
 
 **It must be `ReadWriteMany`, and the default class on EKS is not.** The dashboard mounts the
 claim's root and every pod the driver specs mounts the same claim at its own `subPath`, so the
-volume is read and written by many pods on many nodes at once. EKS's default StorageClass is EBS:
-`ReadWriteOnce` and single-AZ. The claim never binds, the dashboard Deployment sits `Pending`, and
-the driver — which never mounts the volume itself — keeps claiming jobs whose runner pods can
-mount nothing.
+volume is read and written by many pods on many nodes at once. EKS's default StorageClass is EBS —
+`ReadWriteOnce`, and single-AZ — so the claim never binds, the dashboard Deployment sits `Pending`,
+and the driver, which never mounts the volume itself, keeps claiming jobs whose runner pods can
+mount nothing. Observed on `internal-utils`: its default class is `gp3`, provisioner
+`kubernetes.io/aws-ebs`, and its six nodes span two availability zones — so even the fallback
+below would strand half the fleet.
 
 **It must be writable by uid 1000, and nothing in this repository makes it so.** The dashboard and
 driver pods run `runAsUser: 1000 / runAsGroup: 1000`; runner, sync, reclaim, publish, helper and
@@ -494,11 +499,20 @@ producing work.
 
 ### EFS prerequisites
 
-Stated, not observed — see the caveat above and its entry in [limits.md](limits.md):
+Stated from AWS's documentation except where marked observed — see the caveat above and the entry
+in [limits.md](limits.md):
 
-1. **The EFS CSI driver**, installed as an add-on. Its controller needs IRSA — a service account
-   annotated with an IAM role allowing the access-point and file-system calls; the node role is
-   not enough.
+1. **The EFS CSI driver, actually running.** Its controller needs an IAM role carrying the
+   access-point and file-system calls, bound either by IRSA (annotate the controller's service
+   account) or by EKS Pod Identity; the node role is not enough.
+
+   **Check for the controller, never for the `CSIDriver` object** — observed on `internal-utils`,
+   which has carried an `efs.csi.aws.com` `CSIDriver` registration since 2023 with no controller
+   behind it: no `efs-csi-controller-sa`, no pods in any namespace, and EFS absent from
+   `aws eks list-addons`. A `CSIDriver` object is a leftover an uninstall does not always sweep, so
+   a PVC against an `efs-sc` class on such a cluster waits `Pending` forever with no provisioner to
+   answer it and nothing in its events naming the cause. `kubectl -n kube-system get pods | grep
+   efs` is the honest check.
 2. **An EFS file system with a mount target in every subnet the nodes run in.** A node in a subnet
    with no mount target cannot mount the volume at all, and on EKS that is how a working install
    becomes an intermittent one as the autoscaler picks a new AZ.

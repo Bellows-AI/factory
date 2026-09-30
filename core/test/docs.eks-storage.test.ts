@@ -39,10 +39,21 @@ describe('the workspaces volume prerequisites', () => {
         expect(kubernetes).toContain('directoryPerms: "0775"');
     });
 
-    it('names the EFS CSI driver, its IRSA role and the mount-target requirement', () => {
+    it('names the EFS CSI driver, both IAM bindings and the mount-target requirement', () => {
         expect(kubernetes).toContain('EFS CSI driver');
         expect(kubernetes).toContain('IRSA');
+        expect(kubernetes).toContain('EKS Pod Identity');
         expect(kubernetes).toContain('mount target');
+    });
+
+    /**
+     * Observed on a real cluster and worth a pin of its own: a `CSIDriver` object can outlive the
+     * install it came from, so "is the driver there" is a question about the controller's pods.
+     * An operator who checks the registration instead gets a PVC that waits forever.
+     */
+    it('warns that a CSIDriver object does not prove the driver is installed', () => {
+        expect(kubernetes).toContain('never for the `CSIDriver` object');
+        expect(chartReadme).toContain('CSIDriver');
     });
 
     it('states why fsGroup is not the answer on an RWX NFS mount', () => {
@@ -55,9 +66,20 @@ describe('the workspaces volume prerequisites', () => {
         expect(kubernetes).toContain('no scheduling knob');
     });
 
-    it('does not claim the EFS path has been observed from this repository', () => {
+    it('does not claim the EFS path itself has been observed from this repository', () => {
         expect(kubernetes).toContain('not been observed on a real EKS cluster');
-        expect(limits).toContain('The EFS path for the workspaces claim is stated, never observed');
+        expect(limits).toContain('The EFS path for the workspaces claim is mostly stated, not observed');
+    });
+
+    /**
+     * The other half of the same honesty rule: what WAS read off a real cluster must say so, and
+     * must name the cluster, so a later reader can tell a measurement from a quotation.
+     */
+    it('marks the two claims that were read off a real EKS cluster', () => {
+        expect(kubernetes).toContain('read off a real EKS cluster');
+        expect(kubernetes).toContain('internal-utils');
+        expect(kubernetes).toContain('kubernetes.io/aws-ebs');
+        expect(limits).toContain('internal-utils');
     });
 
     /**
