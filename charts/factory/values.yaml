@@ -11,6 +11,15 @@
 # Registry pull Secrets (names, in this namespace) for every pod the chart runs AND every pod the
 # driver specs — runners, aux Jobs, gates and services pull the same way (RUNNER_IMAGE_PULL_SECRETS).
 imagePullSecrets: []
+
+global:
+    # Prefixes every image reference this chart renders — dashboard, driver, collector and both
+    # executor images — with one registry, so the registry decision cannot be half-applied: the
+    # executor images reach the driver as opaque env strings, and setting two of four values by
+    # hand is what leaves every runner pod in ImagePullBackOff (#358). Empty (the kind story): every
+    # repository/value is used verbatim and side-loaded images resolve under IfNotPresent.
+    # database.waitImage is NOT prefixed — it is a full reference an operator sets whole.
+    imageRegistry: ''
 # Scheduling for the chart's own pods (dashboard, driver, collector). Runner pods are specced by
 # the driver and schedule wherever the workspaces claim can attach.
 nodeSelector: {}
@@ -145,7 +154,9 @@ driver:
     # one checkout (docs/kubernetes.md).
     replicas: 1
     # One driver serves both task-selected executor types. These values choose image locations —
-    # full references, tag included; the task's executor profile chooses which one a claim runs.
+    # bare repository paths the global.imageRegistry prefix composes with (a tag may be included:
+    # `claude-executor:v1.2.3`; tagless reads :latest); the task's executor profile chooses which
+    # one a claim runs.
     executorImages:
         claudeCode: claude-executor
         opencode: opencode-executor

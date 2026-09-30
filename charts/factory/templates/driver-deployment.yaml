@@ -95,11 +95,12 @@ spec:
                       - name: EXECUTOR
                         value: kubernetes
                       # Image locations only. The claimed task's selected executor profile chooses
-                      # the CLI/image pair for that run.
+                      # the CLI/image pair for that run. The registry prefix composes here the
+                      # same as everywhere, so the executor images cannot be left behind it (#358).
                       - name: CLAUDE_EXECUTOR_IMAGE
-                        value: {{ $.Values.driver.executorImages.claudeCode | quote }}
+                        value: {{ include "factory.imageReference" (list $ $.Values.driver.executorImages.claudeCode) | quote }}
                       - name: OPENCODE_EXECUTOR_IMAGE
-                        value: {{ $.Values.driver.executorImages.opencode | quote }}
+                        value: {{ include "factory.imageReference" (list $ $.Values.driver.executorImages.opencode) | quote }}
                       # Runner pods pull like the driver's own: IfNotPresent, so a side-loaded
                       # executor image is used rather than reached for.
                       - name: RUNNER_IMAGE_PULL_POLICY

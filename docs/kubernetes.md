@@ -435,6 +435,22 @@ kind walkthrough. Decisions that look like cruft and are not:
   pinned, its config keys moving between releases. `values-local.yaml` uses `latest`, the tag the
   local builds produce. A changed chart Secret or collector config rolls its readers via
   `checksum/*` pod annotations.
+- **`global.imageRegistry` prefixes every image the release names (#358).** The bare defaults
+  (`factory-ai`, `factory-driver`, the two executor names) are the kind story — side-loaded with
+  `kind load docker-image`, resolved by `IfNotPresent`. On a remote cluster a bare name resolves
+  to `docker.io/library/*` and every pod lands in `ImagePullBackOff`. The executor images are the
+  sharp half: they are opaque strings handed to the driver, not pod-spec fields derived from any
+  chart registry, so four separate values are four chances to set two — which is why the prefix
+  is one value applied at `factory.image` (dashboard, driver, collector) and at the two executor
+  env values, never a rule the operator re-implements per value. `database.waitImage` is excluded
+  on purpose: it is a full reference (`postgres:17-alpine`) an operator sets whole. A repository
+  that already names a registry under a set prefix is refused at render — the prefix composes
+  with bare repositories only, by docker's own registry rule (first component containing `.`/`:`
+  or `localhost`), so `claude-executor:v1.2.3` stays legal. The recommended registry is GHCR with
+  public packages — nodes pull anonymously, no `imagePullSecrets`, no node-role change — and the
+  build/push walkthrough lives in the chart README. When an image cannot be pulled anyway,
+  `readImagePullStatus` (issue #302) fails the run fast with the kubelet's own message instead of
+  burning the deadline.
 - **The chart ships the collector, and the driver names it in every runner spec.** A docker runner
   joins the compose network and its baked `collector:4318` resolves; a pod cannot join a network,
   so the kubernetes form of `RUNNER_NETWORK` is the driver setting `OTEL_EXPORTER_OTLP_ENDPOINT`

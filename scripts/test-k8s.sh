@@ -481,6 +481,70 @@ refuses 'a port-forward origin is refused as an ingress host' 'is not among ingr
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set auth.publicUrl=http://127.0.0.1:18080 \
     --set ingress.enabled=true --set 'ingress.hosts={factory.example}'
 
+# --- The registry prefix (#358): one value, every image the release names ---------------------
+
+# Bare image names are the kind story: `kind load docker-image` side-loads them and IfNotPresent
+# resolves. On a remote cluster a bare name resolves to docker.io/library/* and every pod lands in
+# ImagePullBackOff — and the executor images reach the driver as opaque env strings, so setting two
+# of four values by hand is exactly the half-applied state one prefix value closes. With the
+# prefix empty (the default, the local story) the image assertions above pin the verbatim render
+# for the chart's own images and the pin below for the executor values, so a prefix that applied
+# unconditionally fails here first.
+expect_contains 'the executor values render verbatim with no prefix' "$gh" 'value: "claude-executor"'
+prefixed="$(gh_render --set global.imageRegistry=ghcr.io/example)"
+expect_contains 'the prefix reaches the dashboard image' "$prefixed" \
+    "image: ghcr.io/example/factory-ai:$app_version"
+expect_contains 'the prefix reaches the driver image' "$prefixed" \
+    "image: ghcr.io/example/factory-driver:$app_version"
+# The needle is the values.yaml pin verbatim; move it with the pin.
+expect_contains 'the prefix reaches the collector image' "$prefixed" \
+    'image: ghcr.io/example/otel/opentelemetry-collector-contrib:0.161.0'
+expect_contains 'the prefix reaches the claude executor image'   "$prefixed" 'value: "ghcr.io/example/claude-executor"'
+expect_contains 'the prefix reaches the opencode executor image' "$prefixed" 'value: "ghcr.io/example/opencode-executor"'
+# The exclusion the values comment states: the wait image is a full reference, never prefixed.
+expect_contains 'the prefix leaves the database wait image whole' "$prefixed" 'image: postgres:17-alpine'
+
+# A tag on an executor value survives the prefix; tagless reads :latest, which the pinning
+# assertions above already refuse for the chart's own images.
+tagged="$(gh_render --set global.imageRegistry=ghcr.io/example \
+    --set driver.executorImages.claudeCode=claude-executor:v1.2.3)"
+expect_contains 'a tag on the executor value survives the prefix' "$tagged" \
+    'value: "ghcr.io/example/claude-executor:v1.2.3"'
+
+# The prefix composes with a bare repository only: a value that already names a registry would
+# render a double prefix no registry serves. The tag-carrying shape is pinned too — the regex's
+# colon rule has to catch it before the tag, not false-positive on the tag itself.
+refuses 'an absolute repository is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set dashboard.image.repository=ghcr.io/other/factory-ai
+refuses 'a tagged absolute executor value is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set driver.executorImages.claudeCode=ghcr.io/other/claude-executor:v1.2.3
+refuses 'a trailing slash on the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example/
+refuses 'a pasted URL as the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=https://ghcr.io/example
+refuses 'a doubled slash in the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io//example
+refuses 'surrounding whitespace on the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set 'global.imageRegistry=ghcr.io/example '
+refuses 'an uppercase prefix is refused' 'lowercase registry path' \
+    "${GH_SETS[@]}" --set global.imageRegistry=Ghcr.io/Example
+refuses 'a scheme:/ typo as the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=https:/ghcr.io/example
+
+# The colon in a prefix is a registry port, not a tag: a bare host:port prefix renders whole.
+port="$(gh_render --set global.imageRegistry=registry:5000)"
+expect_contains 'a colon-bearing prefix renders as a host port' "$port" \
+    "image: registry:5000/factory-ai:$app_version"
+# The `:` and `localhost` alternations of the registry rule, pinned like the `.` one above.
+refuses 'a host:port repository is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set driver.image.repository=registry:5000/factory-driver
+refuses 'a localhost repository is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set driver.image.repository=localhost/factory-driver
+
 # Names stay valid DNS labels however long the release name: truncation leaves room for suffixes.
 long="$(helm template "release-name-that-is-deliberately-far-too-long-for-a-dns-label" charts/factory \
     "${GH_SETS[@]}" 2>&1)"
