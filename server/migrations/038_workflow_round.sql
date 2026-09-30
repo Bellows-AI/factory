@@ -14,7 +14,7 @@
 -- expanded graph (`DUPLICATE_NODE`), so `workflow_node` is reused directly as `workflow_wait.reason`
 -- — no separate namespacing scheme, no extra column to keep in sync with it.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 create table if not exists workflow_round (
     org_id           text        not null,

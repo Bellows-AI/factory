@@ -252,11 +252,12 @@ services:
                 condition: service_healthy
         restart: unless-stopped
 
-    # TimescaleDB rather than plain Postgres: metric_point is a real time-series table and
-    # becomes a hypertable, while session_branch stays relational so the attribution join is
-    # ordinary SQL. One extension, one driver, one dialect.
+    # Plain Postgres: metric_point is a declaratively-partitioned table (#371), not a hypertable,
+    # so no extension is involved and this is the same database a deployment points at — RDS,
+    # Aurora or anything else speaking PG17. The service keeps the name `timescale`: it is
+    # load-bearing in test-jobs.sh, test-k8s.sh, the Makefile and playwright.config.ts.
     timescale:
-        image: timescale/timescaledb:latest-pg17
+        image: postgres:17
         environment:
             POSTGRES_USER: factory
             POSTGRES_PASSWORD: factory

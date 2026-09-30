@@ -23,7 +23,7 @@
 -- by construction (they are created in this file), so there is nothing to backfill or validate —
 -- unlike 033/034, this file needs no follow-up VALIDATE CONSTRAINT migration.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 alter table job add column if not exists default_review_reconciliation boolean;
 alter table job add column if not exists default_merge_conflict_autofix boolean;

@@ -113,7 +113,7 @@ describe('parseBellows: services block', () => {
             '',
             'services:',
             '    - name: timescale',
-            '      image: timescale/timescaledb:latest-pg17',
+            '      image: postgres:17',
             '      environment:',
             '          POSTGRES_PASSWORD: factory',
         ].join('\n');

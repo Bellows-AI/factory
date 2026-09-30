@@ -16,7 +16,7 @@
 -- the comment in 001_init.sql: "the repo is resolved by joining to session_branch, so there is one
 -- source of truth rather than two that disagree"), so its organization comes through that same
 -- join. Adding the column would mean a second source of truth for one fact AND rebuilding a unique
--- index on a hypertable, bought for nothing. Consequence worth knowing: a session with metrics but
+-- index on a partitioned table, bought for nothing. Consequence worth knowing: a session with metrics but
 -- no session_branch row belongs to no organization at all. With one organization that is
 -- invisible; with several it is honestly unattributable, which is already how sessionsWithoutHook
 -- reports it.
@@ -28,8 +28,11 @@
 -- into the configured org exactly once, by adoptOrg() in db/migrate.ts. config.ts refuses any id
 -- beginning with '__' so the namespace cannot be squatted.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`. Those misbehave inside a
--- transaction, and without them postgres wraps the whole multi-statement body in an implicit one —
+-- This file must contain NO `create extension`. There is none anywhere in the schema since #371,
+-- and core/test/migrations.sql.test.ts asserts that rather than asking for it: the chart's
+-- database.url has to be able to name an RDS or Aurora instance with nothing installed in it. An
+-- extension also misbehaves inside a transaction, and without one postgres wraps the whole
+-- multi-statement body in an implicit one —
 -- which is what makes ten key rewrites atomic, so a crashed run rolls back whole instead of
 -- leaving half a schema behind.
 

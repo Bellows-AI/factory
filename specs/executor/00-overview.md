@@ -53,7 +53,7 @@ operator ──POST /api/tasks──> server (Fastify)  ──insert──> agen
 
 ## The four shaping decisions
 
-1. **Task state is in TimescaleDB, not in Kubernetes.** No CRDs, no operator framework. Jobs are
+1. **Task state is in PostgreSQL, not in Kubernetes.** No CRDs, no operator framework. Jobs are
    plain `batch/v1`, and the DB row is the source of truth. Kubernetes is a process launcher.
    *Rejected:* a Task CRD with a reconcile loop — it duplicates state the database already holds and
    makes `kubectl` and the dashboard two disagreeing sources of truth.

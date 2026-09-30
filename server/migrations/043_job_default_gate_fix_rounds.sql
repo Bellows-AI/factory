@@ -26,7 +26,7 @@
 -- the backfill above, every pre-existing row satisfies it, and the validating follow-up in the
 -- 034 style can land later.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 alter table job add column if not exists default_gate_fix_rounds integer;
 

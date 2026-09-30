@@ -12,7 +12,7 @@ under `server/src/github/`.
 | `driver/` | Job driver: claims jobs from the board and spawns a runner container per job. |
 
 Data flow: Claude Code → OTEL collector → `POST /api/otlp/v1/metrics` → `flattenMetrics()` →
-TimescaleDB (`metric_point`, `session_branch`) → `createPostgresTelemetryClient()` → `TelemetryInput`
+PostgreSQL (`metric_point`, `session_branch`) → `createPostgresTelemetryClient()` → `TelemetryInput`
 → `telemetryStats()` → `{ telemetry, meta }` → panels. **There is one stats pipeline.** The
 pull-request fetch, PR store, PR aggregation and their panels were removed with issue #62 —
 `023_drop_pull_requests.sql` drops the schema they owned — and `telemetry` is the whole payload

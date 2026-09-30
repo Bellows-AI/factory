@@ -22,7 +22,7 @@
 -- Actions precedent) and also admin-written; workspace rows are the member's own. Membership is
 -- not a sandbox here (docs/jobs.md), and nothing about env changes that.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header: without
+-- This file must contain NO `create extension`, per 005's header: without
 -- them postgres wraps the whole body in an implicit transaction, so a crashed run rolls back whole
 -- instead of leaving half a schema behind.
 

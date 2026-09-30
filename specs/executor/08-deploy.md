@@ -130,7 +130,7 @@ best-effort and get evicted first.
 
 ## 6. Where the database and the collector live
 
-The **local overlay** assumes the existing compose stack: TimescaleDB and the OTEL collector stay
+The **local overlay** assumes the existing compose stack: PostgreSQL and the OTEL collector stay
 where they are, reached from k3d via the host gateway. That keeps `docker compose up` meaningful and
 avoids running a database in the dev cluster.
 

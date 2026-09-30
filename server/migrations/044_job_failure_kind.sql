@@ -15,6 +15,6 @@
 -- verdict's overwrite is the only write, so the value boundary is the route's validation and no
 -- check constraint is needed.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 alter table job add column if not exists failure_kind text;
