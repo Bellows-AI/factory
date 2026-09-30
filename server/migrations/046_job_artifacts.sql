@@ -14,7 +14,7 @@
 -- JSONL exports), and the read routes page over characters. `truncated` marks a cap cut; the
 -- bytes beyond it were dropped by the driver, not by this table.
 --
--- This file must contain NO `create extension` and NO `create_hypertable`, per 005's header.
+-- This file must contain NO `create extension`, per 005's header.
 
 create table if not exists job_artifact (
     org_id text not null,
