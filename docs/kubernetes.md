@@ -406,7 +406,8 @@ kind walkthrough. Decisions that look like cruft and are not:
   `isolation.dnsCidrs`, default the NodeLocal DNSCache address 169.254.20.10/32 — a cluster whose
   DNS carries other labels must list its resolver there, or runners lose DNS), this release's
   dashboard, collector and driver, each other, and anything outside `isolation.blockedCidrs` (the private ranges and 169.254.0.0/16, the cloud
-  metadata endpoint). IPv4 only; inert without an enforcing CNI.
+  metadata endpoint). IPv4 only; inert without an enforcing CNI. On EKS that CNI needs setting up
+  first — see [EKS prerequisites](#eks-prerequisites).
 - **The gate endpoint is advertised at the driver pod's IP.** `GATE_ADVERTISE_URL=http://$(POD_IP)`
   from the downward API: a Service name would resolve to every driver replica — and to the old and
   new pod both during a rollout — while the ephemeral port the driver appends is open on exactly
@@ -470,6 +471,52 @@ kind walkthrough. Decisions that look like cruft and are not:
    key: the driver puts the attempt pair itself — `RUNNER_JOB_ID` and `RUNNER_LEASE_TOKEN`, the
    job and the lease it claimed — into every runner pod's per-attempt Secret, so the reports
    authenticate as the attempt rather than as the deployment.
+
+## EKS prerequisites
+
+Four node- and add-on-level settings the chart cannot make for itself (issue #363), plus the
+ownership answer that closes the one caveat the settings cannot. Each is silent
+when wrong — the isolation story reads as enforced and is not — so these are prerequisites, not
+recommendations.
+
+- **IMDS is defended at the node, not only by the policy.** `isolation.blockedCidrs` includes
+  `169.254.0.0/16`, so a runner cannot reach the cloud metadata endpoint — but only where a CNI
+  actually enforces the policy. The node-level defence has to exist beside it: set
+  `httpPutResponseHopLimit: 1` on the runner node group, or disable IMDS there outright. A
+  container that reaches `169.254.169.254` gets the node's IAM role, which no chart value scopes.
+- **The VPC CNI enforces NetworkPolicy only when told to.** The add-on must be configured with
+  `enableNetworkPolicy: true`, and then only on EC2 Linux nodes — not Fargate, not Windows.
+  A policy is one IP family per rule and the chart's egress rule is IPv4 `0.0.0.0/0`, so an
+  IPv6 cluster is uncovered (the template says so). Without the flag the NetworkPolicy object is
+  admitted and inert.
+- **Declared-service pods are owned, so the enforcement caveat has nothing here to bite.** AWS
+  states VPC CNI enforcement is "optimized for" pods carrying `metadata.ownerReferences` and that
+  standalone pods "might not work reliably" — and every other pod the driver specs is a Job and
+  therefore owned. The declared-service pods are the one class that is not a Job, so each carries
+  an ownerReference to the attempt's own headless Service: `startFleet` creates the Service first,
+  reads the uid off its create response, and `servicePodSpec` stamps it into every pod — a create
+  answered without a uid refuses to start the fleet rather than leave standalone pods behind.
+  `blockOwnerDeletion: false` (no write on the owner needed) and `controller: false` (the Service
+  is an owner, not a manager); deleting the Service garbage-collects the pods, the direction the
+  lease teardown already goes. What the ownerReference buys is managed-pod status with the VPC CNI;
+  AWS's wording stays a caveat, not a promise — a cluster that wants a harder guarantee runs
+  Cilium.
+- **metrics-server is not installed on EKS by default.** The driver reads runner vitals from the
+  metrics API and treats a missing sample as null, so its absence degrades honestly: the dashboard
+  renders no vitals and nothing false. Install the add-on when you want the numbers.
+- **`blockedCidrs` blocks the VPC too.** The defaults — 10/8, 172.16/12, 192.168/16, 100.64/10 —
+  cover every plausible VPC CIDR. In-cluster traffic is fine, the dashboard, collector and driver
+  are reached by podSelector rather than by CIDR, but a runner that must reach a VPC endpoint
+  (CodeArtifact, a registry mirror, an internal git host, a PrivateLink'd database) needs that
+  host in `isolation.allowedCidrs` as a /32, one per host.
+
+Checks that pass as written, recorded so nobody re-derives them: EKS CoreDNS pods carry
+`k8s-app: kube-dns` in `kube-system`; every namespace carries `kubernetes.io/metadata.name`;
+NodeLocal DNSCache is not installed by default, so the `169.254.20.10/32` default in
+`isolation.dnsCidrs` is harmless; both chart Services satisfy the "service port must equal
+container port" shape; the admission policies need Kubernetes ≥ 1.30, which every supported EKS
+version meets. **Fargate is out entirely** — no network policy, no metrics API, and the whole
+isolation story assumes a node.
 
 ## Variables
 
@@ -547,7 +594,11 @@ one is the escalation it never needed.
 readout is a throwaway Job over a read-only PVC mount — the same script the docker readout
 container runs — and each service then starts as a `restartPolicy: Never` pod (docker's detached
 container never restarts either) with the environment as literal pod env, exactly as public as
-the author's file already was. The DNS half is the whole trick, and it is attempt-scoped the way
+the author's file already was. Each pod is an OWNED pod, never a standalone one: it carries an
+`ownerReference` to that headless Service, whose uid `startFleet` reads off the Service's create
+response — the one driver-specced pod that is not a Job, kept from being the one pod an enforcing
+CNI may skip ([EKS prerequisites](#eks-prerequisites), issue #363). The DNS half is the whole
+trick, and it is attempt-scoped the way
 docker's per-job network is: the attempt gets ONE headless Service named
 `factory-svc-<hash of job id + lease>`, each service pod sets `hostname: <declared name>` and
 `subdomain: <that Service>` (and carries `factory.fleet: <that Service>`, which is all the Service

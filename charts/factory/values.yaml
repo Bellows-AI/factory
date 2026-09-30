@@ -240,7 +240,9 @@ isolation:
     # A NetworkPolicy on every runner pod (the `factory.job` label). Ingress only from other runner
     # pods (declared services); egress to DNS (kube-dns and `dnsCidrs` only), this release's
     # dashboard, collector and driver, other runner pods, and anywhere outside `blockedCidrs`. Needs
-    # a CNI that enforces NetworkPolicy — without one the object is inert, never an outage.
+    # a CNI that enforces NetworkPolicy — without one the object is inert, never an outage. On EKS
+    # that means the VPC CNI add-on with enableNetworkPolicy: true (EC2 Linux nodes only); see
+    # docs/kubernetes.md, "EKS prerequisites".
     networkPolicy: true
     # The only addresses runner pods may reach on port 53 besides the `k8s-app: kube-dns` pods in
     # kube-system. The default is NodeLocal DNSCache's link-local address, which no pod selector
