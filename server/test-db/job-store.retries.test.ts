@@ -181,6 +181,50 @@ describe.skipIf(!enabled)('retries', () => {
         expect(await store.createRetry(second, null)).toBe('not_finished');
     });
 
+    // Eligibility is the THREAD HEAD's, not the named row's: the retry re-runs the head's
+    // command, so a head that is still queued or running owns the turn whoever was asked.
+    it('refuses a retry while the thread head is still queued', async () => {
+        const root = await finishWithSession('drive me');
+        await mustFollowUp(root, 'queued adjustment', null);
+
+        expect(await store.createRetry(root, null)).toBe('not_finished');
+    });
+
+    it('refuses a retry while the thread head is still running', async () => {
+        const root = await finishWithSession('drive me');
+        const followUp = await mustFollowUp(root, 'running adjustment', null);
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        expect(claim?.id).toBe(followUp.id);
+
+        expect(await store.createRetry(root, null)).toBe('not_finished');
+    });
+
+    // The done is the THREAD's: one member carrying done_at closes the whole conversation to
+    // retries, even when the asked member itself was never marked.
+    it('refuses a retry on a thread whose done landed on another member', async () => {
+        const root = await finishWithSession('drive me');
+        const followUp = await mustFollowUp(root, 'again', null);
+        const claim = await store.claim('w1', LEASE_SECONDS);
+        expect(claim?.id).toBe(followUp.id);
+        // The follow-up's run dies sessionless — retry's own acceptance shape.
+        await store.session(followUp.id, claim!.leaseToken, null);
+        await store.complete(followUp.id, claim!.leaseToken, { status: 'failed', exitCode: null, output: 'died' });
+
+        await store.markDone(root, null);
+
+        expect(await store.createRetry(followUp.id, null)).toBe('task_done');
+    });
+
+    // A moving head means the thread is not over: not_finished (retry later) outranks the
+    // older member's task_done, which a reopen can still clear.
+    it('prefers not_finished over task_done when the head is moving', async () => {
+        const root = await finishWithSession('drive me');
+        await mustFollowUp(root, 'still queued', null);
+        await store.markDone(root, null);
+
+        expect(await store.createRetry(root, null)).toBe('not_finished');
+    });
+
     it('refuses a retry on a task the user has marked done', async () => {
         const id = await finishSessionless('echo hi');
         await store.markDone(id, null);
@@ -229,5 +273,43 @@ describe.skipIf(!enabled)('retries', () => {
         const retry = await mustRetry(id, null);
 
         expect(await store.get(retry.id)).toMatchObject({ workflowName: 'my-flow' });
+    });
+
+    // The per-thread advisory lock is the codebase's one serialization point (claim, remove,
+    // reopen, done all take it): the retry's eligibility check and its insert must be atomic
+    // with a racing done on any member, or a done could commit between the check and the
+    // insert and leave a fresh attempt queued into a closed thread.
+    it('blocks a retry while another transaction holds the thread lock', async () => {
+        const root = await finishSessionless('retry me');
+
+        let lockTaken: (() => void) | null = null;
+        const locked = new Promise<void>((resolve) => {
+            lockTaken = resolve;
+        });
+        let release: (() => void) | null = null;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const blocker = sql.begin(async (tx) => {
+            await tx`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`;
+            lockTaken!();
+            await held;
+        });
+        blocker.catch(() => {});
+        await locked;
+
+        // The timer is the assertion device, the same one the follow-ups lock tests use:
+        // the retry must still be waiting when it fires.
+        const retry = store.createRetry(root, null);
+        const STILL_LOCKED_TIMEOUT_MS = 450;
+        const outcome = await Promise.race([
+            retry,
+            new Promise<string>((resolve) => setTimeout(() => resolve('still_locked'), STILL_LOCKED_TIMEOUT_MS)),
+        ]);
+        expect(outcome).toBe('still_locked');
+
+        release!();
+        await blocker;
+        expect(await retry).toMatchObject({ id: expect.any(String) });
     });
 });

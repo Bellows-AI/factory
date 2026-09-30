@@ -126,12 +126,18 @@ export async function createFollowUpRow(
     // same lock both job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
     return sql.begin(async (tx) => {
         // The follow-up runs in the PARENT's repo's checkout, so the guard reads the parent's
-        // repo label (a finished parent's label never changes) and locks the author's checkout
-        // row before anything can be inserted.
-        const [label] = await tx<{ repo: string | null }[]>`
-            select repo from job where org_id = ${orgId} and id = ${parentId}
+        // repo label (a finished parent's label never changes) — and the same read resolves the
+        // thread root the advisory lock below is keyed by.
+        const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
+            select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
         `;
-        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label?.repo ?? null)) return 'purging';
+        if (!label) return 'missing';
+        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
+        // The same per-thread advisory lock the claim, remove, reopen and done take: the
+        // eligibility check and the insert must be atomic with a racing done on ANY member —
+        // not only on the parent row the CTE below locks — or a done could commit between the
+        // check and the insert and leave queued work in a thread the user closed.
+        await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
         const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, session_id, root_job_id, workflow_name
@@ -178,8 +184,8 @@ export async function createFollowUpRow(
         // Nothing inserted — one of the five preconditions failed, and which one decides the answer
         // the route turns into a status code. Forbidden is last: a sessionless parent answers the
         // truer no_session whoever asks, and a parent with no author falls through the author check
-        // rather than refusing.
-        if (!(await exists(tx, orgId, parentId))) return 'missing';
+        // rather than refusing. The parent cannot have moved to deleted since the pre-read above —
+        // remove deletes under this same advisory lock — so missing was decided before the lock.
         return followUpRefusalOf(tx, orgId, parentId, createdBy);
     });
 }
@@ -218,17 +224,21 @@ async function followUpRefusalOf(
 /**
  * createRetry's body (issue #326): queue a fresh attempt of the thread head's command in the SAME
  * thread, without resuming a session. One transaction and one conditional insert, shaped exactly
- * like the follow-up's: the checkout purge guard first, then the insert whose `named` CTE carries
- * every precondition on the NAMED row — terminal, not done, the caller's own — under its `for
- * update` lock, so the refusal below names the row as it is now, never a stale snapshot.
+ * like the follow-up's: the checkout purge guard first, then the insert. Eligibility is the
+ * THREAD's, not the named row's: the `named` CTE carries only the caller's own-row predicate
+ * under its `for update` lock, and the INSERT..SELECT admits the retry only when the thread HEAD
+ * (the newest member by created_at then id — the same chainHead rule the reads follow) is
+ * terminal and NO member of the thread carries a done_at. A terminal root therefore cannot queue
+ * a second attempt under a head that is still queued or running, and a terminal head whose
+ * thread the user closed anywhere refuses task_done. The refusal below names the thread as it is
+ * now, never a stale snapshot.
  *
- * What is copied comes from the thread HEAD (the newest member by created_at then id — the same
- * chainHead rule the reads follow): its command, repo, executor, workflow_name and root_job_id.
- * What is deliberately ABSENT is the follow-up's other two columns: no `parent_job_id` and no
- * `session_id`. The claim computes `followUp` from `parent_job_id` and keeps `session_id` only on
- * a follow-up, so this row is delivered as an ordinary first run — `resumeSessionId: null,
- * followUp: false` — with no claim-side rule added, and it lands in the thread's own worktree
- * because the worktree is keyed by `root_job_id`.
+ * What is copied comes from the thread HEAD: its command, repo, executor, workflow_name and
+ * root_job_id. What is deliberately ABSENT is the follow-up's other two columns: no
+ * `parent_job_id` and no `session_id`. The claim computes `followUp` from `parent_job_id` and
+ * keeps `session_id` only on a follow-up, so this row is delivered as an ordinary first run —
+ * `resumeSessionId: null, followUp: false` — with no claim-side rule added, and it lands in the
+ * thread's own worktree because the worktree is keyed by `root_job_id`.
  */
 export async function createRetryRow(
     sql: Sql,
@@ -239,24 +249,28 @@ export async function createRetryRow(
     // job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
     return sql.begin(async (tx) => {
         // The retry runs in the thread's repo's checkout, so the guard reads the named row's
-        // repo label (a finished row's label never changes) and locks the author's checkout row
-        // before anything can be inserted.
-        const [label] = await tx<{ repo: string | null }[]>`
-            select repo from job where org_id = ${orgId} and id = ${id}
+        // repo label (a finished row's label never changes) — and the same read resolves the
+        // thread root the advisory lock below is keyed by.
+        const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
+            select repo, root_job_id from job where org_id = ${orgId} and id = ${id}
         `;
-        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label?.repo ?? null)) return 'purging';
+        if (!label) return 'missing';
+        if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
+        // The same per-thread advisory lock the claim, remove, reopen and done take: the
+        // eligibility check and the insert must be atomic with a racing done on ANY member and
+        // with a claim of the head, or a done could commit between the check and the insert and
+        // leave a fresh attempt queued into a closed thread.
+        await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
         const rows = await tx<{ id: string }[]>`
             with named as (
                 select id, root_job_id
                 from job
                 where org_id = ${orgId} and id = ${id}
-                  and status in ('succeeded','failed','dead','stopped')
-                  and done_at is null
                   and created_by is not distinct from ${createdBy}
                 for update
             ),
             head as (
-                select command, repo, executor, root_job_id, workflow_name
+                select command, repo, executor, root_job_id, workflow_name, status
                 from job
                 where org_id = ${orgId} and root_job_id = (select root_job_id from named)
                 order by created_at desc, id desc
@@ -266,36 +280,67 @@ export async function createRetryRow(
             select ${orgId}, head.command, ${createdBy}, head.repo, head.executor,
                    head.root_job_id, head.workflow_name
             from named, head
+            where head.status in ('succeeded','failed','dead','stopped')
+              and not exists (
+                  select 1
+                  from job d
+                  where d.org_id = ${orgId}
+                    and d.root_job_id = head.root_job_id
+                    and d.done_at is not null
+              )
             returning id
         `;
         if (rows[0]) return { id: rows[0]!.id };
         // Nothing inserted — one of the preconditions failed, and which one decides the answer
         // the route turns into a status code.
-        if (!(await exists(tx, orgId, id))) return 'missing';
-        return retryRefusalOf(tx, orgId, id);
+        return retryRefusalOf(tx, orgId, id, createdBy);
     });
 }
 
 /**
- * Names the precondition the conditional insert failed on, for the row AS IT IS NOW — the same
- * honesty followUpRefusalOf states. The author predicate has no arm here: the insert's `named`
- * CTE already decided it, so after the done and status reads the only remaining cause is a row
- * that moved between the CTE and this read, and `forbidden` is the catch-all answer. A row that
- * moved all the way to deleted answers `missing` rather than dying on the read.
+ * Names the precondition the conditional insert failed on, for the thread AS IT IS NOW — the
+ * same honesty followUpRefusalOf states. The eligibility the insert decided is the thread's, so
+ * the refusal reads all three facts in one go and answers in the priority they mean: a HEAD
+ * that is still moving owns the turn (`not_finished`) even when an older member carries
+ * done_at — retry later, or reopen the done first; a done on ANY member is the thread closed
+ * (`task_done`); the author predicate is decided last, so a thread that is over answers its
+ * over-ness to whoever asks before it answers `forbidden` — and forbidden is the catch-all for
+ * a row that moved between the CTE and this read. A row that moved all the way to deleted
+ * answers `missing` rather than dying on the read.
  */
 async function retryRefusalOf(
     tx: TransactionSql,
     orgId: string,
-    id: string
+    id: string,
+    createdBy: string | null
 ): Promise<'missing' | 'task_done' | 'not_finished' | 'forbidden'> {
-    const [row] = await tx<{ status: JobStatus; done_at: Date | null }[]>`
-        select status, done_at from job where org_id = ${orgId} and id = ${id}
+    const [row] = await tx<{ head_status: JobStatus | null; thread_done: boolean; created_by: string | null }[]>`
+        select (
+            select status from job head
+            where head.org_id = ${orgId} and head.root_job_id = named.root_job_id
+            order by head.created_at desc, head.id desc
+            limit 1
+        ) as head_status,
+        exists (
+            select 1 from job d
+            where d.org_id = ${orgId} and d.root_job_id = named.root_job_id
+              and d.done_at is not null
+        ) as thread_done,
+        named.created_by
+        from job named
+        where named.org_id = ${orgId} and named.id = ${id}
     `;
     if (!row) return 'missing';
-    if (row.done_at !== null) return 'task_done';
-    if (row.status !== 'succeeded' && row.status !== 'failed' && row.status !== 'dead' && row.status !== 'stopped') {
+    if (
+        row.head_status !== 'succeeded' &&
+        row.head_status !== 'failed' &&
+        row.head_status !== 'dead' &&
+        row.head_status !== 'stopped'
+    ) {
         return 'not_finished';
     }
+    if (row.thread_done) return 'task_done';
+    if (row.created_by !== createdBy) return 'forbidden';
     return 'forbidden';
 }
 
@@ -312,6 +357,18 @@ export async function markJobDone(
     // not. A thread that is still moving keeps its tree: its last completing attempt will
     // find every member terminal AND this done_at in place, and reclaim at the verdict.
     return sql.begin(async (tx) => {
+        // The thread root, straight off the named row (022) — the same pre-lock read remove and
+        // reopen make. Nothing when the input never existed.
+        const [named] = await tx<{ root_job_id: string }[]>`
+            select root_job_id from job where org_id = ${orgId} and id = ${id}
+        `;
+        if (!named) return 'missing';
+        // The same per-thread advisory lock the claim, remove, reopen and both insert paths take:
+        // stamping done_at must be atomic with the follow-up and retry inserts — whose
+        // thread-done eligibility checks read it — and with remove and reopen, or one of them
+        // could decide against a thread whose done it could not see. It also serializes done
+        // against remove and reopen, which row-locking alone never did.
+        await tx`select pg_advisory_xact_lock(hashtextextended(${named.root_job_id}::text, 0))`;
         // coalesce, not assignment: the second "done" answers the first one's instant,
         // which is what makes the route idempotent rather than silently rewriting history.
         // done_by rides the same rule: the first writer's actor survives a retried click.

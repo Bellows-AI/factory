@@ -178,10 +178,13 @@ describe.skipIf(!enabled)('the purge races', () => {
                     ${'33333333-3333-4333-8333-333333333333'}, ${parentId})
         `;
 
-        const followUp = await jobs.createFollowUp(parentId, 'again', ALICE);
-        expect(followUp).toHaveProperty('id');
-        // The retry path reads the same absent row as no refusal, the same contract.
+        // The retry path reads the same absent row as no refusal, the same contract — probed
+        // while the parent is still the thread's head, which is what makes it retry-eligible
+        // (a queued follow-up head owns the turn and answers not_finished instead).
         const retry = await jobs.createRetry(parentId, ALICE);
         expect(retry).toHaveProperty('id');
+
+        const followUp = await jobs.createFollowUp(parentId, 'again', ALICE);
+        expect(followUp).toHaveProperty('id');
     });
 });
