@@ -29,6 +29,7 @@ installer allowed to create cluster-scoped admission policies. Images default to
 | --- | --- |
 | `Deployment <release>-factory` | The dashboard. `AUTH_MODE` is always `github` — there is no value to change it: this deployment holds checkouts and serves a route that runs shell commands. Exactly one replica, `Recreate`: the server is the single in-process writer of the checkouts and its migrations take no lock. An init container (`pg_isready -d "$DATABASE_URL"`, bounded by `database.waitTimeoutSeconds`) holds the server back until the database accepts connections; the startup and readiness probes read `/api/ready` (503 until the migrations land), liveness reads `/api/health`. |
 | `Service <release>-factory` | ClusterIP. The driver reaches the board by this name; people reach it through whatever the operator deliberately puts in front. |
+| `Ingress <release>-factory` | Only when `ingress.enabled` (default off). Fronts the dashboard Service; `className`, `annotations`, `hosts` and `tls` pass through verbatim — the annotations are the whole cloud-specific part. See "Exposing the dashboard". |
 | `Deployment <release>-factory-driver` + the shared `ServiceAccount`/`Role`/`RoleBinding` | The "operator for runners": watches the board and reconciles one runner Job per claimed job. The Role is namespace-scoped and carries only the calls the runner makes — create/delete Jobs (runners, gate runs and the services readout), create/delete the per-attempt env Secret, create/get/delete the per-job checkout-claim ConfigMap that makes the re-claim fence atomic, create/delete/list pods (service fleets; list is discovery), create/delete Services (a service's DNS name), read pod logs. Never a ClusterRole, and never `pods/exec`. The driver also runs the **orphan reaper** (`driver.reapIntervalMs` / `driver.reapGraceMs`, issue #301): a periodic sweep of service objects whose owning job is terminal, board-unknown, or running under another lease — no new verbs needed, the grants above already cover it. The gate endpoint is advertised at the driver pod's own IP (`GATE_ADVERTISE_URL=http://$(POD_IP)`), so more than one driver replica is safe. Liveness is a heartbeat file the driver touches every 10s. |
 | `ValidatingAdmissionPolicy <namespace>-<release>-factory-driver-{pods,objects}` + bindings | The fence the Role cannot draw (`isolation.admissionPolicy`). RBAC cannot scope by name, so `create pods` would be `read every Secret` in the namespace — the dashboard's App key included — and `delete secrets` would reach them all. Bound to the driver's ServiceAccount: pod specs may reference only the driver's per-attempt Secrets (`factory-{job,sync,publish,helper,gate}-…-env`), the runner credentials and the chart's pull secrets; no hostPath, host namespaces, privilege or ServiceAccount token; creates and deletes only of objects labelled `factory.job`; Secrets only Opaque, Services only headless. |
 | `NetworkPolicy <release>-factory-runners` | Confines every pod this release's driver specs (`isolation.networkPolicy`): ingress only from each other, egress to DNS (port 53 only to the `k8s-app: kube-dns` pods in kube-system and `isolation.dnsCidrs`, default NodeLocal DNSCache's 169.254.20.10/32 — list your resolver there if your cluster DNS carries other labels, or runners lose DNS), this release's dashboard/collector/driver, each other, and anything outside `isolation.blockedCidrs` — the private ranges and the cloud metadata endpoint. Inert without a CNI that enforces NetworkPolicy. |
@@ -49,6 +50,46 @@ the `RuntimeDefault` seccomp profile; only the driver mounts a ServiceAccount to
 chart Secret or collector config rolls the pods that read it (`checksum/*` annotations).
 `imagePullSecrets`, `nodeSelector`, `tolerations`, `affinity` and `podAnnotations` apply to every
 chart pod; `imagePullSecrets` is also forwarded to every pod the driver specs.
+
+## Exposing the dashboard
+
+The Service is ClusterIP on purpose and stays that way: the port carries the job board, and an
+unauthenticated `POST /api/jobs` is remote code execution (docs/security.md). `ingress.enabled`
+(default off) is the deliberate act of putting something in front — the chart renders one Ingress
+fronting the dashboard Service, with `className`, `annotations`, `hosts` and `tls` passed through
+verbatim: the annotations are the whole cloud-specific part, so none of it is chart fields. When
+enabled, the render is refused unless the host of `auth.publicUrl` is among `ingress.hosts` —
+GitHub redirects to `auth.publicUrl`, and an origin the Ingress does not answer is a sign-in that
+never comes back.
+
+On EKS (AWS Load Balancer Controller installed; the ACM certificate and the Route53 record to the
+ALB's DNS name are outside the chart):
+
+```yaml
+ingress:
+    enabled: true
+    className: alb
+    hosts:
+        - factory.example.com
+    annotations:
+        alb.ingress.kubernetes.io/scheme: internet-facing
+        alb.ingress.kubernetes.io/target-type: ip
+        alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-west-1:…:certificate/…
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+        alb.ingress.kubernetes.io/ssl-redirect: '443'
+        alb.ingress.kubernetes.io/healthcheck-path: /api/health
+auth:
+    publicUrl: https://factory.example.com
+    cookieSecure: 'true'
+```
+
+`listen-ports` opens an HTTP listener so `ssl-redirect` has something to redirect — with only
+`{"HTTPS":443}` declared, plain `http://` fails to connect instead of redirecting to https.
+`target-type: ip` routes to pod IPs on `dashboard.port`, so no NodePort is published anywhere;
+`/api/health` touches no database. `auth.publicUrl` must name the origin as the controller
+actually serves it — with this ALB set, `https://factory.example.com`, no port. For an in-cluster
+controller (nginx and friends) drop the `alb.*` annotations and name the certificate's Secret in
+`tls` instead.
 
 ## A local cluster, end to end
 

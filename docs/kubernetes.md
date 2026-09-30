@@ -313,6 +313,13 @@ kind walkthrough. Decisions that look like cruft and are not:
   `auth.oauthClientId`, the OAuth client secret, a 32-character session secret and a 32-character
   `secret.jobBoardToken` are refused at render time when missing; the driver's `JOB_BOARD_TOKEN`
   reference is not `optional`, because a driver without it would poll into 401s forever.
+- **The chart can put an Ingress in front, and nothing else.** `ingress.enabled`, off by default
+  (the ClusterIP is the perimeter, docs/security.md), renders one Ingress fronting the dashboard
+  Service with `className`/`annotations`/`hosts`/`tls` passed through verbatim — the annotations
+  are the cloud-specific part (ALB on EKS; see the chart README for the set that works), so the
+  template carries no cloud fields. When enabled, the render is refused unless `auth.publicUrl`'s
+  host is among `ingress.hosts`: GitHub redirects to publicUrl and the Ingress answers hosts —
+  independent values, checked to agree rather than one derived from the other.
 - **The local profile carries no credentials; `.env` does.** `values-local.yaml` holds only the
   local shape (image tags, the state release's objects, the runner images);
   `scripts/k8s-local-values.mjs` reads the repo-root `.env` — the App, the OAuth client, the

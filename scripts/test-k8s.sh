@@ -411,6 +411,52 @@ refuses 'offline still refuses a missing board token' 'secret.jobBoardToken of a
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set secret.jobBoardToken=
 refuses 'no Secret at all is refused' 'secret.existingSecret is empty' "${GH_SETS[@]}" --set secret.create=false
 
+# --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
+
+# Off by default in both profiles: the ClusterIP is the perimeter until the operator says
+# otherwise (docs/security.md), and the local profile fronts it with a port-forward.
+expect_not_contains 'no Ingress renders by default (local profile)' "$(cat "$work/rendered.yaml")" 'kind: Ingress'
+expect_not_contains 'no Ingress renders by default (production defaults)' "$gh" 'kind: Ingress'
+
+# On: the Ingress fronts the release's dashboard service — class, annotations, host and tls all
+# verbatim from the values, the backend pinned to the Service the driver already uses.
+ing="$(gh_render --set ingress.enabled=true --set ingress.className=alb \
+    --set 'ingress.hosts={factory.example}' \
+    --set 'ingress.tls[0].secretName=factory-tls' --set 'ingress.tls[0].hosts[0]=factory.example' \
+    --set 'ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip')"
+ingress_doc="$(awk '/^# Source: factory\/templates\/ingress.yaml/,/^---/' <<<"$ing")"
+expect_contains 'the enabled ingress carries the ingress class' "$ingress_doc" 'ingressClassName: alb'
+expect_contains 'the enabled ingress carries the host' "$ingress_doc" 'host: "factory.example"'
+expect_contains 'annotations pass through verbatim' "$ingress_doc" 'alb.ingress.kubernetes.io/target-type: ip'
+expect_contains 'tls passes through verbatim' "$ingress_doc" 'secretName: factory-tls'
+expect_contains 'the ingress backs the dashboard service by name' "$ingress_doc" "name: $RELEASE-factory"
+expect_contains 'the ingress backs the dashboard port' "$ingress_doc" 'number: 8080'
+expect_contains 'the ingress is the dashboard component' "$ingress_doc" 'app.kubernetes.io/component: dashboard'
+helm lint charts/factory "${GH_SETS[@]}" --set ingress.enabled=true --set 'ingress.hosts={factory.example}' \
+    >/dev/null 2>&1 && ok 'helm lint passes with the ingress enabled' \
+    || bad 'helm lint passes with the ingress enabled' 'lint failed'
+
+# The enabled-with-defaults shape: no className, no annotations, no tls keys render at all — an
+# empty `ingressClassName: ""` would be an apiserver refusal — and the range covers every host.
+bare_ingress="$(gh_render --set ingress.enabled=true --set 'ingress.hosts={factory.example,b.example}' |
+    awk '/^# Source: factory\/templates\/ingress.yaml/,/^---/')"
+expect_contains     'the ingress renders one rule per host' "$bare_ingress" 'host: "b.example"'
+expect_not_contains 'an empty className renders no ingressClassName' "$bare_ingress" 'ingressClassName'
+expect_not_contains 'empty annotations render no annotations key' "$bare_ingress" 'annotations:'
+expect_not_contains 'empty tls renders no tls key' "$bare_ingress" 'tls:'
+
+# The refusals: the hosts list is the authority, and auth.publicUrl must be an origin it answers.
+refuses 'an enabled ingress with no hosts is refused' 'ingress.hosts is required when ingress.enabled' \
+    "${GH_SETS[@]}" --set ingress.enabled=true
+refuses 'an auth.publicUrl the ingress does not answer is refused' 'is not among ingress.hosts' \
+    "${GH_SETS[@]}" --set ingress.enabled=true --set 'ingress.hosts={elsewhere.example}'
+refuses 'a scheme-less auth.publicUrl is refused under ingress' 'auth.publicUrl must be an absolute origin' \
+    "${GH_SETS[@]}" --set auth.publicUrl=factory.example --set ingress.enabled=true \
+    --set 'ingress.hosts={factory.example}'
+refuses 'a port-forward origin is refused as an ingress host' 'is not among ingress.hosts' \
+    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set auth.publicUrl=http://127.0.0.1:18080 \
+    --set ingress.enabled=true --set 'ingress.hosts={factory.example}'
+
 # Names stay valid DNS labels however long the release name: truncation leaves room for suffixes.
 long="$(helm template "release-name-that-is-deliberately-far-too-long-for-a-dns-label" charts/factory \
     "${GH_SETS[@]}" 2>&1)"
