@@ -125,6 +125,17 @@ export interface DriverConfig {
      */
     imagePullSecrets: string[];
     /**
+     * Opts every pod this driver specs (runner, aux Jobs, declared services) out of voluntary
+     * disruption under the kubernetes executor (RUNNER_DO_NOT_DISRUPT): both
+     * `karpenter.sh/do-not-disrupt` and `cluster-autoscaler.kubernetes.io/safe-to-evict`, so
+     * consolidation, scale-down and spot rebalance leave a run alone. Off by default, and the
+     * cost is stated where the decision is made: an undisruptable pod pins its node for as long
+     * as its run lasts — up to jobTimeoutMs, two hours by default — so an operator running only
+     * on-demand nodes may legitimately leave it off. It does not stop an explicit
+     * `kubectl drain`; nothing but moving the work can.
+     */
+    runnerDoNotDisrupt: boolean;
+    /**
      * How long a gate environment container outlives the task that started it. The issue's
      * cooldown: a container that stays up across a coding task's turns saves each turn the
      * environment's startup, and ten minutes is the default because that is what the issue
@@ -434,6 +445,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         credentialsSecret: (env.RUNNER_CREDENTIALS_SECRET ?? '').trim() || null,
         imagePullPolicy: pullPolicyRaw,
         imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),
+        runnerDoNotDisrupt: flag(env.RUNNER_DO_NOT_DISRUPT),
         gateCooldownMs: int(env.GATE_COOLDOWN_MS, 'GATE_COOLDOWN_MS', DEFAULT_GATE_COOLDOWN_MS, {
             min: 0,
             max: 24 * MS_PER_HOUR,
