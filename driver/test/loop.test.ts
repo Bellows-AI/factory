@@ -66,6 +66,8 @@ interface BoardStub extends Board {
     reclaimGrants: Reclaim[];
     reclaimAcks: string[];
     leaseLookups: string[][];
+    /** The artifact uploads the loop made (issue #325), in the order it made them. */
+    artifacts: { id: string; kind: string; attempt: number; content: string; truncated: boolean }[];
 }
 
 /**
@@ -114,6 +116,7 @@ function stubBoard(
         reclaimGrants: [],
         reclaimAcks: [],
         leaseLookups: [],
+        artifacts: [],
         async leases(ids) {
             board.leaseLookups.push([...ids]);
             if (options.leaseRows === undefined) return [];
@@ -126,6 +129,10 @@ function stubBoard(
         async session(claimed, sessionId) {
             if (options.failSession) throw new Error('board unreachable');
             board.sessions.push({ id: claimed.id, sessionId });
+            return 'held';
+        },
+        async artifact(claimed, upload) {
+            board.artifacts.push({ id: claimed.id, ...upload });
             return 'held';
         },
         async progress(claimed, output, runtime) {
@@ -504,6 +511,69 @@ describe('the poll loop', () => {
 
         // No summary read — the field stays off the wire, and the board stores null.
         expect(board.board.completed[1]).not.toHaveProperty('summary');
+    });
+
+    /**
+     * The run artifacts (issue #325): the loop uploads the runner's full log and transcript at
+     * close, while the lease is still live — before the verdict on the ordinary path, before the
+     * park on a stop, never on a lost or removed row. Best-effort throughout; the pins below are
+     * the ordering and the scoping, the upload helper's own failure rules live in
+     * artifacts.test.ts.
+     */
+    it('uploads the run artifacts before the verdict, and none when the lease was lost', async () => {
+        const events: string[] = [];
+        const board = stubBoard([job(1)]);
+        const rawComplete = board.board.complete.bind(board.board);
+        board.board.complete = async (claimed, result) => {
+            events.push(`completed with ${board.board.artifacts.length} artifact(s) uploaded`);
+            return rawComplete(claimed, result);
+        };
+        const runner = stubRunner(async () =>
+            ok({ fullLog: 'the whole log\n', logTruncated: true, transcript: '[{"role":"assistant"}]' })
+        );
+
+        // A second job whose heartbeat answers lost: nothing uploads, nothing completes.
+        const second = stubBoard([job(2)], { lease: 'lost' });
+        const rawCompleteSecond = second.board.complete.bind(second.board);
+        second.board.complete = async (claimed, result) => {
+            events.push('completed while lost');
+            return rawCompleteSecond(claimed, result);
+        };
+        const losing = stubRunner(async () => ok({ fullLog: 'lost log' }));
+
+        await drive({ ...board, runner });
+        await drive({ ...second, runner: losing });
+
+        expect(events).toEqual(['completed with 2 artifact(s) uploaded']);
+        expect(board.board.artifacts).toEqual([
+            { id: job(1).id, kind: 'log', attempt: 1, content: 'the whole log\n', truncated: true },
+            { id: job(1).id, kind: 'transcript', attempt: 1, content: '[{"role":"assistant"}]', truncated: false },
+        ]);
+        expect(second.board.artifacts).toEqual([]);
+    });
+
+    it('uploads the artifacts before parking a stopped run', async () => {
+        const events: string[] = [];
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push(`parked with ${board.board.artifacts.length} artifact(s) uploaded`);
+            return rawSuspend(claimed);
+        };
+        const runner = stubRunner(async () => {
+            // The stop lands once the run is live (the same shape the session-report-before-park
+            // pin uses): the beats then carry the flag, and the container is killed mid-run.
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok({ fullLog: 'stopped log\n' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual(['parked with 1 artifact(s) uploaded']);
+        expect(board.board.artifacts.map((a) => a.kind)).toEqual(['log']);
+        expect(board.board.suspended).toEqual([job(1).id]);
     });
 
     // An opencode run always leaves a session, so an empty scrape is a failed readout — said out

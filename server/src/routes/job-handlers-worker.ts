@@ -11,6 +11,7 @@ import {
     workflowsFor,
 } from './job-context.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
+import { validateArtifactBody } from './job-field-validation-artifacts.js';
 import {
     type ResolvedWorkflow,
     validateCommandField,
@@ -22,6 +23,7 @@ import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { UUID } from '../config.js';
 import {
+    ARTIFACT_LIMIT,
     HTTP_CONFLICT,
     HTTP_CREATED,
     HTTP_NO_CONTENT,
@@ -248,6 +250,43 @@ export async function handleGates(orgs: OrgRegistry, request: FastifyRequest, re
     if (result.value === 'missing') return notFoundJob(reply);
     if (result.value === 'lost') return leaseLost(reply);
     return reply.code(HTTP_OK).send({ id });
+}
+
+// The run artifacts (issue #325): the driver uploads the full-run log and the agent transcript at
+// close, while its lease is still live, and the read routes serve them to investigating readers.
+// The content bound is enforced HERE, not trusted from the worker — the same rule the output tail
+// follows — and a cut forces `truncated` beside it. A 409 from this route is not a kill order, the
+// same rule /output states: the upload is retention, never a verdict.
+export async function handleArtifact(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const { leaseToken } = body(request.body);
+    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
+    }
+    const parsed = validateArtifactBody(body(request.body));
+    if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
+
+    // Sliced, not refused — the point is retention, not protocol discipline. The slice is in
+    // characters (the OUTPUT_LIMIT precedent; the honest driver byte-caps before upload) and
+    // keeps the TAIL — the driver's cut is tail-kept, and the read routes promise the head bytes
+    // were dropped, not stored elsewhere. The flag is forced when the route cut what the driver
+    // thought fit: the reader must be able to trust it.
+    const raw = parsed.value.content;
+    const content = raw.length > ARTIFACT_LIMIT ? raw.slice(raw.length - ARTIFACT_LIMIT) : raw;
+    const truncated = parsed.value.truncated || content.length < parsed.value.content.length;
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job artifact upload failed'),
+        () => store.artifact(id, leaseToken, { ...parsed.value, content, truncated })
+    );
+    if (!result.ok) return reply;
+    if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'lost') return leaseLost(reply);
+    return reply.code(HTTP_OK).send({ id, kind: parsed.value.kind, attempt: parsed.value.attempt });
 }
 
 // Re-reads what the job's checkout declares in .bellows.yaml. The claim read the file before the

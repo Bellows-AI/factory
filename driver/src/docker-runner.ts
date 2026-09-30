@@ -33,6 +33,8 @@ import { claimContinuesSession, envFileBody, workspacePath } from './claim.js';
 import {
     composeRuntimeSample,
     reportTail,
+    tailKept,
+    ARTIFACT_LIMIT,
     type RunOutcome,
     type Runner,
     type RunSession,
@@ -576,6 +578,8 @@ async function dockerRun(
                 output,
                 timedOut,
                 cacheLost: cacheState.cacheLost,
+                fullLog,
+                logTruncated,
             });
 
         // The run's start instant, captured here because both close-time turn reads key
@@ -593,12 +597,22 @@ async function dockerRun(
         const cacheState: { cacheLost: string | null } = { cacheLost: null };
 
         let output = '';
+        // The full-log accumulator (issue #325): everything the stream printed, tail-kept at
+        // ARTIFACT_LIMIT bytes — the artifact the loop uploads at close, of which the rolling
+        // tail above is only the end. Kept separately from `output`, whose window is the
+        // report's, and grown by the same chunks.
+        let fullLog = '';
+        let logTruncated = false;
         const collect = (chunk: Buffer | string) => {
-            output += String(chunk);
+            const text = String(chunk);
+            output += text;
             // Keep the tail: a run that fails says why at the end, and the head is banner.
             // Byte-true, because the report has to fit the board's body limit whatever the
             // log contained — see reportTail.
             output = reportTail(output);
+            const grown = tailKept(fullLog + text, ARTIFACT_LIMIT);
+            fullLog = grown.content;
+            logTruncated = logTruncated || grown.truncated;
             // The same tail a complete report would carry, handed over as it grows. Every
             // chunk calls back; throttling is the loop's business, not this runner's.
             onOutput?.(output);

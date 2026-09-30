@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claudeTurnsScript } from '../src/container-scripts.js';
+import { claudeTurnsScript, claudeTranscriptScript, opencodeTranscriptScript } from '../src/container-scripts.js';
+import { ARTIFACT_LIMIT } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
@@ -11,6 +12,8 @@ import {
     bellowsJobSpec,
     claudeTurnsJobName,
     claudeTurnsJobSpec,
+    claudeTranscriptJobName,
+    claudeTranscriptJobSpec,
     envBodyToData,
     fleetDnsField,
     gateEnvSecretName,
@@ -18,6 +21,8 @@ import {
     jobsPath,
     opencodeReadoutJobName,
     opencodeReadoutJobSpec,
+    opencodeTranscriptJobName,
+    opencodeTranscriptJobSpec,
     runnerJobName,
     runnerJobSpec,
     secretName,
@@ -526,6 +531,18 @@ const cturnsCalls = (j: BoardJob): string[] => [
     `GET /api/v1/namespaces/factory/pods`,
     `GET /api/v1/namespaces/factory/pods/${podName}/log`,
     `DELETE ${jobPath(namespace, claudeTurnsJobName(j))}`,
+];
+
+/**
+ * The transcript artifact's close-time Job requests (issue #325) — the twin read that follows the
+ * turn read, same shape, distinct name (`factory-ctrans-`).
+ */
+const ctransCalls = (j: BoardJob): string[] => [
+    `POST ${jobsPath(namespace)}`,
+    `GET ${jobPath(namespace, claudeTranscriptJobName(j))}`,
+    `GET /api/v1/namespaces/factory/pods`,
+    `GET /api/v1/namespaces/factory/pods/${podName}/log`,
+    `DELETE ${jobPath(namespace, claudeTranscriptJobName(j))}`,
 ];
 
 const FAKE: Record<string, unknown> = {
@@ -2466,6 +2483,8 @@ describe('the kubernetes runner', () => {
             `GET /api/v1/namespaces/factory/pods/${podName}/log`,
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
             ...cturnsCalls(job),
+            // The transcript artifact's read (issue #325): the twin Job, right behind it.
+            ...ctransCalls(job),
             `GET ${claimPathFor(job.id)}`,
             `DELETE ${claimPathFor(job.id)}`,
             // No fleet teardown here: the services outlive run() for the declared gates, and the
@@ -2479,6 +2498,13 @@ describe('the kubernetes runner', () => {
             output: 'did the work\n',
             timedOut: false,
             started: true,
+            // The full log rides the outcome now (issue #325) — the whole (one-line) log, uncut.
+            fullLog: 'did the work\n',
+            logTruncated: false,
+            // The fake serves the runner's own log to the transcript Job too, so the export's
+            // answer is that line as content.
+            transcript: 'did the work',
+            transcriptTruncated: false,
         });
     });
 
@@ -2709,6 +2735,13 @@ describe('the kubernetes runner', () => {
             output: 'did the work\n',
             timedOut: false,
             started: true,
+            // The full log rides the outcome now (issue #325) — the whole (one-line) log, uncut.
+            fullLog: 'did the work\n',
+            logTruncated: false,
+            // The fake serves the runner's own log to the transcript Job too, so the export's
+            // answer is that line as content.
+            transcript: 'did the work',
+            transcriptTruncated: false,
         });
     });
 
@@ -2863,6 +2896,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+            // The transcript artifact's read (issue #325): the twin Job, same shape.
             'POST',
             'GET',
             'GET',
@@ -3145,6 +3184,8 @@ describe('the kubernetes runner', () => {
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped. It
             // rides THIS attempt, so its name hashes the token this run holds.
             ...cturnsCalls(newerJob),
+            // The transcript artifact's read (issue #325): the twin Job, right behind it.
+            ...ctransCalls(newerJob),
             `GET ${claimPath}`,
             `DELETE ${claimPath}`,
             `DELETE /api/v1/namespaces/factory/secrets/${secretName(newerJob)}`,
@@ -3465,6 +3506,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            // The transcript artifact's read (issue #325): the twin Job, same shape.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'DELETE',
@@ -3583,6 +3630,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            // The transcript artifact's read (issue #325): the twin Job, same shape.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'DELETE',
@@ -3650,6 +3703,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+            // The transcript artifact's read (issue #325): the twin Job, same shape.
             'POST',
             'GET',
             'GET',
@@ -3731,6 +3790,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             // The close-time claude-code turn read: one aux Job, polled, logged, reaped.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
+            // The transcript artifact's read (issue #325): the twin Job, same shape.
             'POST',
             'GET',
             'GET',
@@ -4928,6 +4993,12 @@ describe('the kubernetes runner', () => {
             'GET',
             'GET',
             'DELETE',
+            // The transcript artifact's read (issue #325): the twin Job, same shape.
+            'POST',
+            'GET',
+            'GET',
+            'GET',
+            'DELETE',
             'GET',
             'DELETE',
             'DELETE',
@@ -5243,8 +5314,8 @@ describe('the kubernetes runner', () => {
 
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
-        // The runner's poll plus the close-time turn read's own pod list.
-        expect(lists).toBe(4);
+        // The runner's poll plus the close-time reads' own pod list.
+        expect(lists).toBe(5);
     });
 
     // A log read that fails outright — connection reset, pod gone — must not fail the report: the
@@ -6249,6 +6320,63 @@ describe('the close-time claude-code turn read under kubernetes', () => {
                 START
             )
         ).toThrow(/not a session id/);
+    });
+});
+
+describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
+    /**
+     * The twins of the two readout Jobs above (executor parity): the same aux-Job shape, the
+     * same env-VALUES rule, exporting the run's transcript instead of counting it. Names are
+     * distinct from the turns Jobs' — the hash key is the same (job, lease) pair, and one
+     * attempt's transcript Job and its turn Job must not collide.
+     */
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+
+    it('claude: exports the transcript as one aux Job, its inputs by env, the cap as a VALUE', () => {
+        const spec = claudeTranscriptJobSpec(config, job, SESSION, START);
+        const container = spec.spec.template.spec.containers[0];
+        expect(spec.metadata.name).toBe(claudeTranscriptJobName(job));
+        expect(spec.metadata.name).toMatch(/^factory-ctrans-/);
+        expect(container.command).toEqual(['node', '-e', claudeTranscriptScript]);
+        expect(claudeTranscriptScript).not.toContain('/workspaces');
+        expect(claudeTranscriptScript).not.toContain(SESSION);
+        expect(container.env).toEqual([
+            { name: 'CLAUDE_TRANSCRIPT_DIR', value: `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}` },
+            { name: 'CLAUDE_SESSION_ID', value: SESSION },
+            { name: 'RUN_STARTED_AT', value: START },
+            { name: 'TRANSCRIPT_LIMIT_BYTES', value: String(ARTIFACT_LIMIT) },
+        ]);
+        expect(container.volumeMounts).toEqual([
+            { name: 'workspaces', mountPath: `/workspaces/bellows/${USER}`, subPath: `bellows/${USER}` },
+        ]);
+    });
+
+    it('opencode: exports the transcript from the session database, scoped to the run directory', () => {
+        const spec = opencodeTranscriptJobSpec(config, job, START);
+        const container = spec.spec.template.spec.containers[0];
+        expect(spec.metadata.name).toBe(opencodeTranscriptJobName(job));
+        expect(spec.metadata.name).toMatch(/^factory-otrans-/);
+        expect(container.command).toEqual(['node', '-e', opencodeTranscriptScript]);
+        expect(container.env).toEqual([
+            { name: 'OPENCODE_DB', value: `/workspaces/bellows/${USER}/.opencode/opencode/opencode.db` },
+            { name: 'OPENCODE_DIR', value: `/workspaces/bellows/${USER}` },
+            { name: 'RUN_STARTED_MS', value: String(Date.parse(START)) },
+            { name: 'TRANSCRIPT_LIMIT_BYTES', value: String(ARTIFACT_LIMIT) },
+        ]);
+    });
+
+    it('refuses the same broken inputs the turn Jobs refuse', () => {
+        expect(() => claudeTranscriptJobSpec(config, job, 'not-a-uuid', START)).toThrow(/not a session id/);
+        expect(() => opencodeTranscriptJobSpec(config, { ...job, workspacePath: null }, START)).toThrow(
+            /workspace path/
+        );
+    });
+
+    it('bounds itself with a deadline of its own and reaps its pod', () => {
+        const spec = claudeTranscriptJobSpec(config, job, SESSION, START);
+        expect(spec.spec.activeDeadlineSeconds).toBeGreaterThan(0);
+        expect(spec.spec.backoffLimit).toBe(0);
+        expect(spec.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     });
 });
 

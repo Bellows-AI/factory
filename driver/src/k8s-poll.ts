@@ -1,7 +1,7 @@
 import type { BoardJob } from './board.js';
 import { claimContinuesSession, envFileBody } from './claim.js';
 import { executorImage } from './config.js';
-import { reportTail } from './runner.js';
+import { ARTIFACT_LIMIT, reportTail, tailKept } from './runner.js';
 import {
     jobPath,
     jobPodsPath,
@@ -395,11 +395,17 @@ export async function readRunnerVerdict(
     deps: K8sDeps,
     job: BoardJob,
     jobSucceeded: boolean
-): Promise<{ exitCode: number | null; output: string }> {
+): Promise<{ exitCode: number | null; output: string; fullLog: string; logTruncated: boolean }> {
     const verdict = await readJobPodVerdict(deps, runnerName(job), jobSucceeded, 'listing the runner pods');
-    // The tail, not the transcript — the one thing the runner's own read does beyond the shared
-    // shape, since only its output ever reaches the board's live tail.
-    return { exitCode: verdict.exitCode, output: reportTail(verdict.output) };
+    // The tail for the verdict's output field, and the full log (issue #325) tail-kept at the
+    // artifact cap for the loop's upload — both cut from the one pod log this read exists for.
+    const full = tailKept(verdict.output, ARTIFACT_LIMIT);
+    return {
+        exitCode: verdict.exitCode,
+        output: reportTail(verdict.output),
+        fullLog: full.content,
+        logTruncated: full.truncated,
+    };
 }
 
 /**

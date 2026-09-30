@@ -29,7 +29,8 @@ name, there is no barrel:
 - `k8s-transport.ts` — the wire types (`K8sRequest`/`K8sResponse`), the real transport
   (`inClusterRequest`), and the protocol constants and status thresholds every other file reads.
 - `k8s-podspec.ts` — the runner's own pure Job spec (`runnerJobSpec`, the `dockerArgs`
-  analogue) plus the gate/bellows/claude-turns/opencode-readout spec builders and naming.
+  analogue) plus the gate/bellows/claude-turns/opencode-readout/transcript-export spec builders
+  and naming.
 - `k8s-auxspec.ts` — the sync/reclaim/publish/service spec builders, and the shared checkout
   claim / per-attempt Secret naming and path helpers.
 - `k8s-fence.ts` — the re-claim fence: claim acquire/release, the leftover sweep, and the
@@ -603,6 +604,18 @@ polled to terminal and read from its pod log, its JSON line parsed into the outc
 `parseOpencodeRunOutcome` does on docker. A failed scrape never fails the verdict: the session id,
 finish reason and context stats are the run's follow-up-ability, not its work. What stays
 unported for opencode here is the cache watch above, refused with claude-code's.
+
+**The run artifacts ride the same close (issue #325).** The full-run log is cut from the same
+pod-log read the verdict comes from (`readRunnerVerdict`), tail-kept at the 512 KiB artifact cap
+beside the 16 KiB report tail; the transcript export is the docker twin as one more aux Job —
+`claude-transcript.cjs` / `opencode-transcript.cjs` passed by content (`factory-ctrans-` /
+`factory-otrans-`, attempt-scoped names like every Job here), the same env VALUES, the byte cap
+among them, polled to terminal and parsed by the same `parseTranscriptRead` both executors
+share. The upload lands in the shared loop, before the verdict — executor parity by
+construction. One stated limit: a runner Job whose pod is gone before the verdict read (deleted
+mid-run on a kill, reaped by its TTL) uploads no log — docker's streamed accumulator survives
+its container, a pod log does not survive its pod, and the absent-artifact 404 is the documented
+answer, tested as the nothing-retained path (docs/jobs.md, "Run artifacts").
 
 ## Gates and services on this platform
 

@@ -48,6 +48,24 @@ const OUTPUT_LIMIT_KIB = 64;
 export const OUTPUT_LIMIT = OUTPUT_LIMIT_KIB * BYTES_PER_KIB;
 
 /**
+ * Run artifacts (issue #325): the full-run log and the agent transcript the driver uploads at
+ * close. The driver tail-keeps 512 KiB per artifact before uploading; the route re-bounds the
+ * stored content to the same figure (in characters, the OUTPUT_LIMIT precedent) and forces the
+ * `truncated` flag when it cut. The upload body limit sits above both the cap and JSON overhead,
+ * so an honest upload is never refused for its envelope — a too-big one is sliced, never bounced,
+ * because the point is retention, not protocol discipline.
+ */
+const ARTIFACT_LIMIT_KIB = 512;
+export const ARTIFACT_LIMIT = ARTIFACT_LIMIT_KIB * BYTES_PER_KIB;
+const ARTIFACT_BODY_LIMIT_MIB = 4;
+export const ARTIFACT_BODY_LIMIT = ARTIFACT_BODY_LIMIT_MIB * BYTES_PER_KIB * BYTES_PER_KIB;
+/** Which artifacts a worker may upload, and a read may name. */
+export const ARTIFACT_KINDS: readonly ('log' | 'transcript')[] = ['log', 'transcript'];
+/** The artifact read's page: a default a client never has to think about, a cap past abuse. */
+export const ARTIFACT_READ_LIMIT_DEFAULT = 65_536;
+export const ARTIFACT_READ_LIMIT_MAX = ARTIFACT_LIMIT;
+
+/**
  * The runtime vitals a worker may report beside the tail. Numbers are bounded past anything a
  * real container reaches (a busy multi-core container exceeds 100% CPU; ten petabytes of RAM does
  * not exist), the activity line is capped because it is one CLI line and not a log, and the

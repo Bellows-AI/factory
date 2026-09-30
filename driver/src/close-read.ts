@@ -9,6 +9,7 @@
 import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
 import type { RunOutcome, RunSession } from './runner.js';
+import { ARTIFACT_LIMIT } from './runner.js';
 import { CLAUDE_CODE } from './executors.js';
 
 /** What the readout answers: the session the run used, how it ended, and the context it reached. */
@@ -161,6 +162,67 @@ export function parseClaudeCloseRead(stdout: string): { turns: number | null; su
     } catch {
         return { turns: null, summary: null };
     }
+}
+
+/**
+ * The whole lines that fit `limit` UTF-8 bytes, newest first: a record larger than the cap is
+ * skipped, and older lines join only while the byte total, separators included, stays within it.
+ * A byte-cut would persist a partial record, which no marker line can repair — so a line that
+ * fits only by splitting is dropped with everything before it, and the drop is said by the flag.
+ */
+function linesWithinCap(lines: string[], start: number, limit: number): { kept: string[]; truncated: boolean } {
+    const encoder = new TextEncoder();
+    const kept: string[] = [];
+    let bytes = 0;
+    let truncated = false;
+    for (let i = lines.length - 1; i >= start; i -= 1) {
+        const line = lines[i] ?? '';
+        const lineBytes = encoder.encode(line).length;
+        if (lineBytes > limit) {
+            truncated = true;
+            continue;
+        }
+        const separatorBytes = kept.length > 0 ? 1 : 0;
+        if (bytes + separatorBytes + lineBytes > limit) {
+            truncated = true;
+            break;
+        }
+        kept.unshift(line);
+        bytes += separatorBytes + lineBytes;
+    }
+    return { kept, truncated };
+}
+
+/**
+ * What a transcript export answered (issue #325): the content to upload and whether the cap cut
+ * it, or null when the read answered nothing — a missing transcript, an unreadable database, a
+ * failed container. The scripts print an optional truncation marker line FIRST
+ * (`{"truncated":true,...}`), then the export's own JSONL; this sniffs and strips the marker,
+ * re-caps the remainder to the driver's own byte bound at whole-line granularity (the scripts
+ * carry the same figure as an env value, but the driver's copy is the one the upload is bound
+ * by), and answers null for anything that leaves no content — no artifact, never an empty one.
+ */
+export function parseTranscriptRead(stdout: string): { content: string; truncated: boolean } | null {
+    const lines = stdout.split('\n').filter((line) => line.trim() !== '');
+    let truncated = false;
+    let start = 0;
+    if (lines[0]?.trim().startsWith('{')) {
+        try {
+            const first = JSON.parse(lines[0]) as { truncated?: unknown; error?: unknown };
+            if (first.truncated === true) {
+                truncated = true;
+                start = 1;
+            } else if (typeof first.error === 'string' && first.error && lines.length === 1) {
+                // The export's failure line, alone on the stream: no transcript, not content.
+                return null;
+            }
+        } catch {
+            // Not a marker: the first line is content.
+        }
+    }
+    const selected = linesWithinCap(lines, start, ARTIFACT_LIMIT);
+    if (selected.kept.length === 0) return null;
+    return { content: selected.kept.join('\n'), truncated: truncated || selected.truncated };
 }
 
 /**
