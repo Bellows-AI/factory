@@ -34,7 +34,7 @@ installer allowed to create cluster-scoped admission policies. Images default to
 | `PodDisruptionBudget <release>-factory` and `PodDisruptionBudget <release>-factory-driver` | The voluntary-disruption policy for the chart's own pods (issue #362) — see "Node churn". The dashboard's always renders (`maxUnavailable: 1`); the driver's only above one replica (`minAvailable: 1`). |
 | `Deployment/Service/ConfigMap <release>-factory-collector` | The OTLP collector. Runner pods export to it over the cluster network — the driver names it in every spec via `RUNNER_OTEL_ENDPOINT` — and it forwards to this release's dashboard ingest route with the same processors the compose collector runs. |
 | `Job factory-runner-…` (per job, at runtime) | One runner pod, `restartPolicy: Never`, `backoffLimit: 0` — the cluster never re-runs a job; the board owns retries. `automountServiceAccountToken: false`, so a runner holds no API credentials. The name is `factory-runner-<hash16(id and lease token)>` — the apiserver stamps a Job's name onto its pod template as the `job-name` label, and label values cap at 63 bytes, which the raw id-and-token form exceeds. |
-| `PersistentVolumeClaim <release>-factory-workspaces` | The checkouts. The dashboard writes them, every runner mounts the same claim. `ReadWriteMany` by default. Not created when `workspaces.existingClaim` names one — the local profile names the state release's. Annotated `helm.sh/resource-policy: keep`: `helm uninstall` leaves it. |
+| `PersistentVolumeClaim <release>-factory-workspaces` | The checkouts. The dashboard writes them, every runner mounts the same claim. `ReadWriteMany` by default. Not created when `workspaces.existingClaim` names one — the local profile names the state release's. Annotated `helm.sh/resource-policy: keep`: `helm uninstall` leaves it. The class behind it must serve RWX and a root writable by uid 1000, which EKS's default is documented not to — see [The workspaces volume](#the-workspaces-volume) before installing. |
 | `Secret <release>-factory-dashboard` | The dashboard credentials, `database-url` among them (the URL carries the password). With `secret.existingSecret`, that Secret must carry `database-url` and `job-board-token` (both required in the pod specs) plus the auth and App keys — those are `optional` in the dashboard's pod spec, and the server names any still missing at boot. |
 | `Secret <release>-factory-runner-credentials` | One key per `runner.env` name, valued from `runner.credentials`. Not created when `runner.credentialsExistingSecret` names one. |
 
@@ -51,6 +51,36 @@ chart Secret or collector config rolls the pods that read it (`checksum/*` annot
 chart pod; `imagePullSecrets` is also forwarded to every pod the driver specs, and so are
 `runner.nodeSelector`, `runner.tolerations` and `runner.affinity` (as JSON) — the runner group the
 agent pods land on, chart pods never do.
+
+## The workspaces volume
+
+The chart provisions the claim; it cannot provision what the claim needs from the cluster. Two
+requirements, both defaulted for a kind cluster and met by neither of EKS's defaults. The EFS
+shape below was **stood up and observed on a real EKS cluster** on 2026-09-30 — claim bound,
+access point owned `1000:1000`, a uid-1000 pod provisioning a member tree that a pod in another AZ
+wrote into through its `subPath`. The chart itself has still never been installed on EKS; see
+`docs/limits.md` for that line:
+
+- **`ReadWriteMany`.** The dashboard mounts the volume root and every pod the driver specs mounts
+  the same claim at its own `subPath`, from whichever node it landed on. `workspaces.storageClass`
+  is empty by default, meaning the cluster's default class — on EKS that is single-AZ
+  `ReadWriteOnce` EBS, so the claim never binds and the dashboard sits `Pending`.
+- **Writable by uid 1000.** Every pod that touches the volume runs as uid/gid 1000 and nothing
+  sets `fsGroup`, which on EFS would not help anyway — only the access point's POSIX user does.
+  Dynamic provisioning always applies EFS user identity enforcement (the client's uid/gid are
+  replaced with the access point's), and without explicit `uid`/`gid` that identity is whatever
+  the driver picks from its allocation range — arbitrary, so pin `uid: "1000"`/`gid: "1000"` as
+  below. The failure is silent: sign-in succeeds, the member tree is never created, and runner
+  pods hang in `ContainerCreating`.
+
+On EKS: install the EFS CSI driver — and check its controller pods are actually running, not that
+a `CSIDriver` object exists, which can outlive the install by years — give that controller an IAM
+role by IRSA or EKS Pod Identity, create a file system with a mount
+target in every availability zone the nodes run in (EFS allows one per zone, and every node in
+that zone's subnets shares it), and point `workspaces.storageClass` at a `StorageClass` with
+`provisioningMode: efs-ap`, `uid: "1000"`, `gid: "1000"`, `directoryPerms: "0775"`. The manifest,
+the single-AZ EBS fallback and why that fallback is not reachable yet are in
+[The workspaces volume](../../docs/kubernetes.md#the-workspaces-volume).
 
 ## Exposing the dashboard
 

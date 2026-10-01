@@ -1,8 +1,10 @@
 {{/*
 The organization's checkouts. The dashboard writes them here and every runner mounts the same
 claim — the kubernetes form of the named docker volume the compose services share. Default
-ReadWriteMany because the dashboard and runners share it across nodes; values-local.yaml
-overrides ReadWriteOnce for single-node local clusters.
+ReadWriteMany because the dashboard and runners share it across nodes. Local clusters do not
+render this template at all: values-local.yaml sets existingClaim to the factory-local-state
+release's claim, which is the ReadWriteOnce one. What the class behind this claim must provide —
+RWX, and a root writable by uid 1000 — is docs/kubernetes.md, "The workspaces volume".
 
 Kept on `helm uninstall`: the checkouts hold uncommitted agent work and the database's rows
 describe them, so removing the app must not remove them. Delete the claim by hand to reclaim it.
