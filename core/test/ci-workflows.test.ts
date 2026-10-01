@@ -246,7 +246,9 @@ describe('ci workflows', () => {
     // leading `v`; the app version keeps the tag as it is spelled, because that IS the image tag.
     it('packages the chart at the release version and carries the tag as the app version', () => {
         const commands = runs(workflow(RELEASE).jobs.chart!).join('\n');
-        expect(commands).toContain('VERSION="${IMAGE_TAG#v}"');
+        // A regex rather than a literal: the shell expansion reads as a template placeholder to
+        // noTemplateCurlyInString, and the rule is right about every case but this one.
+        expect(commands).toMatch(/VERSION="\$\{IMAGE_TAG#v}"/);
         expect(commands).toContain('--version "$VERSION"');
         expect(commands).toContain('--app-version "$IMAGE_TAG"');
     });

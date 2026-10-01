@@ -119,6 +119,12 @@ kubelet pull a new build once under `IfNotPresent`; tagless reads `:latest`, and
 whatever it cached first. `database.waitImage` is the one reference the prefix never touches: a
 cluster without Docker Hub egress needs it mirrored and set whole.
 
+The same tag publishes **the chart** to `oci://ghcr.io/<owner>/charts/factory`, versioned with the
+tag minus its leading `v` (docs/ci.md). That is what a GitOps controller resolves — it never
+clones this repository — and it is why the dashboard and driver `tag` values can be left empty in
+a deployment: a packaged chart resolves an empty tag to its own `AppVersion`. The two executor
+references cannot, which is what the previous paragraph is about.
+
 Observe: every pod pulls; an intentionally wrong executor reference fails the run fast naming the
 image (`readImagePullStatus`), not as a burned deadline.
 
@@ -151,7 +157,23 @@ decisions and where they are already argued:
   annotations on a runner pod.
 - `auth.publicUrl` — the real public origin (step 7), with `auth.cookieSecure: 'true'`.
 - `secret.existingSecret` or the chart-created Secret — the EKS path is External Secrets over
-  Secrets Manager; either way the Secret must carry `database-url` and `job-board-token`.
+  Secrets Manager; either way the Secret must carry `database-url` and `job-board-token`. Three
+  things the 2026-10-01 walk learned the hard way, none of which the chart can check:
+  - **The remote path has to be inside the controller's IAM scope.** An external-secrets role is
+    normally scoped to a prefix; a secret outside it fails with
+    `could not get secret data from provider` and nothing else — the `AccessDeniedException` naming
+    the path is in the controller's *events*, not in the ExternalSecret's status. Match the
+    cluster's existing prefix rather than widening the policy, which drifts from whatever
+    provisioned it.
+  - **A missing remote key is a template error, not an empty string.** `{{ .SOME_KEY }}` on a map
+    that lacks the key fails the whole sync, taking every other key down with it — including
+    `database-url`. Use `{{ default "" (index . "SOME_KEY") }}` for any key that is added later.
+  - **One secret per owner.** Terraform owns an entire `SecretString`, so a Terraform-written
+    database URL and a hand-maintained App key cannot share one remote: the next apply deletes
+    whatever the human put there. Two remotes and two `dataFrom` entries merge into one Secret.
+  - `GITHUB_APP_PRIVATE_KEY` may be stored raw or base64 — `loadConfig` discriminates on the
+    `-----BEGIN` header — but a *tool* reading that secret must do the same, or it fails to parse a
+    key the server accepts.
 
 ## 6. Isolation: the policy has to be enforced, not just admitted
 
