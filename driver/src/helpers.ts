@@ -5,8 +5,8 @@ import { REVIEW_HELPER_DESCRIPTORS } from './review-helpers.js';
  * The generic block-helper transport (issue #207): one allowlisted, board-owned script an
  * expanded workflow `block` node may declare to run before or after its agent turn — a runtime
  * plan naming a helper id and validated/bounded JSON input, never arbitrary shell or an image.
- * Docker and kubernetes execute the same plan through the same `Runner.runHelper` seam (docker.ts,
- * k8s-runner.ts) with the same credential, bound and failure semantics; this module is the shared,
+ * Docker and kubernetes execute the same plan through the same `Runner.runHelper` seam (declared in
+ * runner.ts, implemented by docker-runner.ts and k8s-runner.ts) with the same credential, bound and failure semantics; this module is the shared,
  * platform-agnostic half — the plan/result types, the registry closed over real files under
  * `driver/src/scripts/`, and the bounded-JSON verdict parser both transports call.
  *

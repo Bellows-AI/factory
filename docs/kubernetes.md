@@ -59,7 +59,7 @@ The two implementations decide the same things and are pinned the same way:
 | What a runner must never hold | the docker socket (it does not) | a ServiceAccount token (`automountServiceAccountToken: false`) |
 | Publish | sibling containers over the workspaces volume, one per step | aux Jobs over the workspaces PVC, one per step — the same `publishCheckout` workflow over both |
 | Runner vitals | `docker stats --no-stream` | the metrics API (`metrics.k8s.io`), read from the runner's pod; null when the cluster runs no metrics-server |
-| Master prompt (issue #244) | Claude: `--append-system-prompt`/`--system-prompt-snapshot off` in `dockerArgs`. OpenCode: reserved `factory` agent merged into `OPENCODE_CONFIG_CONTENT` by `envFileBody(job, config)` | identical: `claudeRunnerPlan`/`opencodeRunnerPlan` build the same argv, and `runnerCredentialEnv` merges the same `OPENCODE_CONFIG_CONTENT` through the shared `driver/src/claim.ts` `runnerClaimEnv` — one merge function, never two |
+| Master prompt (issue #244) | Claude: `--append-system-prompt`/`--system-prompt-snapshot off` in `dockerArgs`. OpenCode: reserved `factory` agent merged into `OPENCODE_CONFIG_CONTENT` by `envFileBody(job, config)` | identical: one `runnerPlan` (`driver/src/runner-plan.ts`, fed by `claudeSystemPromptArgs`/`opencodeAgentArgs` from `driver/src/master-prompt.ts`) builds the same argv, and `runnerCredentialEnv` merges the same `OPENCODE_CONFIG_CONTENT` through the shared `driver/src/claim.ts` `runnerClaimEnv` — one merge function, never two |
 | Resources (issue #360) | `--cpus`/`--memory` from the limits, `--memory-reservation` from the memory request, on the **runner container only** (the aux containers stay unthrottled — docker is the dev executor), translated from the same quantities by `cpuQuantityToCores`/`memoryQuantityToBytes` — and **no cpu-request flag**, stated: docker has no absolute CPU floor (`--cpu-shares` is a relative weight), and capping a runner at its request would throttle builds the kubernetes side leaves free | `resources.requests`/`resources.limits` from the same four variables, verbatim, on every pod the driver specs — runner, aux Jobs, gates, services — via the one `resourcesField` |
 
 Two decisions in that table deserve their own paragraph:
@@ -338,8 +338,8 @@ kind walkthrough. Decisions that look like cruft and are not:
   `schema_migrations` insert into that scope.
 - **Local state is its own release: `charts/factory-local-state`.** A plain Postgres **StatefulSet**
   (not the upstream chart — one replica, one claim, mirroring compose) plus the workspaces
-  claim, installed as `factory-state`; `values-local.yaml` names both objects (`database.url`,
-  `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
+  claim, installed as `factory-state`; `charts/factory/values-local.yaml` names both objects
+  (`database.url`, `workspaces.existingClaim`). Split out so `make stop` uninstalls the app and keeps the database
   and the checkouts that database records — the two are kept together, since rows describing a
   worktree that is gone are worse than no rows. `make reset` removes the state release too. Its
   image is a superset of PostgreSQL, so #371 does not break it; swapping it is cleanup there.

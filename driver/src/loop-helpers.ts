@@ -10,7 +10,7 @@ import { STOOD_DOWN } from './loop-types.js';
  * The loop's own two ends of the block-helper transport (issue #207, extended by #230's conclude
  * control and composite helper programs): when a declared pre/post helper runs, fenced by the same
  * lease/stop state as sync/gates/publish. Split from `loop-run.ts` purely to keep that file under
- * AGENTS.md's line-count budget — the same seam `loop-gates.ts` already draws for the gate phase.
+ * the linter's per-file line budget (`noExcessiveLinesPerFile` in biome.json) — the same seam `loop-gates.ts` already draws for the gate phase.
  * `runHelperPlan` (`helpers.ts`) owns the plain-vs-composite sequencing; this file supplies its own
  * `invokeChild` per phase — the exact fencing (and, for pre, standing the attempt down) each phase
  * already applied to a single plan, now applied identically to every child call a composite makes.

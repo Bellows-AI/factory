@@ -17,7 +17,7 @@ import { withPublishToken } from './publish.js';
  * the bounded input as a literal pod-spec env value (never a credential), and cleanup of both on
  * every exit path. Unknown helper ids fail BEFORE any Job is created, matching the docker
  * transport's own first check. Split out of `k8s-runner.ts` purely to keep that file under
- * AGENTS.md's line-count budget.
+ * the linter's per-file line budget (`noExcessiveLinesPerFile` in biome.json).
  */
 export async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, token?: string): Promise<HelperResult> {
     const descriptor = lookupHelper(plan.helperId);

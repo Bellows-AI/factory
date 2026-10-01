@@ -18,6 +18,7 @@ simplifying one silently makes the number wrong.
 | `server/` | Fastify API: telemetry ingest and store, the GitHub App credential and repo list, and static hosting for the SPA. |
 | `web/` | Vite + React SPA. |
 | `driver/` | Job driver: claims jobs from the board and spawns a runner container per job. |
+| `cli/` | Board CLI: queue and inspect jobs over HTTP (`job create/list/investigate/wait/follow-up/stop/done/remove`). |
 
 ## Running it
 
@@ -87,8 +88,9 @@ that org, and nobody else does — onboarding is installing the App. See [docs/a
 loopback bind is the access control — that is what `npm run seed` and `npm run verify:ui` need, and
 what a clone with no OAuth app can run.
 
-There are two GitHub registrations, deliberately. An **OAuth App** signs people in and requests zero
-scopes — it reads a numeric id and a login, nothing else. A separate **GitHub App** reads
+There are two GitHub registrations, deliberately. An **OAuth App** signs people in and requests one
+scope, `read:org` — org-level only, no repository access; it reads a numeric id and a login, nothing
+else. A separate **GitHub App** reads
 repositories: its private key signs a short-lived JWT, which buys an installation token that expires
 in an hour. One credential doing both would mean every person who signs in grants repository access.
 
@@ -114,7 +116,7 @@ Required GitHub App installation permissions:
 | Route | Behaviour |
 | --- | --- |
 | `GET /api/health` | Never calls GitHub, so a token-less or rate-limited container still reports healthy. |
-| `GET /api/stats` | `200` with `{ telemetry, meta }`, `202` while the first read runs, `503` if telemetry is disabled or the first read failed. |
+| `GET /api/stats` | `200` with `{ telemetry, tasks, meta }`, `202` while the first read runs, `503` if telemetry is disabled or the first read failed. |
 
 ## Tests
 

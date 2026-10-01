@@ -33,7 +33,7 @@ const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
 export const SPECIMEN_PORT = PORT_BASE + SPECIMEN_PORT_OFFSET;
 const E2E_LOGIN = 'e2e-user';
 /**
- * A fresh GitHub identity every run. The seed leaves auth tables alone, so a fixed id would keep
+ * A fresh GitHub identity every run. The seed writes no sign-in selection, so a fixed id would keep
  * its stored selection between runs and the selection screen (issue 125) would only ever be
  * driven on the first run against a fresh database. A per-run id makes every run's first sign-in
  * a first sign-in; the login stays the same, and rows accumulate only in the disposable database.
@@ -60,7 +60,7 @@ const databaseUrl = (name: string) => `postgres://factory:factory@${DB_HOST}:543
 export const E2E_DATABASE_URL = databaseUrl(`${DB_PREFIX}_e2e`);
 const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
-/** The specs that need a signed-in member; follow-up-auth.spec.ts is the slot #281 fills. */
+/** The specs that need a signed-in member. */
 const AUTH_SPECS = /\/(auth|workspace|follow-up-auth)\.spec\.ts$/;
 /** The specimen browses its own server, never a board, so no board project may pick it up. */
 const SPECIMEN_SPEC = /\/specimen\.spec\.ts$/;
@@ -103,7 +103,7 @@ export default defineConfig({
         {
             // These specs need a signed-in member, and workspace.spec.ts also needs a server with a
             // real ORG_WORKSPACE_ROOT — which the open board deliberately does not have, so that a
-            // picker never appears in the visual check. follow-up-auth.spec.ts lands with #281.
+            // picker never appears in the visual check.
             name: 'auth',
             testMatch: AUTH_SPECS,
             use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${AUTH_PORT}` },

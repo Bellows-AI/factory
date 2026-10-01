@@ -19,8 +19,9 @@ answered 401 there would be nothing left to render a sign-in button in. The wall
 **Authentication is not a sandbox.** Signing in narrows "anyone who can reach the port" to "any
 member of this organization"; it does not make any route safe to hand out. See the job board below.
 
-**Two GitHub registrations, on purpose.** An OAuth App signs people in and requests *zero* scopes;
-a separate GitHub App reads repositories. One credential doing both would mean every person who
+**Two GitHub registrations, on purpose.** An OAuth App signs people in and requests one scope —
+`read:org`, org-level only, no repository access; a separate GitHub App reads repositories. One
+credential doing both would mean every person who
 signs in grants repository access, which is exactly the conflation `docs/auth.md` warns about.
 
 Required GitHub App installation permissions: `Metadata: read` (the repository list) and

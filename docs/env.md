@@ -54,12 +54,12 @@ real value.
    value in the first tells the runner's attribution reports to post somewhere else, the middle
    two forge the attempt credential the board resolves those reports' organization from, and the
    last claims the report is somebody else's session — a cross-tenant write into the telemetry
-   store, refused the same way. `OPENCODE_CONFIG_CONTENT` is the one name the board
-  reserves that the driver does not: the claim SYNTHESIZES it from the author's own executor row
-  when the task was stamped with an `opencode` executor ([workspace.md](workspace.md)), applied
-  after the resolved scopes so the synthesized value wins any collision, and a member var of the
-  same name could only ever be silently shadowed — the PUT says so instead. The driver's
-  `claimEnv` deliberately does not filter it, because the synthesized value must flow to reach
+   store, refused the same way. `OPENCODE_CONFIG_CONTENT` and `CLAUDE_CODE_CONFIG_CONTENT` are the
+   two names the board reserves that the driver does not: the claim SYNTHESIZES each from the
+   author's own executor row ([workspace.md](workspace.md)), applied
+   after the resolved scopes so the synthesized value wins any collision, and a member var of the
+   same name could only ever be silently shadowed — the PUT says so instead. The driver's
+   `claimEnv` deliberately does not filter them, because the synthesized values must flow to reach
   the runner (docker's env-file, kubernetes's per-attempt Secret — both carry it with no
   platform-specific code).
 - **`REPO`, `WORKTREE` and `BRANCH` are driver-owned inside the startup sync's container only**

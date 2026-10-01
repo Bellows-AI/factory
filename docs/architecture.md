@@ -10,6 +10,7 @@ under `server/src/github/`.
 | `web/` | Vite + React 19 SPA, polls `/api/stats`. |
 | `plugins/agent-telemetry/` | Installable Claude Code plugin. Reports `session -> (repo, branch)`. |
 | `driver/` | Job driver: claims jobs from the board and spawns a runner container per job. |
+| `cli/` | Board CLI: HTTP client that queues and inspects tasks. |
 
 Data flow: Claude Code → OTEL collector → `POST /api/otlp/v1/metrics` → `flattenMetrics()` →
 PostgreSQL (`metric_point`, `session_branch`) → `createPostgresTelemetryClient()` → `TelemetryInput`

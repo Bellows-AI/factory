@@ -146,9 +146,9 @@ driver `suspend`s the row, and the board lands the park as a terminal
 ## The master prompt (issue #244)
 
 **Read this before touching** `server/src/db/master-prompt.ts`, `driver/src/master-prompt.ts`, the
-`masterPrompt` field on the claim, or the two argv builders it feeds
-(`driver/src/docker.ts`'s `pushClaudeCodeArgs`/`pushOpencodeArgs`,
-`driver/src/k8s-podspec.ts`'s `claudeRunnerPlan`/`opencodeRunnerPlan`). Every agent claim carries a
+`masterPrompt` field on the claim, or the argv plan it feeds
+(`driver/src/runner-plan.ts`'s `runnerPlan`, composed from
+`driver/src/master-prompt.ts`'s `claudeSystemPromptArgs`/`opencodeAgentArgs`). Every agent claim carries a
 board-owned, board-rendered text — never authorable by a workflow or task prompt — that tells the
 agent it is one turn inside a Factory-run process and names exactly what Factory itself does around
 it: declared gates, publish/reuse-PR, any declared pre/post helper steps, and (scanned off the
@@ -697,7 +697,8 @@ connection and retry, which is what agents are for.
 ## Block-helper steps (issue #207)
 
 **Read this before touching** `driver/src/helpers.ts`, `driver/src/k8s-helper-runner.ts`,
-`driver/src/loop-helpers.ts`, or the `Runner.runHelper` seam in `driver/src/docker.ts`.
+`driver/src/loop-helpers.ts`, or the `Runner.runHelper` seam (declared in `driver/src/runner.ts`,
+implemented for docker by `dockerRunHelper` in `driver/src/docker-runner.ts`).
 
 A workflow `block` node (docs/workflows.md) may declare an allowlisted, board-owned helper to run
 before and/or after its agent turn — a runtime plan naming a helper id, its phase (`pre`/`post`),

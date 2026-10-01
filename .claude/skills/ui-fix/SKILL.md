@@ -100,7 +100,7 @@ npm run verify:ui                       # all specs, chromium, headless
 npx playwright show-trace artifacts/ui/trace/<name>/trace.zip   # on a failure
 ```
 
-The config builds all four packages and boots fresh servers against freshly seeded databases —
+The config builds all five packages and boots fresh servers against freshly seeded databases —
 a leftover server can never verify stale code. Never point Playwright at `npm run dev`; the built
 SPA served by the API is the arrangement under test.
 

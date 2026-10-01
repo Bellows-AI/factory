@@ -10,6 +10,7 @@ checkout; it does not build or run this repo's application.
 | `Dockerfile` | the image — Node 24 (debian), git, `@anthropic-ai/claude-code`, `gh`, `acli`, the `context-mode` plugin |
 | `entrypoint.sh` | `/usr/local/bin/claude-executor` — the `ENTRYPOINT` |
 | `branch-reporter.cjs` | `/usr/local/bin/branch-reporter.cjs` — the branch reporter the entrypoint launches beside the CLI |
+| `claude-progress.cjs` | `/usr/local/bin/claude-progress.cjs` — the progress watcher the entrypoint launches beside the CLI, fed the CLI's `stream-json` output |
 | `git-guard.cjs` | `/usr/local/bin/git-guard.cjs` — the git guard wired as the `PreToolUse` hook in `settings.json` |
 | `test.sh` | builds the image and exercises it against this repo — not shipped inside it |
 | `claude-home/` | `/home/node/.claude` inside the image, via `CLAUDE_CONFIG_DIR` |
@@ -99,7 +100,8 @@ settled at build time in the image's `.claude.json`.
 `ENTRYPOINT` is the `claude-executor` wrapper: it changes into `$WORKDIR`, then runs `claude`
 with every argument given after the image name as a supervised child, capturing and re-raising its
 exit status. Arguments reach the CLI unchanged — the wrapper
-adds no flags and interprets none.
+prepends `--output-format stream-json --verbose` (the progress watcher consumes the stream) and
+interprets none of them.
 
 ```bash
 # Run against a subdirectory of the mount, or a second checkout, without rebuilding
