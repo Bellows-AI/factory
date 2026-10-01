@@ -8,10 +8,32 @@
 #
 # debian rather than alpine: the CLI ships prebuilt glibc binaries (ripgrep among them) that fail
 # at runtime on musl, and the failure surfaces as an empty search result rather than an error.
-# The full image rather than -slim, despite the size: it already carries git and the CA bundle, and
-# Claude Code shells out to git for status, diffs and blame. Installing them with apt instead would
-# be smaller but adds a network-dependent layer that breaks behind a TLS-intercepting proxy.
-FROM node:24-bookworm
+#
+# -slim rather than the full image, reversing the earlier choice. The full tag carries a C/C++
+# toolchain and an X/media stack it never uses, and with it `linux-libc-dev`, `libopenexr`,
+# `libperl` and friends: 547 CRITICAL+HIGH findings on v0.0.0, of which ~497 were unfixed kernel
+# headers nothing in a container links against. The release scan gates on CRITICAL+HIGH, so that
+# base is a release that cannot ship.
+#
+# The earlier comment argued the full image avoids a network-dependent apt layer that breaks
+# behind a TLS-intercepting proxy. That reason did not survive contact: the two layers below
+# already curl binaries from acli.atlassian.com and github.com over TLS, so the build has required
+# working egress and a trusted chain all along. apt adds one more host, not a new class of failure.
+FROM node:24-bookworm-slim
+
+# What -slim drops and the rest of this file needs: git (Claude Code shells out to it for status,
+# diffs and blame), curl (the two downloads below) and the CA bundle both verify against.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# npm stays in this image — the CLI's plugin path uses it — so its own bundled dependency tree
+# ships too, and the version node:24 pins carries the only fixable findings the release scan
+# still reports here (tar, brace-expansion, ip-address, undici). Upgrading npm is what moves
+# them; removing npm would take the plugin path with it. Pinned, like everything else in this
+# file, so the image does not change under a rebuild of the same commit.
+ARG NPM_VERSION=11.21.0
+RUN npm install -g npm@${NPM_VERSION} && npm cache clean --force
 
 # Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
 # starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.
@@ -40,7 +62,7 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 -o /usr/local/bin/acli \
 # GitHub CLI. The github skill and CLAUDE.md both instruct agents to reach GitHub through `gh`, and
 # without it every one of those instructions ends in "command not found". Static release tarball
 # rather than apt, for the same proxy reason as the base image choice.
-ARG GH_VERSION=2.98.0
+ARG GH_VERSION=2.102.0
 RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
         | tar -xz -C /tmp \
     && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \

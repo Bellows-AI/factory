@@ -8,6 +8,7 @@ interface Step {
     name?: string;
     run?: string;
     uses?: string;
+    if?: string;
     with?: Record<string, string>;
     env?: Record<string, string>;
 }
@@ -18,6 +19,7 @@ interface Job {
     needs?: string | string[];
     if?: string;
     steps?: Step[];
+    env?: Record<string, string>;
     services?: Record<string, { image: string }>;
     strategy?: { matrix?: { image?: { name: string; context: string; args: string }[]; arch?: string[] } };
 }
@@ -222,6 +224,33 @@ describe('ci workflows', () => {
         expect(mirror!.run).not.toMatch(/collector-contrib:[\d.]+/);
     });
 
+    // A release nobody can resolve by version is a release only this repository can install. The
+    // chart goes to the same registry as the images, under `<owner>/charts` so it does not collide
+    // with the `factory-ai` image package in the same namespace.
+    it('publishes the chart as an OCI artifact beside the images it names', () => {
+        const chart = workflow(RELEASE).jobs.chart!;
+        expect(chart, 'the chart is not published at all').toBeTruthy();
+        const commands = runs(chart).join('\n');
+        expect(commands).toContain('helm package charts/factory');
+        expect(commands).toMatch(/helm push .* "oci:\/\/\$REGISTRY\/charts"/);
+    });
+
+    // The images must exist before anything can resolve the chart that names them: a chart
+    // published first is one that installs and then lands every pod in ImagePullBackOff.
+    it('publishes the chart only after the images it names are pushed', () => {
+        expect(needs(workflow(RELEASE).jobs.chart!)).toContain('manifest');
+    });
+
+    // `factory.image` resolves an empty `tag` to .Chart.AppVersion, so --app-version is what makes
+    // a packaged chart name its own release without any value being set. A SemVer `version` has no
+    // leading `v`; the app version keeps the tag as it is spelled, because that IS the image tag.
+    it('packages the chart at the release version and carries the tag as the app version', () => {
+        const commands = runs(workflow(RELEASE).jobs.chart!).join('\n');
+        expect(commands).toContain('VERSION="${IMAGE_TAG#v}"');
+        expect(commands).toContain('--version "$VERSION"');
+        expect(commands).toContain('--app-version "$IMAGE_TAG"');
+    });
+
     it('never interpolates a ref name into shell text', () => {
         for (const job of Object.values(workflow(RELEASE).jobs)) {
             for (const step of runSteps(job)) {
@@ -256,9 +285,84 @@ describe('ci workflows', () => {
 
     it('grants each workflow only the access its job needs', () => {
         expect(workflow(CI).permissions, CI).toEqual({ contents: 'read' });
-        // The publish path writes packages and nothing else — no contents: write, so a release
-        // can never move a ref.
-        expect(workflow(RELEASE).permissions, RELEASE).toEqual({ contents: 'read', packages: 'write' });
+        // Packages for the push, security-events for the scan's SARIF, and no contents: write —
+        // so a release can never move a ref.
+        expect(workflow(RELEASE).permissions, RELEASE).toEqual({
+            contents: 'read',
+            packages: 'write',
+            'security-events': 'write',
+        });
+    });
+
+    // The whole point of the gate: an image that fails it must not exist in the registry, so the
+    // scan has to sit between the build and both the credential and the push.
+    it('scans every image before it is pushed, and before the registry credential is on the runner', () => {
+        const build = workflow(RELEASE).jobs.build!;
+        const names = (build.steps ?? []).map((step) => step.name ?? step.uses ?? '');
+        const gate = names.findIndex((name) => name.includes('--exit-code 1'));
+        const login = names.findIndex((name) => name.includes('docker login'));
+        const push = names.findIndex((name) => name.includes('--push'));
+        expect(gate, 'nothing in the build job fails on a finding').toBeGreaterThan(-1);
+        expect(gate).toBeLessThan(login);
+        expect(gate).toBeLessThan(push);
+        // Scanned from a tarball, so the bytes the gate reads are the bytes the push sends and
+        // nothing has left the runner before the verdict.
+        const commands = runs(build).join('\n');
+        expect(commands).toContain('--output type=docker,dest=/tmp/image.tar');
+        expect(commands).toContain('--input /tmp/image.tar');
+        // The tar may not land in the workspace: for the two images whose context is `.` it would
+        // be swept into the push build's context.
+        expect(commands).not.toMatch(/dest=\$?\{?(PWD|GITHUB_WORKSPACE)/);
+    });
+
+    it('gates on secrets and on CRITICAL and HIGH, and pins the scanner', () => {
+        const build = workflow(RELEASE).jobs.build!;
+        const gate = runSteps(build).find((step) => step.name!.includes('--exit-code 1'))!;
+        expect(gate.run).toContain('--scanners vuln,secret');
+        expect(gate.run).toContain('--severity CRITICAL,HIGH');
+        expect(read('.trivyignore')).toBeTruthy();
+        // A scanner that moves under you turns a release into a bisect.
+        expect(build.env!.TRIVY_IMAGE).toMatch(/^ghcr\.io\/aquasecurity\/trivy:\d+\.\d+\.\d+$/);
+    });
+
+    // Two narrowings, and the gate is only honest while both stay this narrow.
+    it('narrows the gate by unfixed findings and by the one unpinnable binary, and no further', () => {
+        const build = workflow(RELEASE).jobs.build!;
+        const scans = runSteps(build).filter((step) => /trivy/i.test(step.run));
+        expect(scans).toHaveLength(2);
+        for (const step of scans) {
+            // Blocking on a base package with no upstream patch does not produce a fixed image.
+            expect(step.run, `${step.name} does not skip unfixed findings`).toContain('--ignore-unfixed');
+            // Scoped to the one path Atlassian publishes as a single `latest` binary, so the same
+            // CVEs still block anywhere else — gh carried several of them until 2.102.0.
+            expect(step.run).toContain('--skip-files /usr/local/bin/acli');
+            const skipped = [...step.run.matchAll(/--skip-files (\S+)/g)].map((match) => match[1]);
+            expect(skipped, `${step.name} skips more than acli`).toEqual(['/usr/local/bin/acli']);
+            // Narrowing the severity or dropping the secret scanner would hollow it out instead.
+            expect(step.run).not.toMatch(/--skip-dirs|--vuln-type|--scanners vuln\b(?!,)/);
+        }
+        // Both passes carry the same flags, or the Security tab shows a different set from the
+        // one the gate enforces.
+        const flags = scans.map((step) => [...step.run.matchAll(/--[a-z-]+(?: [^\s\\]+)?/g)].map((m) => m[0]));
+        const shared = flags.map((list) => list.filter((flag) => !/format|output|exit-code/.test(flag)).sort());
+        expect(shared[0]).toEqual(shared[1]);
+        // The skip is a stopgap with an owner, not a permanent carve-out. Read from the file
+        // rather than the parsed job: the reference lives in a YAML comment, which the parser drops.
+        expect(read(RELEASE), 'the acli skip names no issue that retires it').toMatch(/#\d+ tracks/);
+    });
+
+    // A gate on the SARIF pass would skip the upload on exactly the runs whose findings matter.
+    it('uploads the SARIF even when the gate fails, under a category per matrix cell', () => {
+        const build = workflow(RELEASE).jobs.build!;
+        const sarif = runSteps(build).find((step) => step.run.includes('--format sarif'))!;
+        expect(sarif.run).toContain('--exit-code 0');
+        const upload = (build.steps ?? []).find((step) => step.uses?.startsWith('github/codeql-action/upload-sarif'))!;
+        expect(upload, 'the scan result never reaches the Security tab').toBeTruthy();
+        expect(upload.if).toBe('always()');
+        // One category holds one result set: eight uploads sharing a name would leave only
+        // whichever finished last.
+        expect(upload.with!.category).toContain('matrix.image.name');
+        expect(upload.with!.category).toContain('matrix.arch');
     });
 
     // Only one run sits pending per group, so a group shared across merges to main would let a
@@ -287,11 +391,14 @@ describe('ci workflows', () => {
                 }
             }
         }
-        // The publish jobs hold `packages: write`, so no third-party action runs on that path at
-        // all — the registry work is `run` steps calling the docker CLI.
+        // The publish jobs hold `packages: write`, so every action on that path is GitHub-owned —
+        // `actions/*` or `github/*`. The registry work and the scan are `run` steps calling a
+        // CLI, which is what keeps aquasecurity/trivy-action off a job holding a token.
         for (const job of Object.values(workflow(RELEASE).jobs)) {
             for (const step of job.steps ?? []) {
-                if (step.uses) expect(step.uses, `${step.uses} runs beside packages: write`).toMatch(/^actions\//);
+                if (step.uses) {
+                    expect(step.uses, `${step.uses} runs beside packages: write`).toMatch(/^(actions|github)\//);
+                }
             }
         }
     });

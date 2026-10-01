@@ -6,9 +6,12 @@ on:
 
 permissions:
     contents: read
-    # The only write the release path has, and the only one GHCR needs. No repository secret is
-    # configured anywhere: `github.token` is the installation token this run already carries.
+    # The only write GHCR needs. No repository secret is configured anywhere: `github.token` is
+    # the installation token this run already carries.
     packages: write
+    # The scan's SARIF, which becomes tracked alerts in the Security tab rather than a line in a
+    # log nobody reads after the run expires.
+    security-events: write
 
 concurrency:
     # Must differ from ci.yml's group; the called workflow would otherwise wait on this run.
@@ -90,12 +93,75 @@ jobs:
         runs-on: ${{ matrix.runner }}
         # An executor image installs node, gh, acli and an agent CLI from scratch.
         timeout-minutes: 45
+        env:
+            # Pinned, never `latest`: a scanner that changes under you turns a release into a
+            # bisect. Run as a container rather than through aquasecurity/trivy-action, so the
+            # only `uses:` on this path stay GitHub-owned.
+            TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0
         steps:
             - uses: actions/checkout@v4
             # The default builder uses the `docker` driver, which cannot --push. A docker-container
             # builder can, and is what produces an image a manifest list may reference.
             - name: docker buildx create
               run: docker buildx create --use --driver docker-container
+            # Built to a tarball first, NOT pushed and not even loaded into the daemon: the scan
+            # below gets the exact bytes that would ship, and nothing has left the runner yet if
+            # it fails. The push step rebuilds, which is a cache hit on this builder.
+            # The tar lands in /tmp, never the workspace — for the two images whose context is `.`
+            # it would otherwise be swept into the push build's context.
+            - name: docker buildx build --output type=docker
+              env:
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+                  IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
+                  IMAGE: ${{ matrix.image.name }}
+                  CONTEXT: ${{ matrix.image.context }}
+                  BUILD_ARGS: ${{ matrix.image.args }}
+                  ARCH: ${{ matrix.arch }}
+              run: |
+                  # $BUILD_ARGS is deliberately unquoted: the matrix carries flags, not one word.
+                  docker buildx build --platform "linux/$ARCH" --provenance=false $BUILD_ARGS \
+                      -t "$REGISTRY/$IMAGE:$IMAGE_TAG-$ARCH" \
+                      --output type=docker,dest=/tmp/image.tar "$CONTEXT"
+            # Two passes over one tarball. This one never fails the job — its product is the SARIF
+            # the step after it uploads, and a gate here would skip the upload on the only runs
+            # whose findings matter.
+            - name: trivy image --format sarif
+              run: |
+                  docker run --rm -v /tmp:/tmp -v "$PWD:/work" -w /work "$TRIVY_IMAGE" \
+                      image --input /tmp/image.tar --scanners vuln,secret \
+                      --severity CRITICAL,HIGH --ignore-unfixed --skip-files /usr/local/bin/acli \
+                      --format sarif --output /tmp/trivy.sarif --exit-code 0
+            # A distinct category per matrix cell: one category holds one result set, so eight
+            # uploads under a shared name would leave only whichever finished last.
+            - if: always()
+              uses: github/codeql-action/upload-sarif@v3
+              with:
+                  sarif_file: /tmp/trivy.sarif
+                  category: image-${{ matrix.image.name }}-${{ matrix.arch }}
+            # The gate: CRITICAL and HIGH, plus any secret found in a layer. Two narrowings, both
+            # measured rather than assumed, and both the same on the SARIF pass above so the
+            # Security tab shows what the gate enforces.
+            #
+            # --ignore-unfixed: 99 of the executors' findings are bookworm-slim base packages
+            # (perl, bsdutils, curl, libblkid1) with no upstream patch. Blocking on them does not
+            # produce a fixed image, it produces a release nobody can cut.
+            #
+            # --skip-files /usr/local/bin/acli: Atlassian publishes the CLI as one `latest`
+            # binary, so its 26 Go stdlib findings have a fix in Go and no build to take it from.
+            # Scoped to the one path, so the same CVEs still block anywhere else — `gh` carried
+            # several of them until 2.102.0, and would be caught again. Issue #384 tracks taking
+            # that binary into our own registry, which is what retires this flag.
+            #
+            # `.trivyignore` at the repo root is where anything else triaged goes, with a reason.
+            # Reads from /work, which is why the workspace is mounted at all.
+            - name: trivy image --exit-code 1
+              run: |
+                  docker run --rm -v /tmp:/tmp -v "$PWD:/work" -w /work "$TRIVY_IMAGE" \
+                      image --input /tmp/image.tar --scanners vuln,secret \
+                      --severity CRITICAL,HIGH --ignore-unfixed --skip-files /usr/local/bin/acli \
+                      --format table --exit-code 1
+            # Only now. The registry credential is not on the runner while a third-party scanner
+            # container is running, and nothing reaches GHCR that the gate has not passed.
             - name: docker login ghcr.io
               env:
                   # The run's own installation token under `packages: write` — not a secret
@@ -112,7 +178,8 @@ jobs:
                   BUILD_ARGS: ${{ matrix.image.args }}
                   ARCH: ${{ matrix.arch }}
               run: |
-                  # $BUILD_ARGS is deliberately unquoted: the matrix carries flags, not one word.
+                  # Identical to the build above but for the output, so every layer is a cache hit
+                  # and this pushes the bytes the scan just cleared.
                   # --provenance=false keeps the push a plain single-platform image; an attestation
                   # would make it a manifest list of its own, and `imagetools create` would then
                   # merge lists of lists with unknown/unknown entries.
@@ -154,3 +221,67 @@ jobs:
                       repo && $1 == "tag:" { print repo ":" $2; exit }' charts/factory/values.yaml | tr -d "'")
                   test -n "$COLLECTOR" || { echo 'the chart no longer pins a collector image here'; exit 1; }
                   docker buildx imagetools create -t "$REGISTRY/$COLLECTOR" "$COLLECTOR"
+
+    # The chart itself, as an OCI artifact beside the images it names. Without this the only way to
+    # install a release is to clone the repository at the right tag, which no GitOps controller
+    # does: ArgoCD resolves a chart from a registry by version, and a deployment repository holds
+    # values, not a vendored copy of somebody else's templates.
+    #
+    # Runs after `manifest` rather than beside it: a published chart whose images do not exist yet
+    # is a chart that resolves and then lands every pod in ImagePullBackOff.
+    chart:
+        needs: [tag, manifest]
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        env:
+            # Pinned, and installed from the official tarball by checksum rather than through
+            # azure/setup-helm: every `uses:` on a job that holds `packages: write` stays
+            # GitHub-owned, the same rule that makes the Trivy scan a container rather than an
+            # action (core/test/ci-workflows.test.ts pins it). A third-party action here would run
+            # arbitrary code in the step before the registry credential is used.
+            HELM_VERSION: v3.16.4
+            HELM_SHA256: fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179
+        steps:
+            - uses: actions/checkout@v4
+            - name: install helm by checksum
+              run: |
+                  curl -fsSL -o /tmp/helm.tar.gz \
+                      "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz"
+                  printf '%s  /tmp/helm.tar.gz\n' "$HELM_SHA256" | sha256sum -c -
+                  tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
+                  install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+                  helm version --short
+            - name: helm registry login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
+            # The chart version is the release tag with its leading `v` removed: a Chart.yaml
+            # version must be SemVer, and SemVer has no `v`. --app-version carries the tag as it is
+            # spelled, which is also the image tag every value in the chart composes against, so a
+            # `helm get metadata` names the images without a lookup.
+            - name: helm package --version <tag>
+              env:
+                  IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
+              run: |
+                  VERSION="${IMAGE_TAG#v}"
+                  helm package charts/factory --version "$VERSION" --app-version "$IMAGE_TAG" \
+                      --destination /tmp/chart
+                  test -f "/tmp/chart/factory-$VERSION.tgz"
+                  # --app-version is load-bearing, not decoration: `factory.image` resolves an
+                  # empty `tag` to .Chart.AppVersion (_helpers.tpl), so the dashboard, driver and
+                  # collector references in a packaged chart name THIS release without any value
+                  # being set. The two executor images are the exception — they are bare
+                  # repository strings with no tag field, so a deployment must pin them
+                  # (docs/eks-runbook.md step 3). Nothing here rewrites values: a chart whose
+                  # committed defaults differ from what it renders in CI is a chart nobody can
+                  # reproduce locally.
+            - name: helm push to ghcr.io
+              env:
+                  IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+              run: |
+                  VERSION="${IMAGE_TAG#v}"
+                  # Under `<owner>/charts`, so the chart does not collide with the `factory-ai`
+                  # image package in the same namespace.
+                  helm push "/tmp/chart/factory-$VERSION.tgz" "oci://$REGISTRY/charts"

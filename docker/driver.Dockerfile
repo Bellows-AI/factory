@@ -36,16 +36,21 @@ RUN npm run build -w driver
 # driver's one runtime tool: it talks to the host daemon through the socket compose mounts, spawning
 # sibling runner containers. Not the last stage — `runtime` below stays what deploys.
 FROM deps AS dev
-COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 
 FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # The client only. The daemon is the host's, reached through the socket mounted at run time.
-COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 # No `npm ci` here: the driver has no runtime dependencies at all. package.json is still needed —
 # it is what makes node read dist/*.js as ESM.
 COPY driver/package.json driver/package.json
+# And no package manager either: this stage never runs one, and npm/yarn/corepack bundle their own
+# dependency trees, which a scanner reads as vulnerabilities in the shipped image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+        /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=build /app/driver/dist driver/dist
 # Runs as root, unlike the dashboard. /var/run/docker.sock is root-owned on the host and a
 # non-root user cannot open it; see docs/security.md for what mounting it actually grants.

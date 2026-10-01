@@ -1,0 +1,34 @@
+# Findings the release scan should not block on.
+#
+# `.github/workflows/release-image.yml` gates every image on CRITICAL and HIGH, fixed or not,
+# plus any secret found in a layer. That is strict on purpose: a base-image CVE should stop a
+# release rather than ship quietly. This file is the valve, and an entry here is a decision, not
+# a mute button.
+#
+# One CVE id per line. Write the reason above it and an expiry date, so a line that outlived its
+# reason is visible as an old date rather than as a line nobody remembers adding:
+#
+#   # CVE-2025-0000 — in libfoo, reachable only from the CLI's --serve mode, which no image runs.
+#   # Revisit 2026-12-01, or when debian ships the fix.
+#   CVE-2025-0000
+#
+# Empty is the goal. A growing file means the base image needs bumping, not that the gate is
+# wrong.
+
+# Both of the below are inside npm's OWN vendored tree in the two executor images, which keep npm
+# because Claude Code's plugin path uses it. npm 11.21.0 is the newest release on the 11 line and
+# still carries them; npm 12.2.0 fixes both and breaks the build — @anthropic-ai/claude-code's
+# postinstall does not place its native binary under it, and `claude plugin install` then fails
+# with "claude native binary not installed". So there is no npm to upgrade to, and the alternative
+# (removing npm from the executors) takes the plugin path with it.
+# Neither is reachable from anything these images run: npm is a build-time tool there, and no
+# runner invokes it. Revisit when @anthropic-ai/claude-code installs cleanly under npm 12.
+
+# brace-expansion denial of service, two of them. npm 11.21.0 vendors 5.0.9; the fixes are 5.0.10
+# and 5.0.11.
+CVE-2026-102276
+CVE-2026-102278
+
+# undici 6.28.0, denial of service via an unrequested WebSocket subprotocol. Fixed in 6.28.1.
+# Nothing in these images opens a WebSocket through npm's copy.
+CVE-2026-19534

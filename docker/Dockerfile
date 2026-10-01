@@ -61,7 +61,15 @@ COPY package.json package-lock.json ./
 COPY core/package.json core/
 COPY server/package.json server/
 COPY web/package.json web/
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+# npm, yarn and corepack go with the install that used them. Nothing at run time shells out to a
+# package manager — the server runs `node server/dist/index.js` and reaches git, not npm — and the
+# three bundle their own dependency trees (tar, brace-expansion, ip-address, undici), which a
+# scanner reads as vulnerabilities in the shipped image. Removed in the same layer as the install,
+# or the layer below still carries them.
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+        /usr/local/bin/yarn /usr/local/bin/yarnpkg
 # node:24-alpine ships no git, and the workspace reconcile shells out to it. Absent, the failure is
 # an ENOENT per repo that only ever appears in the container, never in dev.
 RUN apk add --no-cache git

@@ -13,11 +13,38 @@ can. A real cloud lane in CI is an open decision (epic #365); whatever admitting
 grows must be at least as hard to spoof as the kind endpoint check above, because it would delete
 Jobs too.
 
-**Walk record: not yet walked.** Everything below is an expectation to observe, except where marked
-measured. When the walk happens, record here the date, the cluster, the region, the Kubernetes
-version, and every step whose observation differed from its expectation; fold what it found back
-into the epic (#365) and into this file, so the next walk starts from what is known rather than
-what was assumed.
+**Walk record: partially walked, 2026-10-01** — EKS `internal-utils`, eu-central-1, account
+311772925847, Kubernetes v1.34, chart `v0.0.0`, release `factory` in namespace `factory`, offline
+entry (no GitHub App). Steps 2, 3, 4 and 7's ingress half were walked and held; steps 1, 6 and 7's
+job half were **not** walked, and two of the platform settings step 1 asks for came back wrong on
+this cluster — see [docs/plans/eks-internal-utils-isolation.md](plans/eks-internal-utils-isolation.md),
+which is the follow-up those two need. Everything below is still an expectation to observe except
+where marked measured. The install is disposable and is torn down after; nothing about it makes
+this cluster fit to run agent work.
+
+What differed from expectation:
+
+- **The local-state chart cannot back a cloud install as written.** `charts/factory-local-state`
+  mounts its EBS claim directly at `/var/lib/postgresql/data`, and any real ext4 block volume
+  carries a `lost+found`, so `initdb` refuses: *"directory … exists but is not empty … It contains
+  a lost+found directory"*, and the StatefulSet crash-loops. On kind the local provisioner hands
+  out an empty hostPath directory, so this never fires there. The walk worked around it by setting
+  `PGDATA=/var/lib/postgresql/data/pgdata` on the live StatefulSet — a drift the next
+  `helm upgrade` would revert. The chart says "local only; production points `database.url` at a
+  managed instance", which remains the answer; what the walk showed is that the failure is silent
+  until a cloud cluster, and the subdirectory is one env line.
+- Everything else in steps 2–4 held: the `ReadWriteMany` claim bound on an `efs-sc` carrying
+  `gid: "1000"` and `directoryPerms: "0775"` (no explicit `uid` — the EFS CSI driver defaults
+  `uid` to `gid`, and the access point came out right); every image pulled from
+  `ghcr.io/bellows-ai` under `global.imageRegistry`, collector mirror included; the `pg_isready`
+  init container gated correctly and `GET /api/ready` answered 200 once the migrations landed.
+- Step 7's ingress half held on the first try with the chart README's ALB annotation set: the ALB
+  joined an existing `group.name`, `http://` redirected to `https://`, `/api/health` passed the
+  health check, and external-dns created the record.
+- The driver authenticated against the board on the shared `JOB_BOARD_TOKEN` and polled; its 503s
+  are `JOBS_UNAVAILABLE` ("No job board for this organization"), which is the correct answer for an
+  offline deployment where no sign-in has materialized an org. A 401 here would have been the
+  credential; a 503 is the absence of an org, so the worker-route credential path is confirmed.
 
 Everything the walk creates should be disposable: one dedicated namespace, one release, one EFS
 file system and access point, one ACM certificate on a hostname that exists to be deleted. The

@@ -96,6 +96,75 @@ registry. `--provenance=false` is load-bearing: an attestation would make each s
 push a manifest list of its own, and the merge would nest lists and carry `unknown/unknown`
 entries.
 
+### The scan gate
+
+Each build job builds to a **tarball** first (`--output type=docker,dest=/tmp/image.tar`) rather
+than pushing: Trivy then reads the exact bytes that would ship, and nothing has left the runner
+if it fails. The push step rebuilds with the same flags, which is a cache hit on the same
+builder. The tar lands in `/tmp`, never the workspace — for the two images whose context is `.`
+it would otherwise be swept into the push build's context.
+
+Two passes over that one tarball. The first writes SARIF with `--exit-code 0` and
+`github/codeql-action/upload-sarif@v3` publishes it under a category per matrix cell (one
+category holds one result set; eight uploads sharing a name would leave only whichever finished
+last). The upload is `if: always()`, because a gate on the SARIF pass would skip the upload on
+exactly the runs whose findings matter. The second pass is the gate: `--exit-code 1` on
+**`--scanners vuln,secret --severity CRITICAL,HIGH`**.
+
+Two narrowings, both measured rather than assumed, and both applied to the SARIF pass as well so
+the Security tab shows what the gate enforces:
+
+- **`--ignore-unfixed`.** 99 of the executors' findings are `bookworm-slim` base packages
+  (`perl`, `bsdutils`, `curl`, `libblkid1`) with no upstream patch. Blocking on them does not
+  produce a fixed image, it produces a release nobody can cut.
+- **`--skip-files /usr/local/bin/acli`.** Atlassian publishes the CLI as a single `latest`
+  binary — there is no versioned URL — so its 26 Go stdlib findings have a fix in Go and no
+  build to take it from. Scoped to the one path, so the same CVEs still block anywhere else:
+  `gh` carried several of them until 2.102.0 and would be caught again. Issue #384 mirrors that
+  binary into our own registry, which is what retires the flag.
+
+A test pins both, pins that they are the *only* narrowings (no `--skip-dirs`, no second
+`--skip-files`, no `--vuln-type`), pins that the two passes carry identical flags, and pins that
+the skip names an issue that retires it.
+
+`docker login` comes *after* the gate. The registry credential is not on the runner while a
+third-party scanner container runs, and nothing reaches GHCR the gate has not passed.
+
+Trivy runs as a **pinned container**, not `aquasecurity/trivy-action`: a job holding
+`packages: write` should not execute a third-party action, and a scanner that moves under you
+turns a release into a bisect. A test pins the version shape and that every `uses:` on this path
+is `actions/*` or `github/*`.
+
+The gate is strict on purpose and `.trivyignore` at the repo root is the only valve. An entry
+there is a decision with a reason and a revisit date, not a mute button — a growing file means
+the base image needs bumping.
+
+**Measured.** `v0.0.0` — the last release before the gate existed — scanned 24 HIGH on the
+dashboard, 1 CRITICAL + 28 HIGH on the driver and 33 CRITICAL + 514 HIGH on each executor. Zero
+secrets everywhere. What the findings were, and what each cost:
+
+| source | fix |
+| --- | --- |
+| `fastify` 5.12.1, `@fastify/static` 8.3.0, `fast-uri` | bumped to 5.12.5 / 10.1.5; `npm audit --omit=dev` is clean |
+| npm/yarn/corepack bundled in the runtime images (`tar`, `brace-expansion`, `ip-address`, `undici`) | removed from both — nothing at run time shells out to a package manager |
+| Go `stdlib` in the vendored docker client | `docker:27-cli` → `docker:29-cli` |
+| `node:24-bookworm`'s unused toolchain and media stack (~497 unfixed `linux-libc-dev`) | both executors moved to `-slim` + `apt-get install git curl ca-certificates` |
+| `gh` 2.98.0 | 2.102.0 |
+
+One more followed from the numbers: the executors keep npm (the CLI's plugin path uses it), so
+npm's own vendored tree ships, and the version `node:24` pins was the last fixable source left.
+`ARG NPM_VERSION=11.21.0` — the newest on the 11 line. **Not 12**: npm 12.2.0 fixes the rest and
+breaks the build, because `@anthropic-ai/claude-code`'s postinstall does not place its native
+binary under it and `claude plugin install` then fails with *"claude native binary not
+installed"*. That is why the pin looks a minor behind and must stay there.
+
+**Where that lands: every image passes the gate.** Dashboard and driver report nothing at all.
+Each executor reports three findings, all inside npm's own bundle and none reachable from
+anything a runner invokes — two `brace-expansion` and one `undici` — and those three ids are the
+entire contents of `.trivyignore`, each with the reason above and a revisit condition.
+
+### Two smaller things
+
 Two smaller things the jobs do on purpose. `docker buildx create --use --driver docker-container`
 runs first because the default builder uses the `docker` driver, which cannot `--push` at all.
 And `manifest` mirrors the collector — `global.imageRegistry` prefixes *every* reference the

@@ -8,9 +8,27 @@
 #
 # The driver selects this image when a task's chosen executor profile has type `opencode`.
 #
-# debian rather than alpine: the CLI ships prebuilt glibc binaries that fail at runtime on musl,
-# and the full image already carries git and the CA bundle the agent shells out to.
-FROM node:24-bookworm
+# debian rather than alpine: the CLI ships prebuilt glibc binaries that fail at runtime on musl.
+#
+# -slim rather than the full image, for the reason docker/claude-executor/Dockerfile spells out:
+# the full tag's unused toolchain and media stack carried ~497 unfixed `linux-libc-dev` findings,
+# and the release scan gates on CRITICAL+HIGH.
+FROM node:24-bookworm-slim
+
+# What -slim drops and the rest of this file needs: git (the agent shells out to it), curl (the
+# two downloads below) and the CA bundle both verify against. Deliberately NO compiler: a
+# toolchain here would pull libc6-dev back in, and with it the `linux-libc-dev` findings this base
+# change exists to remove. context-mode's better-sqlite3 resolves a prebuilt binding for
+# linux/amd64 and linux/arm64 on node 24; the test below is what catches the day it stops.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# npm stays in this image, so its own bundled dependency tree ships too — and the version node:24
+# pins carries the only fixable findings the release scan still reports here. Same pin and same
+# reasoning as docker/claude-executor/Dockerfile.
+ARG NPM_VERSION=11.21.0
+RUN npm install -g npm@${NPM_VERSION} && npm cache clean --force
 
 # Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
 # starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.
@@ -50,7 +68,7 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 -o /usr/local/bin/acli \
 # GitHub CLI. The agent instructions point GitHub work at `gh`, and without it every one of those
 # instructions ends in "command not found". Static release tarball rather than apt, for the same
 # proxy reason as the base image choice.
-ARG GH_VERSION=2.98.0
+ARG GH_VERSION=2.102.0
 RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
         | tar -xz -C /tmp \
     && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \

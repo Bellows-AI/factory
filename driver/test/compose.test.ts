@@ -93,7 +93,14 @@ describe('the compose driver service', () => {
 describe('the driver image stages', () => {
     it('has a dev stage with the docker CLI', () => {
         expect(driverDockerfile).toMatch(/^FROM deps AS dev$/m);
-        expect(driverDockerfile).toContain('COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker');
+        // Pinned to a major, and the two stages must agree: the dev stage's client and the
+        // runtime stage's are the same binary, and a split would let `docker compose up` exercise
+        // a version the chart never ships. The major itself moves with the release scan — an old
+        // client carries an old Go stdlib, which is 22 of the driver image's findings.
+        const clients = [...driverDockerfile.matchAll(/COPY --from=docker:(\S+) /g)].map((m) => m[1]);
+        expect(clients).toHaveLength(2);
+        expect(new Set(clients).size).toBe(1);
+        expect(clients[0]).toMatch(/^\d+-cli$/);
     });
 
     it('keeps runtime as the last stage — what the chart ships', () => {
