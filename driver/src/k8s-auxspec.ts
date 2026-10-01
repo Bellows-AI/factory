@@ -6,18 +6,15 @@ import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
 import type { HelperDescriptor, HelperPlan } from './helpers.js';
 import {
     auxJobSpec,
-    doNotDisruptField,
     hash16,
     jobsPath,
     pullSecretsField,
     releaseLabel,
-    resourcesField,
-    schedulingField,
     serviceSubdomain,
     workspaceMount,
     type AuxJobSpec,
-    type PodResources,
 } from './k8s-podspec.js';
+import { doNotDisruptField, resourcesField, schedulingField, type PodResources } from './k8s-podfields.js';
 import { JOB_ID, LOG_TAIL_LINES, MS_PER_SECOND } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import {
