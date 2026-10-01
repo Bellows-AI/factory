@@ -1,0 +1,13 @@
+
+ RUN  v3.2.7 /Users/andriihrachov/development/factory-ai
+
+ ✓ web/test/task-tree.test.ts (21 tests) 18ms
+ ✓ web/test/task-composer-logic.test.ts (39 tests) 22ms
+ ✓ web/test/task-header.render.test.tsx (22 tests) 216ms
+
+ Test Files  3 passed (3)
+      Tests  82 passed (82)
+   Start at  09:10:19
+   Duration  2.76s (transform 597ms, setup 0ms, collect 1.56s, tests 256ms, environment 1ms, prepare 670ms)
+
+
