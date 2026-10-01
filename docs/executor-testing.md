@@ -12,7 +12,7 @@ PostgreSQL, or the OTLP collector actually accepted the artifact handed to it.
 | `npm run test:coverage:executors` | The same surface with a regression threshold | 95.14% lines/statements, 89.21% branches, 96.28% functions |
 | `DATABASE_URL=…/factory_test npm run test:db` | Real lease, fencing, attribution, deduplication and rollup SQL | 308 tests |
 | `npm run test:jobs` | Real board HTTP, Docker daemon, containers and disposable database | Required before changing Docker runner behavior |
-| `npm run test:k8s` | Helm assertions; `--cluster` adds real Jobs in kind | Required before changing Kubernetes runner behavior |
+| `npm run test:k8s` | Helm assertions, including an EKS-shaped render lane; `--cluster` adds real Jobs in kind | Required before changing Kubernetes runner behavior |
 
 The focused coverage gate excludes `driver/src/index.ts`, content-injected scripts under
 `driver/src/scripts/`, and the Postgres telemetry store. V8 cannot attribute child-process code to
@@ -57,15 +57,23 @@ suites, per the executor-parity rule in AGENTS.md.
    `test:jobs` and `test:k8s --cluster`, pass it through the actual collector, then assert the
    stored row and dashboard rollup. Include a dashboard restart inside the collector's 300-second
    retry window and prove one logical datapoint is stored once.
-2. The real Docker harness does not kill the driver after claim and prove a replacement fences the
+2. No lane runs the chart against a cloud cluster. The `test:k8s --cluster` phase refuses every
+   non-kind kubectl context deliberately — it deletes runner Jobs, and the endpoint-bound guard is
+   what keeps that from ever firing against something shared — so the EKS value shape is only
+   rendered offline (`EKS_SETS` in `scripts/test-k8s.sh`, which cannot catch EFS permissions or
+   add-on enforcement) and exercised for real only by the by-hand pre-release walk,
+   `docs/eks-runbook.md` (issue #364, unwalked until its walk record says otherwise). A real cloud
+   lane in CI is an open decision on the epic (#365), and its admitting fingerprint must be at
+   least as hard to spoof as the kind endpoint check.
+3. The real Docker harness does not kill the driver after claim and prove a replacement fences the
    orphan before writing. The unit suite covers the sequence; the daemon boundary does not.
-3. The kind phase proves successful execution, not API outage, stop-during-sync, superseded claim,
+4. The kind phase proves successful execution, not API outage, stop-during-sync, superseded claim,
    or failed cleanup. Add one fault-injection case at a time; do not recreate the unit matrix in a
    slow cluster suite.
-4. Neither real-agent image can emit telemetry offline without the vendor binary/plugin runtime.
+5. Neither real-agent image can emit telemetry offline without the vendor binary/plugin runtime.
    Keep artifact contract tests fast, and reserve image-level emission for a pinned smoke job rather
    than making every unit run depend on external credentials.
-5. The `test:k8s --cluster` phase (`scripts/test-k8s.sh`) has no case for an allowlisted block
+6. The `test:k8s --cluster` phase (`scripts/test-k8s.sh`) has no case for an allowlisted block
    helper (`merge-conflict-autofix`, `github-review-reconcile`) — only the bare echo-executor happy
    path. Deferred (issue #210): both real blocks need a "GitHub" to talk to (a git remote to probe/
    rebase against, or `gh`-shaped HTTP responses and a recorded PR publication), and there is no
@@ -73,7 +81,7 @@ suites, per the executor-parity rule in AGENTS.md.
    remote in the test's own scaffolding and a stub of the helper script's HTTP/`gh` calls inside the
    executor image are the two candidates. Picking one is a test-harness design decision, not an
    integration fix, so it is left open here rather than decided unilaterally.
-6. The board-owned master prompt (issue #244) is pinned offline down to the exact argv/config each
+7. The board-owned master prompt (issue #244) is pinned offline down to the exact argv/config each
    transport builds (`master-prompt.test.ts` on both sides, plus the argv/spec parity pins in
    `docker.test.ts`/`k8s.test.ts`) and against a real database only where `server/test-db` already
    runs. Nothing offline proves the CLIs themselves honor the flags: that the pinned

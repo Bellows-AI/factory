@@ -7,7 +7,10 @@
 # Phase one is offline: helm lint, and helm template assertions that the rendered manifests carry
 # the security-relevant decisions — credentials by secretKeyRef and never by value, a
 # namespace-scoped Role, a runner pod with no service account, and an auth wall that no value can
-# take down (the chart always renders AUTH_MODE=github). Phase two installs the chart into the
+# take down (the chart always renders AUTH_MODE=github). Phase one also renders an EKS-shaped value
+# set (#364): the cluster phase refuses every non-kind context, so the cloud shape is asserted
+# where it can be — at render time — and exercised on a real cluster only by the by-hand walk in
+# docs/eks-runbook.md. Phase two installs the chart into the
 # local cluster with the stub executor image and the code-only no-fetch entry (dashboard.offline)
 # behind that same wall, mints a member's personal access token straight into the database, queues
 # a job through it, and watches it come back succeeded — real pods, no Claude, no GitHub, and the
@@ -637,6 +640,75 @@ expect_contains 'the driver PDB selects the driver component' "$driver_pdb" 'com
 helm lint charts/factory "${GH_SETS[@]}" --set driver.replicas=2 >/dev/null 2>&1 &&
     ok 'helm lint passes above one driver replica' ||
     bad 'helm lint passes above one driver replica' 'lint failed'
+
+# --- The EKS-shaped render lane (#364): the cloud shape, rendered offline ----------------------
+#
+# The cluster phase refuses every non-kind context on purpose — it deletes runner Jobs — so no
+# automated lane ever installs this chart against a cloud cluster. What CAN be asserted without
+# one is the value shape an EKS install sets: the same set docs/eks-runbook.md walks by hand, and
+# the two must not drift — a mismatch is a bug in one of them. The needles below are read off the
+# COMBINED render, every runbook feature in one release, which is itself the assertion: no two
+# values the runbook sets may be mutually exclusive. The annotation values go through --set-string,
+# where plain --set would parse the JSON-shaped ones as structured data and mangle the render.
+EKS_SETS=(
+    "${GH_SETS[@]}"
+    --set global.imageRegistry=ghcr.io/example
+    --set workspaces.storageClass=efs-ap
+    --set ingress.enabled=true --set ingress.className=alb
+    --set 'ingress.hosts={factory.example}'
+    --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing'
+    --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/target-type=ip'
+    --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/certificate-arn=arn:aws:acm:eu-west-1:000000000000:certificate/00000000-0000-0000-0000-000000000000'
+    --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/listen-ports=[{"HTTP":80}\,{"HTTPS":443}]'
+    --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/ssl-redirect=443'
+    --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/healthcheck-path=/api/health'
+    --set runner.nodeSelector.dedicated=factory-runners
+    --set 'runner.tolerations[0].key=dedicated' --set 'runner.tolerations[0].operator=Equal'
+    --set 'runner.tolerations[0].value=factory-runners' --set 'runner.tolerations[0].effect=NoSchedule'
+    --set driver.runnerDoNotDisrupt=1
+    --set 'isolation.allowedCidrs={10.5.5.5/32}'
+)
+eks_render() { helm template "$RELEASE" charts/factory "${EKS_SETS[@]}" --namespace "$NAMESPACE" "$@" 2>&1; }
+
+if ! eks="$(eks_render)"; then
+    bad 'the EKS-shaped values render as one shape' "${eks:0:400}"
+else
+    ok 'the EKS-shaped values render as one shape'
+fi
+# The claim and its class: the EFS decision, pinned so a values regression cannot silently drop
+# the cloud install back onto a default class that cannot serve ReadWriteMany.
+expect_contains 'the EKS shape names the EFS storage class on the claim' "$eks" 'storageClassName: "efs-ap"'
+expect_contains 'the EFS claim stays ReadWriteMany' "$eks" '- ReadWriteMany'
+# The registry prefix composes with every image, and the wait image stays whole — the two rules
+# the prefix's own block pins separately, pinned together here because the runbook sets both.
+expect_contains 'the EKS shape prefixes the dashboard image' "$eks" "image: ghcr.io/example/factory-ai:$app_version"
+expect_contains 'the EKS shape prefixes the executor values' "$eks" 'value: "ghcr.io/example/claude-executor"'
+expect_contains 'the wait image stays whole under the EKS prefix' "$eks" 'image: postgres:17-alpine'
+# The ingress, scoped to its own document: class and the two annotations that carry behaviour
+# (where traffic lands, what the ALB health check reads).
+eks_ingress="$(awk '/^# Source: factory\/templates\/ingress.yaml/,/^---/' <<<"$eks")"
+expect_contains 'the ALB class fronts the EKS ingress' "$eks_ingress" 'ingressClassName: alb'
+expect_contains 'the ALB target type routes to pod IPs' "$eks_ingress" 'alb.ingress.kubernetes.io/target-type: ip'
+expect_contains 'the ALB healthcheck path is the liveness route' "$eks_ingress" \
+    'alb.ingress.kubernetes.io/healthcheck-path: /api/health'
+# The runner group's scheduling: the driver is handed the node selector and tolerations as JSON
+# (issue #361), the tainted node group's contract, in the same render that names the storage class.
+expect_contains 'the EKS shape hands the driver the runner node selector as JSON' "$eks" \
+    'value: "{\"dedicated\":\"factory-runners\"}"'
+expect_contains 'the EKS shape hands the driver the runner tolerations as JSON' "$eks" \
+    'value: "[{\"effect\":\"NoSchedule\",\"key\":\"dedicated\",\"operator\":\"Equal\",\"value\":\"factory-runners\"}]"'
+eks_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$eks")"
+# Name and value asserted adjacent: `value: "1"` alone is satisfied by RUNNER_SERVICES' default in
+# the same document, so the second needle could never fail on its own.
+expect_contains 'the EKS shape forwards the do-not-disrupt switch, value set' "$eks_driver" \
+    $'- name: RUNNER_DO_NOT_DISRUPT\n                        value: "1"'
+# The VPC-endpoint escape hatch (docs/kubernetes.md, "EKS prerequisites"): a /32 in allowedCidrs
+# renders as its own ipBlock beside the except-carving 0.0.0.0/0 rule — the only way a runner
+# reaches a private host, and never asserted anywhere until now.
+eks_netpol="$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' <<<"$eks")"
+expect_contains 'an allowed VPC endpoint cidr reaches the runner policy' "$eks_netpol" 'cidr: 10.5.5.5/32'
+helm lint charts/factory "${EKS_SETS[@]}" >/dev/null 2>&1 && ok 'helm lint passes on the EKS shape' \
+    || bad 'helm lint passes on the EKS shape' 'lint failed'
 
 # --- Phase two: the cluster -------------------------------------------------------------------
 
