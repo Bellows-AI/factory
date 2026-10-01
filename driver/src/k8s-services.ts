@@ -116,12 +116,18 @@ async function startFleet(deps: K8sDeps, job: BoardJob, specs: ServiceSpec[]): P
             serviceDnsSpec(deps.config, job)
         );
         expectOk(dns, 'creating the service DNS name');
+        // The Service's uid is what makes every service pod an owned pod rather than a standalone
+        // one (issue #363): an apiserver always stamps it, so an answer without one is a lying
+        // proxy — and the pods it would leave behind are exactly the pods an enforcing CNI may
+        // not confine. Fail loud instead of starting an owner-less fleet.
+        const uid = parse<{ metadata?: { uid?: string } }>(dns.body).metadata?.uid;
+        if (!uid) throw new Error('the service DNS name answered no uid — service pods would start standalone');
         for (const spec of specs) {
             current = `service "${spec.name}"`;
             const pod = await deps.request(
                 'POST',
                 podsPath(deps.config.k8sNamespace),
-                servicePodSpec(deps.config, job, spec)
+                servicePodSpec(deps.config, job, spec, uid)
             );
             expectOk(pod, 'creating the service pod');
         }

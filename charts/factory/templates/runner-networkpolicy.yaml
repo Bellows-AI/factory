@@ -14,7 +14,11 @@ code, so they reach only what a run needs:
   - each other, for the declared services a run starts beside itself;
   - the internet: anything outside isolation.blockedCidrs, plus isolation.allowedCidrs.
 Ingress only from each other. IPv4 only: the egress rule names 0.0.0.0/0, so an IPv6-only cluster
-must add its own policy.
+must add its own policy. Inert without an enforcing CNI, and enforcement is an add-on setting the
+chart cannot make: on EKS configure the VPC CNI with enableNetworkPolicy: true (EC2 Linux nodes
+only) — docs/kubernetes.md, "EKS prerequisites". The declared-service pods this policy selects are
+owned (an ownerReference to their attempt's headless Service), so VPC CNI's standalone-pod caveat
+has nothing here to bite.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
