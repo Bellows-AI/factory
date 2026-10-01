@@ -51,7 +51,7 @@ const shared = {
 /**
  * The database host, overridable because it is environmental: a dev machine reaches compose's
  * published port on 127.0.0.1, a board container reaches the declared service by its DNS name
- * (`E2E_DB_HOST=timescale`) — localhost carries nothing there.
+ * (`E2E_DB_HOST=postgres`) — localhost carries nothing there.
  */
 const DB_HOST = process.env.E2E_DB_HOST ?? '127.0.0.1';
 /** The `_e2e` suffix is what e2e/reset-db.mjs and the seed's disposable-name guard accept. */
@@ -76,7 +76,7 @@ const SPECIMEN_SPEC = /\/specimen\.spec\.ts$/;
  * purely from what was seeded, and `loadConfig` permits the disposable database precisely because
  * nothing can be lost to it.
  *
- * Requires a running container:  docker compose up -d timescale
+ * Requires a running container:  docker compose up -d postgres
  */
 export default defineConfig({
     testDir: './e2e',

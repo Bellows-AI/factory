@@ -284,7 +284,7 @@ kind walkthrough. Decisions that look like cruft and are not:
   `database-url` and reaches the pod by `secretKeyRef`, and the template refuses to render without
   one when it is the thing creating that Secret — under `secret.existingSecret` the key has to be
   there already, and it is the one key the pod spec does not mark optional. There is no
-  `timescale.enabled` switch to leave on by accident.
+  `postgres.enabled` switch to leave on by accident.
 - **`database.url` names any managed PostgreSQL 17 — RDS and Aurora included (#356, done in
   #371).** The schema loads **no extension**: `metric_point` is declared
   `partition by range (time)` with a single DEFAULT partition, so a cloud install needs no
@@ -300,15 +300,15 @@ kind walkthrough. Decisions that look like cruft and are not:
   this schema stopped requiring.
 
   **An existing local database must be destroyed, not upgraded.** A data directory initialised by
-  `timescale/timescaledb` preloads the library in its own `postgresql.conf`, so `postgres:17`
+  `postgres/postgresdb` preloads the library in its own `postgresql.conf`, so `postgres:17`
   exits at startup and the pod crash-loops — delete the database claim (it outlives `make stop`
   deliberately) along with the image change. `make reset` is that delete. By hand it is two steps,
   and the order is the whole point: `helm uninstall factory-state` first — `make stop` leaves the
   database StatefulSet running, and pvc-protection holds a claim its pod still mounts, so a delete
   issued before the uninstall sits in `Terminating` forever — then
-  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=timescale`.
+  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=postgres`.
   Select by label, not by name: the claim is the StatefulSet's `volumeClaimTemplate`, so it is named
-  `data-<release>-timescale-0`. Both labels, not just the instance: on its own that one also matches
+  `data-<release>-postgres-0`. Both labels, not just the instance: on its own that one also matches
   `factory-state-workspaces`, the checkouts claim, which an image change has no business deleting.
   (`make reset` drops the whole local state deliberately, so it selects by instance alone.)
   `docs/persistence.md` carries the same warning for compose.
@@ -326,7 +326,7 @@ kind walkthrough. Decisions that look like cruft and are not:
   The old release's standalone PVC is a resource this manifest does not contain and carries no
   `helm.sh/resource-policy: keep`, so `helm upgrade --install` would delete it — and its data —
   and bring the StatefulSet up on a fresh claim. That contradicts start's promise that a re-run
-  keeps the release's data, so the target stops on a `deployment/factory-state-timescale` it finds
+  keeps the release's data, so the target stops on a `deployment/factory-state-postgres` it finds
   and names `make reset` as the way through. The check is a Deployment lookup rather than a chart
   version, because the Deployment is exactly the shape that cannot be upgraded.
 

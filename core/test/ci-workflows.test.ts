@@ -109,13 +109,12 @@ describe('ci workflows', () => {
         expect(e2e.if).toContain('push');
     });
 
-    it('gives the browser suite a timescale service and the two databases it names', () => {
+    it('gives the browser suite a postgres service and the two databases it names', () => {
         const e2e = workflow(CI).jobs.e2e!;
         const compose = load<{ services: Record<string, { image: string }> }>('docker-compose.yml');
-        expect(e2e.services!.timescale!.image).toBe(compose.services.timescale!.image);
-        // The service keeps its name — it is load-bearing across scripts — but the image is
-        // plain PostgreSQL since #371 dropped the extension.
-        expect(e2e.services!.timescale!.image).not.toMatch(/timescale/i);
+        expect(e2e.services!.postgres!.image).toBe(compose.services.postgres!.image);
+        // Plain PostgreSQL since #371 dropped the extension: no TimescaleDB image anywhere.
+        expect(e2e.services!.postgres!.image).not.toMatch(/timescale/i);
         const commands = runs(e2e).join('\n');
         expect(commands).toContain('create database factory_e2e');
         expect(commands).toContain('create database factory_auth_e2e');

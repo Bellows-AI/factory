@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config';
  * the SQL and the migration runner have no coverage there — a real tradeoff, written down in
  * AGENTS.md rather than left to be discovered.
  *
- *     docker compose up -d timescale
+ *     docker compose up -d postgres
  *     DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db
  */
 export default defineConfig({

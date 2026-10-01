@@ -10,7 +10,7 @@
 #
 # Everything it creates it removes: a *_test database, four stub images, one volume, two processes.
 #
-# Needs: docker (with the compose stack's timescale reachable) and node. No jq, no curl.
+# Needs: docker (with the compose stack's postgres reachable) and node. No jq, no curl.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,7 +27,7 @@ IMAGE_RUN="factory-jobs-smoke-run"
 VOLUME="factory-jobs-smoke-workspaces"
 COMPOSE_DRIVER="factory-jobs-compose-driver"
 # The compose phase pins its own project name, so the volumes and network its `run` creates can be
-# torn down by name without touching the stack services the script itself started (timescale).
+# torn down by name without touching the stack services the script itself started (postgres).
 COMPOSE_PROJECT="factory-jobs-smoke-compose"
 
 pass=0
@@ -54,11 +54,11 @@ cleanup() {
     [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
     wait 2>/dev/null
     docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
-    # The compose phase's own project: its volumes and network, not the stack's timescale.
+    # The compose phase's own project: its volumes and network, not the stack's postgres.
     docker compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
     # Only ever drops a database this run created, and only one named *_test.
     if [ -n "$db_created" ]; then
-        docker compose exec -T timescale psql -U factory -d postgres \
+        docker compose exec -T postgres psql -U factory -d postgres \
             -c "drop database if exists $DB" >/dev/null 2>&1
     fi
     docker volume rm "$VOLUME" >/dev/null 2>&1
@@ -166,20 +166,20 @@ command -v docker >/dev/null || {
     exit 1
 }
 
-echo 'starting timescale'
-docker compose up -d timescale >/dev/null 2>&1
+echo 'starting postgres'
+docker compose up -d postgres >/dev/null 2>&1
 for _ in $(seq 1 30); do
-    docker compose exec -T timescale pg_isready -U factory >/dev/null 2>&1 && break
+    docker compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && break
     sleep 1
 done
 
 # The name ends in _test on purpose: it marks the database disposable, and the drop in cleanup()
 # refuses anything this run did not create.
-if docker compose exec -T timescale psql -U factory -d postgres -tAc \
+if docker compose exec -T postgres psql -U factory -d postgres -tAc \
     "select 1 from pg_database where datname = '$DB'" 2>/dev/null | grep -q 1; then
     echo "reusing database $DB"
 else
-    docker compose exec -T timescale psql -U factory -d postgres -c "create database $DB" >/dev/null 2>&1 ||
+    docker compose exec -T postgres psql -U factory -d postgres -c "create database $DB" >/dev/null 2>&1 ||
         {
             echo "test-jobs: could not create $DB"
             exit 1
@@ -276,7 +276,7 @@ done
     tail -20 "$work/server.log"
     exit 1
 }
-docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1 || {
+docker compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1 || {
     echo 'test-jobs: could not truncate job, workflow'
     exit 1
 }
@@ -328,7 +328,7 @@ expect_field 'the output is kept'       "$done_body" output hello
 # Reclaim, proven by ageing the lease rather than by waiting one out.
 reclaim_id="$(create_job 'reclaim me')"
 stale="$(field "$(body "$(api POST /api/jobs/claim '{"worker":"dies","leaseSeconds":300}')")" leaseToken)"
-docker compose exec -T timescale psql -U factory -d "$DB" \
+docker compose exec -T postgres psql -U factory -d "$DB" \
     -c "update job set lease_expires_at = now() - interval '1 second' where id = '$reclaim_id'" >/dev/null 2>&1
 again="$(body "$(api POST /api/jobs/claim '{"worker":"takes-over","leaseSeconds":300}')")"
 expect_field 'an expired lease is reclaimed' "$again" id "$reclaim_id"

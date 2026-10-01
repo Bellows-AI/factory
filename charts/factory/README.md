@@ -7,7 +7,7 @@ is required when the chart creates the Secret, and with `secret.existingSecret` 
 carry `database-url` instead. Either way the URL can name **any managed PostgreSQL 17** —
 RDS and Aurora included. The schema loads no extension: `metric_point` is a declaratively-
 partitioned table (`partition by range (time)` with a DEFAULT partition), which is what #371
-replaced the `timescaledb` hypertable with. Local clusters get a database, plus a workspaces claim
+replaced the `postgresdb` hypertable with. Local clusters get a database, plus a workspaces claim
 that survives an app reinstall, from the separate
 [`factory-local-state`](../factory-local-state) chart.
 
@@ -257,7 +257,7 @@ App, the OAuth client, the session secret, the board token and — when set — 
 missing). The origin is `K8S_PUBLIC_URL`, default `http://127.0.0.1:8081` — the forward above.
 The executors are the real runner images, so a queued job runs the agent in a pod. Its
 `database.url` and `workspaces.existingClaim` name the `factory-state` release's objects
-(`factory-state-timescale`, `factory-state-workspaces`), so that release name is fixed.
+(`factory-state-postgres`, `factory-state-workspaces`), so that release name is fixed.
 `make start` does all of the above.
 
 Then open `http://127.0.0.1:8081`, sign in with GitHub, add an executor on the workspace page — a

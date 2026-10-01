@@ -58,7 +58,7 @@ repo.
 ```bash
 npm install
 
-# All of these need a database; there is no in-memory mode. `docker compose up -d timescale` first.
+# All of these need a database; there is no in-memory mode. `docker compose up -d postgres` first.
 # They also need the GitHub App: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required, and either
 # one missing refuses to boot. There is no no-fetch mode; the offline tooling boots
 # server/dist/offline.js instead, which is code, not configuration.
@@ -118,7 +118,7 @@ npm run lint:fix       # biome check --write — fixes what lint flags
 # `${prefix}_e2e` and `${prefix}_auth_e2e`, which must exist. Two worktrees with different values
 # run concurrently — one checkout cannot, since both runs write web/dist and artifacts/. E2E_DB_HOST
 # still picks the host. Example: E2E_PORT_BASE=8143 E2E_DB_PREFIX=factory_l2 npm run verify:ui
-npm run verify:ui      # needs: a running timescale, and `npx playwright install chromium` once
+npm run verify:ui      # needs: a running postgres, and `npx playwright install chromium` once
 
 # Fill a disposable database with synthetic agent sessions. Refuses
 # any database whose name does not mark it disposable: synthetic rows are indistinguishable from
@@ -152,7 +152,7 @@ docker compose up -d driver
 # backfilled history, and the tests would still pass. Suites seed their own fakes (shared harness,
 # server/test-db/harness.ts), so a fresh empty database works; nothing survives a run.
 # loadConfig mirrors that: a fetching process refuses to run against any disposable name at all.
-docker compose up -d timescale
+docker compose up -d postgres
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db
 
 # The job board and its driver, end to end: a real board on 8129 against a real factory_jobs_test,

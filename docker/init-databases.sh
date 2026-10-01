@@ -9,7 +9,7 @@
 # Postgres only runs docker-entrypoint-initdb.d scripts when the data directory is empty, so on
 # an existing volume create it by hand:
 #
-#   docker compose exec timescale psql -U factory -d postgres -c 'create database factory_test'
+#   docker compose exec postgres psql -U factory -d postgres -c 'create database factory_test'
 set -e
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<-EOSQL

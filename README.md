@@ -32,7 +32,7 @@ either credential missing refuses to boot.
 
 ```bash
 npm install
-docker compose up -d timescale
+docker compose up -d postgres
 cp .env.example .env          # set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY
 npm run dev                   # API on 127.0.0.1:8080, Vite on 5173 with /api proxied
 ```
@@ -40,7 +40,7 @@ npm run dev                   # API on 127.0.0.1:8080, Vite on 5173 with /api pr
 No credential? Seed a disposable database and browse it offline:
 
 ```bash
-docker compose exec timescale psql -U factory -d postgres -c 'create database factory_seed'
+docker compose exec postgres psql -U factory -d postgres -c 'create database factory_seed'
 DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_seed npm run seed
 npm run verify:ui
 ```

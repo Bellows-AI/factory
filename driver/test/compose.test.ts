@@ -20,7 +20,7 @@ const compose = read('docker-compose.yml');
 const driverDockerfile = read('docker/driver.Dockerfile');
 const dashboardDockerfile = read('docker/Dockerfile');
 
-// The service blocks only: later services reuse names like `volumes:`, and `    timescale:` also
+// The service blocks only: later services reuse names like `volumes:`, and `    postgres:` also
 // matches the dashboard's depends_on entry, so the markers are line starts.
 const between = (from: string, to: string): string => {
     const start = compose.indexOf(from);
@@ -30,7 +30,7 @@ const between = (from: string, to: string): string => {
     return compose.slice(start, end);
 };
 const dashboardBlock = between('\n    dashboard:', '\n    driver:');
-const driverBlock = between('\n    driver:', '\n    timescale:');
+const driverBlock = between('\n    driver:', '\n    postgres:');
 
 describe('the compose driver service', () => {
     it('runs the working tree, not a baked dist', () => {

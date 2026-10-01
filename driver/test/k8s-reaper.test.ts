@@ -51,7 +51,7 @@ const router = (
 const pod = (name: string, jobId: string, lease: string, created: string) => ({
     metadata: {
         name,
-        labels: { [JOB_LABEL]: jobId, [LEASE_LABEL]: lease, 'factory.service': 'timescale' },
+        labels: { [JOB_LABEL]: jobId, [LEASE_LABEL]: lease, 'factory.service': 'postgres' },
         creationTimestamp: created,
     },
 });
@@ -69,7 +69,7 @@ const group = (overrides: Partial<OrphanGroup> = {}): OrphanGroup => ({
     leaseToken: LEASE,
     createdAtMs: 0,
     objects: [
-        { kind: 'pod', name: `${JOB}-${LEASE}-svc-timescale` },
+        { kind: 'pod', name: `${JOB}-${LEASE}-svc-postgres` },
         { kind: 'service', name: `factory-svc-abc` },
     ],
     ...overrides,
@@ -203,7 +203,7 @@ describe('the kubernetes reaper arm: reap', () => {
             ...emptyLists,
             [
                 'DELETE',
-                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-timescale?propagationPolicy=Foreground`,
+                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
                 { status: 200, body: '' },
             ],
             [
@@ -216,10 +216,10 @@ describe('the kubernetes reaper arm: reap', () => {
 
         const removed = await arm.reap(group(), 'gone');
 
-        expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-timescale`, 'service factory-svc-abc']);
+        expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-postgres`, 'service factory-svc-abc']);
         const fleet = deleteCalls(calls).filter((path) => !path.startsWith(secretsPath(NAMESPACE)));
         expect(fleet).toEqual([
-            `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-timescale?propagationPolicy=Foreground`,
+            `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
             `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
             // The checkout claim is pinned in full below — here the read answers nothing (this
             // router models a claim that was already released), so nothing is deleted on a maybe.
@@ -229,7 +229,7 @@ describe('the kubernetes reaper arm: reap', () => {
     it('reads 404 and 409 as the object already going away, and keeps the answer honest', async () => {
         const { request } = router([
             ...emptyLists,
-            ['DELETE', `${podsPath(NAMESPACE)}/svc-timescale?propagationPolicy=Foreground`, { status: 404, body: '' }],
+            ['DELETE', `${podsPath(NAMESPACE)}/svc-postgres?propagationPolicy=Foreground`, { status: 404, body: '' }],
             [
                 'DELETE',
                 `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
@@ -247,7 +247,7 @@ describe('the kubernetes reaper arm: reap', () => {
             ...emptyLists,
             [
                 'DELETE',
-                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-timescale?propagationPolicy=Foreground`,
+                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
                 { status: 200, body: '' },
             ],
             ['DELETE', runnerSecret, { status: 200, body: '' }],
@@ -343,7 +343,7 @@ describe('the kubernetes reaper arm: reap', () => {
                 { status: 404, body: '' },
             ]),
             ...[
-                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-timescale?propagationPolicy=Foreground`,
+                `${podsPath(NAMESPACE)}/${JOB}-${LEASE}-svc-postgres?propagationPolicy=Foreground`,
                 `${servicesPath(NAMESPACE)}/factory-svc-abc?propagationPolicy=Foreground`,
             ].map((path): readonly [K8sMethod, string, K8sResponse] => ['DELETE', path, { status: 200, body: '' }]),
         ]);
@@ -354,7 +354,7 @@ describe('the kubernetes reaper arm: reap', () => {
         // Ordering is the point: the four Secret deletes are the FIRST four calls, before any
         // fleet object — and already-gone Secrets never hold the round back.
         expect(deleteCalls(calls).slice(0, names.length)).toEqual(names);
-        expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-timescale`, 'service factory-svc-abc']);
+        expect(removed).toEqual([`pod ${JOB}-${LEASE}-svc-postgres`, 'service factory-svc-abc']);
     });
 
     it('answers what it removed without throwing on any single delete failure', async () => {

@@ -28,7 +28,7 @@ twice and drives a real chromium, which is too slow to gate every pull request. 
 
 - a `postgres:17` service — the same image `docker-compose.yml` pins, and a test asserts the two
   stay equal. Plain postgres since #371: the schema names no extension. The service is still
-  called `timescale`, because that name is what the scripts and `playwright.config.ts` reach for.
+  called `postgres`, because that name is what the scripts and `playwright.config.ts` reach for.
 - `factory_e2e` and `factory_auth_e2e`, created by hand: `e2e/reset-db.mjs` truncates but never
   creates, and `docker/init-databases.sh` only makes `factory_test`. Migrations run inside
   `npm run seed`, so empty databases are enough.

@@ -22,7 +22,7 @@ const job = { id: JOB, leaseToken: LEASE } as BoardJob;
 const psLine = (fields: { id: string; jobId: string; lease: string; created: string; service?: string }) =>
     JSON.stringify({
         ID: fields.id,
-        Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.service=${fields.service ?? 'timescale'}`,
+        Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.service=${fields.service ?? 'postgres'}`,
         CreatedAt: fields.created,
         State: 'running',
         Image: 'postgres:16',
@@ -50,7 +50,7 @@ const group = (overrides: Partial<OrphanGroup> = {}): OrphanGroup => ({
     jobId: JOB,
     leaseToken: LEASE,
     createdAtMs: 0,
-    objects: [{ kind: 'container', name: `${JOB}-${LEASE}-svc-timescale` }],
+    objects: [{ kind: 'container', name: `${JOB}-${LEASE}-svc-postgres` }],
     ...overrides,
 });
 
@@ -135,13 +135,13 @@ describe('the docker reaper arm: reap', () => {
 
         expect(removed).toEqual([
             `network factory-job-${JOB}-${LEASE}-services`,
-            `container ${JOB}-${LEASE}-svc-timescale`,
+            `container ${JOB}-${LEASE}-svc-postgres`,
         ]);
         expect(calls).toEqual([
             ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
             ['network', 'disconnect', '-f', networkName(job), 'gate-env'],
             ['network', 'rm', networkName(job)],
-            ['rm', '-f', `${JOB}-${LEASE}-svc-timescale`],
+            ['rm', '-f', `${JOB}-${LEASE}-svc-postgres`],
         ]);
     });
 
@@ -191,6 +191,6 @@ describe('the docker reaper arm: reap', () => {
 
     it('names the service container the way the fleet builder does', () => {
         // The pin that keeps the reaper's idea of a name from drifting from the spawner's.
-        expect(serviceContainerName(job, 'timescale')).toBe(`factory-job-${JOB}-${LEASE}-svc-timescale`);
+        expect(serviceContainerName(job, 'postgres')).toBe(`factory-job-${JOB}-${LEASE}-svc-postgres`);
     });
 });
