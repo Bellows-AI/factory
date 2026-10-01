@@ -313,6 +313,39 @@ describe('the driver config: runner resources', () => {
         expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '0.1Ki' })).toThrow(/RUNNER_MEMORY_LIMIT/);
     });
 
+    // `1.001G` is exactly 1001000000 whole bytes, but binary floating-point multiplication rounds
+    // Number('1.001') * 1e9 to 1000999999.9999999 — scaling must be exact, or a valid quantity
+    // prevents driver startup.
+    it('accepts a decimal quantity whose whole bytes floating-point multiplication would round away', () => {
+        expect(memoryQuantityToBytes('1.001G')).toBe('1001000000');
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '1.001G' })).not.toThrow();
+    });
+
+    it('still refuses a quantity genuinely fractional after exact scaling', () => {
+        expect(() => memoryQuantityToBytes('1.0000000001G')).toThrow(/whole number of bytes/);
+    });
+
+    // The apiserver refuses a pod whose request exceeds its limit — at job-create, attempt-burning
+    // — and docker refuses `--memory-reservation` above `--memory`; one runnerResources block
+    // feeds the runner, auxiliary and service specs, so the pair is refused at startup instead,
+    // naming both variables. Equal values are a valid (Guaranteed-shaped) configuration.
+    it('refuses a request above its limit, naming both variables, and allows equal values', () => {
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_REQUEST: '2Gi', RUNNER_MEMORY_LIMIT: '1Gi' })).toThrow(
+            /RUNNER_MEMORY_REQUEST.*RUNNER_MEMORY_LIMIT/
+        );
+        expect(() => loadDriverConfig({ RUNNER_CPU_REQUEST: '2', RUNNER_CPU_LIMIT: '500m' })).toThrow(
+            /RUNNER_CPU_REQUEST.*RUNNER_CPU_LIMIT/
+        );
+        expect(() =>
+            loadDriverConfig({
+                RUNNER_CPU_REQUEST: '500m',
+                RUNNER_CPU_LIMIT: '500m',
+                RUNNER_MEMORY_REQUEST: '1Gi',
+                RUNNER_MEMORY_LIMIT: '1Gi',
+            })
+        ).not.toThrow();
+    });
+
     it('renders cpu quantities as decimal cores for the docker flag', () => {
         expect(cpuQuantityToCores('500m')).toBe('0.5');
         expect(cpuQuantityToCores('250m')).toBe('0.25');

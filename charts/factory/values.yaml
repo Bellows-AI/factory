@@ -295,7 +295,8 @@ runner:
     # a zero-request pod schedules onto any free pod slot and provisions nothing. Limits render
     # only when set: a memory limit on an agent run turns a big build into an OOM kill mid-work,
     # the requests-only posture the dashboard and driver pods above carry deliberately. Both maps
-    # empty keeps every pod BestEffort — the behavior before this value existed.
+    # unset keeps every pod BestEffort. In override files, use requests: null to remove
+    # the defaults; requests: {} retains them through Helm's map merge.
     resources:
         requests:
             cpu: 500m

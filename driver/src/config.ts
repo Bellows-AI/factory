@@ -426,6 +426,8 @@ const CPU_QUANTITY = /^(\d+(\.\d+)?)m?$/;
 const MEMORY_QUANTITY = /^(\d+(\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|[kMGTPE])?$/;
 /** Millicores per core: the `m` suffix of a cpu quantity. */
 const MILLICORES_PER_CORE = 1000;
+/** 10: the base the decimal fraction digits of a quantity are counted in, as a BigInt. */
+const DECIMAL_BASE = 10n;
 /** 1024: the base of the binary memory suffixes, multiplied out one step at a time below. */
 const BYTES_PER_KIB = 1024;
 const BYTES_PER_MIB = BYTES_PER_KIB * BYTES_PER_KIB;
@@ -461,9 +463,14 @@ export function memoryQuantityToBytes(quantity: string): string {
     const match = MEMORY_QUANTITY.exec(quantity);
     if (!match)
         throw new Error(`"${quantity}" is not a memory quantity (a byte count with an optional SI/binary suffix)`);
-    const bytes = Number(match[1]) * (match[3] ? MEMORY_SUFFIX_BYTES[match[3]]! : 1);
-    if (!Number.isInteger(bytes)) throw new Error(`"${quantity}" is not a whole number of bytes`);
-    return String(bytes);
+    // Exact integer scaling: binary floating-point multiplication rounds — `1.001 * 1e9` is
+    // 1000999999.9999999, which would refuse the valid whole-byte quantity `1.001G`.
+    const [whole = '', fraction = ''] = match[1]!.split('.');
+    const scale = BigInt(match[3] ? MEMORY_SUFFIX_BYTES[match[3]]! : 1);
+    const denominator = DECIMAL_BASE ** BigInt(fraction.length);
+    const numerator = fraction ? BigInt(fraction) * scale : 0n;
+    if (numerator % denominator !== 0n) throw new Error(`"${quantity}" is not a whole number of bytes`);
+    return (BigInt(whole) * scale + numerator / denominator).toString();
 }
 
 /** One resource slot: validated at boot, stored verbatim — the apiserver owns the semantics. */
@@ -479,6 +486,24 @@ function runnerResource(raw: string | undefined, label: string, kind: 'cpu' | 'm
         );
     }
     return value;
+}
+
+/**
+ * Kubernetes refuses a pod whose request exceeds its limit — at job-create, attempt-burning — and
+ * docker refuses `--memory-reservation` above `--memory` at run time. One runnerResources block
+ * feeds the runner, auxiliary and service specs on both executors, so the pair is refused here, at
+ * startup, naming both variables. Equal values are valid (a Guaranteed-shaped pod, on kubernetes).
+ */
+function assertRequestWithinLimit(
+    request: string | null,
+    limit: string | null,
+    labels: [string, string],
+    convert: (quantity: string) => string
+): void {
+    if (request === null || limit === null) return;
+    if (Number(convert(request)) > Number(convert(limit))) {
+        throw new Error(`${labels[0]} (${request}) exceeds ${labels[1]} (${limit})`);
+    }
 }
 
 /** How much of a rejected scheduling value rides the refusal message — a preview, not the whole value. */
@@ -538,6 +563,33 @@ function jsonNodeSelector(raw: string | undefined, label: string): Record<string
         );
     }
     return parsed as Record<string, string>;
+}
+
+/**
+ * The four runner resource variables, each shape-validated by runnerResource, then the request/
+ * limit pairs validated against each other — shape is per-variable, but request>limit is only
+ * visible across the two.
+ */
+function loadRunnerResources(env: NodeJS.ProcessEnv): RunnerResources {
+    const resources: RunnerResources = {
+        cpuRequest: runnerResource(env.RUNNER_CPU_REQUEST, 'RUNNER_CPU_REQUEST', 'cpu'),
+        cpuLimit: runnerResource(env.RUNNER_CPU_LIMIT, 'RUNNER_CPU_LIMIT', 'cpu'),
+        memoryRequest: runnerResource(env.RUNNER_MEMORY_REQUEST, 'RUNNER_MEMORY_REQUEST', 'memory'),
+        memoryLimit: runnerResource(env.RUNNER_MEMORY_LIMIT, 'RUNNER_MEMORY_LIMIT', 'memory'),
+    };
+    assertRequestWithinLimit(
+        resources.cpuRequest,
+        resources.cpuLimit,
+        ['RUNNER_CPU_REQUEST', 'RUNNER_CPU_LIMIT'],
+        cpuQuantityToCores
+    );
+    assertRequestWithinLimit(
+        resources.memoryRequest,
+        resources.memoryLimit,
+        ['RUNNER_MEMORY_REQUEST', 'RUNNER_MEMORY_LIMIT'],
+        memoryQuantityToBytes
+    );
+    return resources;
 }
 
 export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
@@ -644,13 +696,10 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             max: 24 * MS_PER_HOUR,
         }),
         // Validated here, stored verbatim: the pod specs render these strings as-is, and the
-        // docker flags take them translated by cpuQuantityToCores/memoryQuantityToBytes.
-        runnerResources: {
-            cpuRequest: runnerResource(env.RUNNER_CPU_REQUEST, 'RUNNER_CPU_REQUEST', 'cpu'),
-            cpuLimit: runnerResource(env.RUNNER_CPU_LIMIT, 'RUNNER_CPU_LIMIT', 'cpu'),
-            memoryRequest: runnerResource(env.RUNNER_MEMORY_REQUEST, 'RUNNER_MEMORY_REQUEST', 'memory'),
-            memoryLimit: runnerResource(env.RUNNER_MEMORY_LIMIT, 'RUNNER_MEMORY_LIMIT', 'memory'),
-        },
+        // docker flags take them translated by cpuQuantityToCores/memoryQuantityToBytes. A
+        // request above its limit is refused by the apiserver only per attempt, so the pair is
+        // checked here instead (see assertRequestWithinLimit).
+        runnerResources: loadRunnerResources(env),
         runnerNodeSelector: jsonNodeSelector(env.RUNNER_NODE_SELECTOR, 'RUNNER_NODE_SELECTOR'),
         runnerTolerations: jsonArray(env.RUNNER_TOLERATIONS, 'RUNNER_TOLERATIONS'),
         runnerAffinity: jsonObject(env.RUNNER_AFFINITY, 'RUNNER_AFFINITY'),
