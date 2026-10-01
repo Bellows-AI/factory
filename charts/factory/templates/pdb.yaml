@@ -1,0 +1,46 @@
+{{/*
+PodDisruptionBudgets (issue #362) — the voluntary-disruption policy for the chart's own pods,
+complementing the driver-specced pods' RUNNER_DO_NOT_DISRUPT opt-in.
+
+The dashboard allows one unavailable (maxUnavailable: 1), deliberately NOT minAvailable: 1: this
+Deployment runs exactly one replica with strategy Recreate — an in-process workspace writer whose
+upgrades already accept seconds of downtime — so a drain evicts the pod, it reschedules, and the
+board is back; that is "survives the drain". minAvailable: 1 on replicas: 1 can never be
+satisfied during an eviction and would wedge every drain and managed-nodegroup update in this
+namespace forever, trading a gap nothing depends on (drivers retry; leases outlive a restart;
+runner Jobs run under their own kubelet deadlines) for a permanent operational blocker.
+
+The driver is protected only above one replica (minAvailable: 1 — one drains its jobs inside its
+termination grace while the other keeps claiming). At the default single replica the driver's
+protection is its SIGTERM drain, and a one-replica PDB would block drains exactly like a
+dashboard minAvailable would.
+
+The driver's own pod carries no do-not-disrupt annotation: a never-exiting Deployment pinned to a
+node holds it indefinitely, strictly worse than a runner's job-timeout-bounded pin. The runner and
+aux pods' opt-in lives in driver.runnerDoNotDisrupt, not here.
+*/}}
+{{- define "factory.pdb" }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: {{ .name }}
+    labels:
+        {{- include "factory.labels" .context | nindent 8 }}
+        app.kubernetes.io/component: {{ .component }}
+spec:
+    {{- if .maxUnavailable }}
+    maxUnavailable: {{ .maxUnavailable }}
+    {{- end }}
+    {{- if .minAvailable }}
+    minAvailable: {{ .minAvailable }}
+    {{- end }}
+    selector:
+        matchLabels:
+            {{- include "factory.selectorLabels" .context | nindent 12 }}
+            app.kubernetes.io/component: {{ .component }}
+{{- end }}
+{{- include "factory.pdb" (dict "context" $ "name" (include "factory.fullname" $) "component" "dashboard" "maxUnavailable" 1) }}
+{{- if gt (int $.Values.driver.replicas) 1 }}
+{{- include "factory.pdb" (dict "context" $ "name" (printf "%s-driver" (include "factory.fullname" $)) "component" "driver" "minAvailable" 1) }}
+{{- end }}

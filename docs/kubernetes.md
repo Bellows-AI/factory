@@ -33,6 +33,10 @@ name, there is no barrel:
   and naming.
 - `k8s-auxspec.ts` — the sync/reclaim/publish/service spec builders, and the shared checkout
   claim / per-attempt Secret naming and path helpers.
+- `k8s-podfields.ts` — the pod-spec field builders both spec files spread: the resource
+  requests/limits (`resourcesField`, issue #360), the runner group's scheduling knobs
+  (`schedulingField`, issue #361) and the voluntary-disruption opt-out (`doNotDisruptField`,
+  issue #362) — config in, one optional field out, absent when unconfigured.
 - `k8s-fence.ts` — the re-claim fence: claim acquire/release, the leftover sweep, and the
   pre/post-create claim verifies around the runner Job POST.
 - `k8s-poll.ts` — Job-status polling to a terminal state, the live-output tail, and the
@@ -399,6 +403,7 @@ kind walkthrough. Decisions that look like cruft and are not:
   from the template. Limits, stated in the template: the names carry no release (one release per
   namespace), the subPath is fenced by shape and not by owner (a compromised driver can still name
   another member's subtree), and a mesh sidecar injector's volumes are refused on service pods.
+- **Runner pods land where the operator's scheduling values send them** (`runner.nodeSelector`, `runner.tolerations`, `runner.affinity`, issue #361). The chart's own `nodeSelector`/`tolerations`/`affinity` reach the chart's pods only — the driver specs every runner, gate, sync, reclaim, publish, helper and service pod, and those got none, so agent-written code shared nodes with the dashboard pod holding the App key, the session secret and the board token. The values forward as JSON (`RUNNER_NODE_SELECTOR`/`RUNNER_TOLERATIONS`/`RUNNER_AFFINITY`), the driver parses them fail-loud at boot, and a `schedulingField()` beside `pullSecretsField()` spreads them onto every pod spec it emits. The standard cloud answer this buys: a tainted, IMDS-hardened runner node group that nothing else schedules onto — and, without it, an RWO workspaces claim cannot be kept to one node's AZ. The admission policy stays deliberately silent on these fields: it pins placement to the scheduler by refusing `nodeName` (a driver that could pin pods could reach the dashboard's node whatever the values say), and constrains nothing else scheduling-shaped — pinned in `driver/test/k8s-admission.test.ts`. Docker parity is a stated nothing: the docker executor has no node concept, the daemon decides placement, there is nothing to forward.
 - **Runner pods are confined by a NetworkPolicy** (`templates/runner-networkpolicy.yaml`,
   `isolation.networkPolicy`), selected by `factory.job` plus the release label — every pod the
   driver specs carries `app.kubernetes.io/instance: <K8S_RELEASE>` for exactly this, so one
@@ -420,11 +425,38 @@ kind walkthrough. Decisions that look like cruft and are not:
   replica with `strategy: Recreate`. Startup and readiness read `/api/ready` — 503 until the
   migrations land, 503 for good if they gave up — so a pod whose schema never arrived is restarted
   instead of left Ready; liveness stays on `/api/health`, which touches no database.
+- **Voluntary disruption is two decisions, both written down (issue #362).** The driver-specced
+  pods' opt-in is `driver.runnerDoNotDisrupt` (`RUNNER_DO_NOT_DISRUPT`): both disruption
+  annotations on every pod the driver specs, off by default because an undisruptable pod pins its
+  node for up to `jobTimeoutMs` — an operator's cost-benefit, not the chart's. The chart's own
+  pods get PDBs in `templates/pdb.yaml`: the dashboard `maxUnavailable: 1` — one `Recreate`
+  replica means a drain is a brief gap, while `minAvailable: 1` could never be satisfied
+  mid-eviction and would block every drain and nodegroup update forever — and the driver
+  `minAvailable: 1` only above one replica, where a single-replica PDB would block drains exactly
+  the same way. The driver's own pod carries no do-not-disrupt annotation: a never-exiting
+  Deployment pinned to a node holds it indefinitely, strictly worse than a runner's
+  timeout-bounded pin.
 - **Images carry tags.** `dashboard.image.tag`/`driver.image.tag` default to the chart's
   `appVersion`, so an upgrade to a new build changes the pod spec and rolls; the collector is
   pinned, its config keys moving between releases. `values-local.yaml` uses `latest`, the tag the
   local builds produce. A changed chart Secret or collector config rolls its readers via
   `checksum/*` pod annotations.
+- **`global.imageRegistry` prefixes every image the release names (#358).** The bare defaults
+  (`factory-ai`, `factory-driver`, the two executor names) are the kind story — side-loaded with
+  `kind load docker-image`, resolved by `IfNotPresent`. On a remote cluster a bare name resolves
+  to `docker.io/library/*` and every pod lands in `ImagePullBackOff`. The executor images are the
+  sharp half: they are opaque strings handed to the driver, not pod-spec fields derived from any
+  chart registry, so four separate values are four chances to set two — which is why the prefix
+  is one value applied at `factory.image` (dashboard, driver, collector) and at the two executor
+  env values, never a rule the operator re-implements per value. `database.waitImage` is excluded
+  on purpose: it is a full reference (`postgres:17-alpine`) an operator sets whole. A repository
+  that already names a registry under a set prefix is refused at render — the prefix composes
+  with bare repositories only, by docker's own registry rule (first component containing `.`/`:`
+  or `localhost`), so `claude-executor:v1.2.3` stays legal. The recommended registry is GHCR with
+  public packages — nodes pull anonymously, no `imagePullSecrets`, no node-role change — and the
+  build/push walkthrough lives in the chart README. When an image cannot be pulled anyway,
+  `readImagePullStatus` (issue #302) fails the run fast with the kubelet's own message instead of
+  burning the deadline.
 - **The chart ships the collector, and the driver names it in every runner spec.** A docker runner
   joins the compose network and its baked `collector:4318` resolves; a pod cannot join a network,
   so the kubernetes form of `RUNNER_NETWORK` is the driver setting `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -454,6 +486,7 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `RUNNER_CREDENTIALS_SECRET` | unset | The Secret holding runner credentials, one key per `RUNNER_ENV` name. Unset forwards nothing — an image with a login baked into a volume needs none, the same answer as the docker driver's missing-credentials warning. |
 | `RUNNER_OTEL_ENDPOINT` | `http://collector:4318` | Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT` in the pod spec. Always provided, so a pod never relies on an image-baked default that nothing in a cluster resolves; the default names the compose collector and the chart overrides it with the in-chart collector. |
 | `RUNNER_IMAGE_PULL_SECRETS` | unset | Comma-separated Secret names set as `imagePullSecrets` on every pod the driver specs (runner, aux Jobs, gates, services). The chart forwards its own `imagePullSecrets`. Docker has no twin: the daemon's login is what `docker run` pulls with. |
+| `RUNNER_NODE_SELECTOR` / `RUNNER_TOLERATIONS` / `RUNNER_AFFINITY` | unset | JSON-encoded scheduling fields set on every pod the driver specs (issue #361) — the chart forwards `runner.nodeSelector` / `runner.tolerations` / `runner.affinity` with `toJson`. Parsed at boot; malformed JSON or the wrong shape is fatal there, never a per-attempt refusal. Absent, pods schedule wherever the workspaces claim can attach. Docker has no twin: the daemon decides placement, there is nothing to forward. |
 | `K8S_RELEASE` | unset | The Helm release; labels every runner Job and every driver-specced pod `app.kubernetes.io/instance`, which scopes bulk cleanup and the runner NetworkPolicy to one release. |
 | `K8S_CLUSTER_DOMAIN` | `cluster.local` | The cluster's DNS domain. The runner and gate pods resolve a declared service's bare name through the search domain `<attempt subdomain>.<namespace>.svc.<domain>`, and a search domain is absolute. The chart forwards `driver.clusterDomain`. |
 | `DRIVER_HEARTBEAT_FILE` | unset | A file the driver rewrites every 10s from a timer, so a liveness probe can tell a turning event loop from a wedged one — the driver serves no HTTP. Timer-driven on purpose: a drain stops polling for as long as its jobs take. The chart sets `/tmp/heartbeat` and probes its age. Executor-neutral. |
@@ -462,6 +495,7 @@ kind walkthrough. Decisions that look like cruft and are not:
 | `RUNNER_MEMORY_REQUEST` | unset | A kubernetes memory quantity (`1Gi`, `1G`, plain bytes) rendered as `resources.requests.memory` on every pod the driver specs. Docker renders it as `--memory-reservation` — the soft floor, translated to bytes. Same boot-time validation. |
 | `RUNNER_CPU_LIMIT` | unset | A kubernetes cpu quantity rendered as `resources.limits.cpu`, and as docker's `--cpus` (translated to decimal cores). Limits are off by default: a memory limit on an agent run turns a big build into an OOM kill mid-work, so a limit is something an operator types. |
 | `RUNNER_MEMORY_LIMIT` | unset | A kubernetes memory quantity rendered as `resources.limits.memory`, and as docker's `--memory` (translated to bytes). Off by default, per above. A quantity that is not a whole number of bytes is refused at boot rather than silently floored for docker. |
+| `RUNNER_DO_NOT_DISRUPT` | unset | Opts every pod the driver specs — runner, aux Jobs, declared services — out of voluntary disruption: both `karpenter.sh/do-not-disrupt: "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` on the pod's metadata (Karpenter reads pods, not Job objects), because Karpenter consolidation and cluster-autoscaler scale-down evicting a runner mid-job means the work is redone under a higher `attempts` (issue #362). The guarantee stops there: a Spot interruption reclaims the node regardless — Karpenter explicitly excludes interruption from `do-not-disrupt`, and it does not drain on rebalance recommendations — and an external drain (`kubectl drain`, a managed-nodegroup upgrade) proceeds all the same, so a two-hour job can still be redone. Off by default, and the cost is real: an undisruptable pod pins its node for as long as the run lasts — up to `DRIVER_JOB_TIMEOUT_MS` — so an operator on on-demand-only nodes may not want it. The chart forwards `driver.runnerDoNotDisrupt`. |
 
 Refused combination, fatal at startup: `EXECUTOR=kubernetes` + `RUNNER_CACHE_WATCH=1` — each
 watch tick is one throwaway container on the docker daemon, and the kubernetes form would be a Job

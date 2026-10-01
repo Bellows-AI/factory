@@ -78,6 +78,13 @@ spec:
                       # The search domain a declared service's bare name resolves through.
                       - name: K8S_CLUSTER_DOMAIN
                         value: {{ $.Values.driver.clusterDomain | quote }}
+                      {{- if $.Values.driver.runnerDoNotDisrupt }}
+                      # Annotate every pod the driver specs out of voluntary disruption
+                      # (RUNNER_DO_NOT_DISRUPT) — the cost of an undisruptable pod is stated in
+                      # the values entry.
+                      - name: RUNNER_DO_NOT_DISRUPT
+                        value: {{ $.Values.driver.runnerDoNotDisrupt | quote }}
+                      {{- end }}
                       # The claim's worker name. Defaulted it is `driver-<pid>` — pid 1 in every
                       # container, so every replica would claim as `driver-1`, and the board's
                       # claimed_by fences (the reclaim ack among them) could not tell them apart.
@@ -88,11 +95,12 @@ spec:
                       - name: EXECUTOR
                         value: kubernetes
                       # Image locations only. The claimed task's selected executor profile chooses
-                      # the CLI/image pair for that run.
+                      # the CLI/image pair for that run. The registry prefix composes here the
+                      # same as everywhere, so the executor images cannot be left behind it (#358).
                       - name: CLAUDE_EXECUTOR_IMAGE
-                        value: {{ $.Values.driver.executorImages.claudeCode | quote }}
+                        value: {{ include "factory.imageReference" (list $ $.Values.driver.executorImages.claudeCode) | quote }}
                       - name: OPENCODE_EXECUTOR_IMAGE
-                        value: {{ $.Values.driver.executorImages.opencode | quote }}
+                        value: {{ include "factory.imageReference" (list $ $.Values.driver.executorImages.opencode) | quote }}
                       # Runner pods pull like the driver's own: IfNotPresent, so a side-loaded
                       # executor image is used rather than reached for.
                       - name: RUNNER_IMAGE_PULL_POLICY
@@ -101,6 +109,23 @@ spec:
                       # Every pod the driver specs pulls with the chart's own pull secrets.
                       - name: RUNNER_IMAGE_PULL_SECRETS
                         value: {{ join "," . | quote }}
+                      {{- end }}
+                      {{- with $.Values.runner.nodeSelector }}
+                      # The runner group's scheduling knobs (issue #361), forwarded as JSON onto
+                      # every pod the driver specs — runner, gate, sync, reclaim, publish, helper,
+                      # service. The tainted node group agent code lands on and the chart's own
+                      # pods never touch; unset, pods schedule wherever the workspaces claim can
+                      # attach. The driver parses JSON at boot, fatal on a bad shape.
+                      - name: RUNNER_NODE_SELECTOR
+                        value: {{ toJson . | quote }}
+                      {{- end }}
+                      {{- with $.Values.runner.tolerations }}
+                      - name: RUNNER_TOLERATIONS
+                        value: {{ toJson . | quote }}
+                      {{- end }}
+                      {{- with $.Values.runner.affinity }}
+                      - name: RUNNER_AFFINITY
+                        value: {{ toJson . | quote }}
                       {{- end }}
                       # The claim the checkouts live on — the same one the dashboard writes to.
                       - name: WORKSPACE_VOLUME

@@ -6915,6 +6915,52 @@ describe('RUNNER_IMAGE_PULL_SECRETS', () => {
     });
 });
 
+// Issue #361: the chart's scheduling knobs reach the chart's own pods only; these are the runner
+// group's — the tainted node group agent-written code is meant to land on and nothing else. Every
+// pod the driver specs carries them: the runner, each aux Job (sync shown — they all share
+// `auxJobSpec`) and each service pod, exactly as RUNNER_IMAGE_PULL_SECRETS above does.
+describe('RUNNER NODE SELECTOR / TOLERATIONS / AFFINITY', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const scheduled = loadDriverConfig({
+        EXECUTOR: 'kubernetes',
+        RUNNER_NODE_SELECTOR: '{"dedicated":"factory-runners"}',
+        RUNNER_TOLERATIONS: '[{"key":"dedicated","operator":"Equal","value":"factory-runners","effect":"NoSchedule"}]',
+        RUNNER_AFFINITY:
+            '{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":1,"podAffinityTerm":{"topologyKey":"topology.kubernetes.io/zone","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"factory"}}}}]}}',
+    });
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const nodeSelector = { dedicated: 'factory-runners' };
+    const tolerations = [{ key: 'dedicated', operator: 'Equal', value: 'factory-runners', effect: 'NoSchedule' }];
+
+    it('schedules the runner, aux and service pods onto the configured node group', () => {
+        const runner = runnerJobSpec(scheduled, job, { id: SESSION, resume: false }).spec.template.spec;
+        expect(runner.nodeSelector).toEqual(nodeSelector);
+        expect(runner.tolerations).toEqual(tolerations);
+        expect(runner.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+        const sync = syncJobSpec(scheduled, repoJob, null).spec.template.spec;
+        expect(sync.nodeSelector).toEqual(nodeSelector);
+        expect(sync.tolerations).toEqual(tolerations);
+        expect(sync.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+        const servicePod = servicePodSpec(scheduled, job, service).spec;
+        expect(servicePod.nodeSelector).toEqual(nodeSelector);
+        expect(servicePod.tolerations).toEqual(tolerations);
+        expect(servicePod.affinity).toMatchObject({ podAntiAffinity: expect.anything() });
+    });
+
+    it('leaves the fields off entirely when none are configured', () => {
+        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
+        expect(spec().spec.template.spec).not.toHaveProperty('nodeSelector');
+        expect(spec().spec.template.spec).not.toHaveProperty('tolerations');
+        expect(spec().spec.template.spec).not.toHaveProperty('affinity');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('nodeSelector');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('tolerations');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('affinity');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('nodeSelector');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('tolerations');
+        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('affinity');
+    });
+});
+
 // The chart's runner NetworkPolicy selects by release, so every pod the driver specs must carry
 // the release label — not only the runner Job object, which is what bulk cleanup reads.
 describe('K8S_RELEASE on pod templates', () => {
@@ -6929,5 +6975,97 @@ describe('K8S_RELEASE on pod templates', () => {
         ).toMatchObject(instance);
         expect(syncJobSpec(released, repoJob, null).spec.template.metadata.labels).toMatchObject(instance);
         expect(servicePodSpec(released, job, service).metadata.labels).toMatchObject(instance);
+    });
+});
+
+// Karpenter consolidation or a cluster-autoscaler scale-down voluntarily evicts a running runner
+// pod mid-job (issue #362): nothing is corrupted — the lease expires, the board re-offers — but
+// the work is redone, silently, visible only as a higher `attempts`. RUNNER_DO_NOT_DISRUPT is the
+// opt-out from that voluntary disruption, and both annotation keys travel together: Karpenter
+// reads the first, the cluster-autoscaler the second, and they are one switch. It is not a shield
+// against everything: a Spot interruption or an external drain (a managed-nodegroup upgrade,
+// kubectl drain) reclaims the pod regardless. Every pod the driver specs carries the annotations —
+// a declared service's eviction ruins the attempt exactly like the runner's does.
+describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
+    const ANNOTATIONS = {
+        'karpenter.sh/do-not-disrupt': 'true',
+        'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
+    };
+    const disruptable = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_DO_NOT_DISRUPT: '1' });
+    const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const service: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
+    const NOOP_DESCRIPTOR = lookupHelper('noop')!;
+    const NONCE = '77777777-7777-4777-8777-777777777777';
+    const plan = (): HelperPlan => ({ helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false });
+    const GATE_KEY = 'bellows/44444444-4444-4444-8444-444444444444/.worktrees/88888888-8888-4888-8888-888888888888';
+    const STARTED_AT = '2026-01-01T00:00:00.000Z';
+
+    it('annotates every pod the driver specs — runner, aux Jobs, declared services', () => {
+        // The annotations name the POD: Job specs carry them on the pod template (Karpenter reads
+        // pods, not Job objects); the bare service Pod carries them on its own metadata.
+        const jobSpecs: [string, { spec: { template: { metadata: { annotations?: object } } } }][] = [
+            ['the runner', runnerJobSpec(disruptable, job, { id: SESSION, resume: false })],
+            ['the sync', syncJobSpec(disruptable, repoJob, null)],
+            ['the reclaim', reclaimJobSpec(disruptable, repoJob)],
+            [
+                'the publish step',
+                publishStepJobSpec(disruptable, repoJob, {
+                    step: 1,
+                    publish: { label: 'git push', entrypoint: 'git', args: ['push'], env: false, inRepo: false },
+                    envSecret: null,
+                    repo: 'repo',
+                }),
+            ],
+            [
+                'the helper',
+                helperJobSpec(disruptable, repoJob, {
+                    plan: plan(),
+                    descriptor: NOOP_DESCRIPTOR,
+                    envSecret: null,
+                    nonce: NONCE,
+                }),
+            ],
+            [
+                'the gate',
+                gateJobSpec(disruptable, job, {
+                    key: GATE_KEY,
+                    image: 'node:20',
+                    gateName: 'test',
+                    command: 'true',
+                    run: 1,
+                    envSecretName: null,
+                    gateTimeoutMs: 60_000,
+                }),
+            ],
+            ['the bellows readout', bellowsJobSpec(disruptable, job)],
+            ['the claude turns readout', claudeTurnsJobSpec(disruptable, job, SESSION, STARTED_AT)],
+            ['the opencode session readout', opencodeReadoutJobSpec(disruptable, job, STARTED_AT)],
+            ['the claude transcript export', claudeTranscriptJobSpec(disruptable, job, SESSION, STARTED_AT)],
+            ['the opencode transcript export', opencodeTranscriptJobSpec(disruptable, job, STARTED_AT)],
+        ];
+        for (const [name, spec] of jobSpecs) {
+            expect(spec.spec.template.metadata.annotations, name).toEqual(ANNOTATIONS);
+            // Annotating the Job object itself would be cargo cult — Karpenter reads pods.
+            expect((spec as { metadata: { annotations?: object } }).metadata.annotations, name).toBeUndefined();
+        }
+        expect(servicePodSpec(disruptable, job, service).metadata.annotations).toEqual(ANNOTATIONS);
+    });
+
+    it('leaves the annotations off entirely when the switch is unset', () => {
+        expect(spec().spec.template.metadata).not.toHaveProperty('annotations');
+        expect(syncJobSpec(plain, repoJob, null).spec.template.metadata).not.toHaveProperty('annotations');
+        expect(
+            gateJobSpec(plain, job, {
+                key: GATE_KEY,
+                image: 'node:20',
+                gateName: 'test',
+                command: 'true',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 60_000,
+            }).spec.template.metadata
+        ).not.toHaveProperty('annotations');
+        expect(servicePodSpec(plain, job, service).metadata).not.toHaveProperty('annotations');
     });
 });

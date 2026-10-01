@@ -6,11 +6,13 @@ import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
 import type { HelperDescriptor, HelperPlan } from './helpers.js';
 import {
     auxJobSpec,
+    doNotDisruptField,
     hash16,
     jobsPath,
     pullSecretsField,
     releaseLabel,
     resourcesField,
+    schedulingField,
     serviceSubdomain,
     workspaceMount,
     type AuxJobSpec,
@@ -279,13 +281,22 @@ export function servicePodSpec(
 ): {
     apiVersion: 'v1';
     kind: 'Pod';
-    metadata: { name: string; labels: Record<string, string> };
+    metadata: {
+        name: string;
+        labels: Record<string, string>;
+        /** The disruption opt-out (doNotDisruptField) — a bare Pod's own metadata. */
+        annotations?: Record<string, string>;
+    };
     spec: {
         restartPolicy: 'Never';
         automountServiceAccountToken: false;
         hostname: string;
         subdomain: string;
         imagePullSecrets?: { name: string }[];
+        /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
+        nodeSelector?: Record<string, string>;
+        tolerations?: Record<string, unknown>[];
+        affinity?: Record<string, unknown>;
         containers: {
             name: string;
             image: string;
@@ -305,7 +316,7 @@ export function servicePodSpec(
     return {
         apiVersion: 'v1',
         kind: 'Pod',
-        metadata: { name: servicePodName(job, spec.name), labels },
+        metadata: { name: servicePodName(job, spec.name), labels, ...doNotDisruptField(config) },
         spec: {
             restartPolicy: 'Never',
             automountServiceAccountToken: false,
@@ -315,6 +326,7 @@ export function servicePodSpec(
             hostname: spec.name,
             subdomain: serviceSubdomain(job),
             ...pullSecretsField(config),
+            ...schedulingField(config),
             containers: [
                 {
                     name: spec.name,

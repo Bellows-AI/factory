@@ -501,6 +501,70 @@ refuses 'a port-forward origin is refused as an ingress host' 'is not among ingr
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set auth.publicUrl=http://127.0.0.1:18080 \
     --set ingress.enabled=true --set 'ingress.hosts={factory.example}'
 
+# --- The registry prefix (#358): one value, every image the release names ---------------------
+
+# Bare image names are the kind story: `kind load docker-image` side-loads them and IfNotPresent
+# resolves. On a remote cluster a bare name resolves to docker.io/library/* and every pod lands in
+# ImagePullBackOff — and the executor images reach the driver as opaque env strings, so setting two
+# of four values by hand is exactly the half-applied state one prefix value closes. With the
+# prefix empty (the default, the local story) the image assertions above pin the verbatim render
+# for the chart's own images and the pin below for the executor values, so a prefix that applied
+# unconditionally fails here first.
+expect_contains 'the executor values render verbatim with no prefix' "$gh" 'value: "claude-executor"'
+prefixed="$(gh_render --set global.imageRegistry=ghcr.io/example)"
+expect_contains 'the prefix reaches the dashboard image' "$prefixed" \
+    "image: ghcr.io/example/factory-ai:$app_version"
+expect_contains 'the prefix reaches the driver image' "$prefixed" \
+    "image: ghcr.io/example/factory-driver:$app_version"
+# The needle is the values.yaml pin verbatim; move it with the pin.
+expect_contains 'the prefix reaches the collector image' "$prefixed" \
+    'image: ghcr.io/example/otel/opentelemetry-collector-contrib:0.161.0'
+expect_contains 'the prefix reaches the claude executor image'   "$prefixed" 'value: "ghcr.io/example/claude-executor"'
+expect_contains 'the prefix reaches the opencode executor image' "$prefixed" 'value: "ghcr.io/example/opencode-executor"'
+# The exclusion the values comment states: the wait image is a full reference, never prefixed.
+expect_contains 'the prefix leaves the database wait image whole' "$prefixed" 'image: postgres:17-alpine'
+
+# A tag on an executor value survives the prefix; tagless reads :latest, which the pinning
+# assertions above already refuse for the chart's own images.
+tagged="$(gh_render --set global.imageRegistry=ghcr.io/example \
+    --set driver.executorImages.claudeCode=claude-executor:v1.2.3)"
+expect_contains 'a tag on the executor value survives the prefix' "$tagged" \
+    'value: "ghcr.io/example/claude-executor:v1.2.3"'
+
+# The prefix composes with a bare repository only: a value that already names a registry would
+# render a double prefix no registry serves. The tag-carrying shape is pinned too — the regex's
+# colon rule has to catch it before the tag, not false-positive on the tag itself.
+refuses 'an absolute repository is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set dashboard.image.repository=ghcr.io/other/factory-ai
+refuses 'a tagged absolute executor value is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set driver.executorImages.claudeCode=ghcr.io/other/claude-executor:v1.2.3
+refuses 'a trailing slash on the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example/
+refuses 'a pasted URL as the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=https://ghcr.io/example
+refuses 'a doubled slash in the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io//example
+refuses 'surrounding whitespace on the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set 'global.imageRegistry=ghcr.io/example '
+refuses 'an uppercase prefix is refused' 'lowercase registry path' \
+    "${GH_SETS[@]}" --set global.imageRegistry=Ghcr.io/Example
+refuses 'a scheme:/ typo as the prefix is refused' 'no trailing or doubled slash' \
+    "${GH_SETS[@]}" --set global.imageRegistry=https:/ghcr.io/example
+
+# The colon in a prefix is a registry port, not a tag: a bare host:port prefix renders whole.
+port="$(gh_render --set global.imageRegistry=registry:5000)"
+expect_contains 'a colon-bearing prefix renders as a host port' "$port" \
+    "image: registry:5000/factory-ai:$app_version"
+# The `:` and `localhost` alternations of the registry rule, pinned like the `.` one above.
+refuses 'a host:port repository is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set driver.image.repository=registry:5000/factory-driver
+refuses 'a localhost repository is refused under the prefix' 'already names a registry' \
+    "${GH_SETS[@]}" --set global.imageRegistry=ghcr.io/example \
+    --set driver.image.repository=localhost/factory-driver
+
 # Names stay valid DNS labels however long the release name: truncation leaves room for suffixes.
 long="$(helm template "release-name-that-is-deliberately-far-too-long-for-a-dns-label" charts/factory \
     "${GH_SETS[@]}" 2>&1)"
@@ -511,6 +575,24 @@ too_long="$(grep -E '^    name: ' <<<"$long" | awk '{ if (length($2) > 63) print
 pulled="$(gh_render --set 'imagePullSecrets={regcred}')"
 expect_contains 'chart pods name the pull secret'      "$pulled" 'name: "regcred"'
 expect_contains 'the driver forwards the pull secret'  "$pulled" 'value: "regcred"'
+
+# The runner group's scheduling knobs (issue #361): forwarded to the driver as JSON, which is how
+# they reach every pod it specs. Unset, nothing renders — an untainted cluster sees the same spec
+# as before.
+expect_not_contains 'no runner scheduling var renders on defaults' "$gh" 'name: RUNNER_NODE_SELECTOR'
+expect_not_contains 'no runner tolerations var renders on defaults' "$gh" 'name: RUNNER_TOLERATIONS'
+expect_not_contains 'no runner affinity var renders on defaults' "$gh" 'name: RUNNER_AFFINITY'
+scheduled="$(gh_render --set runner.nodeSelector.dedicated=factory-runners \
+    --set 'runner.tolerations[0].key=dedicated' --set 'runner.tolerations[0].operator=Equal' \
+    --set 'runner.tolerations[0].value=factory-runners' --set 'runner.tolerations[0].effect=NoSchedule' \
+    --set 'runner.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].weight=1')"
+expect_contains 'the driver is handed the runner node selector as JSON' "$scheduled" \
+    'value: "{\"dedicated\":\"factory-runners\"}"'
+expect_contains 'the driver is handed the runner tolerations as JSON' "$scheduled" \
+    'value: "[{\"effect\":\"NoSchedule\",\"key\":\"dedicated\",\"operator\":\"Equal\",\"value\":\"factory-runners\"}]"'
+expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" 'name: RUNNER_AFFINITY'
+expect_contains 'the driver is handed the runner affinity as JSON' "$scheduled" \
+    'value: "{\"podAntiAffinity\":{\"preferredDuringSchedulingIgnoredDuringExecution\":[{\"weight\":1}]}}"'
 
 # The runner Secret has a key for every forwarded name, valued or not.
 runner_secret="$(gh_render --set-string "runner.env=ONE\,TWO" --set runner.credentials.ONE=x)"
@@ -545,6 +627,36 @@ expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpo
     $'- namespaceSelector:\n                    matchLabels:\n                        kubernetes.io/metadata.name: kube-system\n                podSelector:\n                    matchLabels:\n                        k8s-app: kube-dns'
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
+
+# Node churn vs long runs (issue #362). The do-not-disrupt opt-out is off by default in both
+# profiles — an undisruptable runner pod pins its node for as long as its job runs — and the
+# PDBs are always on: the dashboard drains with at most one unavailable, the driver is protected
+# only above one replica, where a single-replica minAvailable would block drains forever.
+expect_not_contains 'no do-not-disrupt switch renders by default (local profile)' \
+    "$(cat "$work/rendered.yaml")" 'RUNNER_DO_NOT_DISRUPT'
+expect_not_contains 'no do-not-disrupt switch renders by default (production defaults)' "$gh" 'RUNNER_DO_NOT_DISRUPT'
+dnd="$(gh_render --set driver.runnerDoNotDisrupt=1)"
+expect_contains 'the opt-in forwards the do-not-disrupt switch' "$dnd" 'name: RUNNER_DO_NOT_DISRUPT'
+expect_contains 'the opt-in carries the value the operator set' "$dnd" 'value: "1"'
+
+[ "$(grep -c 'kind: PodDisruptionBudget' <<<"$(cat "$work/rendered.yaml")")" -eq 1 ] &&
+    ok 'the dashboard PDB renders in the local profile' ||
+    bad 'the dashboard PDB renders in the local profile' 'expected exactly one PDB'
+[ "$(grep -c 'kind: PodDisruptionBudget' <<<"$gh")" -eq 1 ] &&
+    ok 'the dashboard PDB renders at the production defaults' ||
+    bad 'the dashboard PDB renders at the production defaults' "$(grep -c 'kind: PodDisruptionBudget' <<<"$gh") PDBs"
+expect_contains 'the dashboard PDB allows one unavailable' "$gh" 'maxUnavailable: 1'
+expect_not_contains 'no driver PDB below two replicas' "$gh" 'minAvailable: 1'
+two="$(gh_render --set driver.replicas=2)"
+[ "$(grep -c 'kind: PodDisruptionBudget' <<<"$two")" -eq 2 ] &&
+    ok 'the driver PDB renders above one replica' ||
+    bad 'the driver PDB renders above one replica' "$(grep -c 'kind: PodDisruptionBudget' <<<"$two") PDBs"
+expect_contains 'the driver PDB keeps one replica through a drain' "$two" 'minAvailable: 1'
+driver_pdb="$(awk '/^# Source: factory\/templates\/pdb.yaml/ { n++ } n == 2 && /^---$/ { exit } n == 2 { print }' <<<"$two")"
+expect_contains 'the driver PDB selects the driver component' "$driver_pdb" 'component: driver'
+helm lint charts/factory "${GH_SETS[@]}" --set driver.replicas=2 >/dev/null 2>&1 &&
+    ok 'helm lint passes above one driver replica' ||
+    bad 'helm lint passes above one driver replica' 'lint failed'
 
 # --- Phase two: the cluster -------------------------------------------------------------------
 
