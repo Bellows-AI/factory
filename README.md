@@ -1,10 +1,31 @@
 # factory-ai
 
-Software Engineering factory control plane.
+**Scale your workflows. Remote-first harness for your SDLC.**
 
-First surface: **Factory Stats** — a dashboard measuring AI-assisted delivery from agent
-telemetry: sessions, token usage (input, output, cache reads and cache creation), lines written,
-active time, and how much of it the telemetry can actually see.
+A control plane for coding agents. You queue a task against a repository; the board hands it to a
+driver; the driver runs it in a container on Kubernetes (or docker, for development) against your
+own workspace checkout, and reports the result back. Under `EXECUTOR=kubernetes` each task is a pod
+on the configured cluster, so how many run at once is a question of cluster capacity and the
+driver's `DRIVER_CONCURRENCY` limit (default 2, max 32), not of your laptop. The docker executor is
+for development, and there the driver starts those containers on the local docker daemon.
+
+Remote-first is the design, not a deployment option: the dashboard never spawns a task runner, the
+driver never touches the database, and the only thing between them is HTTP. Which is why the same
+board drives one developer's docker daemon and a shared EKS cluster with no change to the task.
+
+What it does:
+
+- **Tasks** — a prompt plus a repo, claimed by a worker and run by the executor profile the task
+  names, whose type is `claude-code` or `opencode`. Queue them from the dashboard or the CLI;
+  follow the thread, stop, follow up, mark done. [docs/jobs.md](docs/jobs.md)
+- **Workflows** — the process a task walks, owned by the board rather than baked into a runner
+  prompt: a graph of agent nodes joined by deterministic edges, so review-fix-publish loops are a
+  definition and not a prompt. [docs/workflows.md](docs/workflows.md)
+- **Workspaces** — per-member checkouts under `/workspaces/<org>/<user>/<repo>`, so one person's
+  agent cannot edit another's working copy. [docs/workspace.md](docs/workspace.md)
+- **Stats** — a dashboard measuring what the fleet actually did, from agent telemetry: sessions,
+  token usage (input, output, cache reads and cache creation), lines written, active time, and how
+  much of it the telemetry can see.
 
 Metric definitions, the API traps behind them, and the reasoning are specified in
 `../factory-stats/SPEC.md`. Every definition exists to correct a specific distortion —
@@ -70,6 +91,28 @@ member signs in, picks repositories from the Workspace page, and gets their own 
 `/workspaces/<ORG_ID>/<user id>/<name>` — so one person's agent cannot edit another's working copy.
 Set `ORG_WORKSPACE_ROOT=` in `.env` to switch that off entirely. An existing checkout is never
 fetched or overwritten, and nothing is ever pruned; see [docs/workspace.md](docs/workspace.md).
+
+## Running tasks
+
+The driver is the half that executes. It claims jobs over HTTP (`JOB_BOARD_URL`, plus the shared
+`JOB_BOARD_TOKEN`) and never talks to the database, so it runs wherever the containers should run.
+
+The CLI carries its own credentials, not the driver's: `FACTORY_URL` names the board and
+`FACTORY_TOKEN` is your personal access token (`fat_…`, minted from the settings page), which is
+simply unset against an `AUTH_MODE=none` board. Set them before running the commands below.
+
+```bash
+make runners                 # build the executor images
+docker compose up -d driver  # development: spawns containers on the local docker socket
+npm run dev -w cli -- job create "fix the flaky test" --repo owner/name
+npm run dev -w cli -- job list --limit 5
+```
+
+**Kubernetes is the primary executor; docker is only for development.** `EXECUTOR=kubernetes`
+makes each task a pod instead of a container, and the chart in `charts/factory/` is what deploys —
+see [docs/kubernetes.md](docs/kubernetes.md) and, for a cluster that is not local,
+[docs/eks-runbook.md](docs/eks-runbook.md). The driver's docker socket is root on the host; read
+[docs/security.md](docs/security.md) before running it anywhere shared.
 
 ## Auth
 
