@@ -6,7 +6,9 @@ import { describe, expect, it } from 'vitest';
  * The chart's defaults — `ReadWriteMany` on the cluster's default StorageClass, with nothing
  * setting `fsGroup` — are correct for the shared-volume design and wrong for a stock EKS cluster,
  * where the default class is single-AZ `ReadWriteOnce` EBS and a dynamically provisioned EFS
- * access point is `root:root 0700`. Neither failure reaches a UI: the PVC simply never binds, or
+ * access point with no `uid`/`gid` gets an arbitrary identity from the driver's allocation range,
+ * which EFS enforces in place of the client's. Neither failure reaches a UI: the PVC simply never
+ * binds, or
  * the member tree is never created and every runner pod hangs in `ContainerCreating` on a
  * `subPath` that does not exist. The prerequisites are the only thing standing between an
  * operator and that silence, so a document that loses them is the bug returning.
@@ -44,6 +46,33 @@ describe('the workspaces volume prerequisites', () => {
         expect(kubernetes).toContain('IRSA');
         expect(kubernetes).toContain('EKS Pod Identity');
         expect(kubernetes).toContain('mount target');
+    });
+
+    /**
+     * EFS allows one mount target per availability zone; nodes in every subnet of that zone share
+     * it. A recipe that demands one per subnet cannot be followed at all when a zone has more
+     * than one node subnet.
+     */
+    it('requires a mount target per availability zone, not per subnet', () => {
+        expect(kubernetes).toContain('availability zone the nodes run in');
+        expect(chartReadme).toContain('availability zone the nodes run in');
+        expect(kubernetes).not.toContain('every subnet the nodes run in');
+        expect(chartReadme).not.toContain('every node subnet');
+    });
+
+    /**
+     * The driver's documented default: without `uid`/`gid` on the StorageClass, the access
+     * point's identity is selected from its allocation range — not `root` — and dynamic
+     * provisioning always applies user identity enforcement, so EFS replaces the client's ids
+     * with that identity. The explicit 1000:1000 recipe is a pin for predictable ownership, not
+     * a rescue from a root default.
+     */
+    it('states the allocation-range default for an access point without uid/gid, not a root default', () => {
+        expect(kubernetes).toContain('allocation range');
+        expect(chartReadme).toContain('allocation range');
+        expect(kubernetes).toContain('identity enforcement');
+        expect(kubernetes).not.toContain('root:root 0700');
+        expect(chartReadme).not.toContain('root:root 0700');
     });
 
     /**

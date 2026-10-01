@@ -487,8 +487,12 @@ the shared Job skeleton — the one place a pod-level `securityContext` is emitt
 driver specs, whose workspaces mounts are composed next door in `k8s-auxspec.ts`. Adding one would
 not help on EFS: the EFS CSI driver does not
 apply `fsGroup` to an RWX NFS mount, so the only thing that makes the tree writable is the
-**access point's POSIX user**. Dynamic provisioning's default access-point root is `root:root`
-`0700`.
+**access point's POSIX user**. Dynamic provisioning always applies EFS's user identity enforcement: the
+client's uid/gid are replaced with the access point's for every filesystem operation — and a
+StorageClass that omits `uid`/`gid` gets an access point whose identity the driver selects from its
+allocation range (default 50000–7000000, used as both uid and gid), not `root:root`. The
+`1000:1000` recipe below is that identity pinned to the uid every pod already runs as, so ownership
+is predictable — not a rescue from a root default.
 
 What that costs, in the order an operator meets it: sign-in still **succeeds** — provisioning is
 deliberately non-fatal (`docs/workspace.md`: a full disk must not become "you cannot log in") — so
@@ -515,9 +519,12 @@ Stood up and observed on `internal-utils` — see the caveat above and the entry
    a PVC against an `efs-sc` class on such a cluster waits `Pending` forever with no provisioner to
    answer it and nothing in its events naming the cause. `kubectl -n kube-system get pods | grep
    efs` is the honest check.
-2. **An EFS file system with a mount target in every subnet the nodes run in.** A node in a subnet
-   with no mount target cannot mount the volume at all, and on EKS that is how a working install
-   becomes an intermittent one as the autoscaler picks a new AZ.
+2. **An EFS file system with a mount target in every availability zone the nodes run in.** EFS
+   allows one mount target per availability zone — a second node subnet in a zone that already
+   has one cannot carry its own, and does not need to: every node in the zone shares it, so what
+   each subnet needs is network access to the zone's mount target. A zone with no mount target
+   cannot mount the volume at all, and on EKS that is how a working install becomes an
+   intermittent one as the autoscaler picks a new AZ.
 3. **A `StorageClass` whose access points are owned by uid 1000**, which is the whole fix for the
    permission half:
 
@@ -545,7 +552,8 @@ On 2026-09-30, against the shape above on `internal-utils`:
 
 - The claim **bound in 16s**, RWX, and the provisioner minted an access point reporting
   `Uid 1000`, `Gid 1000`, `OwnerUid 1000`, `Permissions 0775`. Those four are the whole fix — a
-  class without them mints `root:root 0700` instead.
+  class without the `uid`/`gid` pair leaves the access point's identity to the driver's
+  allocation range instead of pinning it to 1000.
 - A pod with `runAsUser: 1000` and **no `fsGroup`** ran `mkdir -p <org>/<user>` on the volume root
   and wrote into it. Both directories came back owned `1000:1000`. That `mkdir` is the operation
   that returns `EACCES` when the access point's POSIX user is wrong, and it is the one the

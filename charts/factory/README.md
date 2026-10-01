@@ -63,14 +63,18 @@ wrote into through its `subPath`. The chart itself has still never been installe
   is empty by default, meaning the cluster's default class — on EKS that is single-AZ
   `ReadWriteOnce` EBS, so the claim never binds and the dashboard sits `Pending`.
 - **Writable by uid 1000.** Every pod that touches the volume runs as uid/gid 1000 and nothing
-  sets `fsGroup`, which on EFS would not help anyway — only the access point's POSIX user does,
-  and a dynamically provisioned one defaults to `root:root 0700`. The failure is silent: sign-in
-  succeeds, the member tree is never created, and runner pods hang in `ContainerCreating`.
+  sets `fsGroup`, which on EFS would not help anyway — only the access point's POSIX user does.
+  Dynamic provisioning always applies EFS user identity enforcement (the client's uid/gid are
+  replaced with the access point's), and without explicit `uid`/`gid` that identity is whatever
+  the driver picks from its allocation range — arbitrary, so pin `uid: "1000"`/`gid: "1000"` as
+  below. The failure is silent: sign-in succeeds, the member tree is never created, and runner
+  pods hang in `ContainerCreating`.
 
 On EKS: install the EFS CSI driver — and check its controller pods are actually running, not that
 a `CSIDriver` object exists, which can outlive the install by years — give that controller an IAM
 role by IRSA or EKS Pod Identity, create a file system with a mount
-target in every node subnet, and point `workspaces.storageClass` at a `StorageClass` with
+target in every availability zone the nodes run in (EFS allows one per zone, and every node in
+that zone's subnets shares it), and point `workspaces.storageClass` at a `StorageClass` with
 `provisioningMode: efs-ap`, `uid: "1000"`, `gid: "1000"`, `directoryPerms: "0775"`. The manifest,
 the single-AZ EBS fallback and why that fallback is not reachable yet are in
 [The workspaces volume](../../docs/kubernetes.md#the-workspaces-volume).
