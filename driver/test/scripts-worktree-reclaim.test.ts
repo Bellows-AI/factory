@@ -81,6 +81,46 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
         expect(git(clone, 'worktree', 'list', '--porcelain')).not.toContain(wt);
     });
 
+    // The removal is a parallel walk under a semaphore (issue: an EFS reclaim of a ~143k-file
+    // checkout took ~8 minutes serially and then died ENOTEMPTY). Nesting and breadth are what
+    // the walk has to survive — a node_modules is both — and the fan-out must not outrun the
+    // semaphore and exhaust file descriptors.
+    it('removes a deep, wide tree in one pass', () => {
+        const wt = addWorktree(ROOT);
+        let deep = wt;
+        for (let level = 0; level < 12; level++) {
+            deep = join(deep, `level-${level}`);
+            mkdirSync(deep, { recursive: true });
+            for (let file = 0; file < 40; file++) writeFileSync(join(deep, `f-${file}.js`), 'x');
+        }
+        // An empty directory at the bottom: rmdir has to retire it even with nothing to unlink.
+        mkdirSync(join(deep, 'empty'), { recursive: true });
+
+        expect(remove(wt).verdict).toEqual({ ok: true, removed: true });
+        expect(existsSync(wt)).toBe(false);
+        expect(git(clone, 'worktree', 'list', '--porcelain')).not.toContain(wt);
+    });
+
+    // The walk removes entries, it does not follow them. A symlink to a directory reports
+    // isDirectory() false and is unlinked as the one entry it is; recursing through it would
+    // delete whatever it aims at, which is the whole repository when a checkout happens to carry
+    // a link to its own root.
+    it('unlinks symlinks without deleting what they point at', () => {
+        const wt = addWorktree(ROOT);
+        const outside = join(dir, 'outside');
+        mkdirSync(outside, { recursive: true });
+        writeFileSync(join(outside, 'keep.txt'), 'keep me');
+        symlinkSync(outside, join(wt, 'link-to-dir'));
+        symlinkSync(join(outside, 'keep.txt'), join(wt, 'link-to-file'));
+        symlinkSync(join(dir, 'does-not-exist'), join(wt, 'dangling'));
+
+        expect(remove(wt).verdict).toEqual({ ok: true, removed: true });
+        expect(existsSync(wt)).toBe(false);
+        // The targets survive: only the links inside the tree were entries of the tree.
+        expect(existsSync(outside)).toBe(true);
+        expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep me');
+    });
+
     it('prunes a registered worktree whose directory is already gone', () => {
         const wt = addWorktree(ROOT);
         rmSync(wt, { recursive: true });
