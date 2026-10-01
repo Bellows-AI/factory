@@ -115,8 +115,15 @@ database:
     waitTimeoutSeconds: 300
 
 # The checkouts. Default ReadWriteMany because the dashboard pod and every runner pod share one
-# claim across nodes; values-local.yaml overrides ReadWriteOnce (single node). A default
-# StorageClass that cannot serve the mode fails scheduling loudly, not silently.
+# claim across nodes. Locally the claim is not this chart's at all: values-local.yaml points
+# existingClaim at the factory-local-state release, whose own claim is ReadWriteOnce because a
+# single-node provisioner cannot serve ReadWriteMany.
+#
+# storageClass empty means the cluster's default class, which must serve BOTH ReadWriteMany and a
+# volume root writable by uid 1000. EKS's default (single-AZ ReadWriteOnce EBS) is documented to
+# serve neither, and each failure is quiet: a PVC that never binds, or a member tree that is never
+# provisioned. The EFS prerequisites are in docs/kubernetes.md, "The workspaces volume" — stated
+# from AWS's documentation, never observed from here (docs/limits.md).
 workspaces:
     storageSize: 20Gi
     accessModes:
@@ -241,7 +248,9 @@ isolation:
     # A NetworkPolicy on every runner pod (the `factory.job` label). Ingress only from other runner
     # pods (declared services); egress to DNS (kube-dns and `dnsCidrs` only), this release's
     # dashboard, collector and driver, other runner pods, and anywhere outside `blockedCidrs`. Needs
-    # a CNI that enforces NetworkPolicy — without one the object is inert, never an outage.
+    # a CNI that enforces NetworkPolicy — without one the object is inert, never an outage. On EKS
+    # that means the VPC CNI add-on with enableNetworkPolicy: true (EC2 Linux nodes only); see
+    # docs/kubernetes.md, "EKS prerequisites".
     networkPolicy: true
     # The only addresses runner pods may reach on port 53 besides the `k8s-app: kube-dns` pods in
     # kube-system. The default is NodeLocal DNSCache's link-local address, which no pod selector

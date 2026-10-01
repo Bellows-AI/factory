@@ -263,6 +263,14 @@ export function helperJobSpec(config: DriverConfig, job: BoardJob, input: Helper
  * container. `restartPolicy: Never` mirrors docker exactly: a detached container that crashes
  * stays crashed, and so does this pod.
  *
+ * The pod is OWNED by the attempt's headless DNS Service — the `ownerUid` the caller read off the
+ * Service's create response — so it is never a standalone pod: it is the one driver-specced pod
+ * that is not a Job, and a CNI that enforces NetworkPolicy "optimized for" owned pods (EKS's VPC
+ * CNI, issue #363) would otherwise be free to skip the one pod class a repository's
+ * `.bellows.yaml` starts. `blockOwnerDeletion: false` needs no write on the owner, and the
+ * existing teardown deletes pods before their Service either way; the GC dependency is a
+ * self-healing bonus, not a new path.
+ *
  * Environment values travel as literals, unlike every credential this driver forwards: they
  * were already world-readable in the author's `.bellows.yaml`, and no secret of this process's
  * own ever reaches them — the same reasoning docker's `-e KEY=value` argv states.
@@ -274,7 +282,8 @@ const SERVICE_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function servicePodSpec(
     config: DriverConfig,
     job: BoardJob,
-    spec: ServiceSpec
+    spec: ServiceSpec,
+    ownerUid: string
 ): {
     apiVersion: 'v1';
     kind: 'Pod';
@@ -283,6 +292,14 @@ export function servicePodSpec(
         labels: Record<string, string>;
         /** The disruption opt-out (doNotDisruptField) — a bare Pod's own metadata. */
         annotations?: Record<string, string>;
+        ownerReferences: {
+            apiVersion: 'v1';
+            kind: 'Service';
+            name: string;
+            uid: string;
+            blockOwnerDeletion: boolean;
+            controller: boolean;
+        }[];
     };
     spec: {
         restartPolicy: 'Never';
@@ -313,7 +330,21 @@ export function servicePodSpec(
     return {
         apiVersion: 'v1',
         kind: 'Pod',
-        metadata: { name: servicePodName(job, spec.name), labels, ...doNotDisruptField(config) },
+        metadata: {
+            name: servicePodName(job, spec.name),
+            labels,
+            ...doNotDisruptField(config),
+            ownerReferences: [
+                {
+                    apiVersion: 'v1',
+                    kind: 'Service',
+                    name: serviceSubdomain(job),
+                    uid: ownerUid,
+                    blockOwnerDeletion: false,
+                    controller: false,
+                },
+            ],
+        },
         spec: {
             restartPolicy: 'Never',
             automountServiceAccountToken: false,

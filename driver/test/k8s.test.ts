@@ -5938,7 +5938,7 @@ describe('the service pod and DNS specs', () => {
     };
 
     it('runs the service as a never-restarted, token-less pod with the declared env as literals', () => {
-        const pod = servicePodSpec(gatedConfig, job, cache);
+        const pod = servicePodSpec(gatedConfig, job, cache, 'svc-uid');
         expect(pod.kind).toBe('Pod');
         expect(pod.metadata.name).toBe(`factory-job-${job.id}-${job.leaseToken}-svc-cache`);
         expect(pod.metadata.labels).toEqual({
@@ -5957,9 +5957,28 @@ describe('the service pod and DNS specs', () => {
         expect(pod.spec.containers[0].env).toEqual([{ name: 'ALLOW_EMPTY_PASSWORD', value: 'yes' }]);
     });
 
+    // Issue #363: VPC CNI network-policy enforcement is "optimized for" pods carrying
+    // metadata.ownerReferences and "might not work reliably" for standalone pods — and the
+    // declared-service pod is the one driver-specced pod that is not a Job. It is owned by the
+    // attempt's own headless DNS Service, created moments before, so every pod a .bellows.yaml
+    // starts is a managed pod even where the CNI cares.
+    it("owns the service pod by the attempt's DNS Service, so an enforcing CNI sees a managed pod", () => {
+        const pod = servicePodSpec(gatedConfig, job, cache, 'svc-uid');
+        expect(pod.metadata.ownerReferences).toEqual([
+            {
+                apiVersion: 'v1',
+                kind: 'Service',
+                name: serviceSubdomain(job),
+                uid: 'svc-uid',
+                blockOwnerDeletion: false,
+                controller: false,
+            },
+        ]);
+    });
+
     it('refuses an environment key that is not a variable name', () => {
         expect(() =>
-            servicePodSpec(gatedConfig, job, { ...cache, environment: [{ key: 'not a key', value: 'x' }] })
+            servicePodSpec(gatedConfig, job, { ...cache, environment: [{ key: 'not a key', value: 'x' }] }, 'svc-uid')
         ).toThrow(/not a valid environment variable name/);
     });
 
@@ -6025,6 +6044,7 @@ describe('the service pod and DNS specs', () => {
 describe('the kubernetes services flow', () => {
     const BELLOWS_OUTPUT =
         '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
+    const DNS_UID = '99999999-9999-4999-8999-999999999999';
 
     /** A fake that routes one full run with services: readout Job, service objects, runner Job. */
     const servicesFake = (options: { bellowsLog?: string; dnsCreate?: K8sResponse } = {}) => {
@@ -6048,7 +6068,9 @@ describe('the kubernetes services flow', () => {
                 return respond({ status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) });
             }
             if (path === `/api/v1/namespaces/${namespace}/services`) {
-                return respond(options.dnsCreate ?? { status: 201, body: '{}' });
+                return respond(
+                    options.dnsCreate ?? { status: 201, body: JSON.stringify({ metadata: { uid: DNS_UID } }) }
+                );
             }
             // The readout's pod list: answer once with a pod so its log can be read.
             if (path.includes('pods?') && decodeURIComponent(path).includes('job-name=factory-bellows')) {
@@ -6132,6 +6154,65 @@ describe('the kubernetes services flow', () => {
         const releasedAt = calls.length;
         await runner.releaseServices(job);
         expect(calls.slice(releasedAt).filter(leaseList)).toHaveLength(2);
+    });
+
+    // Issue #363: every service pod carries the attempt DNS Service as its ownerReference —
+    // the uid can only come from the create response, so the flow must wire it through.
+    it('wires the created DNS Service uid into every service pod as its owner', async () => {
+        const { request, calls } = servicesFake();
+        const runner = servicesRunner(request);
+        await runner.run(job, { id: SESSION, resume: false });
+
+        const podPosts = calls.filter((c) => c.method === 'POST' && c.path?.endsWith('/pods'));
+        expect(podPosts.length).toBeGreaterThan(0);
+        for (const post of podPosts) {
+            expect((post.body as { metadata: { ownerReferences: unknown } }).metadata.ownerReferences).toEqual([
+                {
+                    apiVersion: 'v1',
+                    kind: 'Service',
+                    name: serviceSubdomain(job),
+                    uid: DNS_UID,
+                    blockOwnerDeletion: false,
+                    controller: false,
+                },
+            ]);
+        }
+    });
+
+    it('fails a DNS create that answers no uid as infrastructure, tearing the partial fleet down', async () => {
+        const { request, calls } = servicesFake({ dnsCreate: { status: 201, body: '{}' } });
+        // An apiserver always stamps a uid; an answer without one is a proxy or a fake lying —
+        // and a pod created without its owner is exactly the standalone pod an enforcing CNI
+        // may not confine. Fail loud, tear the partial fleet down, leave the job to its lease.
+        await expect(servicesRunner(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not start the service DNS name.*no uid/s
+        );
+
+        // The runner Job was never created — a failed start has no runner to orphan.
+        expect(
+            calls.some(
+                (c) =>
+                    c.method === 'POST' &&
+                    c.path === jobsPath(namespace) &&
+                    (c.body as { metadata?: { name?: string } })?.metadata?.name === runnerJobName(job)
+            )
+        ).toBe(false);
+        // And the partial fleet was torn down on the way out: the lease lists ran (their empty
+        // answers mean the fake had nothing left to delete).
+        expect(
+            calls.some(
+                (c) =>
+                    c.method === 'GET' &&
+                    c.path?.includes(`pods?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
+            )
+        ).toBe(true);
+        expect(
+            calls.some(
+                (c) =>
+                    c.method === 'GET' &&
+                    c.path?.includes(`services?labelSelector=${encodeURIComponent(`factory.lease=${job.leaseToken}`)}`)
+            )
+        ).toBe(true);
     });
 
     it('fails a DNS-name create as infrastructure, tearing the partial fleet down', async () => {
@@ -6904,14 +6985,14 @@ describe('RUNNER_IMAGE_PULL_SECRETS', () => {
             runnerJobSpec(withSecrets, job, { id: SESSION, resume: false }).spec.template.spec.imagePullSecrets
         ).toEqual(expected);
         expect(syncJobSpec(withSecrets, repoJob, null).spec.template.spec.imagePullSecrets).toEqual(expected);
-        expect(servicePodSpec(withSecrets, job, service).spec.imagePullSecrets).toEqual(expected);
+        expect(servicePodSpec(withSecrets, job, service, 'svc-uid').spec.imagePullSecrets).toEqual(expected);
     });
 
     it('leaves the field off entirely when none are configured', () => {
         const plain = loadDriverConfig({ EXECUTOR: 'kubernetes' });
         expect(spec().spec.template.spec).not.toHaveProperty('imagePullSecrets');
         expect(syncJobSpec(plain, repoJob, null).spec.template.spec).not.toHaveProperty('imagePullSecrets');
-        expect(servicePodSpec(plain, job, service).spec).not.toHaveProperty('imagePullSecrets');
+        expect(servicePodSpec(plain, job, service, 'svc-uid').spec).not.toHaveProperty('imagePullSecrets');
     });
 });
 
@@ -6974,7 +7055,7 @@ describe('K8S_RELEASE on pod templates', () => {
             runnerJobSpec(released, job, { id: SESSION, resume: false }).spec.template.metadata.labels
         ).toMatchObject(instance);
         expect(syncJobSpec(released, repoJob, null).spec.template.metadata.labels).toMatchObject(instance);
-        expect(servicePodSpec(released, job, service).metadata.labels).toMatchObject(instance);
+        expect(servicePodSpec(released, job, service, 'svc-uid').metadata.labels).toMatchObject(instance);
     });
 });
 
