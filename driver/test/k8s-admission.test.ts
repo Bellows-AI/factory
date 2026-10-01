@@ -83,3 +83,21 @@ describe('the admission policy workspace subPath pattern', () => {
         expect(subPathPattern.test(candidate)).toBe(WORKSPACE_PATH.test(candidate));
     });
 });
+
+/*
+ * Issue #361: the scheduling knobs the driver forwards onto every pod it specs
+ * (RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY) must be ADMISSION-NEUTRAL — the
+ * policy pins placement to the scheduler by refusing `nodeName` and stays silent about everything
+ * else scheduling-shaped, which is what makes a tainted runner node group addable in values alone.
+ * A future policy edit that reaches for these fields would silently break that, so the absence is
+ * pinned against the template itself, never a copy of it.
+ */
+describe('the admission policy stays silent on forwarded scheduling fields', () => {
+    it('still pins placement to the scheduler by refusing nodeName', () => {
+        expect(template).toContain('variables.spec.nodeName');
+    });
+
+    it.each(['nodeSelector', 'tolerations', 'affinity'])('never constrains %s', (field) => {
+        expect(template).not.toContain(`variables.spec.${field}`);
+    });
+});

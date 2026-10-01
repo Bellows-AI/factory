@@ -68,6 +68,10 @@ export interface RunnerJobSpec {
                 automountServiceAccountToken: false;
                 imagePullSecrets?: { name: string }[];
                 dnsConfig?: FleetDnsConfig;
+                /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
+                nodeSelector?: Record<string, string>;
+                tolerations?: Record<string, unknown>[];
+                affinity?: Record<string, unknown>;
                 containers: {
                     name: string;
                     image: string;
@@ -237,6 +241,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                     // socket riding along with the dashboard, refused here for the same reason.
                     automountServiceAccountToken: false,
                     ...pullSecretsField(config),
+                    ...schedulingField(config),
                     ...fleetDnsField(config, job),
                     containers: [
                         {
@@ -334,6 +339,10 @@ export interface AuxJobSpec {
                 securityContext?: { runAsUser: number; runAsGroup: number };
                 /** The attempt's service search domain — gate only. */
                 dnsConfig?: FleetDnsConfig;
+                /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
+                nodeSelector?: Record<string, string>;
+                tolerations?: Record<string, unknown>[];
+                affinity?: Record<string, unknown>;
                 containers: {
                     name: string;
                     image: string;
@@ -391,6 +400,26 @@ export function pullSecretsField(config: DriverConfig): { imagePullSecrets?: { n
 }
 
 /**
+ * The runner group's scheduling knobs (RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY,
+ * issue #361) on a pod spec: the tainted node group agent-written code lands on and nothing else
+ * schedules onto. Absent field by field when unset, so the spec an untainted cluster sees is
+ * unchanged. Docker has no twin — the daemon decides placement, there is nothing to forward.
+ */
+export interface SchedulingField {
+    nodeSelector?: Record<string, string>;
+    tolerations?: Record<string, unknown>[];
+    affinity?: Record<string, unknown>;
+}
+
+export function schedulingField(config: DriverConfig): SchedulingField {
+    const field: SchedulingField = {};
+    if (config.runnerNodeSelector) field.nodeSelector = config.runnerNodeSelector;
+    if (config.runnerTolerations) field.tolerations = config.runnerTolerations;
+    if (config.runnerAffinity) field.affinity = config.runnerAffinity;
+    return field;
+}
+
+/**
  * The voluntary-disruption opt-out (issue #362), as pod metadata: both keys, because Karpenter
  * consolidation reads `karpenter.sh/do-not-disrupt` while the cluster-autoscaler's scale-down
  * reads `cluster-autoscaler.kubernetes.io/safe-to-evict`, and to an operator they are one switch,
@@ -437,6 +466,7 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,
                     ...pullSecretsField(config),
+                    ...schedulingField(config),
                     ...(input.securityContext ? { securityContext: input.securityContext } : {}),
                     ...(input.dnsConfig ? { dnsConfig: input.dnsConfig } : {}),
                     containers: [input.container],

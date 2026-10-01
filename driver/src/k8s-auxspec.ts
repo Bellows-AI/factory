@@ -11,6 +11,7 @@ import {
     jobsPath,
     pullSecretsField,
     releaseLabel,
+    schedulingField,
     serviceSubdomain,
     workspaceMount,
     type AuxJobSpec,
@@ -290,6 +291,10 @@ export function servicePodSpec(
         hostname: string;
         subdomain: string;
         imagePullSecrets?: { name: string }[];
+        /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
+        nodeSelector?: Record<string, string>;
+        tolerations?: Record<string, unknown>[];
+        affinity?: Record<string, unknown>;
         containers: {
             name: string;
             image: string;
@@ -318,6 +323,7 @@ export function servicePodSpec(
             hostname: spec.name,
             subdomain: serviceSubdomain(job),
             ...pullSecretsField(config),
+            ...schedulingField(config),
             containers: [
                 {
                     name: spec.name,

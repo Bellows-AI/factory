@@ -20,8 +20,9 @@ global:
     # repository/value is used verbatim and side-loaded images resolve under IfNotPresent.
     # database.waitImage is NOT prefixed — it is a full reference an operator sets whole.
     imageRegistry: ''
-# Scheduling for the chart's own pods (dashboard, driver, collector). Runner pods are specced by
-# the driver and schedule wherever the workspaces claim can attach.
+# Scheduling for the chart's own pods (dashboard, driver, collector). Runner pods take theirs from
+# `runner.nodeSelector` / `runner.tolerations` / `runner.affinity` below — the driver forwards them
+# onto every pod it specs.
 nodeSelector: {}
 tolerations: []
 affinity: {}
@@ -261,6 +262,20 @@ isolation:
     allowedCidrs: []
 
 runner:
+    # Where agent-written code lands (issue #361): the driver forwards these to every pod it specs —
+    # runner, gate, sync, reclaim, publish, helper, service — as JSON (RUNNER_NODE_SELECTOR /
+    # RUNNER_TOLERATIONS / RUNNER_AFFINITY). The standard cloud shape is a tainted, IMDS-hardened
+    # runner node group that nothing else schedules onto, so the App key's node never runs agent
+    # code; on EKS it is also what keeps an RWO workspaces claim on one node's AZ. Forwarded
+    # verbatim — the API server validates the shapes, and admission never constrains these fields,
+    # only `nodeName`.
+    #   nodeSelector: { dedicated: factory-runners }
+    #   tolerations:
+    #     - { key: dedicated, operator: Equal, value: factory-runners, effect: NoSchedule }
+    #   affinity: { podAntiAffinity: … }   # spread runners across zones beside the selector
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
     env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
     # Created by this chart when secret.create is true, with one key per `env` name, valued from
