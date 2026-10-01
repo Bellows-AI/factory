@@ -170,6 +170,32 @@ spec:
                       # here as everywhere.
                       - name: RUNNER_SERVICES
                         value: {{ $.Values.driver.services | quote }}
+                      {{- with $.Values.runner.resources }}
+                      # Resource requests and limits on every pod the driver specs (issue #360):
+                      # requests make the runner fleet Burstable and are what the autoscaler sizes
+                      # for; limits render only when configured, because a memory limit on an
+                      # agent run OOM-kills a big build mid-work.
+                      {{- with .requests }}
+                      {{- with .cpu }}
+                      - name: RUNNER_CPU_REQUEST
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .memory }}
+                      - name: RUNNER_MEMORY_REQUEST
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- end }}
+                      {{- with .limits }}
+                      {{- with .cpu }}
+                      - name: RUNNER_CPU_LIMIT
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- with .memory }}
+                      - name: RUNNER_MEMORY_LIMIT
+                        value: {{ . | quote }}
+                      {{- end }}
+                      {{- end }}
+                      {{- end }}
                       {{- if $.Values.driver.skipPermissions }}
                       - name: RUNNER_SKIP_PERMISSIONS
                         value: {{ $.Values.driver.skipPermissions | quote }}

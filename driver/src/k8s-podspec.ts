@@ -20,6 +20,7 @@ import {
 } from './container-scripts.js';
 import { ARTIFACT_LIMIT, type RunSession } from './runner.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
+import { doNotDisruptField, resourcesField, schedulingField, type PodResources } from './k8s-podfields.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 import { assertedWorkspacePath, bellowsReadEnv, bellowsReadScript } from './services.js';
@@ -76,6 +77,7 @@ export interface RunnerJobSpec {
                     name: string;
                     image: string;
                     imagePullPolicy: string;
+                    resources?: PodResources;
                     env: EnvVar[];
                     args: string[];
                     volumeMounts: { name: string; mountPath: string; subPath: string }[];
@@ -255,6 +257,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             // `Always` and would reach for a registry, past the image the node
                             // already holds — which is how the docker runner finds it.
                             imagePullPolicy: config.imagePullPolicy,
+                            ...resourcesField(config),
                             env,
                             args,
                             volumeMounts: [
@@ -347,6 +350,7 @@ export interface AuxJobSpec {
                     name: string;
                     image: string;
                     imagePullPolicy: string;
+                    resources?: PodResources;
                     /** One gate run: `sh -c` with the command as the single argv element. */
                     command?: string[];
                     workingDir?: string;
@@ -400,46 +404,6 @@ export function pullSecretsField(config: DriverConfig): { imagePullSecrets?: { n
 }
 
 /**
- * The runner group's scheduling knobs (RUNNER_NODE_SELECTOR / RUNNER_TOLERATIONS / RUNNER_AFFINITY,
- * issue #361) on a pod spec: the tainted node group agent-written code lands on and nothing else
- * schedules onto. Absent field by field when unset, so the spec an untainted cluster sees is
- * unchanged. Docker has no twin — the daemon decides placement, there is nothing to forward.
- */
-export interface SchedulingField {
-    nodeSelector?: Record<string, string>;
-    tolerations?: Record<string, unknown>[];
-    affinity?: Record<string, unknown>;
-}
-
-export function schedulingField(config: DriverConfig): SchedulingField {
-    const field: SchedulingField = {};
-    if (config.runnerNodeSelector) field.nodeSelector = config.runnerNodeSelector;
-    if (config.runnerTolerations) field.tolerations = config.runnerTolerations;
-    if (config.runnerAffinity) field.affinity = config.runnerAffinity;
-    return field;
-}
-
-/**
- * The voluntary-disruption opt-out (issue #362), as pod metadata: both keys, because Karpenter
- * consolidation reads `karpenter.sh/do-not-disrupt` while the cluster-autoscaler's scale-down
- * reads `cluster-autoscaler.kubernetes.io/safe-to-evict`, and to an operator they are one switch,
- * not a vendor choice. Neither survives an explicit `kubectl drain` — a drain evicts through the
- * disruption API, which consults only PodDisruptionBudgets — and this annotation is not offered
- * for the chart's own pods, whose answer is pdb.yaml. Absent entirely when RUNNER_DO_NOT_DISRUPT
- * is off, so the spec an operator who has not opted in sees is unchanged — an undisruptable pod
- * pins its node for as long as the run lasts, which is the operator's decision to make, not the
- * driver's.
- */
-export const DO_NOT_DISRUPT_ANNOTATIONS: Record<string, string> = {
-    'karpenter.sh/do-not-disrupt': 'true',
-    'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
-};
-
-export function doNotDisruptField(config: DriverConfig): { annotations?: Record<string, string> } {
-    return config.runnerDoNotDisrupt ? { annotations: { ...DO_NOT_DISRUPT_ANNOTATIONS } } : {};
-}
-
-/**
  * The skeleton every aux Job builder shares: `factory.job`/`factory.lease` labels (twice — Job
  * and pod template), no ServiceAccount token, `backoffLimit: 0` (the board owns retries, never
  * the kubelet), the finished-Job TTL, and the workspaces PVC as the one named volume. Each
@@ -469,7 +433,10 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     ...schedulingField(config),
                     ...(input.securityContext ? { securityContext: input.securityContext } : {}),
                     ...(input.dnsConfig ? { dnsConfig: input.dnsConfig } : {}),
-                    containers: [input.container],
+                    // One spread covers every aux Job — the gates, the readouts, the sync, the
+                    // reclaim, the publish steps, the block helpers — the same way
+                    // pullSecretsField above covers their image pulls.
+                    containers: [{ ...input.container, ...resourcesField(config) }],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },

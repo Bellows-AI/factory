@@ -287,6 +287,21 @@ runner:
     affinity: {}
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.
     env: CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY
+    # Requests and limits on every pod the driver specs — the runner, the gates, the sync, the
+    # reclaim, the publish steps, the block helpers and the declared services — forwarded as
+    # RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST / RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT
+    # (kubernetes quantities: "500m", "1Gi"). Requests by default, so a runner fleet is Burstable
+    # rather than BestEffort and the autoscaler (Karpenter, Cluster Autoscaler) can size for it —
+    # a zero-request pod schedules onto any free pod slot and provisions nothing. Limits render
+    # only when set: a memory limit on an agent run turns a big build into an OOM kill mid-work,
+    # the requests-only posture the dashboard and driver pods above carry deliberately. Both maps
+    # unset keeps every pod BestEffort. In override files, use requests: null to remove
+    # the defaults; requests: {} retains them through Helm's map merge.
+    resources:
+        requests:
+            cpu: 500m
+            memory: 1Gi
+        limits: {}
     # Created by this chart when secret.create is true, with one key per `env` name, valued from
     # `credentials` (empty when absent). Referencing the Secret by name is the whole point: the
     # credential never appears in the pod spec, which anyone who can `get pods` can read.

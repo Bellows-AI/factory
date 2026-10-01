@@ -501,6 +501,114 @@ describe('the runner job spec', () => {
             'Always'
         );
     });
+
+    /**
+     * Issue #360: a pod with no requests is BestEffort — first evicted under node memory
+     * pressure, and a zero-request pod the autoscaler never provisions capacity for. The
+     * configured requests land on the container verbatim.
+     */
+    it('renders the configured requests and limits, so the pod is Burstable and the autoscaler can size for it', () => {
+        expect(
+            spec({
+                RUNNER_CPU_REQUEST: '500m',
+                RUNNER_MEMORY_REQUEST: '1Gi',
+                RUNNER_CPU_LIMIT: '2',
+                RUNNER_MEMORY_LIMIT: '4Gi',
+            }).spec.template.spec.containers[0].resources
+        ).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+            limits: { cpu: '2', memory: '4Gi' },
+        });
+    });
+
+    // Limits off by default, the dashboard pod's own posture: a request only reserves, while a
+    // memory limit on an agent run turns a big build into an OOM kill mid-work.
+    it('renders requests only when limits are unset — the dashboard posture', () => {
+        const container = spec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' }).spec.template.spec
+            .containers[0];
+        expect(container.resources).toEqual({ requests: { cpu: '500m', memory: '1Gi' } });
+        expect(container.resources?.limits).toBeUndefined();
+    });
+
+    it('renders no resources block at all when none are configured — the BestEffort pod this issue came from', () => {
+        expect(spec().spec.template.spec.containers[0].resources).toBeUndefined();
+    });
+});
+
+describe('resources on every pod the driver specs', () => {
+    // Issue #360: the autoscaler sizes the whole runner fleet, not just the runner pod — an
+    // unschedulable sync or gate on a right-sized node strands the run. One config, every
+    // builder: the requests render on each container from the same four variables. Built in the
+    // it bodies, not here — the file's `namespace` is declared below, and describe bodies of
+    // this suite build nothing eagerly.
+    const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const specs = () => {
+        const config = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            RUNNER_CPU_REQUEST: '500m',
+            RUNNER_MEMORY_REQUEST: '1Gi',
+        });
+        return [
+            runnerJobSpec(config, job, { id: SESSION, resume: false }),
+            gateJobSpec(config, job, {
+                key: `bellows/${USER}/.worktrees/${job.id}`,
+                image: 'node:24',
+                gateName: 't',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            }),
+            bellowsJobSpec(config, job),
+            opencodeReadoutJobSpec(config, job, '2026-09-01T00:00:00Z'),
+            claudeTurnsJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
+            claudeTranscriptJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
+            opencodeTranscriptJobSpec(config, job, '2026-09-01T00:00:00Z'),
+            syncJobSpec(config, repoJob, null),
+            reclaimJobSpec(config, repoJob),
+            publishStepJobSpec(config, repoJob, {
+                step: 1,
+                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                envSecret: null,
+                repo: '/wt',
+            }),
+            helperJobSpec(config, job, {
+                plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
+                descriptor: lookupHelper('noop')!,
+                envSecret: null,
+                nonce: '77777777-7777-4777-8777-777777777777',
+            }),
+        ];
+    };
+
+    it('carries the same requests on every aux Job and service pod', () => {
+        for (const s of specs()) {
+            expect(s.spec.template.spec.containers[0].resources, s.metadata.name).toEqual(REQUESTS);
+        }
+        // The one Pod (not Job) in the fleet: a declared service, under the attempt's headless
+        // Service — sized like everything else, or it lands wherever a pod slot is free.
+        const pod = servicePodSpec(
+            loadDriverConfig({
+                EXECUTOR: 'kubernetes',
+                K8S_NAMESPACE: namespace,
+                RUNNER_CPU_REQUEST: '500m',
+                RUNNER_MEMORY_REQUEST: '1Gi',
+            }),
+            job,
+            { name: 'cache', image: 'redis', environment: [] }
+        );
+        expect(pod.spec.containers[0].resources).toEqual(REQUESTS);
+    });
+
+    it('carries no resources on any of them when none are configured', () => {
+        const plain = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        expect(syncJobSpec(plain, repoJob, null).spec.template.spec.containers[0].resources).toBeUndefined();
+        expect(
+            servicePodSpec(plain, job, { name: 'cache', image: 'redis', environment: [] }).spec.containers[0].resources
+        ).toBeUndefined();
+    });
 });
 
 /*

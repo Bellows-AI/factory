@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { gateAdvertiseUrlFor, loadDriverConfig } from '../src/config.js';
-import { fleetDnsField, serviceSubdomain } from '../src/k8s-podspec.js';
+import { cpuQuantityToCores, gateAdvertiseUrlFor, loadDriverConfig, memoryQuantityToBytes } from '../src/config.js';
+import { dockerArgs } from '../src/docker.js';
+import { fleetDnsField, runnerJobSpec, serviceSubdomain } from '../src/k8s-podspec.js';
 
 describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
@@ -247,6 +248,136 @@ describe('the driver config: policy and gates', () => {
         );
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: '500' })).toThrow(/GATE_TIMEOUT_MS/);
         expect(() => loadDriverConfig({ GATE_TIMEOUT_MS: 'whenever' })).toThrow(/GATE_TIMEOUT_MS/);
+    });
+});
+
+describe('the driver config: runner resources', () => {
+    const USER = '44444444-4444-4444-8444-444444444444';
+    const job: BoardJob = {
+        id: '11111111-1111-4111-8111-111111111111',
+        command: 'fix the failing build',
+        attempts: 1,
+        leaseToken: '22222222-2222-4222-8222-222222222222',
+        leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+        executorType: 'claude-code',
+        masterPrompt: 'Factory execution context',
+        resumeSessionId: null,
+        followUp: false,
+        userId: USER,
+        workspacePath: `bellows/${USER}`,
+    };
+    const SESSION = '33333333-3333-4333-8333-333333333333';
+
+    // Issue #360: every pod the driver specs used to carry no resources at all — BestEffort,
+    // first evicted under node pressure, and invisible to the autoscaler. The four variables are
+    // kubernetes quantities rendered verbatim into the pod specs (and translated for the docker
+    // flags); any unset slot renders nowhere, and all four unset is the pre-issue pod.
+    it('leaves the four runner resource variables unset unless set', () => {
+        expect(loadDriverConfig({}).runnerResources).toEqual({
+            cpuRequest: null,
+            cpuLimit: null,
+            memoryRequest: null,
+            memoryLimit: null,
+        });
+        expect(
+            loadDriverConfig({
+                RUNNER_CPU_REQUEST: '500m',
+                RUNNER_MEMORY_REQUEST: '1Gi',
+                RUNNER_CPU_LIMIT: '2',
+                RUNNER_MEMORY_LIMIT: '4Gi',
+            }).runnerResources
+        ).toEqual({
+            cpuRequest: '500m',
+            cpuLimit: '2',
+            memoryRequest: '1Gi',
+            memoryLimit: '4Gi',
+        });
+    });
+
+    // The apiserver would reject a bad quantity only at job-create time, which is attempt-burning
+    // — this loader exists to move failures to startup, the same reasoning as PULL_POLICIES.
+    it('refuses a quantity kubernetes would reject only at job-create time, naming the variable', () => {
+        expect(() => loadDriverConfig({ RUNNER_CPU_REQUEST: 'half a core' })).toThrow(/RUNNER_CPU_REQUEST/);
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_REQUEST: 'lots' })).toThrow(/RUNNER_MEMORY_REQUEST/);
+    });
+
+    it('refuses cpu in byte suffixes and memory in millicores', () => {
+        expect(() => loadDriverConfig({ RUNNER_CPU_REQUEST: '1Gi' })).toThrow(/RUNNER_CPU_REQUEST/);
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_REQUEST: '500m' })).toThrow(/RUNNER_MEMORY_REQUEST/);
+    });
+
+    // Docker cannot take a fractional byte: a quantity whose byte value is not a whole number is
+    // refused outright rather than silently floored.
+    it('refuses a memory quantity that is not a whole number of bytes', () => {
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '1.5Ki' })).not.toThrow();
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '0.1Ki' })).toThrow(/RUNNER_MEMORY_LIMIT/);
+    });
+
+    // `1.001G` is exactly 1001000000 whole bytes, but binary floating-point multiplication rounds
+    // Number('1.001') * 1e9 to 1000999999.9999999 — scaling must be exact, or a valid quantity
+    // prevents driver startup.
+    it('accepts a decimal quantity whose whole bytes floating-point multiplication would round away', () => {
+        expect(memoryQuantityToBytes('1.001G')).toBe('1001000000');
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_LIMIT: '1.001G' })).not.toThrow();
+    });
+
+    it('still refuses a quantity genuinely fractional after exact scaling', () => {
+        expect(() => memoryQuantityToBytes('1.0000000001G')).toThrow(/whole number of bytes/);
+    });
+
+    // The apiserver refuses a pod whose request exceeds its limit — at job-create, attempt-burning
+    // — and docker refuses `--memory-reservation` above `--memory`; one runnerResources block
+    // feeds the runner, auxiliary and service specs, so the pair is refused at startup instead,
+    // naming both variables. Equal values are a valid (Guaranteed-shaped) configuration.
+    it('refuses a request above its limit, naming both variables, and allows equal values', () => {
+        expect(() => loadDriverConfig({ RUNNER_MEMORY_REQUEST: '2Gi', RUNNER_MEMORY_LIMIT: '1Gi' })).toThrow(
+            /RUNNER_MEMORY_REQUEST.*RUNNER_MEMORY_LIMIT/
+        );
+        expect(() => loadDriverConfig({ RUNNER_CPU_REQUEST: '2', RUNNER_CPU_LIMIT: '500m' })).toThrow(
+            /RUNNER_CPU_REQUEST.*RUNNER_CPU_LIMIT/
+        );
+        expect(() =>
+            loadDriverConfig({
+                RUNNER_CPU_REQUEST: '500m',
+                RUNNER_CPU_LIMIT: '500m',
+                RUNNER_MEMORY_REQUEST: '1Gi',
+                RUNNER_MEMORY_LIMIT: '1Gi',
+            })
+        ).not.toThrow();
+    });
+
+    it('renders cpu quantities as decimal cores for the docker flag', () => {
+        expect(cpuQuantityToCores('500m')).toBe('0.5');
+        expect(cpuQuantityToCores('250m')).toBe('0.25');
+        expect(cpuQuantityToCores('2')).toBe('2');
+        expect(cpuQuantityToCores('1.5')).toBe('1.5');
+    });
+
+    it('renders memory quantities as plain bytes for the docker flag', () => {
+        expect(memoryQuantityToBytes('1Gi')).toBe('1073741824');
+        expect(memoryQuantityToBytes('512Mi')).toBe('536870912');
+        expect(memoryQuantityToBytes('1G')).toBe('1000000000');
+        expect(memoryQuantityToBytes('2048')).toBe('2048');
+    });
+
+    // The done-criterion of the issue: both executors render the same numbers from the same value
+    // — the k8s pod spec verbatim, the docker flags translated once, in this module.
+    it('renders the same numbers on both executors from the same value', () => {
+        const config = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            RUNNER_CPU_LIMIT: '2',
+            RUNNER_MEMORY_LIMIT: '4Gi',
+            RUNNER_MEMORY_REQUEST: '1Gi',
+        });
+        expect(
+            runnerJobSpec(config, job, { id: SESSION, resume: false }).spec.template.spec.containers[0].resources
+        ).toEqual({
+            requests: { memory: '1Gi' },
+            limits: { cpu: '2', memory: '4Gi' },
+        });
+        expect(dockerArgs(config, job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })).toEqual(
+            expect.arrayContaining(['--cpus', '2', '--memory', '4294967296', '--memory-reservation', '1073741824'])
+        );
     });
 });
 

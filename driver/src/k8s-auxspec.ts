@@ -6,16 +6,15 @@ import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
 import type { HelperDescriptor, HelperPlan } from './helpers.js';
 import {
     auxJobSpec,
-    doNotDisruptField,
     hash16,
     jobsPath,
     pullSecretsField,
     releaseLabel,
-    schedulingField,
     serviceSubdomain,
     workspaceMount,
     type AuxJobSpec,
 } from './k8s-podspec.js';
+import { doNotDisruptField, resourcesField, schedulingField, type PodResources } from './k8s-podfields.js';
 import { JOB_ID, LOG_TAIL_LINES, MS_PER_SECOND } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import {
@@ -316,6 +315,7 @@ export function servicePodSpec(
             name: string;
             image: string;
             imagePullPolicy: string;
+            resources?: PodResources;
             env: { name: string; value: string }[];
         }[];
     };
@@ -360,6 +360,7 @@ export function servicePodSpec(
                     name: spec.name,
                     image: spec.image,
                     imagePullPolicy: config.imagePullPolicy,
+                    ...resourcesField(config),
                     env: spec.environment.map(({ key, value }) => {
                         if (!SERVICE_ENV_KEY.test(key)) {
                             throw new Error(

@@ -177,6 +177,37 @@ describe('the docker run arguments', () => {
         }
     });
 
+    // Issue #360, the docker half: a runner with no flags is unbounded on the daemon too. The
+    // kubernetes quantities translate once, in config.ts — the same values the pod spec renders
+    // verbatim (the parity pin in config.test.ts).
+    it('translates the configured limits and memory request into docker resource flags before the image', () => {
+        const resourceful = args({
+            RUNNER_CPU_LIMIT: '2',
+            RUNNER_MEMORY_LIMIT: '4Gi',
+            RUNNER_MEMORY_REQUEST: '1Gi',
+        });
+        expect(resourceful.slice(0, resourceful.indexOf('claude-executor'))).toEqual(
+            expect.arrayContaining(['--cpus', '2', '--memory', '4294967296', '--memory-reservation', '1073741824'])
+        );
+    });
+
+    it('adds no resource flags when none are configured — the dev daemon stays unthrottled', () => {
+        expect(args()).not.toContain('--cpus');
+        expect(args()).not.toContain('--memory');
+        expect(args()).not.toContain('--memory-reservation');
+        expect(args()).not.toContain('--cpu-shares');
+    });
+
+    // Stated limit, not an oversight: docker has no absolute CPU floor — `--cpu-shares` is a
+    // relative weight, not a kubernetes request — and capping a dev runner at its request via
+    // `--cpus` would throttle builds the kubernetes side leaves free.
+    it('renders no cpu request flag — docker has no absolute CPU floor for a kubernetes request', () => {
+        const requested = args({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' });
+        expect(requested).not.toContain('--cpus');
+        expect(requested).not.toContain('--cpu-shares');
+        expect(requested).toEqual(expect.arrayContaining(['--memory-reservation', '1073741824']));
+    });
+
     // The same discipline the workspace reconcile applies to the git token: `-e NAME` makes docker
     // read the value from the driver's environment, where `-e NAME=value` would publish it to every
     // `ps` on the host.

@@ -249,6 +249,26 @@ render | grep -q 'value: "7200000"' && ok 'the job timeout renders as an integer
 render | grep -A1 'name: GATE_TIMEOUT_MS' | grep -q 'value: "1800000"' && ok 'the gate timeout renders as an integer' ||
     bad 'the gate timeout renders as an integer' "$(render | grep -A1 GATE_TIMEOUT_MS)"
 
+# Runner pod resources (issue #360): requests by default so Karpenter and the Cluster Autoscaler
+# can size for the runner fleet — a zero-request pod schedules onto any free pod slot and
+# provisions nothing. Limits only when set: a memory limit on an agent run OOM-kills a big build
+# mid-work, the requests-only posture the dashboard pod above already carries deliberately.
+runner_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' "$work/rendered.yaml")"
+expect_contains 'the driver forwards the runner cpu request'       "$runner_resources" 'name: RUNNER_CPU_REQUEST'
+expect_contains 'the cpu request renders from the chart value'     "$runner_resources" 'value: "500m"'
+expect_contains 'the driver forwards the runner memory request'    "$runner_resources" 'name: RUNNER_MEMORY_REQUEST'
+expect_contains 'the memory request renders from the chart value'  "$runner_resources" 'value: "1Gi"'
+expect_not_contains 'no cpu limit renders by default'              "$runner_resources" 'RUNNER_CPU_LIMIT'
+expect_not_contains 'no memory limit renders by default'           "$runner_resources" 'RUNNER_MEMORY_LIMIT'
+limited="$(render --set runner.resources.limits.memory=4Gi)"
+limited_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$limited")"
+expect_contains 'a configured memory limit forwards'               "$limited_resources" 'name: RUNNER_MEMORY_LIMIT'
+expect_contains 'the limit renders as the operator spelled it'     "$limited_resources" 'value: "4Gi"'
+emptied="$(render --set runner.resources.requests.cpu= --set runner.resources.requests.memory=)"
+emptied_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$emptied")"
+expect_not_contains 'empty cpu requests forward nothing'           "$emptied_resources" 'RUNNER_CPU_REQUEST'
+expect_not_contains 'empty memory requests forward nothing'        "$emptied_resources" 'RUNNER_MEMORY_REQUEST'
+
 # The runner's branch attribution credential is attempt-scoped: the driver mints nothing here and
 # forwards no deployment-wide ingest token — the runner presents the job id and lease token of the
 # attempt it runs for, forwarded at runtime into the per-attempt runner Secret. The chart must not
