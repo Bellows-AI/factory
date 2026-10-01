@@ -1,11 +1,22 @@
-# factory-ai
+# Bellows
 
 **Scale your workflows. Remote-first harness for your SDLC.**
 
-A control plane for coding agents. Queue a task against a repository; the board hands it to a
-driver; the driver runs it in a pod (Kubernetes, primary) or a container (docker, development)
-against the member's own workspace checkout, and reports back. The dashboard spawns no runner, the
-driver never touches the database, and HTTP is the only thing between them.
+Bellows runs your coding agent somewhere else. The same task you would type into a terminal —
+Claude Code or OpenCode, your repository, your test commands — runs on a cluster instead, against
+your own checkout, and tells you when it is done.
+
+What that buys you:
+
+- **Close the laptop.** Tasks keep running; `DRIVER_CONCURRENCY` and cluster size set how many go
+  at once, not your CPU.
+- **Your environment, not a generic one.** Each member gets private checkouts, their own env vars,
+  and the databases their tests need, declared in `.bellows.yaml` (below).
+- **Verified, not just finished.** The gates in `.bellows.yaml` run after the agent; a failed gate
+  can queue a repair round instead of landing broken work.
+- **Multi-step work without prompt engineering.** A workflow is a graph the board walks —
+  implement → review → fix → publish — so the process is a definition, not a paragraph of prompt.
+- **Visible.** Every task's thread, logs and token spend are on one dashboard.
 
 | Surface | What it is | Docs |
 | --- | --- | --- |
@@ -51,6 +62,40 @@ npm run dev -w cli -- job list --limit 5
 ([kubernetes](docs/kubernetes.md), [EKS runbook](docs/eks-runbook.md)). The driver mounts the
 docker socket, which is root on the host — read [security](docs/security.md) before running it
 anywhere shared.
+
+## `.bellows.yaml`
+
+A repository tells Bellows how to verify its own work, and what its tests need to run, by shipping
+a `.bellows.yaml` at the checkout root:
+
+```yaml
+environment:
+    image: node:24          # where gates run
+    gates:
+         - name: test
+           command: "npm test"
+         - name: lint
+           command: "npm run lint"
+
+services:                   # containers started beside the task
+  - name: db
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: secret
+```
+
+- **Gates run after the agent, in `image`, on the same worktree the agent edited.** A failed gate
+  fails the task — and under the default workflow queues a bounded repair round instead of
+  publishing.
+- **A service's `name` is its hostname for that task**: `postgres://db:5432` resolves from the
+  agent's turn and from the gates, and from nothing once the task ends. `RUNNER_SERVICES=0` opts
+  out; duplicate names across a workspace fail the job, ten services is the cap.
+- **No file means no gates and no services.** A file that exists but does not parse fails the task
+  with the line number, rather than running the work and pretending it had no checks.
+
+The accepted grammar is strict and small (one `environment:` block, `image:`, a name/command list;
+no YAML package parses it). Both halves, the exact errors, and the security posture:
+[jobs](docs/jobs.md).
 
 ## Configuration
 
