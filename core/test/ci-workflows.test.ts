@@ -19,6 +19,7 @@ interface Job {
     if?: string;
     steps?: Step[];
     services?: Record<string, { image: string }>;
+    strategy?: { matrix?: { image?: { name: string; context: string; args: string }[]; arch?: string[] } };
 }
 
 interface Workflow {
@@ -120,45 +121,105 @@ describe('ci workflows', () => {
         expect(commands).toContain('npm run verify:ui');
     });
 
-    it('builds the production runtime image on a v* tag', () => {
+    it('builds every image the chart renders, on a v* tag', () => {
         const doc = workflow(RELEASE);
         expect(triggers(doc).push!.tags).toContain('v*');
         const called = Object.entries(doc.jobs).find(([, job]) => job.uses === './.github/workflows/ci.yml');
         expect(called, 'the release workflow does not reuse the validation workflow').toBeTruthy();
-        const image = doc.jobs.image!;
-        expect(needs(image)).toContain(called![0]);
-        const commands = runs(image).join('\n');
-        expect(commands).toContain('-f docker/Dockerfile');
-        expect(commands).toContain('--target runtime');
-        // `github.ref_name` on a tag push is the bare tag, so the image carries the release name —
-        // bound as an env value, because a ref name may contain shell metacharacters.
-        expect(commands).toMatch(/-t "factory-ai:\$IMAGE_TAG"/);
-        const normalize = runSteps(image).find((step) => step.run.includes('IMAGE_TAG='))!;
-        expect(normalize.env!.TAG).toMatch(/^\$\{\{ github\.ref_name \}\}$/);
+        const build = doc.jobs.build!;
+        expect(needs(build)).toContain(called![0]);
+        // The four the chart names. Publishing three of them leaves an install that cannot pull.
+        const matrix = build.strategy!.matrix!.image!;
+        expect(matrix.map((entry) => entry.name).sort()).toEqual([
+            'claude-executor',
+            'factory-ai',
+            'factory-driver',
+            'opencode-executor',
+        ]);
+        const byName = new Map(matrix.map((entry) => [entry.name, entry]));
+        expect(byName.get('factory-ai')!.args).toContain('-f docker/Dockerfile');
+        // The dashboard is the runtime stage, never the builder.
+        expect(byName.get('factory-ai')!.args).toContain('--target runtime');
+        expect(byName.get('factory-driver')!.args).toContain('-f docker/driver.Dockerfile');
+        // The executors read a shared context; without the flag the build fails inside the image.
+        for (const name of ['claude-executor', 'opencode-executor']) {
+            expect(byName.get(name)!.args).toContain('--build-context skills=docker/skills');
+            expect(byName.get(name)!.context).toBe(`docker/${name}`);
+        }
     });
 
     // `v1.0.0+build.1` is a legal git tag and an illegal docker tag; without normalization the
-    // release job dies at `docker build` and never produces the artifact the issue asks for.
+    // push dies at `docker buildx build` and the release ships nothing.
     it('folds a git tag into a tag docker accepts', () => {
-        const image = workflow(RELEASE).jobs.image!;
-        const normalize = runSteps(image).find((step) => step.run.includes('IMAGE_TAG='));
+        const doc = workflow(RELEASE);
+        const normalize = Object.values(doc.jobs)
+            .flatMap(runSteps)
+            .find((step) => step.run.includes('IMAGE_TAG='));
         expect(normalize, 'the git tag reaches docker unnormalized').toBeTruthy();
+        // Bound as an env value, because a ref name may contain a backtick or a $.
+        expect(normalize!.env!.TAG).toMatch(/^\$\{\{ github\.ref_name \}\}$/);
         expect(normalize!.run).toMatch(/tr -c 'A-Za-z0-9_\.-'/);
-        // Folding is lossy, so a digest of the original keeps two refs that fold alike apart —
-        // in the image tag, the tarball name and the artifact name, none of which may carry a
-        // raw ref (a ref may contain a pipe; an artifact name may not).
+        // Folding is lossy, so a digest of the original keeps two refs that fold alike apart.
         expect(normalize!.run).toMatch(/sha1sum/);
         // A docker tag is 128 characters at most; a git tag is not, so the fold truncates to
         // leave room for the digest (120 + '-' + 7).
         expect(normalize!.run).toMatch(/cut -c1-120/);
         expect(normalize!.run).toMatch(/\$\{#TAG\} -gt 128/);
-        const save = runSteps(image).find((step) => step.run.includes('docker save'))!;
-        expect(save.run).toContain('-o "factory-ai-$IMAGE_TAG.tar"');
-        const upload = (image.steps ?? []).find((step) => step.uses?.startsWith('actions/upload-artifact@'))!;
-        for (const value of [upload.with!.name, upload.with!.path]) {
-            expect(value).toContain('env.IMAGE_TAG');
-            expect(value).not.toContain('github.ref_name');
+        // One job folds; everything downstream reads that output, so the fold cannot be done
+        // twice and differently.
+        expect(normalize!.run).toContain('$GITHUB_OUTPUT');
+        for (const name of ['build', 'manifest']) {
+            const job = doc.jobs[name]!;
+            expect(needs(job), `${name} does not read the folded tag`).toContain('tag');
+            const values = (job.steps ?? []).flatMap((step) => Object.values(step.env ?? {}));
+            expect(values.some((value) => /\$\{\{ needs\.tag\.outputs\.image-tag \}\}/.test(value))).toBe(true);
         }
+    });
+
+    // The bare defaults resolve to docker.io/library/* on any remote cluster, so a release that
+    // does not publish is a release nobody outside a kind node can install.
+    it('publishes to GHCR under the repository owner', () => {
+        const doc = workflow(RELEASE);
+        const commands = Object.values(doc.jobs).flatMap(runs).join('\n');
+        expect(commands).toContain('docker login ghcr.io');
+        // GHCR rejects a mixed-case path rather than folding it, and an org login may be mixed.
+        const fold = Object.values(doc.jobs)
+            .flatMap(runSteps)
+            .find((step) => step.run.includes('registry=ghcr.io'))!;
+        expect(fold.run).toMatch(/tr 'A-Z' 'a-z'/);
+        expect(fold.env!.OWNER).toMatch(/^\$\{\{ github\.repository_owner \}\}$/);
+        // Every reference pushed is built from that registry value, never a literal.
+        expect(commands).not.toMatch(/-t "ghcr\.io\//);
+    });
+
+    // Every executor image runs a full npm install; under QEMU that is tens of minutes per arch.
+    it('builds each architecture natively and merges the pair into one tag', () => {
+        const build = workflow(RELEASE).jobs.build!;
+        expect(build.strategy!.matrix!.arch).toEqual(['amd64', 'arm64']);
+        const commands = runs(build).join('\n');
+        // The default builder uses the `docker` driver, which cannot push at all.
+        expect(commands).toContain('docker buildx create');
+        expect(commands).toContain('--platform "linux/$ARCH"');
+        expect(commands).toContain('--push');
+        // An attestation would make each single-platform push a manifest list of its own, and the
+        // merge below would then nest lists and carry unknown/unknown entries.
+        expect(commands).toContain('--provenance=false');
+        const merge = runs(workflow(RELEASE).jobs.manifest!).join('\n');
+        expect(merge).toContain('docker buildx imagetools create');
+        expect(merge).toContain('$IMAGE_TAG-amd64');
+        expect(merge).toContain('$IMAGE_TAG-arm64');
+    });
+
+    // global.imageRegistry prefixes every reference the chart renders, the collector included,
+    // and an absolute repository under a set prefix is refused at render — so an unmirrored
+    // collector is an install that cannot come up, not a convenience.
+    it('mirrors the collector image the chart pins, reading the pin from the chart', () => {
+        const manifest = workflow(RELEASE).jobs.manifest!;
+        const mirror = runSteps(manifest).find((step) => step.run.includes('opentelemetry-collector-contrib'));
+        expect(mirror, 'the collector is never mirrored under the registry prefix').toBeTruthy();
+        // Read from the chart rather than pinned here: two pins drift, one cannot.
+        expect(mirror!.run).toContain('charts/factory/values.yaml');
+        expect(mirror!.run).not.toMatch(/collector-contrib:[\d.]+/);
     });
 
     it('never interpolates a ref name into shell text', () => {
@@ -169,22 +230,35 @@ describe('ci workflows', () => {
         }
     });
 
-    it('retains the release image as a workflow artifact', () => {
-        const image = workflow(RELEASE).jobs.image!;
-        const upload = (image.steps ?? []).find((step) => step.uses?.startsWith('actions/upload-artifact@'));
-        expect(upload, 'the release image is never uploaded').toBeTruthy();
+    // The registry is the distribution channel; a tarball beside it would be a second artifact
+    // with its own tag, aging separately from the one the chart's values name.
+    it('ships the release through the registry and not as a tarball', () => {
+        const doc = workflow(RELEASE);
+        const commands = Object.values(doc.jobs).flatMap(runs).join('\n');
+        expect(commands).not.toContain('docker save');
+        for (const job of Object.values(doc.jobs)) {
+            for (const step of job.steps ?? []) {
+                expect(step.uses ?? '', 'the release image is still uploaded as an artifact').not.toMatch(
+                    /^actions\/upload-artifact@/
+                );
+            }
+        }
     });
 
-    it('needs no application secret on the validation or image path', () => {
+    // `github.token` is the installation token the run already carries. Nothing on either path is
+    // a credential somebody has to mint, store and rotate.
+    it('needs no configured secret on the validation or publish path', () => {
         for (const path of [CI, RELEASE]) {
             expect(read(path), `${path} reads a repository secret`).not.toMatch(/secrets\./);
         }
+        expect(read(RELEASE)).toMatch(/\$\{\{ github\.token \}\}/);
     });
 
-    it('grants the workflows read-only access to the repository', () => {
-        for (const path of [CI, RELEASE]) {
-            expect(workflow(path).permissions, path).toEqual({ contents: 'read' });
-        }
+    it('grants each workflow only the access its job needs', () => {
+        expect(workflow(CI).permissions, CI).toEqual({ contents: 'read' });
+        // The publish path writes packages and nothing else — no contents: write, so a release
+        // can never move a ref.
+        expect(workflow(RELEASE).permissions, RELEASE).toEqual({ contents: 'read', packages: 'write' });
     });
 
     // Only one run sits pending per group, so a group shared across merges to main would let a
@@ -211,6 +285,13 @@ describe('ci workflows', () => {
                 for (const step of job.steps ?? []) {
                     if (step.uses) expect(step.uses, `${path}: ${step.uses} is not pinned`).toMatch(/@v\d+$/);
                 }
+            }
+        }
+        // The publish jobs hold `packages: write`, so no third-party action runs on that path at
+        // all — the registry work is `run` steps calling the docker CLI.
+        for (const job of Object.values(workflow(RELEASE).jobs)) {
+            for (const step of job.steps ?? []) {
+                if (step.uses) expect(step.uses, `${step.uses} runs beside packages: write`).toMatch(/^actions\//);
             }
         }
     });

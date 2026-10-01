@@ -6,6 +6,9 @@ on:
 
 permissions:
     contents: read
+    # The only write the release path has, and the only one GHCR needs. No repository secret is
+    # configured anywhere: `github.token` is the installation token this run already carries.
+    packages: write
 
 concurrency:
     # Must differ from ci.yml's group; the called workflow would otherwise wait on this run.
@@ -17,19 +20,24 @@ jobs:
     validate:
         uses: ./.github/workflows/ci.yml
 
-    image:
-        needs: validate
+    # One place computes the names every later job uses, so the fold and the lowercasing cannot
+    # drift between the per-arch builds and the manifest that merges them.
+    tag:
         runs-on: ubuntu-latest
-        timeout-minutes: 30
+        timeout-minutes: 5
+        outputs:
+            image-tag: ${{ steps.fold.outputs.image-tag }}
+            registry: ${{ steps.fold.outputs.registry }}
         steps:
-            - uses: actions/checkout@v4
             # A docker tag admits only [A-Za-z0-9_.-], but `v*` matches build metadata too:
             # v1.0.0+build.1 is a legal git tag and an illegal image tag, and `docker build` would
             # refuse it. Fold everything else to a dash. The tag travels as an env value and is
             # never interpolated into shell text — a ref name may legally contain a backtick or a $.
             - name: normalize the git tag into a docker tag
+              id: fold
               env:
                   TAG: ${{ github.ref_name }}
+                  OWNER: ${{ github.repository_owner }}
               run: |
                   FOLDED=$(printf '%s' "$TAG" | tr -c 'A-Za-z0-9_.-' '-')
                   # Folding is lossy — v1.0.0+build.1 and v1.0.0-build.1 collapse to one string —
@@ -39,18 +47,110 @@ jobs:
                   if [ "$FOLDED" != "$TAG" ] || [ ${#TAG} -gt 128 ]; then
                       FOLDED="$(printf '%s' "$FOLDED" | cut -c1-120)-$(printf '%s' "$TAG" | sha1sum | cut -c1-7)"
                   fi
-                  printf 'IMAGE_TAG=%s\n' "$FOLDED" >>"$GITHUB_ENV"
-            # The command AGENTS.md documents, plus the tag. No registry, no credential and no
-            # build arg — the runtime stage takes none, and .dockerignore keeps .env out.
-            - name: docker build --target runtime
-              run: docker build -f docker/Dockerfile --target runtime -t "factory-ai:$IMAGE_TAG" .
-            # The tarball and the artifact use the folded tag too: a ref name may contain a pipe,
-            # which an artifact name may not, and the digest suffix is what keeps two folded refs
-            # from sharing a filename. The original is on the run itself (github.ref_name).
-            - name: docker save
-              run: docker save "factory-ai:$IMAGE_TAG" -o "factory-ai-$IMAGE_TAG.tar"
-            - uses: actions/upload-artifact@v4
-              with:
-                  name: factory-ai-image-${{ env.IMAGE_TAG }}
-                  path: factory-ai-${{ env.IMAGE_TAG }}.tar
-                  retention-days: 7
+                  IMAGE_TAG="$FOLDED"
+                  printf 'image-tag=%s\n' "$IMAGE_TAG" >>"$GITHUB_OUTPUT"
+                  # GHCR paths are lowercase even where the org's login is not, and a push to a
+                  # mixed-case path is rejected rather than folded.
+                  printf 'registry=ghcr.io/%s\n' "$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')" >>"$GITHUB_OUTPUT"
+
+    # The four images the chart renders, each built natively on its own architecture. QEMU would
+    # need one job instead of two, but every executor image runs a full npm install, and under
+    # emulation that is tens of minutes per arch. GitHub's arm64 runners are free to public
+    # repositories, so the native pair is both faster and simpler to read.
+    #
+    # Each job pushes an arch-suffixed tag; `manifest` merges the pair into the real tag. The
+    # alternative — pushing by digest and passing eight digests between jobs as artifacts — buys
+    # only the absence of the two extra tags in the registry.
+    build:
+        needs: [validate, tag]
+        strategy:
+            # One image failing should not hide whether the other three build.
+            fail-fast: false
+            matrix:
+                image:
+                    - name: factory-ai
+                      context: .
+                      args: -f docker/Dockerfile --target runtime
+                    - name: factory-driver
+                      context: .
+                      args: -f docker/driver.Dockerfile
+                    # The build context the two executors share, the same flag `make runners` passes.
+                    - name: claude-executor
+                      context: docker/claude-executor
+                      args: --build-context skills=docker/skills
+                    - name: opencode-executor
+                      context: docker/opencode-executor
+                      args: --build-context skills=docker/skills
+                arch: [amd64, arm64]
+                include:
+                    - arch: amd64
+                      runner: ubuntu-latest
+                    - arch: arm64
+                      runner: ubuntu-24.04-arm
+        runs-on: ${{ matrix.runner }}
+        # An executor image installs node, gh, acli and an agent CLI from scratch.
+        timeout-minutes: 45
+        steps:
+            - uses: actions/checkout@v4
+            # The default builder uses the `docker` driver, which cannot --push. A docker-container
+            # builder can, and is what produces an image a manifest list may reference.
+            - name: docker buildx create
+              run: docker buildx create --use --driver docker-container
+            - name: docker login ghcr.io
+              env:
+                  # The run's own installation token under `packages: write` — not a secret
+                  # anybody configured, and scoped to this repository's packages.
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx build --push
+              env:
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+                  IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
+                  IMAGE: ${{ matrix.image.name }}
+                  CONTEXT: ${{ matrix.image.context }}
+                  BUILD_ARGS: ${{ matrix.image.args }}
+                  ARCH: ${{ matrix.arch }}
+              run: |
+                  # $BUILD_ARGS is deliberately unquoted: the matrix carries flags, not one word.
+                  # --provenance=false keeps the push a plain single-platform image; an attestation
+                  # would make it a manifest list of its own, and `imagetools create` would then
+                  # merge lists of lists with unknown/unknown entries.
+                  docker buildx build --platform "linux/$ARCH" --provenance=false $BUILD_ARGS \
+                      -t "$REGISTRY/$IMAGE:$IMAGE_TAG-$ARCH" --push "$CONTEXT"
+
+    # The per-arch tags become the one tag the chart's values name, plus the collector mirror
+    # without which no prefixed install can pull.
+    manifest:
+        needs: [tag, build]
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@v4
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx imagetools create
+              env:
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+                  IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
+              run: |
+                  for image in factory-ai factory-driver claude-executor opencode-executor; do
+                      docker buildx imagetools create -t "$REGISTRY/$image:$IMAGE_TAG" \
+                          "$REGISTRY/$image:$IMAGE_TAG-amd64" "$REGISTRY/$image:$IMAGE_TAG-arm64"
+                  done
+            # global.imageRegistry prefixes EVERY reference the chart renders, the collector
+            # included, and there is no unprefixed escape hatch — an absolute repository under a
+            # set prefix is refused at render. So the mirror is part of the release, not an extra.
+            # Read from the chart rather than pinned here: two pins drift, one cannot.
+            # imagetools copies the manifest list as it stands, so both arches come along.
+            - name: mirror the collector image the chart pins
+              env:
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+              run: |
+                  COLLECTOR=$(awk '/repository: otel\/opentelemetry-collector-contrib/ { repo = $2 }
+                      repo && $1 == "tag:" { print repo ":" $2; exit }' charts/factory/values.yaml | tr -d "'")
+                  test -n "$COLLECTOR" || { echo 'the chart no longer pins a collector image here'; exit 1; }
+                  docker buildx imagetools create -t "$REGISTRY/$COLLECTOR" "$COLLECTOR"

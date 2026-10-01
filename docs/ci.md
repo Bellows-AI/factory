@@ -1,6 +1,7 @@
 # CI
 
-Two workflows, no secrets, no registry. `core/test/ci-workflows.test.ts` pins everything below
+Two workflows and no configured secret: the only credential either uses is `github.token`, the
+installation token the run already carries. `core/test/ci-workflows.test.ts` pins everything below
 that a change could silently break — edit the workflow and the test tells you which promise moved.
 
 ## `.github/workflows/ci.yml`
@@ -44,8 +45,11 @@ because only one run may sit pending per group and a shared group would let a th
 cancel the second's validation outright.
 
 Actions are referenced by major tag (`@v4`), not by commit sha — all three are GitHub-owned, the
-major tag keeps security patches flowing, and there is no Dependabot here to bump a pin. Revisit
-that if the release path ever gains a registry push.
+major tag keeps security patches flowing, and there is no Dependabot here to bump a pin. The
+registry push did not change that, because it uses no action: `docker login`, `docker buildx` and
+`docker buildx imagetools` are `run` steps, so no third party ever sees a job holding
+`packages: write`. A test asserts both halves — every `uses:` carries a major tag, and every
+`uses:` on the release path is GitHub-owned.
 
 ## `.github/workflows/release-image.yml`
 
@@ -59,12 +63,57 @@ over-long ref is truncated to 120 and carries the same digest. A clean `v1.2.3` 
 `v1.2.3` and nothing else — the suffix appears only where the raw ref could not be used. The stated
 limit: a tag deliberately named to equal another tag's truncated-plus-digest form would land on the
 same image tag. Nothing accidental reaches that case, and always-suffixing to close it would put a
-digest on every ordinary release. The image tag, the tarball name and the artifact name all use that folded
-value; the raw ref stays on the run and on the tag itself. Nothing downstream carries the raw ref,
-because a git ref may legally contain a pipe and an artifact name may not. Then `image` builds
-`docker build -f docker/Dockerfile --target runtime -t factory-ai:<tag> .`, `docker save`s it and
-uploads the tarball for 7 days. No build arg, no credential, no registry — publishing, deployment
-and release notes are out of scope until a target registry exists.
+digest on every ordinary release. Every image reference uses that folded value; the raw ref stays
+on the run and on the tag itself.
+
+The fold is a job of its own, `tag`, and it also lowercases `github.repository_owner` into
+`ghcr.io/<owner>` — GHCR rejects a mixed-case path rather than folding it. Both travel as job
+outputs, so there is one fold and one registry string rather than one per job that could drift.
+
+`build` is a matrix of **four images × two architectures**, eight jobs:
+
+| image | built from |
+| --- | --- |
+| `factory-ai` | `docker/Dockerfile`, `--target runtime` — the dashboard |
+| `factory-driver` | `docker/driver.Dockerfile` |
+| `claude-executor` | `docker/claude-executor`, `--build-context skills=docker/skills` |
+| `opencode-executor` | `docker/opencode-executor`, same shared context |
+
+Those four are what the chart renders; publishing three of them leaves an install that cannot
+pull. The flags live in the matrix, not in the script, so a test can read them — it asserts the
+set of four by name and each one's build flags.
+
+**Each architecture builds natively**, `ubuntu-latest` for amd64 and `ubuntu-24.04-arm` for
+arm64, which are free to public repositories. QEMU would need one job instead of two, but every
+executor image runs a full `npm install` plus a `gh`/`acli` download, and under emulation that is
+tens of minutes per arch. Both executor Dockerfiles already read `TARGETARCH` for those
+downloads, so nothing in them changed.
+
+Each build job pushes `<image>:<tag>-<arch>`; `manifest` then merges each pair into the real tag
+with `docker buildx imagetools create`. The alternative — pushing by digest and carrying eight
+digests between jobs as artifacts — buys only the absence of those two extra tags in the
+registry. `--provenance=false` is load-bearing: an attestation would make each single-platform
+push a manifest list of its own, and the merge would nest lists and carry `unknown/unknown`
+entries.
+
+Two smaller things the jobs do on purpose. `docker buildx create --use --driver docker-container`
+runs first because the default builder uses the `docker` driver, which cannot `--push` at all.
+And `manifest` mirrors the collector — `global.imageRegistry` prefixes *every* reference the
+chart renders, the collector included, and an absolute repository under a set prefix is refused
+at render, so an unmirrored collector is an install that will not come up. Its version is read
+out of `charts/factory/values.yaml` rather than pinned in the workflow: two pins drift, one
+cannot, and the step fails loudly if the chart stops spelling it there.
+
+No tarball. The registry is the distribution channel, and a `docker save` artifact beside it
+would be a second copy with its own lifetime, ageing separately from the tag the chart's values
+name. A test asserts there is no `docker save` and no `upload-artifact` on this path.
+
+**The first push creates a private package.** Make each of the five public — GitHub → the org →
+Packages → the package → Package settings → Change visibility — and nodes pull with no
+`imagePullSecrets` and no node-role change. Private works too; the chart's `imagePullSecrets`
+reach every chart pod and every pod the driver specs.
+
+Deployment and release notes are still out of scope.
 
 ## A red `npm test` step is not always your change
 

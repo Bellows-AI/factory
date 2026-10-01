@@ -82,10 +82,12 @@ of two AZs can mount its `<org>/<user>` `subPath` and see the other's writes.
 ## 3. Images: one registry prefix
 
 The bare image defaults are the kind story (`kind load docker-image`); on EKS they resolve to
-`docker.io/library/*` and every pod lands in `ImagePullBackOff`. Follow the chart README's
-"Images on a remote cluster": build and push the four images (dashboard, driver, both executors)
-plus the collector mirror, then set `global.imageRegistry` once — it prefixes every reference the
-chart renders, executor values included. Tag the executor values — the tags are what let the
+`docker.io/library/*` and every pod lands in `ImagePullBackOff`. Push a `v*` tag: the release
+workflow builds the four images (dashboard, driver, both executors) for amd64 and arm64, pushes
+them to `ghcr.io/<owner>`, and mirrors the collector the chart pins. Make the five packages
+public (the first push creates them private), then set `global.imageRegistry` once — it prefixes
+every reference the chart renders, executor values included. The chart README's "Images on a
+remote cluster" has the by-hand equivalent, for a registry the workflow does not reach. Tag the executor values — the tags are what let the
 kubelet pull a new build once under `IfNotPresent`; tagless reads `:latest`, and the node reuses
 whatever it cached first. `database.waitImage` is the one reference the prefix never touches: a
 cluster without Docker Hub egress needs it mirrored and set whole.

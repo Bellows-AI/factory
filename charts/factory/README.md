@@ -179,12 +179,25 @@ composes with bare repositories only. `database.waitImage` is the one image the 
 touch: it is a full reference (`postgres:17-alpine` by default) an operator sets whole.
 
 The registry the images come from is a decision, not a chart value. The recommended path is
-**GitHub Container Registry with public packages**: push rights come from a GitHub token — no
-cloud OIDC or role setup — and public packages let nodes pull anonymously, with no
-`imagePullSecrets` and no node-role change. (Private packages work too: the chart's
-`imagePullSecrets` reach every chart pod and every pod the driver specs.) The release workflow
-builds the dashboard image today but publishes nothing (`docs/ci.md` defers registry publishing),
-so the push is a by-hand step from a checkout:
+**GitHub Container Registry with public packages**: push rights come from the workflow's own
+`GITHUB_TOKEN` — no cloud OIDC or role setup — and public packages let nodes pull anonymously,
+with no `imagePullSecrets` and no node-role change. (Private packages work too: the chart's
+`imagePullSecrets` reach every chart pod and every pod the driver specs.)
+
+**Pushing a `v*` tag is the publish.** `.github/workflows/release-image.yml` validates, then
+builds all four images for `linux/amd64` and `linux/arm64` and pushes them to
+`ghcr.io/<owner>/<image>:<tag>`, along with a mirror of the collector image the chart pins
+(`docs/ci.md` has the shape and the reasoning). So the usual sequence is:
+
+```bash
+git tag v1.2.3 && git push origin v1.2.3
+```
+
+Then make each of the five packages public — GitHub → Your org → Packages → the package →
+Package settings → Change visibility — so nodes pull without credentials. The first push creates
+a private package; after that the visibility sticks.
+
+To publish from a checkout instead — an untagged build, or a registry the workflow does not reach:
 
 ```bash
 OWNER=your-org   # lowercase: GHCR paths are lowercase even when the org's display name is not
@@ -206,8 +219,10 @@ done
 docker push "ghcr.io/$OWNER/otel/opentelemetry-collector-contrib:0.161.0"
 ```
 
-Then make each package public (GitHub → Your org → Packages → the package → Package settings →
-Change visibility), so nodes pull without credentials.
+That by-hand path builds for the host's architecture only — on an Apple Silicon machine it
+produces arm64 images that no amd64 node can run. The workflow is the multi-arch path; `docker
+buildx build --platform linux/amd64,linux/arm64 --push` is the by-hand equivalent, and it builds
+the arm64 or amd64 half under emulation.
 
 The collector mirror is what makes every prefixed install work: the kubelet pulls
 `ghcr.io/$OWNER/otel/opentelemetry-collector-contrib:0.161.0` and never touches Docker Hub. A
