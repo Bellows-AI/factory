@@ -4,18 +4,20 @@
 
 A control plane for coding agents. You queue a task against a repository; the board hands it to a
 driver; the driver runs it in a container on Kubernetes (or docker, for development) against your
-own workspace checkout, and reports the result back. Nothing runs on your laptop, so the number of
-tasks in flight is a cluster-size question, not a laptop question.
+own workspace checkout, and reports the result back. Under `EXECUTOR=kubernetes` each task is a pod
+on the configured cluster, so how many run at once is a question of cluster capacity and the
+driver's `DRIVER_CONCURRENCY` limit (default 2, max 32), not of your laptop. The docker executor is
+for development, and there the driver starts those containers on the local docker daemon.
 
-Remote-first is the design, not a deployment option: the dashboard never spawns a process, the
+Remote-first is the design, not a deployment option: the dashboard never spawns a task runner, the
 driver never touches the database, and the only thing between them is HTTP. Which is why the same
 board drives one developer's docker daemon and a shared EKS cluster with no change to the task.
 
 What it does:
 
-- **Tasks** — a prompt plus a repo, claimed by a worker and run by the executor the task names
-  (`claude-executor` or `opencode-executor`). Queue them from the dashboard or the CLI; follow the
-  thread, stop, follow up, mark done. [docs/jobs.md](docs/jobs.md)
+- **Tasks** — a prompt plus a repo, claimed by a worker and run by the executor profile the task
+  names, whose type is `claude-code` or `opencode`. Queue them from the dashboard or the CLI;
+  follow the thread, stop, follow up, mark done. [docs/jobs.md](docs/jobs.md)
 - **Workflows** — the process a task walks, owned by the board rather than baked into a runner
   prompt: a graph of agent nodes joined by deterministic edges, so review-fix-publish loops are a
   definition and not a prompt. [docs/workflows.md](docs/workflows.md)
@@ -94,6 +96,10 @@ fetched or overwritten, and nothing is ever pruned; see [docs/workspace.md](docs
 
 The driver is the half that executes. It claims jobs over HTTP (`JOB_BOARD_URL`, plus the shared
 `JOB_BOARD_TOKEN`) and never talks to the database, so it runs wherever the containers should run.
+
+The CLI carries its own credentials, not the driver's: `FACTORY_URL` names the board and
+`FACTORY_TOKEN` is your personal access token (`fat_…`, minted from the settings page), which is
+simply unset against an `AUTH_MODE=none` board. Set them before running the commands below.
 
 ```bash
 make runners                 # build the executor images
