@@ -79,4 +79,6 @@ A green pull request has not exercised these; run them locally before trusting a
 
 - `npm run test:db` — needs a `*_test` PostgreSQL 17.
 - `npm run test:jobs` — needs a docker daemon, four stub runner images and a free port 8129.
-- `npm run test:k8s` — needs helm, and kind for `--cluster`.
+- `npm run test:k8s` — needs helm, and kind for `--cluster`. The offline phase also renders an
+  EKS-shaped value set (#364), which needs nothing but helm; no lane runs a real cloud cluster —
+  that is the open decision the issue records, walked by hand per `docs/eks-runbook.md`.

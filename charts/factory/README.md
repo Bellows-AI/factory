@@ -221,7 +221,9 @@ task. The driver claims it, a pod runs the runner image, the board records the r
 
 `scripts/test-k8s.sh` runs the same walkthrough as assertions (`npm run test:k8s`), plus
 `helm lint`/`helm template` checks that do not need a cluster at all. Its cluster phase runs
-against kind and refuses any other kubectl context.
+against kind and refuses any other kubectl context. The cloud twin of this walkthrough — EKS, the
+EFS storage class, a registry prefix, an ALB, a managed database — is `docs/eks-runbook.md`, walked
+by hand; the script's offline phase renders that value shape as assertions.
 
 ## Uninstall
 

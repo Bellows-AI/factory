@@ -519,6 +519,10 @@ container port" shape; the admission policies need Kubernetes ≥ 1.30, which ev
 version meets. **Fargate is out entirely** — no network policy, no metrics API, and the whole
 isolation story assumes a node.
 
+Exercising these on a real cluster is a by-hand pre-release walk — [eks-runbook.md](eks-runbook.md)
+(issue #364), which carries the walk record; the script's cluster phase refuses every non-kind
+context on purpose, and its offline phase renders the EKS value shape as assertions instead.
+
 ## Variables
 
 | Variable | Default | Notes |
