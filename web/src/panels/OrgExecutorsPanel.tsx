@@ -16,6 +16,53 @@ export const ORG_DEFAULT_CAPTION = 'Default — selected on new tasks';
 /** The demote action: the shared profile becomes the calling admin's own personal row. */
 export const DEMOTE_LABEL = 'Make personal';
 
+/** The row's action cell: Make default for every member, the management actions for admins only. */
+function OrgExecutorActions({
+    executor,
+    isAdmin,
+    saving,
+    isDefault,
+    onEdit,
+    onDelete,
+    onDemote,
+    onMakeDefault,
+}: {
+    executor: OrgExecutor;
+    isAdmin: boolean;
+    saving: boolean;
+    /** True when this row is the member's resolved default — no click may rewrite it to itself. */
+    isDefault: boolean;
+    onEdit: ((name: string) => void) | undefined;
+    onDelete: ((name: string) => void) | undefined;
+    onDemote: ((name: string) => void) | undefined;
+    onMakeDefault: (name: string) => void;
+}) {
+    return (
+        <td>
+            {isDefault ? null : (
+                <button type="button" disabled={saving} onClick={() => onMakeDefault(executor.name)}>
+                    Make default
+                </button>
+            )}
+            {isAdmin && onEdit ? (
+                <button type="button" disabled={saving} onClick={() => onEdit(executor.name)}>
+                    Edit
+                </button>
+            ) : null}
+            {isAdmin && onDemote ? (
+                <button type="button" disabled={saving} onClick={() => onDemote(executor.name)}>
+                    {DEMOTE_LABEL}
+                </button>
+            ) : null}
+            {isAdmin && onDelete ? (
+                <button type="button" disabled={saving} onClick={() => onDelete(executor.name)}>
+                    Delete
+                </button>
+            ) : null}
+        </td>
+    );
+}
+
 export function OrgExecutorsPanel({
     executors,
     isAdmin,
@@ -87,38 +134,16 @@ export function OrgExecutorsPanel({
                                         <span className="pill">{executorTypeLabel(executor.type)}</span>
                                     </td>
                                     <td>{commitDate(executor.createdAt)}</td>
-                                    <td>
-                                        <button type="button" onClick={() => onMakeDefault(executor.name)}>
-                                            Make default
-                                        </button>
-                                        {isAdmin && onEdit ? (
-                                            <button
-                                                type="button"
-                                                disabled={saving}
-                                                onClick={() => onEdit(executor.name)}
-                                            >
-                                                Edit
-                                            </button>
-                                        ) : null}
-                                        {isAdmin && onDemote ? (
-                                            <button
-                                                type="button"
-                                                disabled={saving}
-                                                onClick={() => onDemote(executor.name)}
-                                            >
-                                                {DEMOTE_LABEL}
-                                            </button>
-                                        ) : null}
-                                        {isAdmin && onDelete ? (
-                                            <button
-                                                type="button"
-                                                disabled={saving}
-                                                onClick={() => onDelete(executor.name)}
-                                            >
-                                                Delete
-                                            </button>
-                                        ) : null}
-                                    </td>
+                                    <OrgExecutorActions
+                                        executor={executor}
+                                        isAdmin={isAdmin}
+                                        saving={saving}
+                                        isDefault={defaultName === executor.name}
+                                        onEdit={onEdit}
+                                        onDelete={onDelete}
+                                        onDemote={onDemote}
+                                        onMakeDefault={onMakeDefault}
+                                    />
                                 </tr>
                             ))}
                         </tbody>

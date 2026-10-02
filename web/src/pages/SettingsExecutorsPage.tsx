@@ -23,7 +23,7 @@ type ExecutorDialogState = { mode: 'add' } | { mode: 'edit'; name: string };
 
 export function SettingsExecutorsPage() {
     const { workspace, session } = useSettingsPage();
-    const { data, loading, error, saving, saveExecutors, setDefaultExecutor, listExecutorConfigs } = workspace;
+    const { data, loading, error, saving, saveExecutors, setDefaultExecutor, listExecutorConfigs, refresh } = workspace;
     const [executorDialog, setExecutorDialog] = useState<ExecutorDialogState | null>(null);
     const [executorList, setExecutorList] = useState<WorkspaceExecutorFull[]>([]);
     const [executorDialogError, setExecutorDialogError] = useState<string | null>(null);
@@ -135,6 +135,7 @@ export function SettingsExecutorsPage() {
                         saving={saving}
                         onError={setExecutorDialogError}
                         onSaved={setSavedMessage}
+                        onRefresh={refresh}
                         defaultExecutor={data.defaultExecutor ?? null}
                         onMakeDefault={makeDefault}
                     />

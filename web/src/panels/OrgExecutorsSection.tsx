@@ -30,6 +30,7 @@ export function OrgExecutorsSection({
     saving,
     onError,
     onSaved,
+    onRefresh,
     defaultExecutor,
     onMakeDefault,
 }: {
@@ -41,6 +42,12 @@ export function OrgExecutorsSection({
     onError: (message: string | null) => void;
     /** The page's save announcement. */
     onSaved: (message: string) => void;
+    /**
+     * The workspace poll's re-arm (`workspace.refresh`): the poll stops once it returns a settled
+     * answer, so a successful org write must re-arm it or `data.orgExecutors` — this table's rows
+     * — stays stale until the page reloads.
+     */
+    onRefresh: () => void;
     defaultExecutor: DefaultExecutor | null;
     /** Stores the member's default preference; the same hook the personal panel's action calls. */
     onMakeDefault: (scope: 'user' | 'org', name: string) => Promise<string | null>;
@@ -74,9 +81,11 @@ export function OrgExecutorsSection({
     const save = async (next: Parameters<typeof createOrgExecutor>[0], editing: string | null) => {
         // `editing` is the row's original NAME — the dialog's edit contract — matched against the
         // list as it opened, exactly the way the personal page's mergeExecutors matches.
-        return editing === null
+        const message = await (editing === null
             ? createOrgExecutor(next)
-            : updateOrgExecutor(list.find((executor) => executor.name === editing)!.id, next);
+            : updateOrgExecutor(list.find((executor) => executor.name === editing)!.id, next));
+        if (!message) onRefresh();
+        return message;
     };
 
     /**
@@ -96,7 +105,11 @@ export function OrgExecutorsSection({
             return;
         }
         const message = await act(row);
-        if (message) onError(message);
+        if (message) {
+            onError(message);
+            return;
+        }
+        onRefresh();
     };
 
     return (

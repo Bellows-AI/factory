@@ -74,7 +74,7 @@ export function renderJobDetail(job: BoardJobRecord): string {
         field('command:', job.command),
         field('repo:', job.repo),
         field('executor:', job.executor),
-        field('executor scope:', job.executorScope ?? null),
+        field('scope:', job.executorScope ?? null),
         field('author:', job.author?.login ?? null),
         field('created:', job.createdAt),
         field('started:', job.startedAt),
