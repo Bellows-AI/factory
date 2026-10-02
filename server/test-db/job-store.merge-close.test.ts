@@ -386,6 +386,35 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect((await reclaimRowsOf(root)).length).toBe(1);
     });
 
+    it('a stamped stop whose worker died before the park settles at the next claim — and reclaims', async () => {
+        // The arm between stop and suspend (#152): the stop only stamps `cancel_requested_at`
+        // (the lease is live), the worker dies before it can park, the lease expires, and the
+        // next claim lands the row `stopped`. A merge-marked thread closes through that settle —
+        // the tree cannot wait for a verdict that is never coming.
+        const root = await startWorkflowThread('stamped-stop-merge', chainWorkflow, PULL);
+        const successorId = (
+            await sql<{ id: string }[]>`
+                select id from job where org_id = ${ORG} and root_job_id = ${root} and workflow_node = 'second'
+            `
+        )[0]!.id;
+        const claim = await claimOf(successorId);
+        await store.session(successorId, claim.leaseToken, SESSION);
+        await store.closeMergedPr(REPO, PULL, 'guid-stamped-stop');
+        expect(await store.stop(successorId, null)).toEqual({
+            result: 'requested',
+            cancelRequestedAt: expect.any(String),
+        });
+        expect((await reclaimRowsOf(root)).length).toBe(0);
+
+        // The worker died: the lease runs out with the stop stamp still on the row.
+        await sql`update job set lease_expires_at = now() - interval '1 second' where org_id = ${ORG} and id = ${successorId}`;
+        expect(await store.claim('worker-stamped', LEASE_SECONDS)).toBeNull();
+
+        expect((await jobRowOf(successorId)).status).toBe('stopped');
+        expect((await jobRowOf(root)).done_at).not.toBeNull();
+        expect((await reclaimRowsOf(root)).length).toBe(1);
+    });
+
     it('the dead retirement of the last moving member reclaims the merge-marked thread', async () => {
         const root = await startWorkflowThread('dead-merge', chainWorkflow, PULL);
         const successorId = (
