@@ -4058,10 +4058,18 @@ describe('publishing the produced work', () => {
         expect(push.join(' ')).toContain('credential.helper=');
         expect(push.join(' ')).not.toContain('t0k-3n');
         // The PR speaks for the work, not for the command (issue #82): the summarizer reads the
-        // branch with a literal BASE and no credential, and its answer — issue ref appended —
-        // is the title, over the summary body plus the driver's closing lines.
+        // branch with literal envs — the BASE and the backstop commit's own subject (issue
+        // #389: the prompt must never win the title) — and no credential, and its answer —
+        // issue ref appended — is the title, over the summary body plus the driver's closing lines.
         const summary = calls.find((a) => a.some((x) => typeof x === 'string' && x.includes('shortstat')));
-        expect(summary).toEqual(expect.arrayContaining(['-e', 'BASE=origin/main']));
+        expect(summary).toEqual(
+            expect.arrayContaining([
+                '-e',
+                'BASE=origin/main',
+                '-e',
+                'BACKSTOP_TITLE=/fix https://github.com/Bellows-AI/factory/issues/10 (#10)',
+            ])
+        );
         expect(summary).not.toContain('--env-file');
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
         expect(create).toContain('--head');
