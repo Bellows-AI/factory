@@ -3,9 +3,9 @@
 # a real deployment points the factory chart's `database.url` at a managed database and lets the
 # factory chart create its own ReadWriteMany workspaces claim. Nothing here is a production shape.
 
-timescale:
-    # The same plain Postgres container compose runs. The key keeps the name `timescale`
-    # because `<release>-timescale` is the object name values-local.yaml, the Makefile and
+postgres:
+    # The same plain Postgres container compose runs. The key keeps the name `postgres`
+    # because `<release>-postgres` is the object name values-local.yaml, the Makefile and
     # scripts/test-k8s.sh all reach for; the extension itself is gone (#371).
     image: postgres:17
     user: factory

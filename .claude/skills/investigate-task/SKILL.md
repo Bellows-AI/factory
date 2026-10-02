@@ -24,7 +24,7 @@ dashboard serves. A board running `AUTH_MODE=github` answers `401`; investigate 
 database instead, read-only:
 
 ```bash
-docker exec factory-ai-timescale-1 psql -U factory -d factory_dev -x -c \
+docker exec factory-ai-postgres-1 psql -U factory -d factory_dev -x -c \
   "select id, command, status, attempts, parent_job_id, root_job_id, exit_code,
           left(output, 4000) as output, started_at, finished_at
    from job where root_job_id = (select root_job_id from job where id = '<id>')

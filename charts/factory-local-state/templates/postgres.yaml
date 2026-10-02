@@ -7,7 +7,7 @@ the factory chart's `database.url` at a managed instance.
 A StatefulSet rather than a Deployment because the claim belongs to the database, not beside it:
 `volumeClaimTemplates` ties the volume to the pod identity, so the set can never be scaled or
 rolled into a second writer on one ReadWriteOnce claim — the invariant a Deployment could only
-ask for with `strategy: Recreate`. The claim it mints is `data-<release>-timescale-0`, which is
+ask for with `strategy: Recreate`. The claim it mints is `data-<release>-postgres-0`, which is
 why the Makefile and scripts/test-k8s.sh select claims by label rather than by name.
 
 The claim outlives the release. Helm deleted the standalone PVC on uninstall; a StatefulSet's
@@ -15,11 +15,11 @@ claims are Retain by default and `kubectl delete sts` does not touch them, which
 here — the state release exists so the database survives an app reinstall. `make reset` is what
 removes it, by the instance label the template stamps on.
 
-`volumeClaimTemplates` is immutable once the set exists, so changing `timescale.storageSize`
+`volumeClaimTemplates` is immutable once the set exists, so changing `postgres.storageSize`
 fails the next `helm upgrade` — and therefore `make start` — rather than resizing anything. Resize
 the PVC in place, or `make reset` and lose the data.
 
-The object name `<release>-timescale` outlives the extension: `database.url` names the Service,
+The object name `<release>-postgres` outlives the extension: `database.url` names the Service,
 and renaming it would reach values-local.yaml, the Makefile and scripts/test-k8s.sh for nothing.
 The Service is a plain ClusterIP rather than headless — `serviceName` only governs per-pod DNS,
 and nothing addresses the pod directly.
@@ -27,10 +27,10 @@ and nothing addresses the pod directly.
 apiVersion: v1
 kind: Service
 metadata:
-    name: {{ .Release.Name }}-timescale
+    name: {{ .Release.Name }}-postgres
     labels:
         {{- include "state.labels" . | nindent 8 }}
-        app.kubernetes.io/component: timescale
+        app.kubernetes.io/component: postgres
 spec:
     type: ClusterIP
     ports:
@@ -39,18 +39,18 @@ spec:
           targetPort: postgres
     selector:
         {{- include "state.labels" . | nindent 8 }}
-        app.kubernetes.io/component: timescale
+        app.kubernetes.io/component: postgres
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-    name: {{ .Release.Name }}-timescale
+    name: {{ .Release.Name }}-postgres
     labels:
         {{- include "state.labels" . | nindent 8 }}
-        app.kubernetes.io/component: timescale
+        app.kubernetes.io/component: postgres
 spec:
     replicas: 1
-    serviceName: {{ .Release.Name }}-timescale
+    serviceName: {{ .Release.Name }}-postgres
     # One replica holding one ReadWriteOnce claim. Both values below are the API defaults, written
     # out because they are the invariant: a RollingUpdate on a StatefulSet terminates the old pod
     # and waits for it before creating the replacement, so an image change can never put two
@@ -62,26 +62,26 @@ spec:
     selector:
         matchLabels:
             {{- include "state.labels" . | nindent 12 }}
-            app.kubernetes.io/component: timescale
+            app.kubernetes.io/component: postgres
     template:
         metadata:
             labels:
                 {{- include "state.labels" . | nindent 16 }}
-                app.kubernetes.io/component: timescale
+                app.kubernetes.io/component: postgres
         spec:
             containers:
-                - name: timescale
-                  image: {{ .Values.timescale.image }}
+                - name: postgres
+                  image: {{ .Values.postgres.image }}
                   ports:
                       - name: postgres
                         containerPort: 5432
                   env:
                       - name: POSTGRES_USER
-                        value: {{ .Values.timescale.user | quote }}
+                        value: {{ .Values.postgres.user | quote }}
                       - name: POSTGRES_PASSWORD
-                        value: {{ .Values.timescale.password | quote }}
+                        value: {{ .Values.postgres.password | quote }}
                       - name: POSTGRES_DB
-                        value: {{ .Values.timescale.database | quote }}
+                        value: {{ .Values.postgres.database | quote }}
                       # A subdirectory, never the mount point. kind's local provisioner hands out
                       # an empty directory, so mounting the claim straight at the data directory
                       # works there and only there: any real block volume is a filesystem with a
@@ -92,13 +92,13 @@ spec:
                       # docs/eks-runbook.md's walk record.
                       - name: PGDATA
                         value: /var/lib/postgresql/data/pgdata
-                  {{- with .Values.timescale.resources }}
+                  {{- with .Values.postgres.resources }}
                   resources:
                       {{- toYaml . | nindent 22 }}
                   {{- end }}
                   readinessProbe:
                       exec:
-                          command: ['pg_isready', '-U', {{ .Values.timescale.user | quote }}, '-d', {{ .Values.timescale.database | quote }}]
+                          command: ['pg_isready', '-U', {{ .Values.postgres.user | quote }}, '-d', {{ .Values.postgres.database | quote }}]
                       initialDelaySeconds: 5
                       periodSeconds: 5
                   volumeMounts:
@@ -112,10 +112,10 @@ spec:
               # `app.kubernetes.io/instance` rather than by a name that now ends in `-0`.
               labels:
                   {{- include "state.labels" . | nindent 18 }}
-                  app.kubernetes.io/component: timescale
+                  app.kubernetes.io/component: postgres
           spec:
               accessModes:
                   - ReadWriteOnce
               resources:
                   requests:
-                      storage: {{ .Values.timescale.storageSize }}
+                      storage: {{ .Values.postgres.storageSize }}
