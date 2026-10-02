@@ -147,6 +147,7 @@ function resolveTaskThreads(jobs: readonly Job[]): ResolvedTask[] {
             doneAt: head.doneAt,
             repo: root.repo,
             executor: root.executor,
+            executorScope: root.executorScope,
             author: root.author,
             activity: head.runtime?.activity ?? null,
             summary: head.summary,

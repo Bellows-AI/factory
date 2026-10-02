@@ -37,7 +37,10 @@ row it names.
   installation is the boundary now. What survives of the old rule is the *roster* distinction — an
   org is not GitHub's member list beyond what sign-in reports; repo permissions are not projected
   into Factory (per-user repo scoping retired with auto-join).
-- **`org_id` leads every org-owned primary key.** `005` partitioned ten tables; 023 dropped the PR
+- **`org_id` leads every org-owned primary key.** The organization's executor profiles (issue 391)
+  are org-owned rows the same way: `executor_profile` keys `(org_id, id)`, and a NULL `user_id` is
+  what makes a row the organization's rather than a member's — the sibling-scopes shape 027 gave
+  the workflow definitions. `005` partitioned ten tables; 023 dropped the PR
   tables that made up the rest, leaving `session_branch` the only one that ever needs a direct
   org_id rewrite rather than a cascade (see [persistence.md](persistence.md)). The id leads rather
   than trails because a query always knows its organization, so the key is a prefix scan of the

@@ -46,6 +46,8 @@ export interface BoardJobRecord {
     author: { login: string } | null;
     repo: string | null;
     executor: string | null;
+    /** The scope `executor` names (issue 391), as the board's read model normalizes it. */
+    executorScope?: string | null;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -97,6 +99,8 @@ export interface BoardClient {
         command: string;
         repo?: string | undefined;
         executor?: string | undefined;
+        /** The scope `executor` names (issue 391); absent lets the board default to personal. */
+        executorScope?: 'user' | 'org' | undefined;
     }): Promise<JobCreated>;
     listJobs(filters: {
         status?: string | undefined;
@@ -194,6 +198,7 @@ export function createBoardClient({
                 command: input.command,
                 ...(input.repo !== undefined ? { repo: input.repo } : {}),
                 ...(input.executor !== undefined ? { executor: input.executor } : {}),
+                ...(input.executorScope !== undefined ? { executorScope: input.executorScope } : {}),
             };
             const payload = (await request('/api/jobs', {
                 method: 'POST',

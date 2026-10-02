@@ -28,6 +28,8 @@ const workspaceData = (over: Partial<WorkspacePayload> = {}): WorkspacePayload =
     orphaned: [],
     checkoutTotalBytes: 0,
     executors: [],
+    orgExecutors: [],
+    defaultExecutor: null,
     ...over,
 });
 
@@ -237,7 +239,7 @@ describe('deriveReadiness — executors', () => {
         expect(items.get('executors')?.action).toEqual({ label: 'Manage executors', to: '/settings/executors' });
     });
 
-    it('names the first personal executor as the one new tasks pick', () => {
+    it('names the personal executor the resolved default picks', () => {
         const items = byId(
             ...deriveReadiness(
                 input({
@@ -248,15 +250,16 @@ describe('deriveReadiness — executors', () => {
                                     name: 'fast-box',
                                     type: 'claude',
                                     createdAt: '2026-01-01T00:00:00Z',
-                                    isDefault: false,
+                                    gateFixRounds: 3,
                                 },
                                 {
                                     name: 'big-box',
                                     type: 'claude',
                                     createdAt: '2026-01-02T00:00:00Z',
-                                    isDefault: false,
+                                    gateFixRounds: 3,
                                 },
                             ],
+                            defaultExecutor: { scope: 'user', name: 'big-box' },
                         }),
                     },
                 })
@@ -264,34 +267,29 @@ describe('deriveReadiness — executors', () => {
         );
         expect(items.get('executors')?.status).toBe('2 personal executors available');
         expect(items.get('executors')?.tone).toBe('ok');
-        expect(JSON.stringify(items.get('executors')?.facts)).toContain('fast-box is selected first on new tasks.');
+        expect(JSON.stringify(items.get('executors')?.facts)).toContain(
+            'big-box is the default executor for new tasks.'
+        );
         expect(items.get('executors')?.action).toEqual({ label: 'Manage executors', to: '/settings/executors' });
     });
 
-    it('names the default executor, not the first row (issue 215)', () => {
+    it('names the organization profile the resolved default picks, by its scope (issue 391)', () => {
         const items = byId(
             ...deriveReadiness(
                 input({
                     workspace: {
                         data: workspaceData({
-                            executors: [
-                                {
-                                    name: 'fast-box',
-                                    type: 'claude',
-                                    createdAt: '2026-01-01T00:00:00Z',
-                                    isDefault: false,
-                                },
-                                { name: 'big-box', type: 'claude', createdAt: '2026-01-02T00:00:00Z', isDefault: true },
-                            ],
+                            executors: [],
+                            orgExecutors: [{ name: 'team-runner', type: 'claude', createdAt: '2026-01-02T00:00:00Z' }],
+                            defaultExecutor: { scope: 'org', name: 'team-runner' },
                         }),
                     },
                 })
             )
         );
         expect(JSON.stringify(items.get('executors')?.facts)).toContain(
-            'big-box is the default executor for new tasks.'
+            'team-runner (organization) is the default executor for new tasks.'
         );
-        expect(JSON.stringify(items.get('executors')?.facts)).not.toContain('selected first on new tasks');
     });
 });
 
@@ -490,7 +488,11 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
                     repos: [repo({ name: 'web' })],
                     orphaned: [],
                     checkoutTotalBytes: 0,
-                    executors: [{ name: 'fast-box', type: 'claude', createdAt: '2026-01-01T00:00:00Z' }],
+                    executors: [
+                        { name: 'fast-box', type: 'claude', createdAt: '2026-01-01T00:00:00Z', gateFixRounds: 3 },
+                    ],
+                    orgExecutors: [],
+                    defaultExecutor: { scope: 'user', name: 'fast-box' },
                 },
             },
             env: { loading: false, data: emptyEnv },
@@ -518,6 +520,8 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
             env: { loading: false, data: emptyEnv },
@@ -528,7 +532,15 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         const rootless = render({
             workspace: {
                 loading: false,
-                data: { root: null, repos: [], orphaned: [], checkoutTotalBytes: 0, executors: [] },
+                data: {
+                    root: null,
+                    repos: [],
+                    orphaned: [],
+                    checkoutTotalBytes: 0,
+                    executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
+                },
             },
             env: { loading: false, data: emptyEnv },
         });
@@ -544,7 +556,15 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         const html = render({
             workspace: {
                 loading: false,
-                data: { root: null, repos: [], orphaned: [], checkoutTotalBytes: 0, executors: [] },
+                data: {
+                    root: null,
+                    repos: [],
+                    orphaned: [],
+                    checkoutTotalBytes: 0,
+                    executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
+                },
             },
             env: { loading: false, data: emptyEnv },
         });

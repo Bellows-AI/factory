@@ -1,7 +1,6 @@
 import type { UseEnv } from '../api/useEnv.js';
 import { roleLabel, type Session } from '../api/useSession.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
-import { defaultExecutorName } from '../workspace/executors.js';
 
 /**
  * The configuration overview's derivation (issue 180): the five readiness items, computed from
@@ -246,6 +245,27 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
             action: REVIEW_WORKSPACE,
         };
     }
+    // The composer can select from either scope (issue 391): with no personal rows but an
+    // organization profile offered, the overview says so rather than implying a deployment
+    // default decides.
+    if (data.executors.length === 0 && data.orgExecutors.length > 0) {
+        const resolved = data.defaultExecutor;
+        return {
+            id: 'executors',
+            heading: 'Executors',
+            status: `${count(data.orgExecutors.length, 'organization executor available', 'organization executors available')}`,
+            facts: [
+                {
+                    text:
+                        resolved === null
+                            ? 'Select an organization executor when starting a task.'
+                            : `${resolved.name} (organization) is the default executor for new tasks.`,
+                },
+            ],
+            tone: 'ok',
+            action: MANAGE_EXECUTORS,
+        };
+    }
     if (data.executors.length === 0) {
         return {
             id: 'executors',
@@ -256,16 +276,21 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
             action: MANAGE_EXECUTORS,
         };
     }
-    const flagged = data.executors.some((executor) => executor.isDefault);
+    const resolved = data.defaultExecutor;
     return {
         id: 'executors',
         heading: 'Executors',
         status: `${count(data.executors.length, 'personal executor available', 'personal executors available')}`,
         facts: [
             {
-                text: flagged
-                    ? `${defaultExecutorName(data.executors)} is the default executor for new tasks.`
-                    : `${defaultExecutorName(data.executors)} is selected first on new tasks.`,
+                // The resolved default (issue 391) may name either scope; when it names an org
+                // profile the personal list has no default of its own to describe.
+                text:
+                    resolved === null
+                        ? 'No executor is selectable yet.'
+                        : resolved.scope === 'user'
+                          ? `${resolved.name} is the default executor for new tasks.`
+                          : `${resolved.name} (organization) is the default executor for new tasks.`,
             },
         ],
         tone: 'ok',

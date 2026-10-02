@@ -57,7 +57,10 @@ export function job(overrides: Partial<Job> = {}): Job {
 export interface ComposerArgs {
     repos?: { owner: string; name: string }[] | null;
     workspaceError?: string | null;
-    executors?: { name: string; type: string; isDefault?: boolean }[];
+    /** The composer's combined options, scope-qualified (issue 391). */
+    executors?: { name: string; type: string; scope: 'user' | 'org' }[];
+    /** The poll's resolved default; defaults to the first option when any are given. */
+    defaultExecutor?: { name: string; scope: 'user' | 'org' } | null;
     /** The workflow choices for the repo context; null hides the select (no workflows served). */
     workflows?:
         | readonly {
@@ -78,7 +81,8 @@ export interface ComposerArgs {
 export const renderComposer = ({
     repos = [{ owner: 'acme', name: 'web' }],
     workspaceError = null,
-    executors = [{ name: 'main', type: 'claude-code' }],
+    executors = [{ name: 'main', type: 'claude-code', scope: 'user' }],
+    defaultExecutor,
     workflows = null,
     actionError = null,
     sending = false,
@@ -93,6 +97,7 @@ export const renderComposer = ({
                 workspaceError={workspaceError}
                 onRetryWorkspace={() => {}}
                 executors={executors}
+                defaultExecutor={defaultExecutor ?? executors[0] ?? null}
                 workflows={workflows}
                 defaultWorkflowSettings={defaultWorkflowSettings}
                 actionError={actionError}

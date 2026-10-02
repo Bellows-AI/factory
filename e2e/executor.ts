@@ -7,8 +7,10 @@ export const E2E_EXECUTOR = {
     name: 'e2e-executor',
     type: CLAUDE_CODE,
     createdAt: '2026-01-01T00:00:00.000Z',
-    isDefault: true,
 };
+
+/** The member's resolved default the poll carries (issue 391): the one executor, by scope. */
+export const E2E_DEFAULT_EXECUTOR = { scope: 'user' as const, name: E2E_EXECUTOR.name };
 
 /**
  * Give the page one configured executor.
@@ -23,7 +25,10 @@ export async function withExecutor(page: Page): Promise<void> {
     await page.route('**/api/workspace', async (route) => {
         const response = await route.fetch();
         const body = (await response.json()) as Record<string, unknown>;
-        await route.fulfill({ response, json: { ...body, executors: [E2E_EXECUTOR] } });
+        await route.fulfill({
+            response,
+            json: { ...body, executors: [E2E_EXECUTOR], orgExecutors: [], defaultExecutor: E2E_DEFAULT_EXECUTOR },
+        });
     });
 }
 
@@ -32,7 +37,6 @@ export interface MockExecutor {
     name: string;
     type: string;
     createdAt: string;
-    isDefault: boolean;
     /** The gate-repair budget the dialog's config read requires on every row it opens with. */
     gateFixRounds?: number;
     config: object;
@@ -65,7 +69,17 @@ export async function mockExecutors(
         const body = (await response.json()) as Record<string, unknown>;
         const executors = held.executors.map(({ config: _config, ...row }) => row);
         const withRepos = repos.length > 0 ? { repos: selected } : {};
-        await route.fulfill({ response, json: { ...body, root: '/e2e/workspace', executors, ...withRepos } });
+        await route.fulfill({
+            response,
+            json: {
+                ...body,
+                root: '/e2e/workspace',
+                executors,
+                orgExecutors: [],
+                defaultExecutor: held.executors.length > 0 ? E2E_DEFAULT_EXECUTOR : null,
+                ...withRepos,
+            },
+        });
     });
     await page.route('**/api/workspace/executors', async (route) => {
         if (route.request().method() === 'PUT') {

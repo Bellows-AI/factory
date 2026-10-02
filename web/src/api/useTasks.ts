@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import type { ExecutorScope } from '@factory-ai/core';
 import { refusalOf } from './refusal.js';
 import type { DefaultWorkflowSteps } from './useDefaultWorkflowSettings.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
@@ -158,6 +159,8 @@ export interface QueueTaskInput {
     command: string;
     repo: string | null;
     executor: string;
+    /** The scope `executor` names (issue 391): the author's own profiles or the organization's. */
+    executorScope: ExecutorScope;
     workflow: string | null;
     workflowParams: Record<string, string> | null;
     defaultWorkflow?: DefaultWorkflowSteps;
