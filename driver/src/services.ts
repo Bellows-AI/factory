@@ -31,7 +31,28 @@ export interface ServiceSpec {
     name: string;
     image: string;
     environment: { key: string; value: string }[];
+    /**
+     * The declared hardening opt-out (issue #382), present only when the file asked for it. A
+     * service pod is hardened like every other pod the driver specs — every capability dropped —
+     * and that breaks the common stock image whose entrypoint chowns its data directory as root
+     * before dropping down. This restores THE IMAGE'S DEFAULT CAPABILITY SET and nothing else:
+     * the escalation bit stays off and the seccomp profile stays on, because neither is what
+     * broke. Absent rather than `false` when unasked, so the field's presence IS the declaration.
+     */
+    unhardened?: true;
 }
+
+/**
+ * The container hardening flags (issue #382), COPIED from docker.ts rather than imported — the
+ * same one-direction rule the mount string and the workspace-path regexes already follow (docker
+ * imports services, never the reverse). The two spellings are pinned together in
+ * driver/test/docker.test.ts, which asserts both modules' argv against one expectation, so a
+ * change to one that is not made to the other fails there rather than in a container.
+ */
+const HARDENING_ARGS = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];
+
+/** `no-new-privileges` only — the declared `unhardened: true` opt-out. See docker.ts for why. */
+const UNHARDENED_ARGS = ['--security-opt', 'no-new-privileges'];
 
 /**
  * What a service may be called. The name becomes a container-name suffix and a network alias —
@@ -291,6 +312,8 @@ interface BellowsItem {
     name: string;
     image: string;
     environment: { key: string; value: string }[];
+    /** The declared `unhardened: true` (issue #382). Never set from any other spelling. */
+    unhardened: boolean;
     inEnvironment: boolean;
     keys: Set<string>;
     envKeys: Set<string>;
@@ -299,7 +322,7 @@ interface BellowsItem {
 /** Validates and files the just-finished item, when there is one. A no-op on a null item. */
 function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
     if (!item) return;
-    const { name, image, environment } = item;
+    const { name, image, environment, unhardened } = item;
     if (!name) throw new Error('.bellows.yaml: a service is missing "name"');
     if (!image) throw new Error('.bellows.yaml: a service is missing "image"');
     if (!SERVICE_NAME.test(name)) {
@@ -314,7 +337,7 @@ function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
     if (specs.some((s) => s.name === name)) {
         throw new Error(`.bellows.yaml: duplicate service name "${name}"`);
     }
-    specs.push({ name, image, environment });
+    specs.push({ name, image, environment, ...(unhardened ? { unhardened: true as const } : {}) });
 }
 
 /** Applies one `name:`/`image:`/`environment:` field to the item mid-parse. */
@@ -334,7 +357,19 @@ function applyServiceField(item: BellowsItem, key: string, value: string): void 
         item.inEnvironment = true;
         return;
     }
-    throw new Error(`.bellows.yaml: unknown service key "${key}" — supported: name, image, environment`);
+    if (key === 'unhardened') {
+        // The one key in this grammar that LOOSENS a security control (issue #382), so it is
+        // spelled exactly one way. `yes`, `on` and `1` are each a reasonable author guess and each
+        // would have to be read as truthy somewhere; refusing them keeps "did this service opt
+        // out?" a question with one answer rather than a parser trivia question — and makes the
+        // typo that would have silently left a service hardened an error the author reads.
+        if (value !== 'true') {
+            throw new Error('.bellows.yaml: "unhardened" must be `true` — the only value that opts out');
+        }
+        item.unhardened = true;
+        return;
+    }
+    throw new Error(`.bellows.yaml: unknown service key "${key}" — supported: name, image, environment, unhardened`);
 }
 
 function applyField(item: BellowsItem, chunk: string): void {
@@ -464,6 +499,7 @@ export function parseBellows(text: string): ServiceSpec[] {
                 name: '',
                 image: '',
                 environment: [],
+                unhardened: false,
                 inEnvironment: false,
                 keys: new Set(),
                 envKeys: new Set(),
@@ -571,6 +607,7 @@ export function readBellowsArgs(config: DriverConfig, job: BoardJob): string[] {
     return [
         'run',
         '--rm',
+        ...HARDENING_ARGS,
         '--mount',
         // Read-only: the script only cats. Scoped to the job's own `<orgId>/<userId>` subtree —
         // the same boundary the kubernetes readout's subPath mount enforces, and the same
@@ -661,6 +698,10 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec): string[] {
     const args = [
         'run',
         '-d',
+        // The declared opt-out reaches exactly the capability drop (issue #382): a stock image
+        // whose entrypoint chowns its data directory as root needs CHOWN/DAC_OVERRIDE/FOWNER
+        // back, and needs nothing else — so `no-new-privileges` is on either way.
+        ...(spec.unhardened ? UNHARDENED_ARGS : HARDENING_ARGS),
         '--name',
         serviceContainerName(job, spec.name),
         '--label',

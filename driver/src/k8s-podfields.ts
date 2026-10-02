@@ -86,3 +86,56 @@ export const DO_NOT_DISRUPT_ANNOTATIONS: Record<string, string> = {
 export function doNotDisruptField(config: DriverConfig): { annotations?: Record<string, string> } {
     return config.runnerDoNotDisrupt ? { annotations: { ...DO_NOT_DISRUPT_ANNOTATIONS } } : {};
 }
+
+/**
+ * The pod-level half of the executor hardening (issue #382): the runtime's own seccomp profile.
+ * Pod level and not container level on purpose — seccomp applies to every container the pod ever
+ * grows, so naming it once is what keeps a future sidecar from being born unfiltered.
+ * `RuntimeDefault` is the container runtime's profile, which blocks the syscalls a container has
+ * no business making (keyctl, the kernel module calls, the older namespace escapes) without the
+ * per-image tuning a `Localhost` profile would need from every executor image.
+ *
+ * Unlike every other builder in this file this one takes no config and is never absent. The pods
+ * it lands on run code the driver did not write — the agent's commands, the repository's scripts,
+ * a gate, a declared service's image — and a hardening an operator can switch off is a hardening
+ * that is off when it matters. Callers SPREAD it into `securityContext`, never assign over one:
+ * the gate's `runAsUser`/`runAsGroup` lives in the same field, and an assignment drops whichever
+ * of the two was written first.
+ */
+export interface PodSecurityContext {
+    runAsUser?: number;
+    runAsGroup?: number;
+    seccompProfile?: { type: 'RuntimeDefault' };
+}
+
+export function podHardeningField(): { seccompProfile: { type: 'RuntimeDefault' } } {
+    return { seccompProfile: { type: 'RuntimeDefault' } };
+}
+
+/**
+ * The container-level half (issue #382), and the half with teeth:
+ *
+ *   - `capabilities.drop: [ALL]` — a capability is a slice of root the kernel hands a process
+ *     without asking anyone, and an agent run needs none of them: it reads, writes and compiles
+ *     inside its own worktree. Dropping them all is what makes `CAP_NET_RAW` (ARP-spoofing a
+ *     neighbour pod, which no NetworkPolicy sees) and `CAP_DAC_OVERRIDE` (reading past the file
+ *     modes on the shared workspaces claim) unavailable rather than merely unused.
+ *   - `allowPrivilegeEscalation: false` — without it a setuid binary inside the image re-acquires
+ *     what the drop removed, and the drop is decoration. The two are one control.
+ *
+ * `readOnlyRootFilesystem` is deliberately NOT here. An agent run writes its caches, its HOME and
+ * its git worktree; a read-only root fails it on the first `npm install`. The workspace is the
+ * writable surface by design — docs/security.md states it as a limit rather than leaving it to be
+ * discovered.
+ *
+ * `drop` is rebuilt per call rather than shared: a single frozen array would be reachable from
+ * every spec this process ever builds, and one caller mutating it would disarm all of them.
+ */
+export interface ContainerSecurityContext {
+    allowPrivilegeEscalation: false;
+    capabilities: { drop: string[] };
+}
+
+export function containerHardeningField(): { securityContext: ContainerSecurityContext } {
+    return { securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ['ALL'] } } };
+}

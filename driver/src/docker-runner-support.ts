@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import { workspacePath, claimCarriesGithubToken } from './claim.js';
 import { type DriverConfig, executorImage } from './config.js';
-import { workspacesMountArgs, containerName } from './docker.js';
+import { workspacesMountArgs, containerName, containerHardeningArgs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
 import type { RunOutcome } from './runner.js';
@@ -115,6 +115,7 @@ export function syncCheckoutArgs(
 ): string[] {
     return [
         'run',
+        ...containerHardeningArgs(),
         '--rm',
         ...workspacesMountArgs(config, workspacePath(job)),
         ...(sync.envFile ? (['--env-file', sync.envFile] as string[]) : []),

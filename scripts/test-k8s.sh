@@ -631,6 +631,32 @@ expect_contains 'the runner policy sends DNS to kube-dns in kube-system' "$netpo
 expect_contains 'the runner policy sends DNS to the NodeLocal DNSCache address' "$netpol" 'cidr: 169.254.20.10/32'
 expect_not_contains 'the runner policy never allows port 53 to any destination' "$netpol" '        - ports:'
 
+# Issue #382. The hardening the driver sets on every pod is also REQUIRED by admission, which is a
+# different control: a driver that silently stopped setting the fields satisfies every "may not be
+# privileged" expression and would be admitted. The rendered CEL is pinned here; that a REAL
+# apiserver refuses a pod missing each field is phase two, because a policy that renders and does
+# not compile refuses everything (failurePolicy: Fail).
+expect_contains 'the admission policy requires the RuntimeDefault seccomp profile' "$admission" \
+    "variables.spec.securityContext.seccompProfile.type == 'RuntimeDefault'"
+expect_contains 'the admission policy requires allowPrivilegeEscalation false' "$admission" \
+    'c.securityContext.allowPrivilegeEscalation == false'
+expect_contains 'the admission policy requires every capability dropped' "$admission" \
+    "'ALL' in c.securityContext.capabilities.drop"
+expect_contains 'the admission policy exempts only a labelled declared service' "$admission" \
+    "variables.podLabels['factory.unhardened'] == 'true'"
+
+# The chart-pod egress, split per component and port-scoped (#382). A runner reached every port on
+# all three before; now the dashboard is its serving port and the collector its two OTLP ports.
+# The driver stays portless — the gate endpoint is ephemeral, so no number exists to name — and
+# that rule's CONTINUED EXISTENCE is asserted too: dropping it would break every gate run, which
+# is a failure no isolation assertion would have caught.
+expect_contains 'the runner policy reaches the dashboard on its serving port only' "$netpol" \
+    $'app.kubernetes.io/component: dashboard\n          ports:\n              - protocol: TCP\n                port: 8080'
+expect_contains 'the runner policy reaches the collector on the OTLP ports only' "$netpol" \
+    $'app.kubernetes.io/component: collector\n          ports:\n              - protocol: TCP\n                port: 4317\n              - protocol: TCP\n                port: 4318'
+expect_contains 'the runner policy still reaches the driver on any port, for the ephemeral gate endpoint' \
+    "$netpol" $'app.kubernetes.io/component: driver\n        - to:'
+
 # Node churn vs long runs (issue #362). The do-not-disrupt opt-out is off by default in both
 # profiles — an undisruptable runner pod pins its node for as long as its job runs — and the
 # PDBs are always on: the dashboard drains with at most one unavailable, the driver is protected
@@ -727,13 +753,266 @@ expect_contains 'the EKS shape forwards the do-not-disrupt switch, value set' "$
 # reaches a private host, and never asserted anywhere until now.
 eks_netpol="$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' <<<"$eks")"
 expect_contains 'an allowed VPC endpoint cidr reaches the runner policy' "$eks_netpol" 'cidr: 10.5.5.5/32'
+# The port scoping (#382) survives the cloud value set: an EKS install must not quietly go back to
+# reaching every port on the dashboard and collector.
+expect_contains 'the EKS shape keeps the dashboard port scoping' "$eks_netpol" \
+    $'app.kubernetes.io/component: dashboard\n          ports:'
+expect_contains 'the EKS shape keeps the collector OTLP port scoping' "$eks_netpol" \
+    $'app.kubernetes.io/component: collector\n          ports:'
+# ...and keeps the driver rule PORTLESS. Asserted in the same breath as the two above: the cloud
+# shape can drift in either direction, and a driver rule that grew a port list would break every
+# gate run on EKS while every port-scoping assertion still passed.
+expect_contains 'the EKS shape keeps the driver egress portless for the ephemeral gate endpoint' \
+    "$eks_netpol" $'app.kubernetes.io/component: driver\n        - to:'
 helm lint charts/factory "${EKS_SETS[@]}" >/dev/null 2>&1 && ok 'helm lint passes on the EKS shape' \
     || bad 'helm lint passes on the EKS shape' 'lint failed'
+
+# --- Phase three: the enforcing-CNI lane (issue #382) -------------------------------------------
+#
+#   scripts/test-k8s.sh --netpol
+#
+# Everything the runner NetworkPolicy claims is inert without a CNI that enforces NetworkPolicy,
+# and kind's default CNI (kindnet) does NOT enforce it. That makes this the one lane that cannot
+# borrow phase two's cluster: an "access denied" assertion against a non-enforcing CNI passes
+# while proving nothing, which is strictly worse than having no test. So this lane CREATES its own
+# cluster — kindnet disabled, Calico installed — runs an enforcement self-check that fails the
+# whole lane if a known-denied address turns out reachable, and deletes the cluster on the way
+# out. It never touches the caller's current context or any cluster it did not create, which is
+# why phase two's guard (which refuses every context it has not fingerprinted, because it deletes
+# Jobs) is left exactly as it was.
+#
+# This is also the one lane that needs the NETWORK: Calico's manifest and the probe image are
+# pulled. Everything else in this file is offline.
+
+if [ "${1:-}" = '--netpol' ]; then
+    for tool in kind kubectl docker; do
+        command -v "$tool" >/dev/null || {
+            echo "test-k8s: $tool is required for the --netpol lane"
+            exit 1
+        }
+    done
+
+    echo
+    echo '# enforcing-CNI isolation'
+
+    NETPOL_CLUSTER="factory-netpol-$$"
+    NETPOL_KUBECONFIG="$work/netpol.kubeconfig"
+    NETPOL_NS=factory-netpol
+    # Pinned, not `latest`: a CNI that changed its manifest layout under us would fail this lane
+    # with a download error rather than a policy verdict, and the two must never look alike.
+    CALICO_VERSION=v3.28.2
+    CALICO_URL="https://raw.githubusercontent.com/projectcalico/calico/$CALICO_VERSION/manifests/calico.yaml"
+
+    kn() { kubectl --kubeconfig "$NETPOL_KUBECONFIG" "$@"; }
+
+    # Chained onto the file's own cleanup, never replacing it: that one owns $work (and the
+    # releases phase two installs, which this lane never does). A trap that dropped it would leave
+    # the work directory behind on every --netpol run.
+    netpol_cleanup() { kind delete cluster --name "$NETPOL_CLUSTER" >/dev/null 2>&1 || true; }
+    trap 'netpol_cleanup; cleanup' EXIT
+
+    cat >"$work/kind-netpol.yaml" <<'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+    # The whole point of this lane. kindnet ships with kind and does not enforce NetworkPolicy, so
+    # it is turned off and Calico installed in its place; until Calico is up the cluster has no pod
+    # network at all, which is why the node readiness wait below is not optional.
+    disableDefaultCNI: true
+    podSubnet: "192.168.0.0/16"
+EOF
+    echo "creating kind cluster $NETPOL_CLUSTER (no default CNI)"
+    kind create cluster --name "$NETPOL_CLUSTER" --kubeconfig "$NETPOL_KUBECONFIG" \
+        --config "$work/kind-netpol.yaml" >/dev/null 2>&1 || {
+        echo 'test-k8s: could not create the kind cluster for the --netpol lane'
+        exit 1
+    }
+
+    echo "installing Calico $CALICO_VERSION"
+    kn apply -f "$CALICO_URL" >/dev/null 2>&1 || {
+        echo "test-k8s: could not apply the Calico manifest ($CALICO_URL) — this lane needs network"
+        exit 1
+    }
+    kn wait --for=condition=Ready node --all --timeout=300s >/dev/null 2>&1 || {
+        echo 'test-k8s: nodes never became Ready — Calico did not come up'
+        exit 1
+    }
+    kn wait --for=condition=Available deployment/calico-kube-controllers -n kube-system \
+        --timeout=300s >/dev/null 2>&1 || true
+
+    kn create namespace "$NETPOL_NS" >/dev/null 2>&1 || true
+
+    # One pod per role, each exactly as the policy's selectors see it. The runner pods carry
+    # `factory.job` and the release instance label and NOT `app.kubernetes.io/name`, which is what
+    # the policy's podSelector is written against; the chart pods carry both.
+    netpol_pod() { # netpol_pod <name> <labels json> [<args>]
+        kn run "$1" -n "$NETPOL_NS" --image=alpine:3 --restart=Never \
+            --overrides="{\"metadata\":{\"labels\":$2},\"spec\":{\"automountServiceAccountToken\":false,\"containers\":[{\"name\":\"$1\",\"image\":\"alpine:3\",\"command\":[\"sh\",\"-c\",\"${3:-sleep 3600}\"]}]}}" \
+            --command -- sh >/dev/null 2>&1
+    }
+    # busybox `nc`, which alpine already has, rather than `apk add socat`: the install needs the
+    # network from inside the pod and takes an unbounded amount of time, and a listener that is not
+    # up yet reads to every probe exactly like a listener the policy blocked. Re-listening in a
+    # loop because busybox nc serves one connection and exits.
+    LISTEN='while :; do nc -l -p 8080 >/dev/null 2>&1; done & while :; do nc -l -p 9999 >/dev/null 2>&1; done & sleep 3600'
+
+    netpol_pod attempt-a "{\"factory.job\":\"aaaa\",\"factory.lease\":\"la\",\"app.kubernetes.io/instance\":\"$RELEASE\"}"
+    netpol_pod attempt-b "{\"factory.job\":\"bbbb\",\"factory.lease\":\"lb\",\"app.kubernetes.io/instance\":\"$RELEASE\"}" "$LISTEN"
+    netpol_pod unrelated '{"role":"unrelated"}' "$LISTEN"
+    netpol_pod dashboard \
+        "{\"app.kubernetes.io/name\":\"factory\",\"app.kubernetes.io/instance\":\"$RELEASE\",\"app.kubernetes.io/component\":\"dashboard\"}" \
+        "$LISTEN"
+
+    # The node itself, as a probeable address. "A runner may not reach its node" needs something
+    # LISTENING on the node for the denial to mean anything — a kind node runs no sshd, and a
+    # closed port answers `denied` with or without a policy. This pod binds the host network
+    # directly, so 31999 is open on the node's own InternalIP: inside blockedCidrs (172.16/12 on
+    # kind), reachable before the policy and dropped after it. It is the only pod here that needs
+    # host access, it exists purely to be a target, and it is deleted with the cluster.
+    kn run node-listener -n "$NETPOL_NS" --image=alpine:3 --restart=Never \
+        --overrides="{\"spec\":{\"hostNetwork\":true,\"automountServiceAccountToken\":false,\"containers\":[{\"name\":\"node-listener\",\"image\":\"alpine:3\",\"command\":[\"sh\",\"-c\",\"while :; do nc -l -p 31999 >/dev/null 2>&1; done\"]}]}}" \
+        --command -- sh >/dev/null 2>&1
+
+    for p in attempt-a attempt-b unrelated dashboard node-listener; do
+        kn wait --for=condition=Ready "pod/$p" -n "$NETPOL_NS" --timeout=180s >/dev/null 2>&1 || {
+            echo "test-k8s: probe pod $p never became Ready"
+            exit 1
+        }
+    done
+    ip_of() { kn get pod "$1" -n "$NETPOL_NS" -o jsonpath='{.status.podIP}'; }
+    IP_B="$(ip_of attempt-b)"
+    IP_UNRELATED="$(ip_of unrelated)"
+    IP_DASH="$(ip_of dashboard)"
+    NODE_IP="$(kn get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
+    API_IP="$(kn get service kubernetes -n default -o jsonpath='{.spec.clusterIP}')"
+
+    # `reaches` answers one question and prints one word, so every assertion below reads the same
+    # way round. A denied connection is a DROPPED packet, so it costs the full timeout — which is
+    # also why the timeout is short.
+    reaches() { # reaches <from pod> <host> <port>
+        if kn exec "$1" -n "$NETPOL_NS" -- sh -c "nc -z -w 4 $2 $3 >/dev/null 2>&1" >/dev/null 2>&1; then
+            echo reachable
+        else
+            echo denied
+        fi
+    }
+
+    # THE DENIAL TARGETS, and the rule that keeps every one of them honest: each is probed BEFORE
+    # the policy is applied and must answer `reachable` there. An address that was already
+    # unreachable — no listener, no responder, wrong IP — would answer `denied` afterwards no
+    # matter what the policy said, and the lane would report a pass having proved nothing. That is
+    # the single failure mode this whole lane exists to avoid, so it is checked per target rather
+    # than once.
+    #
+    # Each target is `<name>|<host>|<port>`, and each is a REAL listener on this cluster:
+    #   - the unrelated pod on both its ports (an unrelated workload),
+    #   - the kubernetes API's ClusterIP (the service network, inside blockedCidrs 10/8),
+    #   - the kubelet on the node's own address (inside blockedCidrs 172.16/12 on kind),
+    #   - a hostNetwork pod bound to a high port on that same node address — the node itself,
+    #     reachable only because something is actually listening there. There is deliberately no
+    #     `:22` probe: a kind node runs no sshd, so that assertion could only ever be vacuous.
+    DENIALS="unrelated pod|$IP_UNRELATED|8080
+another port on an unrelated pod|$IP_UNRELATED|9999
+the kubernetes API|$API_IP|443
+the kubelet on its node|$NODE_IP|10250
+the node itself|$NODE_IP|31999
+another port on the dashboard|$IP_DASH|9999"
+
+    # Ready means ANSWERING, not Running: the kubelet calls a pod Ready as soon as its process
+    # starts, which is before the listener inside it has bound. Polled rather than slept, because
+    # a fixed sleep is either too short (and the honest-probe controls below fail for a reason
+    # that has nothing to do with the policy) or wasted on every run. EVERY probe target is
+    # polled, not just the first: `node-listener` is a separate pod with its own image pull and is
+    # the likeliest laggard, and a target that is merely slow would otherwise fail its own
+    # control. `attempt-b` is in the list too — it is not a DENIALS entry (its reachability is the
+    # #257 residual, asserted at the end) but it is a listener this lane waits on all the same.
+    #
+    # The first target that never comes up abandons the whole wait rather than letting each
+    # remaining one burn its own budget: the lane is already going to fail its honest-probe
+    # control, and six targets each waiting out 30 attempts would delay that verdict by a
+    # quarter of an hour for no extra information.
+    poll_ready=1
+    while IFS='|' read -r what host port; do
+        [ -n "$what" ] || continue
+        [ "$poll_ready" = '1' ] || continue
+        ready=0
+        for _ in $(seq 1 30); do
+            if [ "$(reaches attempt-a "$host" "$port")" = 'reachable' ]; then
+                ready=1
+                break
+            fi
+            sleep 2
+        done
+        [ "$ready" = '1' ] || poll_ready=0
+    done <<EOF
+$DENIALS
+the cross-attempt residual target|$IP_B|8080
+EOF
+
+    while IFS='|' read -r what host port; do
+        [ -n "$what" ] || continue
+        expect_contains "before any policy, a runner reaches $what (so the probe is honest)" \
+            "$(reaches attempt-a "$host" "$port")" 'reachable'
+    done <<EOF
+$DENIALS
+EOF
+
+    awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' "$work/rendered.yaml" |
+        grep -v '^---$' | kn apply -n "$NETPOL_NS" -f - >/dev/null 2>&1 || {
+        echo 'test-k8s: the rendered runner NetworkPolicy would not apply'
+        exit 1
+    }
+    sleep 5
+
+    while IFS='|' read -r what host port; do
+        [ -n "$what" ] || continue
+        expect_contains "a runner may not reach $what" "$(reaches attempt-a "$host" "$port")" 'denied'
+    done <<EOF
+$DENIALS
+EOF
+
+    # NOT probed, and said out loud rather than left as a gap: the cloud metadata endpoint
+    # (169.254.169.254). Nothing answers on it in a kind cluster, so a probe would report `denied`
+    # whether or not the policy covered it — exactly the vacuous pass the controls above exist to
+    # prevent, and worse here because metadata access is the highest-value denial in the issue.
+    # What IS proved is the mechanism it depends on: 169.254.0.0/16 and 172.16.0.0/12 are both
+    # `blockedCidrs` entries excluded from the same `0.0.0.0/0` egress rule, and the node probe
+    # above shows that rule actually dropping traffic to a blocked private range. The endpoint's
+    # own defence is a node-level setting the chart cannot make either way
+    # (`httpPutResponseHopLimit: 1`, docs/kubernetes.md). Recorded in docs/executor-testing.md
+    # under "What no lane covers".
+
+    # The port scoping (#382), positive half: the dashboard stays reachable where it actually
+    # serves. The negative half — 9999 on that same pod — is in DENIALS above rather than here,
+    # precisely because it is the assertion this whole change exists for: asserted standalone it
+    # would report `denied` if the dashboard's second listener had simply failed to bind, which is
+    # the vacuous pass every other denial is already protected from.
+    expect_contains 'a runner reaches the dashboard on its serving port' "$(reaches attempt-a "$IP_DASH" 8080)" 'reachable'
+
+    # The positive probes: a run that cannot resolve a name or reach its own fleet is a run that
+    # does not work, and an isolation change that breaks them has not hardened anything.
+    dns="$(kn exec attempt-a -n "$NETPOL_NS" -- sh -c 'nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo resolves || echo broken' 2>/dev/null)"
+    expect_contains 'a runner still resolves cluster DNS' "$dns" 'resolves'
+
+    # The STATED RESIDUAL, asserted rather than assumed. One attempt can still reach another
+    # attempt's pods: the policy's runner-to-runner rule is what makes a declared service
+    # reachable from its own runner, and it does not distinguish attempts. #257 owns narrowing it.
+    # Pinned as `reachable` on purpose — when #257 lands, THIS line is what tells its author the
+    # behaviour changed, instead of the change being invisible.
+    expect_contains 'cross-attempt traffic is still allowed — the #257 residual, measured not assumed' \
+        "$(reaches attempt-a "$IP_B" 8080)" 'reachable'
+
+    netpol_cleanup
+    trap cleanup EXIT
+    printf '\n%d passed, %d failed\n' "$pass" "$fail"
+    [ "$fail" -eq 0 ]
+    exit
+fi
 
 # --- Phase two: the cluster -------------------------------------------------------------------
 
 if [ "${1:-}" != '--cluster' ]; then
-    printf '\n%d passed, %d failed (cluster phase skipped — pass --cluster)\n' "$pass" "$fail"
+    printf '\n%d passed, %d failed (cluster phase skipped — pass --cluster or --netpol)\n' "$pass" "$fail"
     [ "$fail" -eq 0 ]
     exit
 fi
@@ -1126,42 +1405,181 @@ kubectl wait --for=delete service/factory-orphan-reaper-svc -n "$NAMESPACE" --ti
 # specs; these prove it refuses what the Role alone would allow. Server-side dry runs as the
 # driver's own ServiceAccount: admission runs in full, nothing is persisted.
 DRIVER_SA="system:serviceaccount:$NAMESPACE:$RELEASE-factory-driver"
-probe_pod() { # probe_pod <name> <extra spec lines> — a pod otherwise shaped like the driver's own
+
+# The executor hardening (#382), in the two spellings these probes need. HARD_C goes INSIDE a
+# container's flow mapping; the pod half is in probe_pod's own body. Every probe below carries
+# both, because the policy now REQUIRES them — a probe shaped like the driver's own pod is a probe
+# that is hardened, and the ones that deliberately are not are the four at the end.
+HARD_C='securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}'
+# The pod half, as a VARIABLE rather than a quoted default inside the heredoc: `${4:-'{…}'}`
+# expands the quotes literally, and the apiserver then reads a YAML string where it wants a
+# securityContext — a BadRequest that never reaches admission, so every probe fails with the same
+# unrelated message and none of them tests anything.
+HARD_POD='{seccompProfile: {type: RuntimeDefault}}'
+
+probe_pod() { # probe_pod <name> <extra spec lines> [<extra labels>] [<pod securityContext>]
     cat <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
     name: admission-probe-$1
-    labels: {factory.job: admission-probe}
+    labels: {factory.job: admission-probe${3:+, $3}}
 spec:
     automountServiceAccountToken: false
     restartPolicy: Never
+    securityContext: ${4:-$HARD_POD}
 $2
 EOF
 }
 as_driver() { kubectl create --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server -f - 2>&1; }
 
-allowed="$(probe_pod ok '    containers: [{name: c, image: alpine, envFrom: [{secretRef: {name: factory-job-probe-env}}]}]' | as_driver)"
+allowed="$(probe_pod ok "    containers: [{name: c, image: alpine, $HARD_C, envFrom: [{secretRef: {name: factory-job-probe-env}}]}]" | as_driver)"
 expect_contains 'the policy admits a pod reading a per-attempt Secret' "$allowed" 'created (server dry run)'
-stolen="$(probe_pod steal "    containers: [{name: c, image: alpine, envFrom: [{secretRef: {name: $RELEASE-factory-dashboard}}]}]" | as_driver)"
+stolen="$(probe_pod steal "    containers: [{name: c, image: alpine, $HARD_C, envFrom: [{secretRef: {name: $RELEASE-factory-dashboard}}]}]" | as_driver)"
 expect_contains 'the policy refuses a pod reading the dashboard Secret' "$stolen" 'may read only its own per-attempt Secrets'
-mounted="$(probe_pod mount "    containers: [{name: c, image: alpine}]
+mounted="$(probe_pod mount "    containers: [{name: c, image: alpine, $HARD_C}]
     volumes: [{name: s, secret: {secretName: $RELEASE-factory-dashboard}}]" | as_driver)"
 expect_contains 'the policy refuses a pod mounting the dashboard Secret' "$mounted" 'may mount only the workspaces claim'
-host="$(probe_pod host '    containers: [{name: c, image: alpine}]
-    volumes: [{name: h, hostPath: {path: /}}]' | as_driver)"
+host="$(probe_pod host "    containers: [{name: c, image: alpine, $HARD_C}]
+    volumes: [{name: h, hostPath: {path: /}}]" | as_driver)"
 expect_contains 'the policy refuses a hostPath pod' "$host" 'may mount only the workspaces claim'
-member="$(probe_pod member "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w, subPath: probe/44444444-4444-4444-8444-444444444444}]}]
+member="$(probe_pod member "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w, subPath: probe/44444444-4444-4444-8444-444444444444}]}]
     volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
 expect_contains 'the policy admits a pod mounting a member workspace subPath' "$member" 'created (server dry run)'
-root="$(probe_pod root "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w}]}]
+root="$(probe_pod root "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w}]}]
     volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
 expect_contains 'the policy refuses a pod mounting the workspaces claim root' "$root" 'only at a member subPath'
-expr="$(probe_pod expr "    containers: [{name: c, image: alpine, volumeMounts: [{name: w, mountPath: /w, subPathExpr: '\$(HOME)'}]}]
+expr="$(probe_pod expr "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w, subPathExpr: '\$(HOME)'}]}]
     volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
 expect_contains 'the policy refuses a subPathExpr workspace mount' "$expr" 'only at a member subPath'
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
 expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
+
+# Issue #382, the half that cannot be asserted by rendering. Phase one proved the CEL is in the
+# document; this proves a real apiserver COMPILES it and refuses on it. The distinction matters
+# more here than anywhere else in this script: `failurePolicy: Fail` means an expression that does
+# not compile refuses every pod the driver creates, so a policy that renders and does not work is
+# a total outage — and one that compiles but matches nothing passes phase one unchanged. Each
+# probe below removes exactly one field from the shape the probes above all carry.
+no_seccomp="$(probe_pod noseccomp "    containers: [{name: c, image: alpine, $HARD_C}]" '' '{}' | as_driver)"
+expect_contains 'the policy refuses a pod with no seccomp profile' "$no_seccomp" 'RuntimeDefault seccomp profile'
+wrong_seccomp="$(probe_pod unconfined "    containers: [{name: c, image: alpine, $HARD_C}]" '' \
+    '{seccompProfile: {type: Unconfined}}' | as_driver)"
+expect_contains 'the policy refuses an Unconfined seccomp profile' "$wrong_seccomp" 'RuntimeDefault seccomp profile'
+no_sc="$(probe_pod nosc '    containers: [{name: c, image: alpine}]' | as_driver)"
+expect_contains 'the policy refuses a container with no securityContext at all' "$no_sc" 'allowPrivilegeEscalation: false'
+escalating="$(probe_pod escalate \
+    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: true, capabilities: {drop: [ALL]}}}]' |
+    as_driver)"
+expect_contains 'the policy refuses a container that may escalate' "$escalating" 'allowPrivilegeEscalation: false'
+no_drop="$(probe_pod nodrop \
+    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
+    as_driver)"
+expect_contains 'the policy refuses a container that drops nothing' "$no_drop" 'must drop ALL capabilities'
+# The declared opt-out, and the fact that it is the LABEL that carries it — not the absence of the
+# field. The same pod without the label is the probe directly above, and it is refused.
+opted_out="$(probe_pod optout \
+    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
+    'factory.unhardened: "true"' | as_driver)"
+expect_contains 'the policy admits a labelled declared unhardened service' "$opted_out" 'created (server dry run)'
+# The opt-out reaches the capability drop and NOTHING else: the label does not buy the escalation
+# bit back, and it does not buy an unconfined seccomp profile.
+opted_escalating="$(probe_pod optesc \
+    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: true}}]' \
+    'factory.unhardened: "true"' | as_driver)"
+expect_contains 'the opt-out still may not escalate privileges' "$opted_escalating" 'allowPrivilegeEscalation: false'
+opted_unconfined="$(probe_pod optsec \
+    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false}}]' \
+    'factory.unhardened: "true"' '{seccompProfile: {type: Unconfined}}' | as_driver)"
+expect_contains 'the opt-out still runs under the default seccomp profile' "$opted_unconfined" \
+    'RuntimeDefault seccomp profile'
+
+# --- The workspace boundary, probed from inside a pod (issue #382) ------------------------------
+#
+# The admission probes above prove the driver cannot SPEC a pod that mounts another member's
+# subtree. This proves the kernel will not let a pod that mounted its own subtree REACH one — the
+# other half, and the half a policy cannot give you. `subPath` is a bind mount of one directory
+# into the container's mount namespace: the rest of the volume is not merely unreadable, it is
+# absent, so traversal and symlinks have nothing to resolve against. That is a property worth
+# proving rather than asserting, because the failure mode if it were wrong is silent.
+#
+# No CNI involvement, no NetworkPolicy: this lane runs on the plain kind cluster.
+echo
+echo '# the workspace boundary'
+
+uuid4() { # a legal member-id uuid, fresh per run — two runs never share a subtree
+    printf '%s-%s-4%s-8%s-%s\n' "$(openssl rand -hex 4)" "$(openssl rand -hex 2)" \
+        "$(openssl rand -hex 2 | cut -c2-)" "$(openssl rand -hex 2 | cut -c2-)" "$(openssl rand -hex 6)"
+}
+MEMBER_A="probea/$(uuid4)"
+MEMBER_B="probeb/$(uuid4)"
+
+# The seeder mounts the claim ROOT, which the driver's own identity may not do — it runs as this
+# script's kubeconfig identity, which the policy's matchConditions do not select. That asymmetry
+# is the point: only the dashboard writes checkouts across members, and it is not the driver.
+kubectl run fs-seed -n "$NAMESPACE" --image=alpine:3 --restart=Never --command \
+    --overrides="$(
+        cat <<EOF
+{"spec":{"automountServiceAccountToken":false,
+"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
+"containers":[{"name":"fs-seed","image":"alpine:3",
+"command":["sh","-c","mkdir -p /all/$MEMBER_A /all/$MEMBER_B && echo mine > /all/$MEMBER_A/secret.txt && echo theirs > /all/$MEMBER_B/secret.txt && echo seeded"],
+"volumeMounts":[{"name":"w","mountPath":"/all"}]}]}}
+EOF
+    )" -- sh >/dev/null 2>&1
+kubectl wait --for=condition=Ready=false --timeout=120s pod/fs-seed -n "$NAMESPACE" >/dev/null 2>&1 || true
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/fs-seed -n "$NAMESPACE" >/dev/null 2>&1
+seeded="$(kubectl logs fs-seed -n "$NAMESPACE" 2>&1 || true)"
+expect_contains 'two member subtrees are seeded through a claim-root mount' "$seeded" 'seeded'
+
+# The probe mounts ONLY member A's subtree, exactly as the driver specs it: subPath, no
+# subPathExpr, target is the subtree's own volume path. Every check prints one `name=verdict`
+# line, so a check that never ran is a missing line rather than a silent pass.
+#
+# One line, single quotes only, no backslashes: the script is interpolated into a JSON override,
+# and a `\n` or a `"` here would have to be JSON-escaped by something. Keeping the script free of
+# both is cheaper than carrying an encoder, and it is why `ls` output is read space-separated
+# (command substitution already collapses it) instead of through `tr`.
+probe_script="cd /workspaces/$MEMBER_A;
+echo own=\$(cat secret.txt 2>/dev/null || echo UNREADABLE);
+echo siblings=\$(ls /workspaces 2>/dev/null);
+echo relative=\$(cat ../../$MEMBER_B/secret.txt 2>/dev/null && echo LEAKED || echo denied);
+echo absolute=\$(cat /workspaces/$MEMBER_B/secret.txt 2>/dev/null && echo LEAKED || echo denied);
+ln -sf / escape 2>/dev/null;
+echo symlink=\$(cat escape/workspaces/$MEMBER_B/secret.txt 2>/dev/null && echo LEAKED || echo denied);
+ln -sf ../.. up 2>/dev/null;
+echo symlink_up=\$(ls up/$MEMBER_B 2>/dev/null && echo LEAKED || echo denied);
+echo above=\$(ls ../.. 2>/dev/null);
+rm -f escape up"
+probe_script="$(printf '%s' "$probe_script" | tr '\n' ' ')"
+kubectl run fs-probe -n "$NAMESPACE" --image=alpine:3 --restart=Never --command \
+    --overrides="$(
+        cat <<EOF
+{"spec":{"automountServiceAccountToken":false,
+"securityContext":{"seccompProfile":{"type":"RuntimeDefault"}},
+"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
+"containers":[{"name":"fs-probe","image":"alpine:3",
+"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},
+"command":["sh","-c","$probe_script"],
+"volumeMounts":[{"name":"w","mountPath":"/workspaces/$MEMBER_A","subPath":"$MEMBER_A"}]}]}}
+EOF
+    )" -- sh >/dev/null 2>&1
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/fs-probe -n "$NAMESPACE" >/dev/null 2>&1
+probe_out="$(kubectl logs fs-probe -n "$NAMESPACE" 2>&1 || true)"
+
+# The positive control FIRST. Without it every "denied" below could be a pod that failed to start,
+# a wrong path or an empty log — the vacuous pass an isolation test must never be able to report.
+expect_contains 'the probe reads its OWN file through the subPath mount' "$probe_out" 'own=mine'
+expect_contains 'only the probe own org is visible under the mount root' "$probe_out" 'siblings=probea'
+expect_not_contains 'the other member org does not appear beside it' "$probe_out" 'probeb'
+expect_contains 'a relative traversal to another member is denied' "$probe_out" 'relative=denied'
+expect_contains 'an absolute path to another member is denied' "$probe_out" 'absolute=denied'
+expect_contains 'a symlink to / cannot reach another member' "$probe_out" 'symlink=denied'
+expect_contains 'a symlink up out of the subtree cannot reach another member' "$probe_out" 'symlink_up=denied'
+expect_not_contains 'nothing in the probe leaked' "$probe_out" 'LEAKED'
+expect_not_contains 'the volume root is not reachable above the mount' "$probe_out" 'theirs'
+
+kubectl delete pod fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
 
 kill "$pf_pid" 2>/dev/null
 

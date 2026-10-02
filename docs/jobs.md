@@ -584,8 +584,14 @@ test run actually needs:
 services:
   - name: db
     image: postgres:16
+    # The postgres entrypoint chowns PGDATA as root before dropping down, which needs
+    # capabilities the default hardening takes away. See "The hardening, and the opt-out" below.
+    unhardened: true
     environment:
       POSTGRES_PASSWORD: secret
+
+  - name: cache
+    image: redis
 ```
 
 With services on (`RUNNER_SERVICES`, **on by default** — `RUNNER_SERVICES=0` opts out), the driver
@@ -621,6 +627,26 @@ connection and retry, which is what agents are for.
   the same subtree at the same consumer paths. `volume-subpath` landed in Engine 26.1; on an older
   daemon every claim fails on a mount error rather than running against a broader mount.
   `docker version` before pointing a dev driver at a host daemon.
+- **The hardening, and the opt-out (issue #382).** A declared service runs an image this project
+  did not build, named by a repository author, so it is hardened like every other container the
+  driver starts: every capability dropped (`capabilities.drop: [ALL]` / `--cap-drop ALL`), no
+  privilege escalation, the runtime's default seccomp profile, and no ServiceAccount token. **That
+  default breaks a large share of stock images**, because the common entrypoint chowns its data
+  directory as root before dropping down to an unprivileged user — `postgres`, `mysql` and `redis`
+  with a persistent directory all do — and `drop: [ALL]` takes away the `CHOWN`, `DAC_OVERRIDE`
+  and `FOWNER` that needs. The symptom is a container that exits immediately with a permission
+  error, not a security message.
+
+  The escape hatch is one key, `unhardened: true`, and it gives back **the image's default
+  capability set and nothing else**: the container still may not escalate privileges, still runs
+  under the default seccomp profile, still has no cluster credential and still cannot mount a host
+  path. It is a declaration in the repository rather than a cluster setting, so the relaxation is
+  visible in review — and it is per service, so one database opting out does not relax the rest of
+  the fleet. Its cost is legible: among what comes back is `CAP_NET_RAW`, on a network shared with
+  the runner and every other declared service. Grant it to the service that needs it, not to all
+  of them. `unhardened` takes the literal `true` and nothing else — `yes`, `on` and `1` are
+  refused, so the one key that loosens a control cannot be set by accident.
+
 - **The parse is strict to the point of rudeness, deliberately.** Unknown keys are refused, which
   is what makes a pasted Drone pipeline fail loudly instead of doing nothing — and `ports:` is an
   unknown key. There is no host port publishing and no volume mounting: the daemon executing these

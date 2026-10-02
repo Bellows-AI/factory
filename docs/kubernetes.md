@@ -676,6 +676,74 @@ Exercising these on a real cluster is a by-hand pre-release walk — [eks-runboo
 (issue #364), which carries the walk record; the script's cluster phase refuses every non-kind
 context on purpose, and its offline phase renders the EKS value shape as assertions instead.
 
+## Executor isolation: the boundary, the assumptions, and the residuals (#382)
+
+Every pod the driver specs runs untrusted code — the agent's commands, the repository's scripts,
+each gate, each block helper, each image a `.bellows.yaml` declares. [security.md](security.md)
+carries the controls themselves and the explicit statement that **none of this is kernel or VM
+isolation**. This section is the Kubernetes-specific half: what must be true of the cluster, and
+what is still open when it is.
+
+### What the deployment must provide
+
+The chart cannot make any of these, and each is **silent when absent** — the objects render, the
+install succeeds, and the isolation story reads as enforced:
+
+- **A CNI that enforces NetworkPolicy.** Without one the runner policy is an admitted, inert
+  object. On EKS that is the VPC CNI with `enableNetworkPolicy: true` (EC2 Linux nodes only); see
+  the prerequisites above. kind's default CNI (kindnet) does **not** enforce — which is why the
+  verification lane builds its own Calico cluster rather than borrowing one.
+- **ValidatingAdmissionPolicy, Kubernetes ≥ 1.30.** The policy is what makes the hardening an
+  invariant of the namespace instead of a habit of one client. `failurePolicy: Fail`, so a cluster
+  that cannot run the API refuses the pods rather than admitting unhardened ones.
+- **Node-level IMDS protection.** `blockedCidrs` covers `169.254.0.0/16`, but only where the CNI
+  enforces. `httpPutResponseHopLimit: 1` on the runner node group is the defence that does not
+  depend on the CNI being right.
+- **IPv4.** Every rule in the runner policy is written for IPv4 — the egress rule names
+  `0.0.0.0/0`. **An IPv6 or dual-stack cluster is not covered by the egress rules at all** and
+  must add its own policy. This is a stated limit, not a defect to be discovered.
+
+**An unsupported configuration must not be read as a sandbox.** If the CNI does not enforce, the
+network half of this section is decoration; if admission is unavailable, the pod half rests
+entirely on the driver being correct.
+
+### The residuals, named
+
+- **A runner can reach the driver pod on any port.** The gate endpoint is advertised at the driver
+  pod's own IP on an *ephemeral* port chosen at runtime, so there is no number the chart can put
+  in the policy. The dashboard and collector are port-scoped (the dashboard's serving port, the
+  collector's 4317/4318); the driver rule is deliberately portless and is the one hole left in
+  that rule. Closing it needs a fixed gate port.
+- **Cross-attempt traffic is allowed.** The policy's runner-to-runner rule is what lets a run reach
+  the declared services it started, and it does not distinguish attempts — so one attempt can
+  reach another attempt's pods, retries included. **#257 owns per-attempt network isolation**;
+  this is not duplicated here. `scripts/test-k8s.sh --netpol` asserts the current behaviour as
+  `reachable` on purpose, so that when #257 lands the change is visible rather than silent.
+- **Declared-service DNS shadowing is #296's.** Not duplicated here either.
+- **The apiserver and nodes are covered by `blockedCidrs`, not by name.** The defaults block
+  10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16, which is what puts the service network,
+  the pod network, the node IPs and the metadata endpoint out of reach on a normal cluster. **A
+  cluster whose apiserver or node addresses are PUBLIC is not covered** — those addresses fall in
+  the `0.0.0.0/0` egress rule, and the operator must add them to `blockedCidrs` themselves.
+- **A NetworkPolicy says nothing about HTTP routes.** Every endpoint a runner is still allowed to
+  reach authorizes its own callers; see [security.md](security.md).
+- **Same-member tasks share a workspace subtree.** See [workspace.md](workspace.md).
+- **A `helm upgrade` onto this change refuses the OLD driver's pods until its rollout finishes.**
+  The tightened policy is a cluster-scoped object and lands before the new driver pod is ready, so
+  for the length of the rollout the still-running previous driver creates pods that do not carry
+  the required fields and are denied. The board re-offers those attempts, so nothing is lost — but
+  a few attempts will fail with an admission message during the upgrade window. This repo does not
+  carry backward compatibility ([AGENTS.md](../AGENTS.md)); the window is named here so it is read
+  as expected rather than diagnosed as a break.
+
+### Docker parity
+
+The docker executor sets the same two container controls (`--cap-drop ALL`,
+`--security-opt no-new-privileges`) on every container it runs, and relies on the daemon's default
+seccomp profile rather than restating it. What docker does **not** have is an admission equivalent:
+nothing outside the driver process checks the argv. Docker is the development executor
+([AGENTS.md](../AGENTS.md)), and this is one of the reasons.
+
 ## Variables
 
 | Variable | Default | Notes |

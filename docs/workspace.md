@@ -262,6 +262,35 @@ with a PUT).
 - **The whole list is a PUT.** Same argument as the repos selection: the body is the entire list,
   so a retried request after a dropped connection changes nothing.
 
+## The workspace boundary, stated exactly (#382)
+
+**The mount is a MEMBER boundary. It is not a task boundary and not a repository boundary.** Both
+executors mount one member's `<orgId>/<userId>` subtree and only that subtree — on Kubernetes as a
+`subPath` on the workspaces claim, on Docker as `--mount volume-subpath=`. Both are bind mounts, so
+the rest of the volume is not merely unreadable from inside the container, it is **absent**: no
+sibling member's path resolves, `..` reaches the container's own rootfs rather than the volume
+root, and a symlink has nothing in the namespace to point at. `scripts/test-k8s.sh --cluster`
+proves exactly that, from inside a pod, with traversal, absolute-path and symlink probes.
+
+What follows from it, stated rather than left to be discovered:
+
+- **Every task belonging to the same member shares that subtree**, including concurrent ones. Two
+  tasks of one member can read and write each other's checkouts, each other's `.worktrees/<root
+  job id>` directories, each other's caches and each other's transcripts. The per-thread worktree
+  separates them by *convention and path*, never by a kernel boundary.
+- **Every repository that member selected is in the same subtree.** A task queued against one
+  repository can read the checkouts of all the others.
+- **A different member, or a different organization, is unreachable.** That is the boundary the
+  mount actually draws, and the one the probes cover.
+
+Narrowing this to a task would be a different mount design, not a tightened parameter: the git
+metadata a worktree needs lives in the member's clone (`.git` is shared by every worktree of it),
+the sync and publish steps write across both, the executor caches are per-member by construction,
+and the transcripts are read back by path after the run. A task-scoped mount has to answer all
+four before any of it can be written, and **this change deliberately does not touch mount code** —
+the issue asks for the design first. Until then, no part of this system claims task isolation from
+the workspace mount, and neither should any document describing it.
+
 ## Limitations
 
 - **Nothing prunes automatically, and per-member checkouts multiply that by the number of members.**

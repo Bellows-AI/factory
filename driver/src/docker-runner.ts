@@ -22,6 +22,7 @@ import {
 } from './publish.js';
 import { networkName } from './services.js';
 import {
+    containerHardeningArgs,
     containerName,
     dockerArgs,
     envFilePath,
@@ -321,6 +322,7 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         const out = await execDocker([
             'run',
             '--rm',
+            ...containerHardeningArgs(),
             ...workspacesMountArgs(config, workspacePath(job)),
             '-e',
             `REPO=${clone}`,
@@ -371,7 +373,12 @@ async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: 
     const repo = worktreeDir(config, job);
     try {
         return await publishCheckout(config, job, async (publish) => {
-            const args = ['run', '--rm', ...workspacesMountArgs(config, workspacePath(job))];
+            const args = [
+                'run',
+                '--rm',
+                ...containerHardeningArgs(),
+                ...workspacesMountArgs(config, workspacePath(job)),
+            ];
             if (publish.inRepo && repo) args.push('-w', repo);
             // Literal env values are paths and code (the probe's REPO) — the same class
             // as the sync's three path literals, never a credential.
@@ -439,7 +446,13 @@ async function dockerRunHelper(
             await files.writeFile(file, envFileBody(withPublishToken(job, token)), { mode: 0o600 });
         }
         const worktree = worktreeDir(config, job);
-        const args = ['run', '--name', helperContainerName, ...workspacesMountArgs(config, workspacePath(job))];
+        const args = [
+            'run',
+            '--name',
+            helperContainerName,
+            ...containerHardeningArgs(),
+            ...workspacesMountArgs(config, workspacePath(job)),
+        ];
         if (worktree) args.push('-w', worktree);
         args.push(
             '--label',

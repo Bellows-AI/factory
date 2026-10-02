@@ -17,6 +17,12 @@ pod — because `create pods` would otherwise be `read every Secret`:
     (`<org>/<user id>`, driver/src/publish.ts) and no subPathExpr, so no pod mounts the claim root.
   - no ServiceAccount token, no other ServiceAccount, no host namespaces, nothing privileged, no
     added capabilities.
+  - the executor hardening is REQUIRED, not merely permitted (#382): the RuntimeDefault seccomp
+    profile on the pod, `allowPrivilegeEscalation: false` on every container, and
+    `capabilities.drop: [ALL]` on every container except a declared `unhardened: true` service,
+    which carries `factory.unhardened: "true"` so this policy can tell one from a driver that
+    quietly stopped hardening. Forbidding `privileged` and requiring the drop are different
+    controls; a client that sets neither satisfies only the first.
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
 label every runner-owned object carries), so the dashboard's Secret, Service and ConfigMaps are
 out of reach; Secrets only under the per-attempt names and only Opaque (a service-account-token
@@ -26,8 +32,10 @@ Limits, stated: the per-attempt Secret names do not carry the release, so in a n
 two releases one driver can still reach the other's per-attempt objects — install one release per
 namespace. Admission sees no job, so the workspace subPath is fenced by shape, not by owner: a
 compromised driver can still name another member's `<org>/<user id>` subtree. A mutating sidecar injector (a service mesh) adds volumes this policy refuses on service
-pods; exclude the namespace from injection. Seccomp/AppArmor/sysctls are left to Pod Security
-Admission — label the namespace `pod-security.kubernetes.io/enforce: baseline` for those.
+pods; exclude the namespace from injection. Seccomp is required here (#382); AppArmor and sysctls
+are still left to Pod Security Admission — label the namespace
+`pod-security.kubernetes.io/enforce: baseline` for those. None of this is kernel or VM isolation:
+it is a smaller share of one shared kernel, not a different one (docs/security.md).
 */}}
 {{- $fullname := include "factory.fullname" . }}
 {{- $name := printf "%s-%s-driver" .Release.Namespace $fullname | trunc 240 | trimSuffix "-" }}
@@ -38,6 +46,8 @@ Admission — label the namespace `pod-security.kubernetes.io/enforce: baseline`
 {{- end }}
 {{- $secretName := "^factory-(job|sync|publish|helper|gate)-[a-z0-9-]+-env$" }}
 {{- $workspaceSubPath := "^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }}
+{{/* The declared-service hardening opt-out (#382) — driver/src/labels.ts, UNHARDENED_LABEL. */}}
+{{- $unhardenedLabel := "factory.unhardened" }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -73,6 +83,19 @@ spec:
               has(variables.spec.volumes) ? variables.spec.volumes.filter(v,
                 has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == {{ include "factory.workspaceClaim" . | squote }}
               ).map(v, v.name) : []
+        {{/*
+        The POD's labels, wherever the pod lives: on a Job the pod is the template, on a declared
+        service it is the object itself. Only the declared-service opt-out (#382) reads this, and
+        only service pods are bare Pods — but the variable resolves for both kinds, because a
+        CEL variable that is undefined for one of the policy's two resources fails the whole
+        expression closed, and `failurePolicy: Fail` turns that into every pod create refused.
+        */}}
+        - name: podLabels
+          expression: >-
+              request.kind.kind == 'Job'
+                ? (has(object.spec.template.metadata) && has(object.spec.template.metadata.labels)
+                    ? object.spec.template.metadata.labels : {})
+                : (has(object.metadata) && has(object.metadata.labels) ? object.metadata.labels : {})
     validations:
         - expression: "has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false"
           message: 'a driver-specced pod must set automountServiceAccountToken: false'
@@ -122,6 +145,38 @@ spec:
                 (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
                   size(c.securityContext.capabilities.add) == 0)))
           message: 'a driver-specced container may not be privileged or add capabilities'
+        {{/*
+        Issue #382. Everything above FORBIDS a dangerous shape; these three REQUIRE the safe one,
+        which is a different control: a driver that silently stopped setting `capabilities.drop`
+        satisfies every expression above and would be admitted. These are what make the hardening
+        an invariant of the namespace rather than a habit of one client.
+        */}}
+        - expression: >-
+              has(variables.spec.securityContext) && has(variables.spec.securityContext.seccompProfile) &&
+              variables.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
+          message: 'a driver-specced pod must run under the RuntimeDefault seccomp profile'
+        - expression: >-
+              variables.containers.all(c, has(c.securityContext) &&
+                has(c.securityContext.allowPrivilegeEscalation) &&
+                c.securityContext.allowPrivilegeEscalation == false)
+          message: 'a driver-specced container must set allowPrivilegeEscalation: false'
+        {{/*
+        The one validation with an exemption, and it is narrow by construction. A declared service
+        runs a stock image the repository author named; `.bellows.yaml` may say `unhardened: true`,
+        which gives that image its default capability set back and nothing else — the escalation
+        bit above and the seccomp profile above that still apply to it. The driver stamps
+        `factory.unhardened: "true"` on exactly those pods, because this policy sees the object and
+        nothing else: without the label a declared opt-out and a driver that quietly stopped
+        dropping capabilities are the same object. The label is not a security boundary against the
+        driver — it holds the driver's own identity — it is what keeps THIS validation from being
+        the reason nobody can run postgres.
+        */}}
+        - expression: >-
+              ('{{ $unhardenedLabel }}' in variables.podLabels &&
+                variables.podLabels['{{ $unhardenedLabel }}'] == 'true') ||
+              variables.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
+                has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop)
+          message: 'a driver-specced container must drop ALL capabilities unless it is a declared unhardened service'
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

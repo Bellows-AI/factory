@@ -9,9 +9,12 @@ code, so they reach only what a run needs:
     (169.254.20.10) no pod selector matches and blockedCidrs covers. Port 53 is not open to any
     other address, so a private host listening on 53 stays behind blockedCidrs. A cluster whose
     DNS carries other labels must list its resolver in dnsCidrs, or runners lose DNS;
-  - this release's dashboard (the branch reporter posts to FACTORY_STATS_URL), collector (OTLP)
-    and driver (the gate endpoint, on an ephemeral port — hence no port list);
-  - each other, for the declared services a run starts beside itself;
+  - this release's dashboard, on its serving port only (the branch reporter posts to
+    FACTORY_STATS_URL), and its collector, on 4317/4318 only (OTLP). The driver is reachable on
+    ANY port it listens on — the gate endpoint rides an ephemeral one, so there is no number to
+    name — which is this policy's stated residual (#382);
+  - each other, for the declared services a run starts beside itself. This also leaves one
+    attempt able to reach another attempt's pods; #257 owns narrowing it;
   - the internet: anything outside isolation.blockedCidrs, plus isolation.allowedCidrs.
 Ingress only from each other. IPv4 only: the egress rule names 0.0.0.0/0, so an IPv6-only cluster
 must add its own policy. Inert without an enforcing CNI, and enforcement is an add-on setting the
@@ -61,14 +64,53 @@ spec:
                 port: 53
               - protocol: TCP
                 port: 53
+        {{- /*
+        Issue #382: the chart's own pods, one rule per component and each named with the PORTS it
+        actually serves. This used to be a single portless rule over all three components, which
+        meant a runner reached every port on the dashboard, the collector and the driver —
+        including anything a future sidecar, a debug endpoint or a metrics listener added to them.
+        The ports here are CONTAINER ports, not Service ports: the peers are selected by
+        podSelector, so a NetworkPolicy port is matched against what the pod listens on.
+        */}}
         - to:
               - podSelector:
                     matchLabels:
                         {{- include "factory.selectorLabels" . | nindent 24 }}
-                    matchExpressions:
-                        - key: app.kubernetes.io/component
-                          operator: In
-                          values: [dashboard, collector, driver]
+                        app.kubernetes.io/component: dashboard
+          ports:
+              - protocol: TCP
+                port: {{ .Values.dashboard.port }}
+        - to:
+              - podSelector:
+                    matchLabels:
+                        {{- include "factory.selectorLabels" . | nindent 24 }}
+                        app.kubernetes.io/component: collector
+          ports:
+              - protocol: TCP
+                port: 4317
+              - protocol: TCP
+                port: 4318
+        {{- /*
+        The driver is the one component that stays PORTLESS, and it is a stated residual rather
+        than an oversight: the gate endpoint is advertised at the driver pod's own IP on an
+        EPHEMERAL port, chosen at runtime, so there is no number the chart could name here. A
+        runner can therefore reach any port the driver pod listens on. The driver listens on that
+        one endpoint and nothing else; narrowing this needs a fixed gate port, which is #257's
+        territory, not a value this chart can set.
+        */}}
+        - to:
+              - podSelector:
+                    matchLabels:
+                        {{- include "factory.selectorLabels" . | nindent 24 }}
+                        app.kubernetes.io/component: driver
+        {{- /*
+        Each other: the declared services a run starts beside itself. Portless by design —
+        `.bellows.yaml` declares no ports (`ports:` is an unknown key), so a service is reached on
+        whatever its image listens on. This rule is also what still allows one attempt to reach
+        ANOTHER attempt's pods; narrowing it to the same attempt is #257, which owns per-attempt
+        network isolation. Named here so the gap is read, not discovered.
+        */}}
+        - to:
               - podSelector:
                     matchLabels:
                         app.kubernetes.io/instance: {{ .Release.Name }}

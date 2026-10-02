@@ -36,7 +36,8 @@ import {
 import { ARTIFACT_LIMIT } from '../src/runner.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
-import { networkName, serviceContainerName, serviceRunArgs } from '../src/services.js';
+import { networkName, readBellowsArgs, serviceContainerName, serviceRunArgs } from '../src/services.js';
+import { syncCheckoutArgs } from '../src/docker-runner-support.js';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
@@ -608,8 +609,12 @@ describe('the close-time claude-code turn count', () => {
      */
     it('reads the transcript off the workspaces volume, session id by env, never in the script text', () => {
         const line = claudeTurnsArgs(loadDriverConfig({}), job, SESSION, START);
-        expect(line.slice(0, 12)).toEqual([
+        expect(line.slice(0, 16)).toEqual([
             'run',
+            '--cap-drop',
+            'ALL',
+            '--security-opt',
+            'no-new-privileges',
             '--rm',
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
@@ -624,8 +629,8 @@ describe('the close-time claude-code turn count', () => {
             '--entrypoint',
             'node',
         ]);
-        expect(line.slice(12, 14)).toEqual(['claude-executor', '-e']);
-        const script = line[14] as string;
+        expect(line.slice(16, 18)).toEqual(['claude-executor', '-e']);
+        const script = line[18] as string;
         // The script is the static file: the paths and the session id arrive by env, so no
         // board-derived value is ever part of its text.
         expect(script).not.toContain(`/workspaces/bellows/${USER}`);
@@ -681,8 +686,12 @@ describe('the transcript export reads (issue #325)', () => {
      */
     it('claude: reads the transcript off the workspaces volume, cap and delta by env, never in the script text', () => {
         const line = claudeTranscriptArgs(loadDriverConfig({}), job, SESSION, START);
-        expect(line.slice(0, 14)).toEqual([
+        expect(line.slice(0, 18)).toEqual([
             'run',
+            '--cap-drop',
+            'ALL',
+            '--security-opt',
+            'no-new-privileges',
             '--rm',
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
@@ -697,8 +706,8 @@ describe('the transcript export reads (issue #325)', () => {
             '--entrypoint',
             'node',
         ]);
-        expect(line.slice(14, 16)).toEqual(['claude-executor', '-e']);
-        const script = line[16] as string;
+        expect(line.slice(18, 20)).toEqual(['claude-executor', '-e']);
+        const script = line[20] as string;
         expect(script).not.toContain(`/workspaces/bellows/${USER}`);
         expect(script).not.toContain(SESSION);
         expect(script).toContain('process.env.TRANSCRIPT_LIMIT_BYTES');
@@ -710,8 +719,12 @@ describe('the transcript export reads (issue #325)', () => {
 
     it('opencode: reads the session database by env, scoped to the run working directory', () => {
         const line = opencodeTranscriptArgs(loadDriverConfig({}), opencodeJob, START);
-        expect(line.slice(0, 14)).toEqual([
+        expect(line.slice(0, 18)).toEqual([
             'run',
+            '--cap-drop',
+            'ALL',
+            '--security-opt',
+            'no-new-privileges',
             '--rm',
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
@@ -727,7 +740,7 @@ describe('the transcript export reads (issue #325)', () => {
             '--entrypoint',
             'node',
         ]);
-        const script = line[16] as string;
+        const script = line[20] as string;
         expect(script).not.toContain(`/workspaces/bellows/${USER}`);
     });
 
@@ -1047,8 +1060,12 @@ describe('scraping the session opencode used', () => {
 
     it('reads the session database out of the member’s data directory, root sessions only', () => {
         const line = opencodeSessionReadoutArgs(loadDriverConfig({}), opencodeJob, START);
-        expect(line.slice(0, 10)).toEqual([
+        expect(line.slice(0, 14)).toEqual([
             'run',
+            '--cap-drop',
+            'ALL',
+            '--security-opt',
+            'no-new-privileges',
             '--rm',
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
@@ -1067,8 +1084,8 @@ describe('scraping the session opencode used', () => {
             // turn count is bounded to the messages written at or after this run began.
             `RUN_STARTED_MS=${Date.parse(START)}`,
         ]);
-        expect(line.slice(10, 14)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
-        const script = line[14] as string;
+        expect(line.slice(14, 18)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[18] as string;
         // The script is the static file: the database path arrives by env, so no board-derived
         // value is ever part of its text.
         expect(script).not.toContain(`/workspaces/bellows/${USER}`);
@@ -1198,8 +1215,12 @@ describe('the cache watch', () => {
      */
     it('probes the newest root session of the member’s data directory, read-only', () => {
         const line = opencodeCacheProbeArgs(loadDriverConfig({}), opencodeJob);
-        expect(line.slice(0, 8)).toEqual([
+        expect(line.slice(0, 12)).toEqual([
             'run',
+            '--cap-drop',
+            'ALL',
+            '--security-opt',
+            'no-new-privileges',
             '--rm',
             '--mount',
             `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
@@ -1210,8 +1231,8 @@ describe('the cache watch', () => {
             // cannot drift apart.
             `CACHE_WATCH_TURNS=${CACHE_WATCH_TURNS}`,
         ]);
-        expect(line.slice(8, 12)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
-        const script = line[12] as string;
+        expect(line.slice(12, 16)).toEqual(['--entrypoint', 'node', 'opencode-executor', '-e']);
+        const script = line[16] as string;
         expect(script).toContain('process.env.OPENCODE_DB');
         expect(script).toContain('process.env.CACHE_WATCH_TURNS');
         // Newest-first, so the probe can answer from the run's last handful of messages without
@@ -4384,5 +4405,161 @@ describe('the block-helper transport (issue #207)', () => {
         const runner = runnerWith(exec);
         await runner.runHelper!(job, plan());
         expect(calls[0]).not.toContain('-w');
+    });
+});
+
+/*
+ * Issue #382, the docker half. Kubernetes is the primary executor, but a hardening that exists on
+ * only one of them is a hardening an operator cannot reason about — and docker is the executor a
+ * developer actually runs agent-written code under, on their own machine, against a daemon that
+ * is root on it. Same two controls, spelled the way docker spells them:
+ *
+ *   --cap-drop ALL                      the kubernetes `capabilities.drop: [ALL]`
+ *   --security-opt no-new-privileges    the kubernetes `allowPrivilegeEscalation: false`
+ *
+ * There is no seccomp twin to assert: the daemon applies its own default profile to every
+ * container unless told otherwise, which is what `seccompProfile: RuntimeDefault` asks the kubelet
+ * for. Adding a flag to restate it would be a flag that can only ever be wrong.
+ *
+ * Asserted as an ADJACENT ARGV PAIR, never as "contains the flag": `--cap-drop` separated from
+ * `ALL` by an inserted argument is the exact bug a substring check reports as passing, and the
+ * argv is built by concatenation in thirteen places.
+ */
+describe('every container the driver runs is hardened (#382)', () => {
+    /** The flag and its value, as the pair docker reads them — index-adjacent or it is not set. */
+    const hasPair = (argv: string[], flag: string, value: string): boolean =>
+        argv.some((arg, i) => arg === flag && argv[i + 1] === value);
+
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const config = () => loadDriverConfig({});
+    const builders: [string, () => string[]][] = [
+        ['the runner', () => dockerArgs(config(), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })],
+        ['a gate', () => gateEnvArgs(config(), `bellows/${USER}/.worktrees/${job.id}`, 'node:24')],
+        ['the opencode session readout', () => opencodeSessionReadoutArgs(config(), opencodeJob, START)],
+        ['the opencode cache probe', () => opencodeCacheProbeArgs(config(), opencodeJob)],
+        ['the claude turns readout', () => claudeTurnsArgs(config(), job, SESSION, START)],
+        ['the claude transcript export', () => claudeTranscriptArgs(config(), job, SESSION, START)],
+        ['the opencode transcript export', () => opencodeTranscriptArgs(config(), opencodeJob, START)],
+        ['the .bellows.yaml readout', () => readBellowsArgs(config(), job)],
+        [
+            'the startup sync',
+            () =>
+                syncCheckoutArgs(config(), repoJob, {
+                    clone: '/w/clone',
+                    worktree: '/w/wt',
+                    restore: false,
+                    envFile: null,
+                }),
+        ],
+        ['a declared service', () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] })],
+    ];
+
+    it.each(builders)('drops every capability on %s', (_name, build) => {
+        expect(hasPair(build(), '--cap-drop', 'ALL')).toBe(true);
+    });
+
+    it.each(builders)('refuses privilege escalation on %s', (_name, build) => {
+        expect(hasPair(build(), '--security-opt', 'no-new-privileges')).toBe(true);
+    });
+
+    /*
+     * The three paths that build their argv INLINE inside docker-runner.ts rather than through an
+     * exported builder — the worktree reclaim, the publish steps and the block helpers. The
+     * kubernetes side funnels all of these through `auxJobSpec`, so one spread covers them; docker
+     * has no such chokepoint, and the issue names reclaim, publish and helper explicitly. Without
+     * these three they were the only `docker run` sites in the process with nothing asserting the
+     * flags, which is exactly where a new one would land unnoticed.
+     *
+     * Asserted through each path's own `execDocker` fake, so the argv checked is the argv the
+     * daemon would have been handed.
+     */
+    const runArgvFrom = async (drive: (runner: ReturnType<typeof createDockerRunner>) => Promise<unknown>) => {
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            calls.push(args);
+            // Enough of a daemon for each path to get PAST its first step. The publish path reads
+            // a git state before it does anything, and a state that says "not cloned" would stop
+            // it after one container — leaving this helper asserting over a single argv while
+            // claiming to cover the step containers.
+            //
+            // The responses are NOT path-appropriate beyond that, and do not need to be: the
+            // reclaim script also embeds `execFileSync`, so it receives a git-state payload
+            // rather than its removal JSON. These tests read the ARGV, never the verdict, and
+            // reclaim runs its one container unconditionally either way. A test here that cared
+            // about the verdict would need a router, not this.
+            if (args.some((a) => typeof a === 'string' && a.includes('execFileSync'))) {
+                if (args.some((a) => typeof a === 'string' && a.includes('shortstat'))) {
+                    return { stdout: JSON.stringify({ title: 'Harden the executors', body: '## Commits' }) };
+                }
+                return {
+                    stdout: JSON.stringify({
+                        cloned: true,
+                        branch: 'main',
+                        defaultBranch: 'main',
+                        dirty: true,
+                        unpushed: 0,
+                        hasIdentity: false,
+                    }),
+                };
+            }
+            if (args.includes('pr') && args.includes('view')) throw new Error('no pull requests');
+            if (args.includes('pr') && args.includes('create')) return { stdout: `${PR_URL}\n` };
+            if (args[0] === 'run') return { stdout: '{"ok":true,"removed":true,"reason":null}' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec,
+            // A fake `files`: the publish path writes a real env file into os.tmpdir() under the
+            // default, and an offline unit test has no business touching the filesystem.
+            { writeFile: async () => undefined, rm: async () => undefined } as unknown as Parameters<
+                typeof createDockerRunner
+            >[3]
+        );
+        await drive(runner).catch(() => undefined);
+        return calls.filter((a) => a[0] === 'run');
+    };
+
+    it.each([
+        [
+            'the worktree reclaim',
+            (r: ReturnType<typeof createDockerRunner>) => r.reclaimWorktree({ ...job, repo: 'Bellows-AI/factory' }),
+        ],
+        [
+            'a block helper',
+            (r: ReturnType<typeof createDockerRunner>) =>
+                r.runHelper!(job, { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }),
+        ],
+    ])('hardens every container %s runs', async (_name, drive) => {
+        const runs = await runArgvFrom(drive as (r: ReturnType<typeof createDockerRunner>) => Promise<unknown>);
+        expect(runs.length).toBeGreaterThan(0);
+        for (const argv of runs) {
+            expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
+            expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
+        }
+    });
+
+    // Publish is its own case: it runs SEVERAL containers per attempt (the git state probe, the
+    // summarizer, each git step), and every one of them must carry the flags — so the assertion
+    // is over all of them, not the first. The `toBeGreaterThan(1)` is load-bearing: with a fake
+    // that stops the path after its probe this test would pass over a single argv while its name
+    // claimed the step containers.
+    it('hardens every container the publish path runs', async () => {
+        const runs = await runArgvFrom((r) => r.publishGit({ ...job, repo: 'Bellows-AI/factory' }));
+        expect(runs.length).toBeGreaterThan(1);
+        for (const argv of runs) {
+            expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
+            expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
+        }
+    });
+
+    // The same opt-out the kubernetes service pod carries, and reaching exactly as far: a stock
+    // image whose entrypoint chowns its data directory as root gets its capabilities back and
+    // nothing else. `no-new-privileges` stays on, because chowning does not require escalating.
+    it('lets a declared service opt out of the capability drop, and of nothing else', () => {
+        const argv = serviceRunArgs(job, { name: 'db', image: 'postgres:16', environment: [], unhardened: true });
+        expect(argv).not.toContain('--cap-drop');
+        expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
     });
 });

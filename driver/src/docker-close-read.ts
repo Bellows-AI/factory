@@ -26,7 +26,12 @@ import {
 } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath, runWorkingDir } from './claim.js';
 import type { ExecDocker } from './docker-runner-support.js';
-import { workspacesMountArgs, opencodeSessionReadoutArgs, CLOSE_READ_DEADLINE_MS } from './docker.js';
+import {
+    workspacesMountArgs,
+    opencodeSessionReadoutArgs,
+    containerHardeningArgs,
+    CLOSE_READ_DEADLINE_MS,
+} from './docker.js';
 import { ARTIFACT_LIMIT, type RunOutcome, type RunSession } from './runner.js';
 import { OPENCODE } from './executors.js';
 
@@ -44,6 +49,7 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
     }
     return [
         'run',
+        ...containerHardeningArgs(),
         '--rm',
         ...workspacesMountArgs(config, workspacePath(job)),
         // Both travel as env VALUES — the script (claude-turns.cjs) is static, so nothing
@@ -77,6 +83,7 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
     const db = opencodeDbPath(config, job);
     return [
         'run',
+        ...containerHardeningArgs(),
         '--rm',
         ...workspacesMountArgs(config, workspacePath(job)),
         // The database path and the turn count travel as env VALUES — the script
@@ -111,6 +118,7 @@ export function claudeTranscriptArgs(
     }
     return [
         'run',
+        ...containerHardeningArgs(),
         '--rm',
         ...workspacesMountArgs(config, workspacePath(job)),
         '-e',
@@ -138,6 +146,7 @@ export function opencodeTranscriptArgs(config: DriverConfig, job: BoardJob, star
     const db = opencodeDbPath(config, job);
     return [
         'run',
+        ...containerHardeningArgs(),
         '--rm',
         ...workspacesMountArgs(config, workspacePath(job)),
         '-e',

@@ -152,3 +152,85 @@ deliberately does not open it. **Keep
 to `0` in `.claude/settings.json`. Enabling any of them puts prompt text and source code into the
 database, and the attribute allowlist does not save you: that content arrives as the log record
 *body*, not as an attribute.
+
+## The executor sandbox: what it is, and what it is not (#382)
+
+Read before: changing a pod spec in `driver/src/k8s-*.ts`, a `docker run` argv in
+`driver/src/docker*.ts`, the admission policy, or the runner NetworkPolicy.
+
+**Everything an executor runs is untrusted code.** Not only the agent's own commands — the
+repository's scripts, every gate, every block helper, and every image a `.bellows.yaml` declares as
+a service. None of it was written by this project, and the boundary has to hold whether the code
+inside is hostile or merely careless.
+
+**What is enforced, on every pod and every container, with no switch to turn it off:**
+
+| Control | Kubernetes | Docker |
+| --- | --- | --- |
+| No capabilities | `capabilities.drop: [ALL]` | `--cap-drop ALL` |
+| No privilege escalation | `allowPrivilegeEscalation: false` | `--security-opt no-new-privileges` |
+| Syscall filter | `seccompProfile: RuntimeDefault` (pod level) | the daemon's default profile, applied unless told otherwise |
+| No cluster credential | `automountServiceAccountToken: false` | no socket, no credential |
+| No host | no hostPath, no host namespaces, no host port | no bind mounts, no `--privileged` |
+
+There is deliberately **no** `--seccomp` flag on the docker side: the daemon already applies its
+default profile, which is what `RuntimeDefault` asks the kubelet for, and a flag restating it could
+only ever be wrong.
+
+On Kubernetes these are not merely *set* by the driver, they are **required by admission**
+(`charts/factory/templates/driver-admission.yaml`). That distinction is the point: the policy
+already forbade `privileged` and added capabilities, and a driver that silently stopped setting
+`capabilities.drop` would have satisfied every one of those expressions. Forbidding a dangerous
+shape and requiring a safe one are different controls.
+
+### The declared-service opt-out
+
+A `.bellows.yaml` service may say `unhardened: true`. It gives that container **the image's default
+capability set and nothing else** — the escalation bit stays off, the seccomp profile stays on, the
+pod still carries no ServiceAccount token and still cannot mount a host path. It exists because a
+large share of stock images (`postgres`, `mysql`, `redis` with a data directory) have an entrypoint
+that chowns its data directory as root before dropping down, and `drop: [ALL]` takes away the
+`CHOWN`/`DAC_OVERRIDE`/`FOWNER` that needs.
+
+**What it gives back is worth naming, not just bounding.** The image's default capability set
+includes `CAP_NET_RAW` — raw socket access, on the network the runner and every other declared
+service of that attempt share, and the capability `k8s-podfields.ts` cites as a reason for the drop
+in the first place. No NetworkPolicy sees traffic forged that way. Grant the opt-out to the one
+service whose entrypoint needs it, never to the whole fleet out of habit.
+
+The opt-out is a **declaration in the repository**, visible in review, not a default and not a
+cluster setting. The driver stamps `factory.unhardened: "true"` on exactly those pods so the
+admission policy can tell a declared opt-out from a driver that quietly stopped hardening; the
+label is not a boundary against the driver, which holds its own identity anyway.
+
+### What the hardening does NOT do
+
+**This is not kernel isolation and it is not VM isolation.** Every runner, gate, helper and service
+shares one host kernel with every other pod on its node. Ordinary pod hardening gives agent code a
+smaller share of that kernel; it does not give it a different one. A kernel privilege-escalation
+bug is not mitigated by anything in the table above. If the threat model needs a kernel boundary,
+that is a sandboxed runtime (gVisor, Kata, Firecracker) on a dedicated node group — a deployment
+decision this chart does not make and does not pretend to.
+
+Also, specifically:
+
+- **There is no opt-out for a GATE image, only for a declared service.** A gate is the other place
+  a repository names an image (`.bellows.yaml`'s `environment: image:`), and it gets the full
+  hardening with no escape hatch: a gate command that reaches for `sudo`, or for any setuid binary,
+  now fails. That asymmetry is deliberate — a gate runs the repository's own verification commands,
+  which have no reason to need root, whereas a declared service runs a third-party image whose
+  entrypoint the author did not write and cannot change. If a real gate turns out to need a
+  capability, the answer is a narrower grant on that one gate, not a second blanket opt-out.
+  (Block helpers are not in this category at all: a helper runs the EXECUTOR image with a script
+  body, never an author-named image, so there is no third-party entrypoint to accommodate.)
+- **No `readOnlyRootFilesystem`.** An agent run writes its caches, its `HOME` and its git worktree;
+  a read-only root fails it on the first `npm install`. The workspace is the writable surface by
+  design.
+- **Same-member tasks share a workspace subtree.** See [workspace.md](workspace.md) — the mount is
+  a member boundary, never a task boundary.
+- **A NetworkPolicy cannot restrict HTTP routes.** It decides which pod may open a socket to which
+  address and port, and nothing about what is then requested over it. Every endpoint a runner is
+  allowed to reach must still authorize the caller itself: the board does (the job-id + lease-token
+  pair), and the OTLP ingest does under `auth.ingest_token`.
+- **The network controls are inert without an enforcing CNI**, and the chart cannot install one.
+  See [kubernetes.md](kubernetes.md), "EKS prerequisites".

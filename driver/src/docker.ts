@@ -55,6 +55,25 @@ export const workspacesMountArgs = (config: DriverConfig, subPath: string, readO
     }`,
 ];
 
+/**
+ * The docker twin of the kubernetes pod hardening (issue #382), on EVERY container this driver
+ * runs — the runner, the gates, the readouts, the sync, the reclaim, the publish steps, the block
+ * helpers and the declared services. Kubernetes is the primary executor, but docker is the one a
+ * developer runs agent-written code under on their own machine, against a daemon that is root on
+ * it, so the two controls are spelled here the way docker spells them:
+ *
+ *   --cap-drop ALL                     the kubernetes `capabilities.drop: [ALL]`
+ *   --security-opt no-new-privileges   the kubernetes `allowPrivilegeEscalation: false`
+ *
+ * There is no seccomp twin, and adding one would be a flag that can only ever be wrong: the daemon
+ * already applies its default profile to every container, which is precisely what the kubelet is
+ * being asked for by `seccompProfile: RuntimeDefault`.
+ *
+ * A FUNCTION, not a shared constant: an exported array would be reachable from every argv this
+ * process builds, and one caller pushing onto it would disarm all of them.
+ */
+export const containerHardeningArgs = (): string[] => ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];
+
 const PERCENT = /^([0-9.]+)%/;
 const MEMORY = /^([0-9.]+)\s*([A-Za-z]+)/;
 
@@ -205,6 +224,7 @@ export function gateEnvArgs(config: DriverConfig, key: string, image: string, en
     }
     const args = [
         'run',
+        ...containerHardeningArgs(),
         '-d',
         '--name',
         gateEnvContainerName(key),
@@ -264,6 +284,7 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
     const db = opencodeDbPath(config, job);
     return [
         'run',
+        ...containerHardeningArgs(),
         '--rm',
         ...workspacesMountArgs(config, workspacePath(job)),
         // The database path and the directory scope travel as env VALUES — the script
@@ -375,6 +396,7 @@ export function dockerArgs(
     assertWorktreeResolvable(config, job);
     const args = [
         'run',
+        ...containerHardeningArgs(),
         '--name',
         containerName(job),
         // Two labels, two jobs. `factory.job` is shared by every attempt of the job: it is what

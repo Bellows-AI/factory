@@ -36,7 +36,8 @@ or {
                 r"^['\"]factory\.job['\"]$",
                 r"^['\"]factory\.lease['\"]$",
                 r"^['\"]factory\.service['\"]$",
-                r"^['\"]factory\.gates['\"]$"
+                r"^['\"]factory\.gates['\"]$",
+                r"^['\"]factory\.unhardened['\"]$"
             }
         },
         // API error codes. The all-caps pre-check runs first so an ordinary literal pays one regex,

@@ -612,6 +612,159 @@ describe('resources on every pod the driver specs', () => {
 });
 
 /*
+ * Issue #382. Every pod the driver specs runs code it did not write — the agent's commands, the
+ * repository's scripts, a gate, a helper, a declared service's image. The hardening below is what
+ * stands between that code and the node, and it is unconditional: there is no config knob, because
+ * an operator who can turn it off is an operator who will find it off after an incident.
+ *
+ * What actually protects a NEW aux Job is not the list below — which is hand-written and can fall
+ * behind — but the single spread inside `auxJobSpec`, which every aux builder goes through. This
+ * suite pins that the spread exists and reaches all ten of today's aux builders (the eleventh
+ * entry is `runnerJobSpec`, which has its own spread and never goes through it); a builder that
+ * bypassed `auxJobSpec` altogether would need its own line here, and the admission policy is the
+ * backstop that refuses it at the apiserver either way.
+ */
+describe('the pod hardening on every pod the driver specs (#382)', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const hardened = () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        return [
+            runnerJobSpec(config, job, { id: SESSION, resume: false }),
+            gateJobSpec(config, job, {
+                key: `bellows/${USER}/.worktrees/${job.id}`,
+                image: 'node:24',
+                gateName: 't',
+                command: 'npm test',
+                run: 1,
+                envSecretName: null,
+                gateTimeoutMs: 30_000,
+            }),
+            bellowsJobSpec(config, job),
+            opencodeReadoutJobSpec(config, job, '2026-09-01T00:00:00Z'),
+            claudeTurnsJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
+            claudeTranscriptJobSpec(config, job, SESSION, '2026-09-01T00:00:00Z'),
+            opencodeTranscriptJobSpec(config, job, '2026-09-01T00:00:00Z'),
+            syncJobSpec(config, repoJob, null),
+            reclaimJobSpec(config, repoJob),
+            publishStepJobSpec(config, repoJob, {
+                step: 1,
+                publish: { label: 'push', entrypoint: 'git', args: ['status'], env: false, inRepo: false },
+                envSecret: null,
+                repo: '/wt',
+            }),
+            helperJobSpec(config, job, {
+                plan: { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false },
+                descriptor: lookupHelper('noop')!,
+                envSecret: null,
+                nonce: '77777777-7777-4777-8777-777777777777',
+            }),
+        ];
+    };
+
+    // A capability is a slice of root the kernel hands a process without asking anyone. An agent
+    // run needs none of them: it reads, writes and compiles inside its own worktree. Dropping ALL
+    // is what makes `CAP_NET_RAW` (ARP spoofing a neighbour pod) and `CAP_DAC_OVERRIDE` (reading
+    // past the file modes on the shared claim) unavailable rather than merely unused.
+    it('drops every capability on every aux Job and the runner', () => {
+        for (const s of hardened()) {
+            const container = s.spec.template.spec.containers[0]!;
+            expect(container.securityContext?.capabilities?.drop, s.metadata.name).toEqual(['ALL']);
+        }
+    });
+
+    // Without this a setuid binary inside the image re-acquires what the drop above removed, and
+    // the drop becomes decoration. The two are one control; they are asserted separately because
+    // a regression reaches for one at a time.
+    it('refuses privilege escalation on every aux Job and the runner', () => {
+        for (const s of hardened()) {
+            const container = s.spec.template.spec.containers[0]!;
+            expect(container.securityContext?.allowPrivilegeEscalation, s.metadata.name).toBe(false);
+        }
+    });
+
+    // Pod level, not container level: seccomp is a property of the whole pod's containers, and
+    // naming it once is what keeps a future sidecar from being born unfiltered. RuntimeDefault is
+    // the runtime's own profile — it blocks the syscalls a container has no business making
+    // (keyctl, the kernel module calls) without the per-image tuning a Localhost profile needs.
+    it('runs every pod under the runtime default seccomp profile', () => {
+        for (const s of hardened()) {
+            expect(s.spec.template.spec.securityContext?.seccompProfile, s.metadata.name).toEqual({
+                type: 'RuntimeDefault',
+            });
+        }
+    });
+
+    // The deliberate absence, pinned so a future tightening reads the reason before it lands: an
+    // agent run writes its caches, its HOME and its git worktree, and a read-only root filesystem
+    // fails it on the first npm install. The workspace is the writable surface by design; see
+    // docs/security.md, "What the hardening does not do".
+    it('sets no readOnlyRootFilesystem, which an agent run needs', () => {
+        for (const s of hardened()) {
+            const container = s.spec.template.spec.containers[0]!;
+            expect(container.securityContext?.readOnlyRootFilesystem, s.metadata.name).toBeUndefined();
+        }
+    });
+
+    // A declared service is the one pod in the fleet whose image the driver did not build: a
+    // repository author names it in `.bellows.yaml` and the cluster pulls it. It is hardened like
+    // everything else — "every execution path" is the whole point of the issue — and the escape
+    // hatch below is a declaration, not a default.
+    it('hardens a declared service pod like every other pod', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        const pod = servicePodSpec(config, job, { name: 'cache', image: 'redis', environment: [] }, 'svc-uid');
+        expect(pod.spec.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
+        expect(pod.spec.containers[0]!.securityContext?.capabilities?.drop).toEqual(['ALL']);
+        expect(pod.spec.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
+        expect(pod.metadata.labels['factory.unhardened']).toBeUndefined();
+    });
+
+    // The opt-out, and exactly how far it goes. `unhardened: true` restores THE IMAGE'S DEFAULT
+    // CAPABILITY SET and nothing else, because that is the only part that breaks a stock image: a
+    // root entrypoint that chowns its data directory needs CHOWN, DAC_OVERRIDE and FOWNER back.
+    // It does not need to escalate, so the escalation bit stays off, and it does not need an
+    // unfiltered syscall table, so the seccomp profile stays on. The label is what lets the
+    // admission policy tell a declared opt-out from a driver that silently stopped hardening.
+    it('lets a declared service opt out of the capability drop, and of nothing else', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        const pod = servicePodSpec(
+            config,
+            job,
+            { name: 'db', image: 'postgres:16', environment: [], unhardened: true },
+            'svc-uid'
+        );
+        expect(pod.spec.containers[0]!.securityContext?.capabilities).toBeUndefined();
+        expect(pod.spec.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
+        expect(pod.spec.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
+        expect(pod.metadata.labels['factory.unhardened']).toBe('true');
+        // Nothing the opt-out touches reaches the node: it is still a tokenless pod, and the
+        // admission policy still refuses it a host mount and a foreign Secret.
+        expect(pod.spec.automountServiceAccountToken).toBe(false);
+    });
+
+    // The merge, not the replace. The gate writes the shared worktree as a fixed uid:gid, and that
+    // pod-level securityContext is the same field the seccomp profile lands in — a builder that
+    // assigns instead of spreading silently drops one of the two, and only one of the two has a
+    // visible symptom.
+    it('keeps the gate uid:gid beside the seccomp profile', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        const gate = gateJobSpec(config, job, {
+            key: `bellows/${USER}/.worktrees/${job.id}`,
+            image: 'node:24',
+            gateName: 't',
+            command: 'npm test',
+            run: 1,
+            envSecretName: null,
+            gateTimeoutMs: 30_000,
+        });
+        expect(gate.spec.template.spec.securityContext).toEqual({
+            runAsUser: 1000,
+            runAsGroup: 1000,
+            seccompProfile: { type: 'RuntimeDefault' },
+        });
+    });
+});
+
+/*
  * The runner is tested against an injected request function — the same discipline board.test.ts
  * applies to fetch, and the reason this suite spawns nothing and needs no cluster. The fake is a
  * router over (method, path): everything it is not told about throws, so a test that passes is one
@@ -5599,7 +5752,9 @@ describe('the gate job spec', () => {
     // docker twin: a gate-built core/dist left a worktree unremovable and its thread stuck).
     it('writes the worktree as the runner uid:gid, with a HOME that uid can write', () => {
         const s = gateSpec();
-        expect(s.spec.template.spec.securityContext).toEqual({ runAsUser: 1000, runAsGroup: 1000 });
+        // The uid:gid half only — the same field also carries the #382 seccomp profile, whose
+        // merge with these two is pinned in 'keeps the gate uid:gid beside the seccomp profile'.
+        expect(s.spec.template.spec.securityContext).toMatchObject({ runAsUser: 1000, runAsGroup: 1000 });
         const container = s.spec.template.spec.containers[0];
         expect(container.env).toEqual([{ name: 'HOME', value: '/tmp' }]);
     });
