@@ -21,15 +21,15 @@ restart with a warm database serves real data on the first request rather than a
   is a new file — 013 adding a check value and 023 removing the pull-request schema are the two
   precedents.
 - **`001_init.sql` is the one exception to that rule, taken deliberately in #371.** It used to
-  `create extension postgresdb` and call `create_hypertable('metric_point', …)`; it now declares
+  `create extension timescaledb` and call `create_hypertable('metric_point', …)`; it now declares
   `metric_point` `partition by range (time)` with a single DEFAULT partition, and the schema names
   no extension at all — which is what lets `database.url` point at RDS or Aurora. It was rewritten
   rather than converted by a new file because a converting migration would have to rebuild the
   table under every existing database, and the project ships no backward compatibility
   (`AGENTS.md`). **An existing data directory must be destroyed, and the symptom if it is not is a
-  container that never starts.** A directory initialised by `postgres/postgresdb` carries
-  `shared_preload_libraries = 'postgresdb'` in its own `postgresql.conf`, and `postgres:17` cannot
-  load that library — it exits at startup ("could not access file \"postgresdb\"") and compose
+  container that never starts.** A directory initialised by `timescale/timescaledb` carries
+  `shared_preload_libraries = 'timescaledb'` in its own `postgresql.conf`, and `postgres:17` cannot
+  load that library — it exits at startup ("could not access file \"timescaledb\"") and compose
   crash-loops the service. The schema would be stale regardless: 001 is already recorded in
   `schema_migrations`, so an old database stays a hypertable and is never converted. So:
   `docker compose down -v` before `docker compose up`, which discards `factory_dev` with the

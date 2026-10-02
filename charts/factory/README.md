@@ -7,7 +7,7 @@ is required when the chart creates the Secret, and with `secret.existingSecret` 
 carry `database-url` instead. Either way the URL can name **any managed PostgreSQL 17** —
 RDS and Aurora included. The schema loads no extension: `metric_point` is a declaratively-
 partitioned table (`partition by range (time)` with a DEFAULT partition), which is what #371
-replaced the `postgresdb` hypertable with. Local clusters get a database, plus a workspaces claim
+replaced the `timescaledb` hypertable with. Local clusters get a database, plus a workspaces claim
 that survives an app reinstall, from the separate
 [`factory-local-state`](../factory-local-state) chart.
 

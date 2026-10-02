@@ -300,7 +300,7 @@ kind walkthrough. Decisions that look like cruft and are not:
   this schema stopped requiring.
 
   **An existing local database must be destroyed, not upgraded.** A data directory initialised by
-  `postgres/postgresdb` preloads the library in its own `postgresql.conf`, so `postgres:17`
+  `timescale/timescaledb` preloads the library in its own `postgresql.conf`, so `postgres:17`
   exits at startup and the pod crash-loops — delete the database claim (it outlives `make stop`
   deliberately) along with the image change. `make reset` is that delete. By hand it is two steps,
   and the order is the whole point: `helm uninstall factory-state` first — `make stop` leaves the

@@ -91,14 +91,14 @@ COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/
 .PHONY: build start state-preflight stop reset
 
 # The one upgrade `make start` must not perform. A pre-#371 state release holds the database in a
-# Deployment beside a standalone PVC named `<release>-postgres`; this chart holds it in a
+# Deployment beside a standalone PVC named `<release>-timescale`; this chart holds it in a
 # StatefulSet whose volumeClaimTemplate mints `data-<release>-postgres-0`. The old PVC is a
 # resource the new manifest does not contain and carries no `helm.sh/resource-policy: keep`, so
 # `helm upgrade --install` deletes it — and the data — and the StatefulSet then starts on an empty
 # claim. `make start` promises a re-run keeps the release's data, so it refuses instead: destroying
 # a local database is a thing the user types, and `make reset` is how they type it.
 state-preflight:
-	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_STATE_RELEASE)-postgres >/dev/null 2>&1; then \
+	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_STATE_RELEASE)-timescale >/dev/null 2>&1; then \
 		echo "make start: $(K8S_STATE_RELEASE) is a pre-#371 release — the database is a Deployment"; \
 		echo "  with a standalone PVC. Upgrading it deletes that claim and every row in it."; \
 		echo "  Run 'make reset' to drop the local state, then 'make start' again."; \

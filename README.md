@@ -153,7 +153,8 @@ What each suite guards, and the coverage gates: [executor testing](docs/executor
 
 `GET /api/health` never calls GitHub, so a rate-limited container still reports healthy.
 `GET /api/stats` answers `200` with `{ telemetry, tasks, meta }`, `202` while the first read runs,
-`503` if telemetry is off or that read failed. Full surface: [api](docs/api.md).
+`503` if telemetry is off or a read failed with no cached payload available. Full surface:
+[api](docs/api.md).
 
 ## Docs
 
