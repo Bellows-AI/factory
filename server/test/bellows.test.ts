@@ -112,7 +112,7 @@ describe('parseBellows: services block', () => {
             '          command: npm test',
             '',
             'services:',
-            '    - name: timescale',
+            '    - name: postgres',
             '      image: postgres:17',
             '      environment:',
             '          POSTGRES_PASSWORD: factory',

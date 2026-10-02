@@ -310,7 +310,7 @@ describe('TaskOutcome — gates, publication and services', () => {
 describe('TaskOutcome — services and the placeholder sweep', () => {
     it('renders the newest attempt services as last-reported states, collapsing past three', () => {
         const services = [
-            { name: 'timescale', image: 'timescale', state: 'running' },
+            { name: 'postgres', image: 'postgres', state: 'running' },
             { name: 'api', image: 'api', state: 'exited' },
             { name: 'web', image: 'web', state: 'running' },
         ];
@@ -328,7 +328,7 @@ describe('TaskOutcome — services and the placeholder sweep', () => {
                 }),
             ],
         });
-        expect(html).toContain('timescale');
+        expect(html).toContain('postgres');
         expect(html).toContain('exited');
         const more = renderDetail({
             jobs: [

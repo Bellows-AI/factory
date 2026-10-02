@@ -523,7 +523,7 @@ to two callers makes that claim false.
 | `core/test/task-state.independent.test.ts` | The transition tables, with the test **declaring its own copy** so a wrong edit to `core/src/executor.ts` cannot hide — same construction and same reason as `metrics.independent.test.ts`. Plus: every terminal status has no outgoing edges; every status is reachable from `queued` (a status nobody can enter cannot be added by accident); `canTransition` is total over both enums. |
 | `executor/test/task-store.memory.test.ts` | Two claimers never receive the same task. `attempt_no` numbering is 1-based and monotonic. `attempts < max_attempts` is honoured. `run_after` gating. Lease expiry → `lost` → requeue-or-fail depending on budget. A duplicate `completeAttempt` is a no-op. **A completion arriving after a cancel does not resurrect the task.** |
 
-### `npm run test:db` — needs timescale, refuses any database not named `*_test`
+### `npm run test:db` — needs postgres, refuses any database not named `*_test`
 
 | File | Must assert |
 | --- | --- |

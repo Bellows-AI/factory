@@ -8,9 +8,13 @@ is a CLI wrapper: the driver passes the command as `-p <command>` to claude-code
 positional prompt of `opencode run`. The task's selected executor profile type chooses which.
 
 **The server hands jobs out and records results. It never spawns anything.** The claim resolves the
-task's executor label in the AUTHOR's executor list and carries its type; the driver runs the
+task's executor label in the STAMPED SCOPE's executor list (issue 391) — the author's own rows by
+default, or the organization's when the task stamped `executorScope: 'org'`, which is how an
+admin-configured profile runs any member's task — and carries its type; the driver runs the
 matching `claude-executor` or `opencode-executor` container against that author's workspace checkout
-and reports back. The docker socket lives with the driver, never with the dashboard: the dashboard's
+and reports back. Sharing a profile changes the configuration, never the author: the task's
+`created_by`, workspace and environment scope are the queuing member's own, whatever scope the
+executor came from. The docker socket lives with the driver, never with the dashboard: the dashboard's
 port is unauthenticated, and a socket on that process would make it root on the host.
 
 When a task walks a WORKFLOW — the graph of agent nodes the board itself walks between verdicts —
@@ -25,7 +29,8 @@ shaped exactly like `driver/`: it depends on nothing, `core` included, and speak
 person routes only. The whole task lifecycle, one command per verb:
 
 ```
-factory job create <command...> [--repo owner/name] [--executor name]   POST /api/jobs
+factory job create <command...> [--repo owner/name] [--executor name]
+      [--executor-scope user|org]                                        POST /api/jobs
 factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]   GET /api/jobs
 factory job investigate <id> [--json]                                   GET /api/jobs/:id + /thread
 factory job wait <id> [--timeout <seconds>] [--json]                    GET /api/jobs/:id?waitFor=terminal

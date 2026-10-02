@@ -444,11 +444,10 @@ test('advanced editing is lossless, per agent, and survives a failed save', asyn
         (request) => request.method() === 'PUT' && request.url().endsWith('/api/workspace/executors')
     );
     await save.click();
-    const sent = (await put).postDataJSON() as { executors: { name: string; config: object; isDefault: boolean }[] };
+    const sent = (await put).postDataJSON() as { executors: { name: string; config: object }[] };
     await expect(dialog).toHaveCount(0);
     expect(sent.executors.find((row) => row.name === 'advanced')).toMatchObject({
         config: { custom: 1, hooks: {}, model: 'opus' },
-        isDefault: false,
     });
 
     // Reopened, the unknown key round-tripped through the server — by value: jsonb keeps its own

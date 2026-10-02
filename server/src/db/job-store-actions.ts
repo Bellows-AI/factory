@@ -4,6 +4,7 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
+import { USER_SCOPE } from '@factory-ai/core';
 import { exists, workspacePathFor, hasRunningMember } from './job-store-rows.js';
 import type { EditCommandResult, JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
 import { wakeOneRound } from './workflow-blocks/runtime.js';
@@ -66,11 +67,11 @@ export async function createJobRow(
         // has always supported.
         const rows = await tx<{ id: string }[]>`
             insert into job (
-                org_id, command, created_by, repo, executor, id, root_job_id,
+                org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params,
                 default_review_reconciliation, default_merge_conflict_autofix, default_gate_fix_rounds
             )
-            select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, x, x,
+            select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
                    ${target.workflow?.name ?? null},
                    ${target.workflow?.node ?? null},
@@ -140,7 +141,7 @@ export async function createFollowUpRow(
         await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
         const rows = await tx<{ id: string }[]>`
             with parent as (
-                select id, repo, executor, session_id, root_job_id, workflow_name
+                select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name
                 from job
                 where org_id = ${orgId} and id = ${parentId}
                   and status in ('succeeded','failed','dead','stopped')
@@ -173,8 +174,8 @@ export async function createFollowUpRow(
                     end as session_id
                 from parent, root
             )
-            insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_name)
-            select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.id,
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_name)
+            select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope, parent.id,
                    coalesce(primary_session.session_id, parent.session_id),
                    parent.root_job_id, parent.workflow_name
             from parent, root, primary_session
@@ -270,14 +271,14 @@ export async function createRetryRow(
                 for update
             ),
             head as (
-                select command, repo, executor, root_job_id, workflow_name, status
+                select command, repo, executor, executor_scope, root_job_id, workflow_name, status
                 from job
                 where org_id = ${orgId} and root_job_id = (select root_job_id from named)
                 order by created_at desc, id desc
                 limit 1
             )
-            insert into job (org_id, command, created_by, repo, executor, root_job_id, workflow_name)
-            select ${orgId}, head.command, ${createdBy}, head.repo, head.executor,
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, root_job_id, workflow_name)
+            select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
                    head.root_job_id, head.workflow_name
             from named, head
             where head.status in ('succeeded','failed','dead','stopped')

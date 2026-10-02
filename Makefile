@@ -8,7 +8,7 @@
 
 IMAGE ?= factory-ai
 BAKED_PORT ?= 8081
-# The compose project's network, where the `timescale` service name resolves. Override if the
+# The compose project's network, where the `postgres` service name resolves. Override if the
 # project directory is not `factory-ai` — the same caveat docker-compose.yml carries for
 # WORKSPACE_VOLUME.
 BAKED_NETWORK ?= factory-ai_default
@@ -22,7 +22,7 @@ baked-build:
 # Run the existing image. Does not build — `make baked` for build + run. Reads ORG_ID/ORG_NAME
 # from the repo-root .env, the same file compose reads, because those two key every stored row.
 baked-run:
-	docker compose up -d timescale
+	docker compose up -d postgres
 	if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
 	docker run --rm --name factory-baked \
 		--network $(BAKED_NETWORK) \
@@ -31,7 +31,7 @@ baked-run:
 		-e AUTH_ALLOW_PUBLIC_BIND=1 \
 		-e ORG_ID="$${ORG_ID}" \
 		-e ORG_NAME="$${ORG_NAME}" \
-		-e DATABASE_URL=postgres://factory:factory@timescale:5432/factory_dev \
+		-e DATABASE_URL=postgres://factory:factory@postgres:5432/factory_dev \
 		$(IMAGE) node server/dist/offline.js
 
 baked: baked-build baked-run
@@ -93,7 +93,7 @@ COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/
 
 # The one upgrade `make start` must not perform. A pre-#371 state release holds the database in a
 # Deployment beside a standalone PVC named `<release>-timescale`; this chart holds it in a
-# StatefulSet whose volumeClaimTemplate mints `data-<release>-timescale-0`. The old PVC is a
+# StatefulSet whose volumeClaimTemplate mints `data-<release>-postgres-0`. The old PVC is a
 # resource the new manifest does not contain and carries no `helm.sh/resource-policy: keep`, so
 # `helm upgrade --install` deletes it — and the data — and the StatefulSet then starts on an empty
 # claim. `make start` promises a re-run keeps the release's data, so it refuses instead: destroying
@@ -175,7 +175,7 @@ start:
 		deployment/$(K8S_RELEASE)-factory-collector \
 		--timeout=600s
 	# The database is a StatefulSet, which carries no `available` condition.
-	kubectl rollout status statefulset/$(K8S_STATE_RELEASE)-timescale --timeout=600s
+	kubectl rollout status statefulset/$(K8S_STATE_RELEASE)-postgres --timeout=600s
 	@echo
 	@echo "board on http://127.0.0.1:$(K8S_PORT) — sign in with GitHub, then queue a job and watch it"
 	@echo 'run through a pod on the real runner images.'
@@ -194,7 +194,7 @@ stop:
 # block forever on a pod whose delete had not been issued yet.
 # The claim delete is not belt-and-braces: the database's claim belongs to a StatefulSet's
 # volumeClaimTemplate, which helm does not delete with the release, so this line is the only thing
-# that removes the data. It selects by label because the minted name is `data-<release>-timescale-0`.
+# that removes the data. It selects by label because the minted name is `data-<release>-postgres-0`.
 reset: stop
 	helm uninstall $(K8S_STATE_RELEASE) || true
 	# --wait=false then wait for the delete, rather than one blocking delete: the database pod is

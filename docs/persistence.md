@@ -35,13 +35,13 @@ restart with a warm database serves real data on the first request rather than a
   `docker compose down -v` before `docker compose up`, which discards `factory_dev` with the
   volume. On a local cluster the same applies to the database claim, which survives `make stop` by
   design — `make reset` deletes it, or, by hand, `helm uninstall factory-state` and then
-  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=timescale`
+  `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=postgres`
   (in that order: pvc-protection holds a claim its pod still mounts, and `make stop` leaves the
   database running, so the delete alone sits in `Terminating` forever). The component half is not decoration: the instance label alone also matches
   `factory-state-workspaces`, the checkouts claim, which this image change does not touch.
   (`make reset` drops the whole local state on purpose, so it selects by instance alone.) Select the
   claim by those labels rather than by name: it belongs to a StatefulSet's
-  `volumeClaimTemplate`, so it is called `data-<release>-timescale-0`. Leave it and the database pod
+  `volumeClaimTemplate`, so it is called `data-<release>-postgres-0`. Leave it and the database pod
   crash-loops after the image change. Disposable databases recreate themselves.
 - **`metric_point`'s DEFAULT partition is the whole partitioning strategy, and removing it breaks
   every write.** A range-partitioned table rejects any row no partition covers — a failure mode the
@@ -82,12 +82,19 @@ restart with a warm database serves real data on the first request rather than a
   answers both switches `true` with a null `updatedAt` for a missing row and never inserts one, so
   the default lives in one place — the read — instead of a column that would need migrating the day
   the default changes. Keyed `(org_id, user_id)`, the same argument 012 made for `user_executor`.
-- **`040_user_executor_default.sql` is a flag on the row, not a settings table like 035's.** The
-  difference is `replace()`: `user_executor` is deleted and re-inserted wholesale on every PUT
-  (012's header), so a preference keyed by executor name in a separate table would lose its link on
-  every save. A column travels with the row through that same replace, and a deleted row takes its
-  flag with it for free. One default per member is a partial unique index, `027_workflows.sql`'s
-  `workflow_default_uk` precedent.
+- **`040_user_executor_default.sql` was a flag on the row — retired by 047.** The difference WAS
+  `replace()`: `user_executor` is deleted and re-inserted wholesale on every PUT (012's header), so
+  a preference keyed by executor name in a separate table would lose its link on every save. That
+  argument died with the second ownership scope (issue 391): one org row is shared by every member,
+  so a member's default could not stay on the row at all. `047_executor_profile_scope.sql` reshapes
+  `user_executor` into `executor_profile` — nullable `user_id`, NULL the org scope (027's
+  sibling-scopes shape); a surrogate `id` with PK `(org_id, id)` because the old PK could not hold
+  a NULL; per-ownership name uniqueness by the coalesce index; `created_by` an audit fact on org
+  rows — backfills 040's flags into `user_executor_default` (one preference per member, keyed
+  `(org_id, user_id)`, holding `{ scope, name }` — name, not id, because the whole-list PUT still
+  severs id-keyed links), drops `is_default`, and stamps `job.executor_scope` beside the audit
+  label (null reads as `'user'`, the pre-391 meaning) with `workflow_round.executor_scope` riding
+  the block-wait park/wake copy.
 - **`044_job_failure_kind.sql` is one nullable text column, and that is the whole migration.**
   `job.failure_kind` names a failed run's terminal reason (issue #339 — the six spellings and the
   driver's precedence live in docs/jobs.md). No check constraint, unlike `status`: the database

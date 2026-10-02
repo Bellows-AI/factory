@@ -30,7 +30,7 @@ RELEASE="factory-k8s-test-$(date +%s)"
 # same way values-local.yaml points `dev` at `factory-state`.
 STATE_RELEASE="$RELEASE-state"
 STATE_SETS=(
-    --set "database.url=postgres://factory:factory@$STATE_RELEASE-timescale:5432/factory_dev"
+    --set "database.url=postgres://factory:factory@$STATE_RELEASE-postgres:5432/factory_dev"
     --set "workspaces.existingClaim=$STATE_RELEASE-workspaces"
 )
 # The chart refuses to render without its auth values, and values-local.yaml carries none (they come
@@ -320,7 +320,7 @@ expect_contains 'the wait probes the URL the server reads' "$dashboard" 'pg_isre
 
 # Production runs no database in the cluster: the app chart has no database objects to switch on,
 # and without a URL it refuses to render rather than boot a server with nowhere to write.
-expect_not_contains 'the app chart deploys no database' "$(cat "$work/rendered.yaml")" 'component: timescale'
+expect_not_contains 'the app chart deploys no database' "$(cat "$work/rendered.yaml")" 'component: postgres'
 if helm template "$RELEASE" charts/factory >/dev/null 2>&1; then
     bad 'the app chart refuses to render without database.url' 'helm template succeeded with no database.url'
 else
@@ -330,11 +330,11 @@ fi
 # The state chart: one database writer on one claim, held by a StatefulSet so the claim belongs to
 # the pod identity and no update can put a second writer on it.
 state="$(helm template "$STATE_RELEASE" charts/factory-local-state --namespace "$NAMESPACE")"
-expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-timescale"
+expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-postgres"
 expect_contains 'the state chart names the workspaces claim'  "$state" "name: $STATE_RELEASE-workspaces"
 expect_contains 'the state database is a StatefulSet'         "$state" 'kind: StatefulSet'
 expect_contains 'the database claim is the set’s own'         "$state" 'volumeClaimTemplates:'
-expect_contains 'the set is addressed by the database service' "$state" "serviceName: $STATE_RELEASE-timescale"
+expect_contains 'the set is addressed by the database service' "$state" "serviceName: $STATE_RELEASE-postgres"
 expect_contains 'the set runs one writer'                     "$state" '
     replicas: 1
     serviceName:'
@@ -1106,7 +1106,7 @@ npm run build -w core >/dev/null 2>&1 && npm run build -w server >/dev/null 2>&1
 echo 'building the images on the host daemon'
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/null &&
     docker build -f docker/driver.Dockerfile -q -t "$DRIVER_IMAGE" . >/dev/null &&
-    printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' >"$work/stub.Dockerfile" &&
+    printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\""]\n' >"$work/stub.Dockerfile" &&
     docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >/dev/null &&
     docker pull -q "$COLLECTOR_IMAGE" >/dev/null 2>&1 || {
     echo 'test-k8s: image build or pull failed'
@@ -1146,7 +1146,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
 }
 installed=1
 
-# The timescale StatefulSet is waited for deliberately: the dashboard listens the moment its
+# The postgres StatefulSet is waited for deliberately: the dashboard listens the moment its
 # process is up — health answers, availability reports — but its migrations only start landing
 # once the database accepts connections, and the server gives up retrying after ~45s. On a cold
 # kind node the database image is still being pulled through containerd in that window, so
@@ -1157,7 +1157,7 @@ kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
     "deployment/$RELEASE-factory-collector" \
     -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
-    kubectl rollout status "statefulset/$STATE_RELEASE-timescale" \
+    kubectl rollout status "statefulset/$STATE_RELEASE-postgres" \
         -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
@@ -1231,7 +1231,7 @@ const t = "fat_" + c.randomBytes(32).toString("base64url");
 process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
 ')
 member="k8s-test-$(openssl rand -hex 6)"
-minted="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-timescale" -- \
+minted="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
     psql -q -v ON_ERROR_STOP=1 -v "member=$member" -v "hash=$token_hash" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 with o as (
@@ -1267,6 +1267,22 @@ for _ in $(seq 1 60); do
 done
 [ -n "$configured" ] && ok 'the board stores the task executor' ||
     bad 'the board stores the task executor' 'PUT /api/workspace/executors never answered 200'
+
+# The organization-scope leg (issue 391): an org profile seeded straight into the table — the
+# admin-created shape, with this lane's member only ever a selector — and a task stamped
+# `executorScope: 'org'`. The stub prints the claude config content, so the org model marker in
+# the output is the proof the claim resolved the ORG row: the member's personal list is empty.
+org_seeded="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    psql -q -v ON_ERROR_STOP=1 -v "member=$member" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+insert into executor_profile (org_id, user_id, name, type, config)
+select id, null, 'team', 'claude-code', '{"model":"org-team-model"}'::jsonb from organization where id = :'member';
+SQL
+)" && ok 'an org executor profile is seeded' || {
+    bad 'an org executor profile is seeded' "$org_seeded"
+    give_up
+}
+ORG_BODY='{"command":"hello from the org scope","executor":"team","executorScope":"org"}'
 
 # The wait above covers the cold case (database image still pulling); this poll covers the
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
@@ -1343,6 +1359,49 @@ fetch(process.argv[1], { headers })
 done
 expect_contains 'the job ran to completion' "$result" 'succeeded'
 expect_contains 'the prompt reached the pod' "$result" 'hello from the cluster'
+
+# The organization-scope run (issue 391), the kubernetes counterpart of test-jobs.sh's leg: the
+# task stamps `executorScope: 'org'`, the claim resolves the ORG row seeded above, and the stub's
+# config echo carries the org model marker no personal row on this board could produce.
+org_id=""
+for _ in $(seq 1 60); do
+    response="$(node -e "$JS_HEADERS"'
+const [url, body] = process.argv.slice(2);
+fetch(url, { method: "POST", headers, body })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status + "|" + String(b.id ?? "")); })
+    .catch(() => process.stdout.write("000|"));
+' "$BASE/api/jobs" "$ORG_BODY")"
+    status="${response%%|*}"
+    org_id="${response#*|}"
+    case "$status" in
+    000 | 5*) sleep 1 ;;
+    201) break ;;
+    *) break ;;
+    esac
+done
+case "$org_id" in
+*-*) ok 'an org-scoped job was queued' ;;
+*) bad 'an org-scoped job was queued' "no id came back (last status: ${status:-none})"
+    give_up
+    ;;
+esac
+org_result=""
+for _ in $(seq 1 120); do
+    org_result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.executorScope ?? "") + "\t" + String(j.output ?? "")); })
+    .catch(() => process.stdout.write("queued\t\t"));
+' "$BASE/api/jobs/$org_id")"
+    case "$org_result" in
+    queued* | running*) sleep 1 ;;
+    *) break ;;
+    esac
+done
+expect_contains 'the org-scoped job ran to completion' "$org_result" 'succeeded'
+# The read model's second tab field is the stamped scope: matched strictly, because the output
+# itself is full of the substring "org" (the prompt, the marker).
+expect_contains 'the org scope is stamped on the read' "$org_result" "$(printf 'succeeded\torg\t')"
+expect_contains 'the org config reached the pod' "$org_result" 'org-team-model'
 
 # The runner object the executor created — the thing only kubernetes could prove. Found by the
 # factory.job label the spec stamps on it (the release labels belong to the chart's objects).

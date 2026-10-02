@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { USER_SCOPE } from '@factory-ai/core';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
@@ -425,6 +426,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
                 parentJobId: root,
                 repo: null,
                 executor: null,
+                executorScope: USER_SCOPE,
                 sessionId: null,
                 workflowNode: 'review',
                 command: 'react to review, again',
@@ -469,6 +471,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
                 parentJobId: claim1.id,
                 repo: null,
                 executor: null,
+                executorScope: USER_SCOPE,
                 sessionId: null,
                 workflowNode: 'review',
                 command: 'react to review, round two',

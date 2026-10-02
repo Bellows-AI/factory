@@ -5,11 +5,11 @@
  * function here is testable without a DOM, which is what lets the offline suite pin the launch
  * contract the board enforces.
  */
-import { COMMAND_LIMIT } from '@factory-ai/core';
+import { COMMAND_LIMIT, USER_SCOPE } from '@factory-ai/core';
 import type { DefaultWorkflowSteps } from './api/useDefaultWorkflowSettings.js';
 import type { QueueTaskInput } from './api/useTasks.js';
 import type { ComposerDraftInput } from './composer-draft.js';
-import { defaultExecutorName } from './workspace/executors.js';
+import { selectionExists, type ExecutorChoice } from './workspace/executors.js';
 
 /**
  * One declared launch parameter of a workflow, as the list route serves it: the name the prompts
@@ -404,7 +404,13 @@ export function clampedWorkflow(workflow: string, workflows: readonly { name: st
 /** The workspace lists a composer draft is measured against. */
 interface DraftLists {
     repos: readonly { owner: string; name: string }[] | null;
-    executors: readonly { name: string; isDefault?: boolean }[];
+    /** The combined options, both scopes, as `composerExecutorOptions` builds them. */
+    executors: readonly ExecutorChoice[];
+    /**
+     * The poll's resolved default — the server's own fallback chain (stored preference, first
+     * personal row, first org row), handed over whole. Null when nothing is selectable.
+     */
+    defaultExecutor: ExecutorChoice | null;
 }
 
 /**
@@ -418,7 +424,8 @@ export function initialComposerState(restored: ComposerDraftInput | null, lists:
     const repo = firstRepo(lists.repos);
     return {
         draft: '',
-        executor: defaultExecutorName(lists.executors),
+        executor: lists.defaultExecutor?.name ?? '',
+        executorScope: lists.defaultExecutor?.scope ?? USER_SCOPE,
         repo,
         repoTouched: false,
         workflowRepo: repo,
@@ -437,6 +444,7 @@ export function draftIsFresh(state: ComposerDraftInput, lists: DraftLists): bool
     return (
         state.draft === fresh.draft &&
         state.executor === fresh.executor &&
+        state.executorScope === fresh.executorScope &&
         state.repo === fresh.repo &&
         state.workflow === fresh.workflow &&
         Object.keys(state.defaultStepOverrides).length === 0
@@ -458,10 +466,15 @@ export function restoredDraftNotices(
     }
 ): string[] | null {
     const notices: string[] = [];
-    if (restored.executor !== '' && !lists.executors.some((executor) => executor.name === restored.executor)) {
-        const next = defaultExecutorName(lists.executors);
+    // The choice is the PAIR: a personal and an org profile may share a name, and a draft that
+    // chose one must never be clamped onto — or stand in for — the other (issue 391).
+    const choseExecutor =
+        restored.executor !== '' &&
+        !selectionExists(lists.executors, { name: restored.executor, scope: restored.executorScope });
+    if (choseExecutor) {
+        const next = lists.defaultExecutor;
         notices.push(
-            `Executor ‘${restored.executor}’ is no longer available — ${next === '' ? 'add one to continue' : `${next} selected`}.`
+            `Executor ‘${restored.executor}’ is no longer available — ${next === null ? 'add one to continue' : `${next.name} selected`}.`
         );
     }
     const repoKept =

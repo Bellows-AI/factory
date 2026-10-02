@@ -48,7 +48,7 @@ const MS_PER_SECOND = 1000;
  */
 const SETTLE_EARLY_FRACTION = 0.5;
 
-export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name]
+export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name] [--executor-scope user|org]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
@@ -127,6 +127,19 @@ function onlyId(args: readonly string[], verb: string, options: Record<string, {
     return { id: parsed.positionals[0]!, values: parsed.values };
 }
 
+/**
+ * The scope an executor selection names (issue 391). Absent sends nothing — the board defaults to
+ * the author's personal profiles — and anything outside the pair is a usage error before any
+ * request, the way a misspelled flag is.
+ */
+function parseExecutorScope(raw: string | undefined): 'user' | 'org' | undefined {
+    if (raw === undefined) return undefined;
+    if (raw !== 'user' && raw !== 'org') {
+        throw new UsageError(`--executor-scope must be "user" or "org", got "${raw}"\n\n${USAGE}`);
+    }
+    return raw;
+}
+
 async function runCreate(args: readonly string[], io: RunIo): Promise<number> {
     const parsed = parseOrUsage(() =>
         parseArgs({
@@ -135,6 +148,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<number> {
             options: {
                 repo: { type: 'string' },
                 executor: { type: 'string' },
+                'executor-scope': { type: 'string' },
             },
         })
     );
@@ -142,10 +156,12 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<number> {
     if (!command) {
         throw new UsageError('a create needs a command\n\n' + USAGE);
     }
+    const executorScope = parseExecutorScope(parsed.values['executor-scope']);
     const created = await boardFor(io).createJob({
         command,
         repo: parsed.values.repo,
         executor: parsed.values.executor,
+        executorScope,
     });
     io.stdout(`${renderCreated(created)}\n`);
     return EXIT_OK;

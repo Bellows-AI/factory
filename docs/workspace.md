@@ -159,11 +159,17 @@ executors configure what a runner runs with and have nothing to do with checkout
 sentence "Your saved agent settings for running tasks." A row is a name, an agent type and a
 configuration object — `{}` when the member set nothing, which inherits the deployment's runner
 configuration. The known types are `claude-code` and `opencode` (013 added the second; see
-[persistence.md](persistence.md) for the constraint-rewrite move adding the next one costs). The
-Tasks page lets a member stamp one of these names onto a job they queue, and the claim resolves that
-label against the author's rows at run time — the name is the join key, which is why it is never
-validated against the list when the task is queued (`job` is an audit record; the rows come and go
-with a PUT).
+[persistence.md](persistence.md) for the constraint-rewrite move adding the next one costs). Since
+issue 391 a profile belongs to one of two OWNERSHIP SCOPES: `user` (the member's own rows, one
+list per member) or `org` (the organization's rows, managed by its administrators and selectable
+by every member). One table holds both — `executor_profile`, with a NULL `user_id` the org scope,
+027's sibling-scopes shape — so an org profile is org-owned data the same way a repo row is, and
+cross-organization isolation is the same bound every org-owned row has. The Tasks page lets a
+member stamp one of these names onto a job they queue, and the claim resolves that label against
+the STAMPED SCOPE's rows at run time — the name is the join key within a scope, which is why it is
+never validated against the list when the task is queued (`job` is an audit record; the rows come
+and go with a PUT), and why a personal and an org profile with the same name stay distinguishable:
+the selection carries both, and never silently switches scopes.
 
 - **Both `opencode` and `claude-code` config reach the run.** At claim, the job store reads the
   author's row of the stamped name (`configFor`) and hands the pasted config to the runner as a
@@ -175,6 +181,18 @@ with a PUT).
   Both strip lists are one constant, `RUNNER_MANAGED_KEYS` in `core/src/executors.ts`: the claim
   strips by it and the dialog warns by it. This is what makes the member's model and provider choice
   authoritative; without a matching row the run falls back to the image's default model.
+- **Organization profiles are the admins' surface, enforced server-side.** `POST/PUT/DELETE
+  /api/org/executors` and the scope route gate on `org_membership.role = 'admin'` — the first
+  consumer of the role the column carried unused since 010 — and a non-admin's mutation answers
+  `403 FORBIDDEN` with the rows untouched, whole-list replacement attempts included (the org scope
+  has no list PUT at all; the personal PUT refuses an entry claiming `scope`/`userId` with a 400).
+  Name uniqueness is per ownership: an org profile may share a name with any member's personal
+  one, never with another org profile (`executor_profile_name_uk`, the coalesce index). A member
+  lists org profiles as SELECTION METADATA — name, type, added — and the configuration, which may
+  hold provider credentials, answers only to admins and to the internal claim resolver; it never
+  rides the poll. Any current admin manages every org row regardless of who created it
+  (`created_by` is an audit fact, not an ownership), and an admin can promote their OWN personal
+  row to org scope, or demote an org row into their personal list, through the one scope route.
 - **`permission` is stripped board-side, never honored from a paste.** The baked fence in the
   runner image (and the entrypoint's per-member `external_directory` patch) is the only authority
   on what a run may touch: a pasted `external_directory: "*": allow` would otherwise open every
@@ -227,18 +245,18 @@ with a PUT).
   its Add action and the page renders a sentence pointing at workspace setup — both executor
   routes would answer 409 `WORKSPACE_DISABLED` anyway, so the client refuses first instead of
   discovering it after a fetch.
-- **A member may flag one executor as the default (issue 215).** Each row's `is_default` column
-  (040) is a real preference, not list order: the panel's Make default action flags a row and
-  clears every other, `withDefault` folds that back into the whole-list PUT the same way
-  `mergeExecutors` folds a dialog save, and 040's partial unique index makes "at most one default
-  per member" a database fact — the route refuses a body naming two before it ever reaches the
-  row. The task composer and the settings overview both read it through `defaultExecutorName`,
-  which falls back to the first row when none is flagged — the pre-215 behavior, unchanged for a
-  member who has never used the action. A rename keeps the flag (matched by the row's original
-  name, same as `mergeExecutors`); dropping the default row from a PUT clears it rather than
-  reviving it on another row — the flag lives on the row, not on a name. "Selected first on new
-  tasks" is what the fallback still says; the flagged row says "Default — selected on new tasks"
-  instead.
+- **The default is a per-member preference naming a scope (issue 391; the 215 flag's successor).**
+  One org row is shared by every member, so a default could not stay a flag on the row: 040's
+  column argument died the day the second scope arrived. `user_executor_default` (047) holds one
+  preference per (org, member) — `{ scope, name }`, keyed by name because the whole-list PUT still
+  delete-and-reinserts the personal rows and an id-keyed link would be severed by every save.
+  `PUT /api/workspace/executors/default` stores it, refusing a preference naming no profile the
+  caller can resolve in that scope (404) — and it is per member: choosing an org profile changes
+  nobody else's default and never edits the shared row. The read is RESOLVED server-side through
+  a deterministic chain — the stored preference while it still resolves, then the first personal
+  row by position, then the first org row, then none — so a removed profile's preference falls
+  through instead of re-pointing, and the poll carries the answer as `defaultExecutor`. The
+  captioning follows it: the row it names says "Default — selected on new tasks".
 - **The Advanced help says what each type's config does.** The claude-code help: merged into the
   runner's settings.json, with `hooks`, `enabledPlugins` and `extraKnownMarketplaces` stripped —
   everything else applies, except that the `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env values

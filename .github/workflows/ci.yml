@@ -57,7 +57,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 40
         services:
-            timescale:
+            postgres:
                 # The image docker-compose.yml pins. Plain postgres since #371: the schema names
                 # no extension, so the service name is all that is left of TimescaleDB here.
                 image: postgres:17

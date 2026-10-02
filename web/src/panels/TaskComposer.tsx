@@ -23,6 +23,12 @@ import {
     touchAll,
 } from '../task-composer.js';
 import { type ComposerDraft, type ComposerWorkflowOption, useComposerDraft } from '../use-composer-draft.js';
+import {
+    executorChoiceId,
+    executorChoiceOf,
+    type ComposerExecutorOption,
+    type ExecutorChoice,
+} from '../workspace/executors.js';
 
 /**
  * The example request — the prompt's placeholder, and what Try an example types in. The issue
@@ -139,7 +145,7 @@ function ComposerContextRow({
     update,
 }: {
     repos: readonly { owner: string; name: string }[];
-    executors: readonly { name: string; type: string; isDefault?: boolean }[];
+    executors: readonly ComposerExecutorOption[];
     workflows: readonly ComposerWorkflowOption[] | null;
     state: ComposerDraftInput;
     update: Update;
@@ -198,9 +204,12 @@ function ComposerContextRow({
                     Executor
                 </span>
                 <Listbox
-                    value={executor}
+                    value={executorChoiceId({ scope: state.executorScope, name: executor })}
                     disabled={executors.length === 0}
-                    onChange={(next) => update({ executor: next })}
+                    onChange={(next) => {
+                        const choice = executorChoiceOf(next);
+                        if (choice) update({ executor: choice.name, executorScope: choice.scope });
+                    }}
                 >
                     <ListboxButton
                         ref={executorAnchor.setReference}
@@ -219,8 +228,13 @@ function ComposerContextRow({
                         className="popover"
                     >
                         {executors.map((candidate) => (
-                            <ListboxOption key={candidate.name} value={candidate.name} className="popover-option">
+                            <ListboxOption
+                                key={executorChoiceId(candidate)}
+                                value={executorChoiceId(candidate)}
+                                className="popover-option"
+                            >
                                 {candidate.name}
+                                {candidate.scope === 'org' ? ' — organization' : ''}
                             </ListboxOption>
                         ))}
                     </ListboxOptions>
@@ -550,6 +564,7 @@ export function TaskComposer({
     workspaceError,
     onRetryWorkspace,
     executors,
+    defaultExecutor,
     workflows,
     defaultWorkflowSettings,
     actionError,
@@ -567,7 +582,9 @@ export function TaskComposer({
     /** Why `repos` is null, when it is. */
     workspaceError: string | null;
     onRetryWorkspace: () => void;
-    executors: readonly { name: string; type: string; isDefault?: boolean }[];
+    executors: readonly ComposerExecutorOption[];
+    /** The poll's resolved default executor (issue 391), or null when nothing is selectable. */
+    defaultExecutor: ExecutorChoice | null;
     /**
      * The workflow choices for the selected repository's context, or null when the list has not
      * answered (or this board serves no workflows at all). Null HIDES the selector: a board
@@ -600,6 +617,7 @@ export function TaskComposer({
     const composer = useComposerDraft({
         repos,
         executors,
+        defaultExecutor,
         workflows,
         defaultWorkflowSettings,
         onRepoChange,

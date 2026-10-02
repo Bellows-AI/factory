@@ -546,4 +546,42 @@ describe('POST /api/jobs — the gate-repair round limit (issue #49)', () => {
             gateFixRounds: 3,
         });
     });
+
+    it('freezes the budget from the ORG-scope row the body stamps (issue 391)', async () => {
+        const { instance, cookie, executors, jobs } = await bootWithExecutor(null);
+        await executors.createOrg({
+            name: 'team-runner',
+            type: 'claude-code',
+            config: {},
+            gateFixRounds: 7,
+            createdBy: 'x',
+        });
+
+        const response = await post(
+            instance,
+            { command: 'echo hi', executor: 'team-runner', executorScope: 'org' },
+            cookie
+        );
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual({
+            reviewReconciliation: true,
+            mergeConflictAutofix: true,
+            gateFixRounds: 7,
+        });
+    });
+
+    it('same name in both scopes: the stamped scope decides, never the name alone', async () => {
+        const { instance, cookie, executors, aliceId, jobs } = await bootWithExecutor(null);
+        await executors.replace(aliceId, [{ name: 'main', type: 'claude-code', config: {}, gateFixRounds: 1 }]);
+        await executors.createOrg({ name: 'main', type: 'claude-code', config: {}, gateFixRounds: 9, createdBy: 'x' });
+
+        const org = await post(instance, { command: 'echo hi', executor: 'main', executorScope: 'org' }, cookie);
+        expect(org.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[0]!.defaultOptions).toEqual(expect.objectContaining({ gateFixRounds: 9 }));
+
+        const user = await post(instance, { command: 'echo hi', executor: 'main', executorScope: 'user' }, cookie);
+        expect(user.statusCode).toBe(HTTP_CREATED);
+        expect(jobs.created[1]!.defaultOptions).toEqual(expect.objectContaining({ gateFixRounds: 1 }));
+    });
 });

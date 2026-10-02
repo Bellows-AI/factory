@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ExecutorScope } from '@factory-ai/core';
+import { JSON_HEADERS } from '@factory-ai/core';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
-import { JSON_HEADERS } from '@factory-ai/core';
 
 export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed' | 'purging';
 
@@ -35,11 +36,27 @@ export interface WorkspaceExecutor {
     name: string;
     type: string;
     createdAt: string;
-    /** The row a new task draft autoselects. At most one true per member. */
-    isDefault: boolean;
     /** The default workflow's gate-repair round limit tasks on this executor launch with (#49). */
     gateFixRounds: number;
     /** Deliberately absent from the payload: it may hold credentials, and this is polled. */
+}
+
+/**
+ * An organization profile as the poll carries it (issue 391): selection metadata only. The
+ * configuration may hold provider credentials, and this payload is fetched by a poll every
+ * member's browser runs — the full organization configuration answers to the admin list
+ * (`listOrgExecutorConfigs`), never to the poll.
+ */
+export interface OrgExecutor {
+    name: string;
+    type: string;
+    createdAt: string;
+}
+
+/** The member's default-executor preference as the poll resolves it (issue 391). */
+export interface DefaultExecutor {
+    scope: ExecutorScope;
+    name: string;
 }
 
 /**
@@ -63,6 +80,13 @@ export interface WorkspacePayload {
      */
     checkoutTotalBytes: number | null;
     executors: WorkspaceExecutor[];
+    /** The organization's profiles, selection metadata only (issue 391). */
+    orgExecutors: OrgExecutor[];
+    /**
+     * The member's resolved default: their stored preference while it still resolves, else the
+     * server's deterministic fallback. Null when nothing is selectable.
+     */
+    defaultExecutor: DefaultExecutor | null;
 }
 
 export interface UseWorkspace {
@@ -72,8 +96,13 @@ export interface UseWorkspace {
     saving: boolean;
     save: (repos: { owner: string; name: string }[]) => Promise<string | null>;
     saveExecutors: (
-        executors: { name: string; type: string; config: object; isDefault: boolean; gateFixRounds: number }[]
+        executors: { name: string; type: string; config: object; gateFixRounds: number }[]
     ) => Promise<string | null>;
+    /**
+     * Stores the member's default-executor preference (issue 391): names a profile by scope and
+     * name, either scope, without touching the shared profile or anyone else's default.
+     */
+    setDefaultExecutor: (scope: ExecutorScope, name: string) => Promise<string | null>;
     /** Deletes ONE orphaned checkout from disk, after its confirmation (issue #92). */
     purge: (owner: string, name: string) => Promise<string | null>;
     /**
@@ -83,6 +112,30 @@ export interface UseWorkspace {
      */
     listExecutorConfigs: () => Promise<{ ok: true; executors: WorkspaceExecutorFull[] } | { ok: false; error: string }>;
     refresh: () => void;
+}
+
+/**
+ * The two executor/workspace PUT bodies, module-level like the reads above: the hook hands them
+ * its URLs and payloads and keeps only the poll re-arm.
+ */
+async function putJson(
+    url: string,
+    body: unknown,
+    fallbackError: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+        const response = await fetch(url, { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(body) });
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+            reportUnauthenticated();
+            return { ok: false as const, error: 'Your session expired' };
+        }
+        if (!response.ok) {
+            return { ok: false as const, error: (await refusalOf(response, fallbackError)).error };
+        }
+        return { ok: true as const };
+    } catch (e) {
+        return { ok: false as const, error: (e as Error).message };
+    }
 }
 
 /**
@@ -147,7 +200,6 @@ const isExecutorFull = (row: unknown): row is WorkspaceExecutorFull =>
     typeof (row as WorkspaceExecutorFull).name === 'string' &&
     typeof (row as WorkspaceExecutorFull).type === 'string' &&
     typeof (row as WorkspaceExecutorFull).createdAt === 'string' &&
-    typeof (row as WorkspaceExecutorFull).isDefault === 'boolean' &&
     typeof (row as WorkspaceExecutorFull).gateFixRounds === 'number' &&
     typeof (row as WorkspaceExecutorFull).config === 'object' &&
     (row as WorkspaceExecutorFull).config !== null;
@@ -177,6 +229,37 @@ export const listExecutorConfigs = async (): Promise<
             return { ok: false as const, error: 'Could not load the executors: unexpected response shape.' };
         }
         return { ok: true as const, executors: rows };
+    } catch (e) {
+        return { ok: false as const, error: (e as Error).message };
+    }
+};
+
+/**
+ * The default-executor preference (issue 391). A refusal is the dialog's error message; a
+ * preference naming no accessible profile is the route's 404. Module-level like the other
+ * on-demand fetches above: it captures no hook state.
+ */
+export const putDefaultExecutor = async (
+    scope: ExecutorScope,
+    name: string
+): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+        const response = await fetch('/api/workspace/executors/default', {
+            method: 'PUT',
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ executor: name, executorScope: scope }),
+        });
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+            reportUnauthenticated();
+            return { ok: false as const, error: 'Your session expired' };
+        }
+        if (!response.ok) {
+            return {
+                ok: false as const,
+                error: (await refusalOf(response, 'Could not save the default executor')).error,
+            };
+        }
+        return { ok: true as const };
     } catch (e) {
         return { ok: false as const, error: (e as Error).message };
     }
@@ -286,25 +369,13 @@ export function useWorkspace(): UseWorkspace {
         async (repos: { owner: string; name: string }[]): Promise<string | null> => {
             setSaving(true);
             try {
-                const response = await fetch('/api/workspace/repos', {
-                    method: 'PUT',
-                    headers: JSON_HEADERS,
-                    body: JSON.stringify({ repos }),
-                });
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    return 'Your session expired';
-                }
-                if (!response.ok) {
-                    return (await refusalOf(response, 'Could not save the selection')).error;
-                }
+                const result = await putJson('/api/workspace/repos', { repos }, 'Could not save the selection');
+                if (!result.ok) return result.error;
                 // 202: the clones have not started yet. Re-arm the poll immediately so the page
                 // shows them go from queued to cloning rather than waiting out a back-off.
                 waitingSince.current = Date.now();
                 start();
                 return null;
-            } catch (e) {
-                return (e as Error).message;
             } finally {
                 setSaving(false);
             }
@@ -317,29 +388,30 @@ export function useWorkspace(): UseWorkspace {
      */
     const saveExecutors = useCallback(
         async (
-            executors: { name: string; type: string; config: object; isDefault: boolean; gateFixRounds: number }[]
+            executors: { name: string; type: string; config: object; gateFixRounds: number }[]
         ): Promise<string | null> => {
             setSaving(true);
             try {
-                const response = await fetch('/api/workspace/executors', {
-                    method: 'PUT',
-                    headers: JSON_HEADERS,
-                    body: JSON.stringify({ executors }),
-                });
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    return 'Your session expired';
-                }
-                if (!response.ok) {
-                    return (await refusalOf(response, 'Could not save the executors')).error;
-                }
+                const result = await putJson('/api/workspace/executors', { executors }, 'Could not save the executors');
+                if (!result.ok) return result.error;
                 start();
                 return null;
-            } catch (e) {
-                return (e as Error).message;
             } finally {
                 setSaving(false);
             }
+        },
+        [start]
+    );
+
+    /** The preference write, with the poll re-arm the other writes share. */
+    const setDefaultExecutor = useCallback(
+        async (scope: ExecutorScope, name: string): Promise<string | null> => {
+            const result = await putDefaultExecutor(scope, name);
+            if (result.ok) {
+                start();
+                return null;
+            }
+            return result.error;
         },
         [start]
     );
@@ -362,5 +434,16 @@ export function useWorkspace(): UseWorkspace {
         [start]
     );
 
-    return { data, loading, error, saving, save, saveExecutors, purge, listExecutorConfigs, refresh: start };
+    return {
+        data,
+        loading,
+        error,
+        saving,
+        save,
+        saveExecutors,
+        setDefaultExecutor,
+        purge,
+        listExecutorConfigs,
+        refresh: start,
+    };
 }

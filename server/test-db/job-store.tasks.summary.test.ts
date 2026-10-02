@@ -185,6 +185,8 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
             'createdAt',
             'doneAt',
             'executor',
+            // The stamped scope beside the label (issue 391) — selection metadata, still bounded.
+            'executorScope',
             'id',
             'repo',
             'status',

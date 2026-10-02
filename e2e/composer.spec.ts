@@ -347,9 +347,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
         // Guided setup: a name alone saves the inherited configuration — no JSON typed (issue 261).
         await addExecutorViaDialog(page, 'fresh-executor');
-        expect(held.executors).toEqual([
-            expect.objectContaining({ name: 'fresh-executor', config: {}, isDefault: false }),
-        ]);
+        expect(held.executors).toEqual([expect.objectContaining({ name: 'fresh-executor', config: {} })]);
         await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
         await page.getByRole('link', { name: 'Back to new task' }).click();
 
@@ -409,8 +407,8 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.goto('/settings/executors?return=/tasks/new');
         await addExecutorViaDialog(page, 'second');
         expect(held.executors).toEqual([
-            expect.objectContaining({ name: E2E_EXECUTOR.name, isDefault: true, config: { model: 'sonnet', keep: 1 } }),
-            expect.objectContaining({ name: 'second', isDefault: false, config: {} }),
+            expect.objectContaining({ name: E2E_EXECUTOR.name, config: { model: 'sonnet', keep: 1 } }),
+            expect.objectContaining({ name: 'second', config: {} }),
         ]);
         await expect(page.getByText('You have a task draft in progress.')).toBeVisible();
         await page.getByRole('link', { name: 'Back to new task' }).click();
@@ -450,7 +448,6 @@ test.describe('the draft survives the configuration detour (F1)', () => {
                 name: 'doomed',
                 type: E2E_EXECUTOR.type,
                 createdAt: E2E_EXECUTOR.createdAt,
-                isDefault: false,
                 config: {},
             },
         ]);
@@ -504,7 +501,6 @@ test.describe('the draft survives the configuration detour (F1)', () => {
                     name: 'heavy',
                     type: E2E_EXECUTOR.type,
                     createdAt: E2E_EXECUTOR.createdAt,
-                    isDefault: false,
                     config: {},
                 },
             ],

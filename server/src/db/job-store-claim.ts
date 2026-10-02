@@ -4,7 +4,15 @@
  * claim/ack pair. See docs/jobs.md for the lease protocol and docs/workflows.md for the publish flag.
  */
 
-import { CLAUDE_CODE, EXECUTOR_TYPES, type ExecutorType, OPENCODE, RUNNER_MANAGED_KEYS } from '@factory-ai/core';
+import {
+    CLAUDE_CODE,
+    EXECUTOR_TYPES,
+    USER_SCOPE,
+    type ExecutorScope,
+    type ExecutorType,
+    OPENCODE,
+    RUNNER_MANAGED_KEYS,
+} from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import { withMintedToken } from './job-store-org-resolvers.js';
@@ -130,6 +138,7 @@ async function claimNextCandidate(
                     repo: string | null;
                     parent_job_id: string | null;
                     executor: string | null;
+                    executor_scope: string | null;
                     follow_up: boolean;
                     workflow_node: string | null;
                     workflow_name: string | null;
@@ -181,7 +190,7 @@ async function claimNextCandidate(
                 -- never been parked, so its command still has to go out; a suspended one settles
                 -- stopped, and is never claimed again.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                          session_id, repo, parent_job_id, executor, workflow_node, workflow_name,
+                          session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
@@ -356,7 +365,7 @@ export async function resolveClaimExecutor(
         githubToken: CreateJobStoreDeps['githubToken'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
     },
-    row: { created_by: string | null; repo: string | null; executor: string | null }
+    row: { created_by: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
 ): Promise<ResolvedClaimExecutor> {
     const { env, githubToken, executorConfig } = deps;
     const resolvedEnv = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined;
@@ -367,13 +376,22 @@ export async function resolveClaimExecutor(
         githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
             ? withMintedToken(await githubToken.fresh(), resolvedEnv)
             : resolvedEnv;
-    // The executor label a task was queued with names a row in the AUTHOR's own executor list
-    // (docs/workspace.md). Its TYPE is the execution input: it tells the driver which CLI/image
-    // family to run. A label matching nothing remains null on the claim and is failed explicitly
-    // by the driver; there is no global CLI fallback.
+    // The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
+    // 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
+    // meaning — and the organization's when it is 'org', which is how a team-shared profile
+    // resolves for any author. Its TYPE is the execution input: it tells the driver which
+    // CLI/image family to run. A label matching nothing IN THAT SCOPE remains null on the claim
+    // and is failed explicitly by the driver; there is no global CLI fallback, and no cross-scope
+    // one either — a selection names its scope, and the other scope's same-named row is simply not
+    // this selection's answer.
     let executorType: ExecutorType | null = null;
     if (executorConfig && row.executor !== null && row.created_by !== null) {
-        const configured = await executorConfig.configFor(row.created_by, row.executor, tx);
+        const configured = await executorConfig.configFor(
+            row.created_by,
+            row.executor,
+            (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
+            tx
+        );
         if (configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType)) {
             executorType = configured.type as ExecutorType;
         }

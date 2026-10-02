@@ -7,7 +7,7 @@ environment:
            command: "npm run lint"
 
 services:
-    - name: timescale
+    - name: postgres
       image: postgres:17
       environment:
           POSTGRES_USER: factory

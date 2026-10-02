@@ -6,7 +6,7 @@
  * saved settings from #203, else both on). Split out of `job-handlers-worker.ts` to keep
  * `handleCreateJob` within the repo's complexity/parameter budget (AGENTS.md).
  */
-import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES } from '@factory-ai/core';
+import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES, type ExecutorScope } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
     compileDefaultWorkflow,
@@ -79,14 +79,19 @@ async function resolveNamedWorkflow(
 async function resolveGateFixRounds(
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { executorsStore: UserExecutorStore | null; executor: string | null; createdBy: string | null }
+    opts: {
+        executorsStore: UserExecutorStore | null;
+        executor: string | null;
+        executorScope: ExecutorScope;
+        createdBy: string | null;
+    }
 ): Promise<{ handled: true } | { handled: false; rounds: number }> {
-    const { executorsStore, executor, createdBy } = opts;
+    const { executorsStore, executor, executorScope, createdBy } = opts;
     if (!executorsStore || !createdBy || !executor) return { handled: false, rounds: DEFAULT_GATE_FIX_ROUNDS };
     const row = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'executor row read failed'),
-        () => executorsStore.configFor(createdBy, executor)
+        () => executorsStore.configFor(createdBy, executor, executorScope)
     );
     if (!row.ok) return { handled: true };
     return { handled: false, rounds: row.value?.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS };
@@ -106,12 +111,13 @@ async function resolveDefaultWorkflow(
         defaultsStore: DefaultWorkflowSettingsStore | null;
         executorsStore: UserExecutorStore | null;
         executor: string | null;
+        executorScope: ExecutorScope;
         fields: Record<string, unknown>;
         createdBy: string | null;
         command: string;
     }
 ): Promise<{ handled: true } | { handled: false; workflow: ResolvedWorkflow; command: string }> {
-    const { defaultsStore, executorsStore, executor, fields, createdBy, command } = opts;
+    const { defaultsStore, executorsStore, executor, executorScope, fields, createdBy, command } = opts;
     const hasOverride = fields.defaultWorkflow !== undefined && fields.defaultWorkflow !== null;
 
     let selection: DefaultWorkflowSelection;
@@ -139,7 +145,7 @@ async function resolveDefaultWorkflow(
 
     // The value freezes into defaultOptions and the snapshot below; a later settings edit changes
     // later tasks, never this thread.
-    const rounds = await resolveGateFixRounds(request, reply, { executorsStore, executor, createdBy });
+    const rounds = await resolveGateFixRounds(request, reply, { executorsStore, executor, executorScope, createdBy });
     if (rounds.handled) return { handled: true };
     const gateFixRounds = rounds.rounds;
 
@@ -174,13 +180,15 @@ export async function resolveLaunchWorkflow(
         defaultsStore: DefaultWorkflowSettingsStore | null;
         executorsStore: UserExecutorStore | null;
         executor: string | null;
+        executorScope: ExecutorScope;
         fields: Record<string, unknown>;
         repo: string | null;
         createdBy: string | null;
         command: string;
     }
 ): Promise<LaunchResolution> {
-    const { workflowsStore, defaultsStore, executorsStore, executor, fields, repo, createdBy, command } = opts;
+    const { workflowsStore, defaultsStore, executorsStore, executor, executorScope, fields, repo, createdBy, command } =
+        opts;
     const named = fields.workflow !== undefined && fields.workflow !== null;
     const hasOverride = fields.defaultWorkflow !== undefined && fields.defaultWorkflow !== null;
 
@@ -201,6 +209,7 @@ export async function resolveLaunchWorkflow(
         defaultsStore,
         executorsStore,
         executor,
+        executorScope,
         fields,
         createdBy,
         command,

@@ -18,7 +18,7 @@ const group = (overrides: Partial<OrphanGroup> = {}): OrphanGroup => ({
     jobId: JOB_A,
     leaseToken: LEASE_OLD,
     createdAtMs: 1_000_000,
-    objects: [{ kind: 'pod', name: 'svc-timescale' }],
+    objects: [{ kind: 'pod', name: 'svc-postgres' }],
     ...overrides,
 });
 
@@ -84,7 +84,7 @@ interface ArmCall {
     verdict: ReapVerdict;
 }
 
-const recordingArm = (removed: string[] = ['pod svc-timescale']): { arm: ReaperArm; calls: ArmCall[] } => {
+const recordingArm = (removed: string[] = ['pod svc-postgres']): { arm: ReaperArm; calls: ArmCall[] } => {
     const calls: ArmCall[] = [];
     return {
         calls,
@@ -128,7 +128,7 @@ describe('the reaper sweep', () => {
 
         expect(leaseCalls).toEqual([[JOB_A, JOB_B]]);
         expect(calls).toEqual([{ group: terminal, verdict: 'gone' }]);
-        expect(logs).toEqual([`reaper: job ${JOB_A} lease ${LEASE_OLD} (gone) — removed pod svc-timescale`]);
+        expect(logs).toEqual([`reaper: job ${JOB_A} lease ${LEASE_OLD} (gone) — removed pod svc-postgres`]);
     });
 
     it('reaps nothing — not even a scan-condemned group — when the board cannot answer', async () => {
