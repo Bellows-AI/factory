@@ -23,9 +23,17 @@ FROM node:24-bookworm-slim
 
 # What -slim drops and the rest of this file needs: git (Claude Code shells out to it for status,
 # diffs and blame), curl (the two downloads below) and the CA bundle both verify against.
+#
+# The doc/man/locale strip is in THIS layer, not a later one: deleting in a later layer leaves the
+# bytes in this one and saves nothing. Worth 0.9MB, measured — NOT the ~18MB `dpkg-query
+# --showformat='${Installed-Size}'` suggests when it reports perl at 28MB and git at 45MB. Those
+# live in the base image's own layers, and a whiteout here cannot reclaim a lower layer's bytes;
+# only the docs apt installs in THIS layer go. Kept because it is free and bounds the growth, not
+# because it is large. Byte-identical to the same layer in docker/opencode-executor/Dockerfile,
+# deliberately — see the acli/gh note below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
 # npm stays in this image — the CLI's plugin path uses it — so its own bundled dependency tree
 # ships too, and the version node:24 pins carries the only fixable findings the release scan
@@ -35,18 +43,13 @@ RUN apt-get update \
 ARG NPM_VERSION=11.21.0
 RUN npm install -g npm@${NPM_VERSION} && npm cache clean --force
 
-# Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
-# starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.
-# No --ignore-scripts here, deliberately. The postinstall is what places the native binary, and
-# without it the CLI installs cleanly and then fails at run time with
-# "Error: claude native binary not installed."
-# This floor also carries the board's master prompt (issue #244): `--append-system-prompt` and
-# `--system-prompt-snapshot off` are both present from 2.1.280 on. The driver never falls back to
-# prefixing the prompt onto the user message on an older CLI — a build below this floor fails an
-# unknown-flag argv rather than silently losing the Factory execution context.
-ARG CLAUDE_CODE_VERSION=2.1.280
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
-    && npm cache clean --force
+# acli and gh sit ABOVE each image's CLI install, and the two files spell this whole block — ARG
+# order included — identically. BuildKit keys a layer on the command string it was built from,
+# which carries the declared ARGs as a `|N NAME=VALUE` prefix, so the slightest divergence here
+# (an extra ARG above, a reworded flag) gives the two images four distinct layers instead of two
+# shared ones. Built in one daemon, as `make runners` does, identical means the second build
+# reuses the first's layers: 59MB less to store and pull on any node that runs both executors.
+# Neither image gets smaller. Keep the two blocks in sync or the saving silently evaporates.
 
 # Atlassian CLI — the only supported way to read and write Jira from here; the Atlassian MCP server
 # is deliberately not configured. TARGETARCH is amd64/arm64, which is exactly how the download
@@ -68,6 +71,24 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/d
     && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
     && rm -rf "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
     && gh --version
+
+# Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
+# starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.
+# No --ignore-scripts here, deliberately. The postinstall is what places the native binary, and
+# without it the CLI installs cleanly and then fails at run time with
+# "Error: claude native binary not installed."
+# This floor also carries the board's master prompt (issue #244): `--append-system-prompt` and
+# `--system-prompt-snapshot off` are both present from 2.1.280 on. The driver never falls back to
+# prefixing the prompt onto the user message on an older CLI — a build below this floor fails an
+# unknown-flag argv rather than silently losing the Factory execution context.
+#
+# The install lands one 223MB native binary, `bin/claude.exe`, hardlinked into the resolved
+# platform package (@anthropic-ai/claude-code-linux-x64). `.exe` is the package's name for it on
+# every platform; the file is an ELF. Unlike opencode below, only the one platform package
+# resolves, so there is no second copy to delete.
+ARG CLAUDE_CODE_VERSION=2.1.287
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    && npm cache clean --force
 
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 
@@ -91,7 +112,21 @@ COPY --chown=node:node managed-settings.json /etc/claude-code/managed-settings.j
 COPY --from=skills --chown=node:node . /home/node/.claude/skills/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
-RUN mkdir -p /workspace /opt/claude-home && chown node:node /workspace /opt/claude-home
+#
+# /opt/claude-home is the seed source for a fresh config directory: the transcript store points
+# CLAUDE_CONFIG_DIR at a per-thread directory on the workspaces volume, which starts empty and
+# would hide the baked config, so the entrypoint copies this tree in on first run.
+#
+# A symlink, not the `cp -a` of the finished config this replaces. That copy wrote 34MB — nearly
+# all of it the context-mode plugin baked in below — into a second layer, for a tree the baked
+# home already holds. Nothing mutates /home/node/.claude before the seed runs: the entrypoint
+# only seeds when CLAUDE_CONFIG_DIR has been pointed somewhere ELSE, and every container starts
+# from the image, so two paths naming one tree costs nothing. The entrypoint's
+# `[ -d /opt/claude-home ]` and `cp -a /opt/claude-home/.` both read through it unchanged.
+# Dangling until the COPYs below land, which is fine — nothing dereferences it at build time.
+# Created here, as root: /opt is root-owned, and everything past `USER node` cannot write it.
+RUN mkdir -p /workspace && chown node:node /workspace \
+    && ln -s /home/node/.claude /opt/claude-home
 WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/claude-executor
@@ -120,11 +155,6 @@ RUN claude plugin marketplace add mksglu/context-mode \
 RUN node -e "const f=process.env.CLAUDE_CONFIG_DIR+'/.claude.json',fs=require('fs'); \
     const c=JSON.parse(fs.readFileSync(f,'utf8')); c.hasCompletedOnboarding=true; \
     c.theme='dark'; fs.writeFileSync(f,JSON.stringify(c,null,2));"
-
-# Keep a pristine copy of the finished config. The transcript store points CLAUDE_CONFIG_DIR at a
-# per-thread directory on the workspaces volume, which starts empty and would hide everything
-# above it. The entrypoint seeds that directory from here on first run.
-RUN cp -a /home/node/.claude/. /opt/claude-home/
 
 # The installs above run as root, and node creates /tmp/node-compile-cache while they run. It
 # survives into the image root-owned, and node running as `node` below cannot write it — the

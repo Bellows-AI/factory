@@ -182,6 +182,31 @@ Packages → the package → Package settings → Change visibility — and node
 `imagePullSecrets` and no node-role change. Private works too; the chart's `imagePullSecrets`
 reach every chart pod and every pod the driver specs.
 
+### The chart is published too
+
+`chart` packages `charts/factory` and pushes it to `oci://ghcr.io/<owner>/charts`, after
+`manifest` and never beside it: a chart that resolves before its images exist installs cleanly and
+then lands every pod in `ImagePullBackOff`. Without this step the only way to install a release is
+to clone the repository at the right tag, which no GitOps controller does — ArgoCD resolves a
+chart from a registry by version, and a deployment repository holds values, not a vendored copy of
+these templates.
+
+Two versions, deliberately different. `--version` is the tag with its leading `v` stripped,
+because a `Chart.yaml` version must be SemVer and SemVer has no `v`. `--app-version` keeps the tag
+exactly as spelled, and that one is load-bearing rather than decorative: `factory.image` resolves
+an empty `tag` to `.Chart.AppVersion`, so a packaged chart names the dashboard, driver and
+collector images of *its own release* with no value set anywhere. The two executor references are
+the exception — bare repository strings with no tag field — so a deployment pins those itself
+(docs/eks-runbook.md, step 3).
+
+Nothing rewrites values at package time. A chart whose committed defaults differ from what CI
+renders is a chart nobody can reproduce locally.
+
+helm is installed from the official tarball and checksum-verified rather than through
+`azure/setup-helm`, for the same reason the Trivy scan is a container and not an action: every
+`uses:` on a job holding `packages: write` stays GitHub-owned. A test pins that rule, so a
+third-party action added here fails the suite rather than the release.
+
 Deployment and release notes are still out of scope.
 
 ## A red `npm test` step is not always your change

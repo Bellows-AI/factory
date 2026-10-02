@@ -1,23 +1,70 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const root = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
-const makefile = readFileSync(join(root, 'Makefile'), 'utf8');
-const chart = readFileSync(join(root, 'charts', 'factory-local-state', 'templates', 'postgres.yaml'), 'utf8');
+/**
+ * `make start` upgrades the `factory-state` release in place and promises the re-run keeps its
+ * data. Two state layouts break that promise rather than one, and both are invisible until after
+ * the upgrade: the pre-#371 Deployment (whose standalone PVC helm deletes), and a StatefulSet
+ * claim initialised before `PGDATA` named a subdirectory — postgres then `initdb`s a fresh,
+ * empty cluster under `/var/lib/postgresql/data/pgdata` while the real one sits unused one
+ * directory up, and the board comes back with an empty database and no error anywhere. Neither is
+ * migrated: `state-preflight` refuses, and `make reset` is how the user asks for the delete.
+ *
+ * Both probes name the resources an EXISTING release renders, which the timescale -> postgres
+ * rename did not touch: a release installed before it holds `<release>-timescale`, and a release
+ * installed after it is by definition new and needs no refusal. Renaming either lookup makes the
+ * guard miss the layout it exists to catch.
+ *
+ * There is no way to exercise the recipe offline — it is kubectl against a cluster — so the guard
+ * is pinned as text, the way this suite pins the chart and document invariants beside it.
+ */
 
-describe('make start preflight', () => {
-    // The guard names a resource this repo no longer renders: the pre-#371 Deployment, which was
-    // called `<release>-timescale`. Renaming it along with the chart makes the lookup miss, and the
-    // destructive upgrade the guard exists to refuse proceeds silently.
-    it('looks up the legacy timescale Deployment, not the current postgres name', () => {
-        expect(makefile).toContain('get deployment/$(K8S_STATE_RELEASE)-timescale');
-        expect(makefile).not.toContain('get deployment/$(K8S_STATE_RELEASE)-postgres');
+const read = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
+
+const makefile = read('../../Makefile');
+const kubernetes = read('../../docs/kubernetes.md');
+const chart = read('../../charts/factory-local-state/templates/postgres.yaml');
+
+/** The `state-preflight` recipe: the target line through the last line that is still indented. */
+const preflight = (() => {
+    const lines = makefile.split('\n');
+    const start = lines.findIndex((line) => line.startsWith('state-preflight:'));
+    expect(start).toBeGreaterThan(-1);
+    const body: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+        if (line !== '' && !line.startsWith('\t')) break;
+        body.push(line);
+    }
+    return body.join('\n');
+})();
+
+describe('the factory-state upgrade preflight', () => {
+    it('still refuses the pre-#371 Deployment', () => {
+        expect(preflight).toContain('deployment/$(K8S_STATE_RELEASE)-timescale');
+        expect(preflight).not.toContain('deployment/$(K8S_STATE_RELEASE)-postgres');
+    });
+
+    it('refuses a StatefulSet whose claim predates PGDATA', () => {
+        expect(preflight).toContain('statefulset/$(K8S_STATE_RELEASE)-timescale');
+        // The detection: the running container's env names, read back and searched for PGDATA.
+        expect(preflight).toContain('.spec.template.spec.containers[*].env[*].name');
+        expect(preflight).toMatch(/grep -qx ['"]?PGDATA/);
+    });
+
+    it('names `make reset` as the way through both refusals', () => {
+        expect(preflight.match(/make reset/g) ?? []).toHaveLength(2);
+    });
+
+    it('guards the value the chart actually sets', () => {
+        expect(chart).toContain('value: /var/lib/postgresql/data/pgdata');
     });
 
     it('describes the current claim with the name the chart actually mints', () => {
         expect(chart).toContain('{{ .Release.Name }}-postgres');
         expect(makefile).toContain('data-<release>-postgres-0');
+    });
+
+    it('is documented where the Deployment refusal is', () => {
+        expect(kubernetes).toContain('`make start` refuses a state claim initialised without `PGDATA`');
     });
 });

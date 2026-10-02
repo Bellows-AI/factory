@@ -508,13 +508,16 @@ async function resolveOrCreatePr(
     // summarizer script reads the branch — its commits and the diff against the default
     // — in the same throwaway-container shape as every other step. It needs no
     // credential (local git reads only) and its failure is decoration: the
-    // command-derived plan title and the plain body stay the fallback.
+    // command-derived plan title and the plain body stay the fallback. BACKSTOP_TITLE names
+    // this publish's own just-created commit (its subject IS plan.title) so the script never
+    // selects the command text as the title (issue #389) — the commit's work stays in the
+    // diff and its subject in the body, but it cannot win the title.
     const summarized = await runStep({
         label: 'pr summary',
         entrypoint: 'node',
         args: ['-e', prSummaryScript],
         env: false,
-        envLiterals: { BASE: `origin/${state.defaultBranch}` },
+        envLiterals: { BASE: `origin/${state.defaultBranch}`, BACKSTOP_TITLE: plan.title },
         inRepo: true,
     })
         .then((r) => parsePrSummary(r.stdout))

@@ -26,8 +26,8 @@ its permissions from the config baked into this image, not from a CLI flag.
 ```bash
 docker build --build-context skills=docker/skills -t opencode-executor docker/opencode-executor
 
-# Pin the CLI instead of tracking latest:
-docker build --build-context skills=docker/skills --build-arg OPENCODE_VERSION=1.18.29 \
+# Override the pinned CLI (the Dockerfile's default is 1.18.34):
+docker build --build-context skills=docker/skills --build-arg OPENCODE_VERSION=1.18.34 \
     -t opencode-executor docker/opencode-executor
 ```
 

@@ -16,9 +16,11 @@
 // whatever that tree is, deleting it would be destroying a session's work for an attempt to
 // reclaim disk. Concretely, in order:
 //   1. WORKTREE is a registered worktree of REPO, and the directory is there
-//      -> `git worktree remove --force` (the force discards uncommitted edits in a logged-off
-//      tree: the thread is terminal, its branch abandoned — the verdict already lives on the
-//      board, not in these edits).
+//      -> removed, discarding uncommitted edits in a logged-off tree: the thread is terminal, its
+//      branch abandoned — the verdict already lives on the board, not in these edits. The removal
+//      is this file's own parallel walk rather than `git worktree remove --force`, because git
+//      unlinks one entry at a time and the volume is NFS; the prune below retires the admin entry
+//      that `worktree remove` would have retired itself.
 //   2. WORKTREE is registered but the directory is already gone -> nothing; the prune below
 //      clears the stale admin entry.
 //   3. WORKTREE exists with a .git entry but is NOT registered -> refused. The sync's own
@@ -42,13 +44,96 @@
 // MORE careful, not less. There is no prune when the clone is gone: nothing to prune into.
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
+const fsp = require('node:fs/promises');
 
 const repo = process.env.REPO;
 const wt = process.env.WORKTREE;
 const ERROR_MESSAGE_MAX_LENGTH = 300;
 
+// Every unlink on a ReadWriteMany NFS mount is a network round trip, and the tree being removed
+// is a checkout WITH its node_modules: measured at ~143k files, of which ~89% were node_modules,
+// against EFS at roughly 7ms per metadata op. Serially that is ~8 minutes, which is what the
+// first real reclaim on EKS took before it died (2026-10-01). Latency cannot be made smaller, so
+// the only lever is overlapping the round trips. 64 is chosen to be well clear of the point where
+// one reclaim's I/O would starve the runners sharing the volume; it is not a tuned optimum, and
+// the win is the order of magnitude, not the exact number.
+const CONCURRENCY = 64;
+// An NFS client can answer readdir from a cached listing that still names entries this process
+// has already unlinked, so the rmdir that follows fails ENOTEMPTY on a directory that is in fact
+// empty. That is not a reason to refuse — it is a reason to look again.
+const RMDIR_ATTEMPTS = 3;
+
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
 const refused = (r) => ({ ok: false, reason: r });
+
+// A plain counting semaphore. The slot is held across ONE syscall and released before any
+// recursion: holding it while awaiting a subdirectory would let every slot fill with parents
+// waiting on children that can never acquire one.
+let inFlight = 0;
+const waiters = [];
+function limited(fn) {
+    const run = async () => {
+        try {
+            return await fn();
+        } finally {
+            const next = waiters.shift();
+            if (next) next();
+            else inFlight--;
+        }
+    };
+    if (inFlight < CONCURRENCY) {
+        inFlight++;
+        return run();
+    }
+    return new Promise((resolve) => waiters.push(resolve)).then(run);
+}
+
+/**
+ * Remove a directory tree with concurrent unlinks. Replaces both `fs.rmSync(recursive)` and
+ * git's own removal, which walk the tree one entry at a time.
+ *
+ * Entries are removed with `rm`, never followed: a symlink — including one whose target is a
+ * directory, and including a dangling one — reports `isDirectory()` false and is unlinked as the
+ * single entry it is. Nothing outside this tree is ever reached.
+ */
+async function removeTree(root) {
+    let entries;
+    try {
+        entries = await limited(() => fsp.readdir(root, { withFileTypes: true }));
+    } catch (e) {
+        // Gone already, or not a directory at all: either way the path is removable as one entry.
+        if (e.code === 'ENOENT') return;
+        if (e.code === 'ENOTDIR') {
+            await limited(() => fsp.rm(root, { force: true }));
+            return;
+        }
+        throw e;
+    }
+    const dirs = [];
+    const files = [];
+    for (const entry of entries) {
+        (entry.isDirectory() ? dirs : files).push(root + '/' + entry.name);
+    }
+    // The files of one directory go out together; the subdirectories then recurse in parallel.
+    // Both are throttled by the semaphore at the syscall, so the fan-out is in pending promises
+    // rather than in concurrent I/O.
+    await Promise.all(files.map((p) => limited(() => fsp.rm(p, { force: true }))));
+    await Promise.all(dirs.map((d) => removeTree(d)));
+    await rmdir(root);
+}
+
+async function rmdir(p, attempt = 1) {
+    try {
+        await limited(() => fsp.rmdir(p));
+    } catch (e) {
+        if (e.code === 'ENOENT') return;
+        if (e.code !== 'ENOTEMPTY' || attempt >= RMDIR_ATTEMPTS) throw e;
+        // Re-walk: either the listing was stale, or something genuinely appeared. Bounded, so a
+        // directory somebody is actively writing into still ends as an honest failure.
+        await removeTree(p);
+        await rmdir(p, attempt + 1);
+    }
+}
 
 /**
  * The .git entry at a path, or null only when the entry is genuinely absent: ENOENT (nothing
@@ -94,7 +179,7 @@ function honestWorktreePointer(p) {
  * The clone is gone. Settle the tree from what the tree itself knows, and nothing else:
  * a registered task worktree carries a .git FILE whose gitdir names this clone's admin dir.
  */
-function reclaimWithoutClone(wtExists) {
+async function reclaimWithoutClone(wtExists) {
     if (!wtExists) return { ok: true, removed: false };
     if (dotGitEntry(wt)) {
         if (!honestWorktreePointer(wt)) {
@@ -106,15 +191,15 @@ function reclaimWithoutClone(wtExists) {
                     ' (whose clone is gone); remove it by hand if it is truly stale'
             );
         }
-        fs.rmSync(wt, { recursive: true, force: true });
+        await removeTree(wt);
         return { ok: true, removed: true };
     }
     // The bare-leftover case, without the clone that would have pruned after it.
-    fs.rmSync(wt, { recursive: true, force: true });
+    await removeTree(wt);
     return { ok: true, removed: true };
 }
 
-function reclaim() {
+async function reclaim() {
     const wtExists = fs.existsSync(wt);
     if (!fs.existsSync(repo)) return reclaimWithoutClone(wtExists);
     const registered =
@@ -135,27 +220,31 @@ function reclaim() {
                 '; remove it by hand if it is truly stale'
         );
     }
+    // `registered` implies `wtExists` — it is computed from it — so the two old arms (git's
+    // removal for a registered tree, a hand rmSync for a bare leftover) are now one removal. The
+    // distinction only ever existed because git had to be the one to retire its own admin entry.
     let removed = false;
-    if (registered) {
-        git('worktree', 'remove', '--force', wt);
-        removed = true;
-    } else if (wtExists) {
-        fs.rmSync(wt, { recursive: true, force: true });
+    if (wtExists) {
+        // The registered case used to be `git worktree remove --force`, which unlinks serially and
+        // then rmdirs — the shape that took ~8 minutes and died ENOTEMPTY on EFS. The registration
+        // check above has already decided this tree may go, so what is left is the removal itself,
+        // and the prune below retires the admin entry exactly as `worktree remove` would have.
+        await removeTree(wt);
         removed = true;
     }
     git('worktree', 'prune');
     return { ok: true, removed };
 }
 
-try {
-    console.log(JSON.stringify(reclaim()));
-} catch (e) {
-    console.log(
-        JSON.stringify(
-            refused(
-                'worktree reclaim failed: ' +
-                    String((e && e.stderr) || (e && e.message) || e).slice(0, ERROR_MESSAGE_MAX_LENGTH)
+reclaim()
+    .then((verdict) => console.log(JSON.stringify(verdict)))
+    .catch((e) =>
+        console.log(
+            JSON.stringify(
+                refused(
+                    'worktree reclaim failed: ' +
+                        String((e && e.stderr) || (e && e.message) || e).slice(0, ERROR_MESSAGE_MAX_LENGTH)
+                )
             )
         )
     );
-}

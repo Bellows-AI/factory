@@ -1595,20 +1595,37 @@ because the publish runs after `runDeclaredGates` returns null and never otherwi
 failed, timed out, was cache-killed, or stopped talking early publishes nothing — its tree may be
 mid-thought, and pushing it would publish work no verdict was ever given on.
 
-**The PR speaks for the work, not for the command that started it (issue #82).** The executor
+**The PR speaks for the work, not for the command that started it (issues #82, #389).** The executor
 may not open pull requests — the claude guard denies `gh pr create` (a second `Bash(gh *)` hook
 arm), the opencode permission fence refuses the same, and the baked skills say the board
 publishes. The title/description are not the author's prompt text either: a summarizer script
 (`driver/src/scripts/pr-summary.cjs`) runs as one more publish step in the same throwaway
-container/Job shape, reads the branch's commit subjects and the diffstat against the default
-branch, and answers one JSON line the driver turns into the PR title and body — the first commit
-subject is the title (the issue reference appended when absent), the commit list and shortstat
-the body, with the issue closure and a published-by line appended by the driver. The step needs
-no credential (local git reads only) and its failure is decoration: the command-derived title
-and plain body of the early publishes remain the fallback. The boundary is exactly creating and
-checking out: `gh pr edit`, `gh pr merge`, `gh pr close` stay allowed — the issue's scope was
-opening, and a follow-up that answers review feedback may still need to comment on the PR it
-did not create.
+container/Job shape, reads the branch's commits and its final diff against the default branch,
+and answers one JSON line the driver turns into the PR title and body. The title is selected,
+not copied (#389): each commit is scored by how much of its churn survives in the final diff —
+reverted or superseded work scores nothing — the heaviest survivor names the PR, earliest wins a
+tie, and test-only commits cannot win while any source-touching commit survives (the fix, not
+the regression test that opened the branch). A commit subject is reused whenever it does
+summarize the change; single-commit branches keep their only subject. The chosen mechanism is
+deterministic and local-git only — no model call, deliberately: the step runs credential-free
+and offline in a throwaway container on both executors, and a generator needing a credential,
+egress or quota would put a decoration at risk of failing a publish. The documented limit: the
+rule selects among the branch's own subjects, it cannot coin one — a branch of `wip`/`fix`
+subjects keeps a subject-based title, with the command-derived plan title as the driver-side
+floor. The publish's own backstop commit — the uncommitted leftovers, committed under the
+command's first line just before the summarizer reads — is excluded from the selection (its
+subject rides the step as `BACKSTOP_TITLE`): the prompt must never win the title, though the
+commit stays in the body's list. The exclusion keys on the current command, so a backstop
+commit a previous attempt left behind under a different command is scored like any other
+commit — a follow-up after a partially-failed publish can still inherit that attempt's subject.
+The commit list (capped) and shortstat are the body, with the issue closure and a
+published-by line appended by the driver; the issue reference is appended to the title when the
+selected subject does not already end with it. Every git read carries a max buffer and a
+timeout — bounded input, bounded time. The step needs no credential (local git reads only) and
+its failure is decoration: the command-derived title and plain body of the early publishes
+remain the fallback. The boundary is exactly creating and checking out: `gh pr edit`, `gh pr
+merge`, `gh pr close` stay allowed — the issue's scope was opening, and a follow-up that answers
+review feedback may still need to comment on the PR it did not create.
 
 **A publish failure fails the verdict.** The work did not land; a green badge over a tree that
 exists on one machine only is the exact lie this exists to prevent. The reason (which git step,

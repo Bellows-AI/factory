@@ -330,6 +330,19 @@ kind walkthrough. Decisions that look like cruft and are not:
   and names `make reset` as the way through. The check is a Deployment lookup rather than a chart
   version, because the Deployment is exactly the shape that cannot be upgraded.
 
+  **`make start` refuses a state claim initialised without `PGDATA`** — the second half of the same
+  preflight. The chart points postgres at `/var/lib/postgresql/data/pgdata`, a subdirectory of the
+  mount, because a real block volume's root carries a `lost+found` and `initdb` refuses a non-empty
+  data directory. A claim that predates that value holds its cluster at the mount point itself, and
+  the entrypoint does not move it: it initialises a fresh, empty cluster in the subdirectory and the
+  pod comes up healthy, so the board runs on an empty database with the real rows one directory up
+  and nothing reporting it. This is the failure with no symptom, which is why the guard exists. The
+  check reads the env names off the running `statefulset/factory-state-timescale`
+  (`.spec.template.spec.containers[*].env[*].name`) and stops when `PGDATA` is not among them —
+  the pod's own state, not a chart version. There is no migration arm: moving a live data directory
+  is not something a `make` target should attempt behind the user's back, so the refusal names
+  `make reset`, the same way through as the Deployment case.
+
   Dropping Timescale cost nothing because it earned nothing: there was no retention policy and no
   compression, the views in `002_views.repeatable.sql` are *deliberately* not continuous
   aggregates, and `time_bucket()` never had a caller. The query path is unchanged. The migration

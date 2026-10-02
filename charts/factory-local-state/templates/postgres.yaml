@@ -82,6 +82,16 @@ spec:
                         value: {{ .Values.postgres.password | quote }}
                       - name: POSTGRES_DB
                         value: {{ .Values.postgres.database | quote }}
+                      # A subdirectory, never the mount point. kind's local provisioner hands out
+                      # an empty directory, so mounting the claim straight at the data directory
+                      # works there and only there: any real block volume is a filesystem with a
+                      # `lost+found` in its root, and `initdb` refuses a non-empty data directory
+                      # outright ("It contains a lost+found directory, perhaps due to it being a
+                      # mount point"). The pod then crash-loops with a message about postgres
+                      # rather than about storage. Measured on EBS, 2026-10-01 — see
+                      # docs/eks-runbook.md's walk record.
+                      - name: PGDATA
+                        value: /var/lib/postgresql/data/pgdata
                   {{- with .Values.postgres.resources }}
                   resources:
                       {{- toYaml . | nindent 22 }}
