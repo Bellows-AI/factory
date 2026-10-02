@@ -130,6 +130,15 @@
         pointer-events: none;
     }
 
+    /* This is a text mirror, so the shared inline-code font scale and padding must not move its
+       glyphs away from the textarea's native caret and mouse hit testing (issue 387). */
+    .json-editor-highlight > code {
+        background: transparent;
+        border-radius: 0;
+        font: inherit;
+        padding: 0;
+    }
+
     .json-editor-input {
         background: transparent;
         caret-color: var(--ink);
