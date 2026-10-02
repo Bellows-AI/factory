@@ -640,6 +640,12 @@ expect_contains 'the admission policy requires the RuntimeDefault seccomp profil
     "variables.spec.securityContext.seccompProfile.type == 'RuntimeDefault'"
 expect_contains 'the admission policy requires allowPrivilegeEscalation false' "$admission" \
     'c.securityContext.allowPrivilegeEscalation == false'
+# A container-level seccomp profile overrides the pod-level one, so requiring it on the pod alone
+# would admit the exact shape it forbids. The needle names the container field, because
+# `c.securityContext.seccompProfile` is a SUBSTRING of the pod expression's
+# `variables.spec.securityContext.seccompProfile` and would match a template without this rule.
+expect_contains 'the admission policy refuses a container-level seccomp override' "$admission" \
+    '!has(c.securityContext.seccompProfile)'
 expect_contains 'the admission policy requires every capability dropped' "$admission" \
     "'ALL' in c.securityContext.capabilities.drop"
 expect_contains 'the admission policy exempts only a labelled declared service' "$admission" \
@@ -1531,6 +1537,15 @@ escalating="$(probe_pod escalate \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: true, capabilities: {drop: [ALL]}}}]' |
     as_driver)"
 expect_contains 'the policy refuses a container that may escalate' "$escalating" 'allowPrivilegeEscalation: false'
+# The container-level override, against the real apiserver: the pod keeps RuntimeDefault and the
+# CONTAINER asks for Unconfined. Admitted, this is a runner with no syscall filter at all while
+# every pod-level assertion still reads green — which is why it is probed rather than reasoned about.
+container_unconfined="$(probe_pod cseccomp \
+    '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: Unconfined}}}]' |
+    as_driver)"
+expect_contains 'the policy refuses a container that overrides the pod seccomp profile' \
+    "$container_unconfined" 'may not override the pod seccomp profile'
+
 no_drop="$(probe_pod nodrop \
     '    containers: [{name: c, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: []}}}]' |
     as_driver)"

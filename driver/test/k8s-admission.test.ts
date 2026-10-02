@@ -129,6 +129,13 @@ describe('the admission policy requires the pod hardening (#382)', () => {
         // template's own header comment, so a bare needle passes with the validation deleted.
         ['the escalation bit', 'c.securityContext.allowPrivilegeEscalation == false'],
         ['the capability drop', "'ALL' in c.securityContext.capabilities.drop"],
+        // A CONTAINER-level seccomp profile overrides the pod-level one, so pinning only the pod
+        // leaves `Unconfined` on a container admitted — the policy would require the invariant and
+        // permit its exact negation one field deeper. The needle names `variables.containers`
+        // explicitly: `c.securityContext.seccompProfile` alone is a SUBSTRING of the pod-level
+        // expression's `variables.spec.securityContext.seccompProfile`, so it passes against a
+        // template that never looks at a container at all.
+        ['the container-level seccomp override', 'has(c.securityContext.seccompProfile)'],
     ])('names %s', (_label, needle) => {
         expect(template).toContain(needle);
     });

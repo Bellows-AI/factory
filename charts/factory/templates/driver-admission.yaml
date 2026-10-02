@@ -155,6 +155,19 @@ spec:
               has(variables.spec.securityContext) && has(variables.spec.securityContext.seccompProfile) &&
               variables.spec.securityContext.seccompProfile.type == 'RuntimeDefault'
           message: 'a driver-specced pod must run under the RuntimeDefault seccomp profile'
+        {{/*
+        And the container cannot take back what the pod just granted. A container-level
+        `seccompProfile` OVERRIDES the pod-level one, so the validation above on its own would
+        require the invariant and admit its exact negation one field deeper: a pod carrying
+        `RuntimeDefault` with a container carrying `Unconfined` runs unfiltered. Any explicit
+        container profile must therefore be RuntimeDefault; absent is fine, and is what the driver
+        actually emits — it sets seccomp once, at the pod. `variables.containers` includes
+        initContainers, so this covers them too.
+        */}}
+        - expression: >-
+              variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.seccompProfile) ||
+                c.securityContext.seccompProfile.type == 'RuntimeDefault')
+          message: 'a driver-specced container may not override the pod seccomp profile'
         - expression: >-
               variables.containers.all(c, has(c.securityContext) &&
                 has(c.securityContext.allowPrivilegeEscalation) &&
