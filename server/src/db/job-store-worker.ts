@@ -19,6 +19,7 @@ import type {
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
 import { enterRuntimeBoundary } from './workflow-blocks/runtime.js';
 import { entersBlockHelperNode, settleBlockWaits } from './workflow-blocks/runtime-settle.js';
+import { applyMergeClosureIfMerged, mergeClosureMarkerSet, prLockKey, settleIfMergeClosed } from './job-store-merge.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
 export type HeartbeatResult = Awaited<ReturnType<JobStore['heartbeat']>>;
@@ -297,14 +298,15 @@ export async function completeJob(
         const rootJobId = rows[0]!.root_job_id;
         const jobRepo = rows[0]!.repo;
 
-        await maybeRecordPublication(tx, prs, { rootJobId, jobRepo, publication: publication ?? null });
+        await maybeRecordPublicationAndClose(tx, ctx, { rootJobId, jobRepo, publication: publication ?? null });
 
         // The workflow transition, when this thread walks a graph — decided HERE, in the
         // verdict's transaction (docs/workflows.md). A workflow-less thread has no
         // snapshot on its root and skips it: its completes behave byte-identically to
         // before 027.
         const [root] = await tx<WorkflowTransitionRoot[]>`
-            select workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo from job
+            select workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
+            from job
             where org_id = ${orgId} and id = ${rootJobId}
         `;
         if (root) {
@@ -334,16 +336,34 @@ export async function completeJob(
             from job
             where org_id = ${orgId} and root_job_id = ${rootJobId}
         `;
-        const threadDone = (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0;
+        // Issue #390's late done-stamp: a merge-marked thread whose members all went terminal
+        // WITHOUT any done landing (the closure skips running rows; the other settles close a
+        // marked thread from their own arms). The shared conditional settle re-checks the marker
+        // under the lock and stamps every terminal member (no actor), so the thread reads done
+        // and the tree reclaims at this verdict. It no-ops on unmarked threads — one indexed
+        // marker lookup is the whole cost of never deciding this on a stale pre-read.
+        let threadDone = (thread?.total ?? 0) > 0 && thread!.total === thread!.terminal && thread!.done > 0;
+        if (!threadDone) {
+            threadDone = await settleIfMergeClosed(ctx, rootJobId, tx);
+        }
         if (threadDone) {
             // A threadDone-true verdict IS the worktree-reclaim order: the driver removes the
             // tree directly on this answer, with no queue row and no ack — so this verdict is
             // where the board records the removal as issued (045, issue #327), or reopen could
             // not tell "tree gone" from "tree still there". Same transaction as the verdict,
-            // coalesce keeps the first writer's instant.
+            // coalesce keeps the first writer's instant. A queue row queued moments earlier in
+            // this same transaction (the merge closure's inline settle, issue #390) is
+            // withdrawn — the direct order supersedes it, one tree, one work order; a row a
+            // worker holds a LIVE claim on stays (it is mid-removal right now, and the ack
+            // finishes it).
             await tx`
                 update job set worktree_reclaimed_at = coalesce(worktree_reclaimed_at, now())
                 where org_id = ${orgId} and id = ${rootJobId}
+            `;
+            await tx`
+                delete from task_reclaim
+                where org_id = ${orgId} and root_job_id = ${rootJobId}
+                  and (claimed_by is null or lease_expires_at <= now())
             `;
         }
         return { result: 'ok', threadDone };
@@ -359,6 +379,27 @@ export async function maybeRecordPublication(
     if (publication && prs && publication.repo === jobRepo) {
         await prs.recordPublication({ root: rootJobId, ...publication }, tx);
     }
+}
+
+/**
+ * The verdict's publication half plus issue #390's merge-before-publication application, under the
+ * PR-scoped advisory lock both merge writers take first (`job-store-merge.ts`'s `prLockKey`): a
+ * merge delivery racing this verdict serializes here, so whichever commits second sees the
+ * other's rows — a delivery that committed first is applied inline (the closure this verdict's
+ * association was waiting for), and a delivery that commits after this one finds the fresh
+ * `job_pr` row and closes the thread itself. The lock is taken only when a publication will be
+ * recorded; a verdict that publishes nothing never contends.
+ */
+async function maybeRecordPublicationAndClose(
+    tx: TransactionSql,
+    ctx: JobStoreContext,
+    verdict: CompleteVerdict
+): Promise<void> {
+    const { rootJobId, jobRepo, publication } = verdict;
+    if (!(publication && ctx.prs && publication.repo === jobRepo)) return;
+    await tx`select pg_advisory_xact_lock(hashtextextended(${prLockKey(ctx.orgId, publication.repo, publication.prNumber)}::text, 0))`;
+    await maybeRecordPublication(tx, ctx.prs, verdict);
+    await applyMergeClosureIfMerged(tx, ctx, publication, rootJobId);
 }
 
 export interface WorkflowTransitionRoot {
@@ -387,6 +428,48 @@ export interface WorkflowTransitionInput {
     prs: JobStorePrs | undefined;
 }
 
+/**
+ * The completed row's stored state and the halted node the transition evaluates FROM — extracted
+ * so the walk below reads as the decision it is. The completed row's `gates` and `output` here
+ * are THIS run's (the verdict UPDATE landed them moments ago): what the edge rules evaluate
+ * against (gate-failed reads the stored reports; markers read the tail). The halted node is the
+ * completed row's own node, or (an off-graph user follow-up completing) the thread's newest
+ * carried node, mirroring workflow-engine.ts's own private `haltedNode` exactly (its own module
+ * comment: "the current node is the completed row's own workflow_node — or, for an off-graph row,
+ * the halted node"). Recomputed here rather than exported, since only this settle call and the
+ * no-publication guard need it outside the engine itself.
+ */
+function transitionContextOf(
+    threadRows: {
+        id: string;
+        workflow_node: string | null;
+        gates: GateReport[] | null;
+        repo: string | null;
+        executor: string | null;
+        executor_scope: string | null;
+    }[],
+    completedId: string,
+    status: JobOutcome,
+    output: string | null
+): { completed: (typeof threadRows)[number] | undefined; completedRun: CompletedRun; halted: string | null } {
+    const completed = threadRows.find((row) => row.id === completedId);
+    const completedRun: CompletedRun = {
+        id: completedId,
+        node: completed?.workflow_node ?? null,
+        status,
+        output,
+        gates: completed?.gates ?? null,
+    };
+    const halted =
+        completedRun.node ??
+        threadRows
+            .slice()
+            .reverse()
+            .find((row) => row.id !== completedId && row.workflow_node !== null)?.workflow_node ??
+        null;
+    return { completed, completedRun, halted };
+}
+
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
     const { orgId, rootJobId, root, completedId, status, output, prs } = input;
     if (!root.workflow_snapshot) return;
@@ -394,6 +477,17 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up
     // claimed against the one-worktree guarantee.
     await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+
+    // A merge-closed thread (issue #390) walks no further: no successor insert, no re-park into a
+    // durable wait — the PR it would wait on can never reopen. Decided on a marker read UNDER the
+    // lock, never on a pre-read: a merge delivery committing while this verdict waited on the
+    // lock must rest this transition too, and a pre-lock read would have answered stale. The
+    // wait cancellation the closure ran is what makes resting safe (settleBlockWaits would
+    // no-op, and is skipped), and any continuation woken before the closure commits is settled
+    // at claim by the existing cancellation fence. A MANUAL done keeps its documented
+    // mid-flight behavior — successors still insert — because the marker, not done_at, is the
+    // discriminator.
+    if (await mergeClosureMarkerSet(tx, orgId, rootJobId)) return;
 
     // The whole thread, oldest first — the audit trail the decision derives from: loop counts
     // are row counts per node (dead rows included), the halted node is the newest carried node,
@@ -425,31 +519,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         gates: row.gates,
         sessionId: row.session_id,
     }));
-    // The completed row's stored state: the UPDATE above just landed the verdict columns, so
-    // `gates` and `output` here are THIS run's — what the edge rules evaluate against
-    // (gate-failed reads the stored reports; markers read the tail).
-    const completed = threadRows.find((row) => row.id === completedId);
-    const completedRun: CompletedRun = {
-        id: completedId,
-        node: completed?.workflow_node ?? null,
-        status,
-        output,
-        gates: completed?.gates ?? null,
-    };
-
-    // The halted node the transition evaluates FROM — the completed row's own node, or (an
-    // off-graph user follow-up completing) the thread's newest carried node, mirroring
-    // workflow-engine.ts's own private `haltedNode` exactly (its own module comment: "the current
-    // node is the completed row's own workflow_node — or, for an off-graph row, the halted node").
-    // Recomputed here rather than exported, since only this settle call and the no-publication
-    // guard below need it outside the engine itself.
-    const halted =
-        completedRun.node ??
-        threadRows
-            .slice()
-            .reverse()
-            .find((row) => row.id !== completedId && row.workflow_node !== null)?.workflow_node ??
-        null;
+    const { completed, completedRun, halted } = transitionContextOf(threadRows, completedId, status, output);
 
     let transition = nextTransition({
         snapshot: root.workflow_snapshot,

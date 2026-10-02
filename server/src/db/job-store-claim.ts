@@ -17,6 +17,7 @@ import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import { withMintedToken } from './job-store-org-resolvers.js';
 import { workspacePathFor } from './job-store-rows.js';
+import { settleIfMergeClosed } from './job-store-merge.js';
 import type {
     JobStoreContext,
     JobStore,
@@ -69,7 +70,15 @@ async function claimNextCandidate(
                            wall_clock_ms = ${ctx.wallTick}
             where org_id = ${orgId} and status = 'running'
               and lease_expires_at <= now() and attempts >= max_attempts
-        `;
+            returning root_job_id
+        `.then(async (retired) => {
+            // A merge-marked thread whose last moving member just retired is closed by it
+            // (issue #390) — the shared conditional settle, distinct roots in deterministic
+            // order so two transactions settling the same roots cannot cycle on the locks.
+            for (const root of [...new Set(retired.map((r) => r.root_job_id))].sort()) {
+                await settleIfMergeClosed(ctx, root, tx);
+            }
+        });
 
         /*
          * The thread-exclusion, rendered once and used twice below. `id` and `root` are the
@@ -218,6 +227,9 @@ async function claimNextCandidate(
                                    attempts = greatest(attempts - 1, 0)
                     where org_id = ${orgId} and id = ${row.id}
                 `;
+                // The settled continuation may have been a merge-closed thread's last moving
+                // member (issue #390) — the shared conditional settle, on the already-held lock.
+                await settleIfMergeClosed(ctx, rootJobId, tx);
                 continue;
             }
 
@@ -279,7 +291,7 @@ export async function claimJob(
      * the settle survives every failed preparation; the transaction below still rolls
      * back exactly the half-claim it always did.
      */
-    await sql`
+    const stampedStops = await sql<{ root_job_id: string }[]>`
         update job set
             status             = 'stopped',
             finished_at        = now(),
@@ -291,7 +303,14 @@ export async function claimJob(
         where org_id = ${orgId} and status = 'running'
           and cancel_requested_at is not null
           and lease_expires_at <= now()
+        returning root_job_id
     `;
+    for (const root of [...new Set(stampedStops.map((r) => r.root_job_id))].sort()) {
+        // A merge-marked thread whose last moving member was this undelivered stop closes here
+        // (issue #390) — the shared conditional settle the other settle points run. This
+        // statement is autocommit by design (above), so the settle opens its own transaction.
+        await settleIfMergeClosed(ctx, root);
+    }
 
     /*
      * One transaction, not two autocommit statements. The UPDATE makes the job running

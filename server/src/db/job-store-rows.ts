@@ -276,6 +276,47 @@ export function hasRunningMember(members: { status: JobStatus }[]): boolean {
 }
 
 /**
+ * `markDone`'s second half, shared by every closure that frees a thread's tree (done, remove's
+ * refusal-free sibling, the merge closure's settle points, issue #390): if this settle just made
+ * the whole thread terminal, queue its worktree reclaim. The thread is one indexed read off the
+ * root column (022), and the ROOT row carries the labels the reclaim is addressed by — the same
+ * fields removeThread queues. Terminal only: a member still queued or running keeps the tree (its
+ * own settle will reclaim); one member done is what makes the settle a THREAD's close and not one
+ * turn's.
+ */
+export async function queueReclaimIfThreadDone(
+    tx: TransactionSql,
+    orgId: string,
+    hasWorkspaces: boolean,
+    rootJobId: string
+): Promise<void> {
+    const [thread] = await tx<{ total: number; terminal: number }[]>`
+        select count(*)::int as total,
+               count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal
+        from job
+        where org_id = ${orgId} and root_job_id = ${rootJobId}
+    `;
+    if (!thread || thread.total === 0 || thread.total !== thread.terminal) return;
+
+    const [root] = await tx<{ repo: string | null; created_by: string | null }[]>`
+        select repo, created_by from job
+        where org_id = ${orgId} and id = ${rootJobId}
+    `;
+    const workspacePath = workspacePathFor(orgId, hasWorkspaces, root?.created_by ?? null);
+    // Idempotent against a row already queued (an earlier done, or a concurrent one): one tree,
+    // one reclaim. The claim-ack cycle removes the row; until then a duplicate insert would only
+    // re-offer an already-removed tree, so the guard is tidiness, not correctness.
+    await tx`
+        insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
+        select ${orgId}, ${rootJobId}, ${root?.repo ?? null}, ${workspacePath}
+        where not exists (
+            select 1 from task_reclaim
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
+        )
+    `;
+}
+
+/**
  * The wall-clock banking, shared by every settle point that ends (or supersedes) an executed
  * segment: add the segment `started_at → now()` to what the row has banked. Used inside
  * transactions, like the claim's sameThreadRunning fragment. The SET expression reads the

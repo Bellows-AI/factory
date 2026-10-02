@@ -1314,6 +1314,35 @@ between the `threadDone: true` answer and the actual `rm` leaves the tree on dis
 marker, and reopen conservatively refuses a thread whose tree survives; recover by removing, or by
 re-done and a later reclaim, the same paths that take a tree down anyway.
 
+**A merged PR closes its threads (issue #390).** A verified `pull_request` delivery with
+`action: closed` and `pull_request.merged === true` (strictly the boolean — a missing or non-boolean
+flag is an ordinary close) hands the delivery to the job store instead of the wait cancel, and one
+transaction closes every thread whose recorded publication (`job_pr`) resolves to the delivery's
+(org, repo, PR number): done-stamped like a manual Done, with NO local actor — `done_by` is never
+written by the merge, so a pure merge close reads authorless and an earlier manual Done keeps its
+instant and actor (first-writer `coalesce`, the done route's own rule). Queued members settle
+`stopped` (no actor, no wall clock — a row that never ran banks nothing); already-running attempts
+settle normally, and the verdict that lands in a merge-closed thread inserts no workflow successor
+and no durable-wait park — the marker, not the done stamp, is what the transition reads. Open waits
+cancel with terminal reason `pr merged` (a plain close keeps `pr closed`). The worktree reclaims
+through the existing machinery only, and only once every member is terminal — the shared
+`queueReclaimIfThreadDone` rule at closure, the `threadDone` verdict when the last member was still
+running. The whole closure is keyed by the delivery in two tables (048): `pr_merge` is the immutable
+ledger — a redelivery, same GUID or not, answers `duplicate` and repeats nothing, which is also what
+keeps a redelivered merge from undoing a manual Reopen (the row survives reopen; reopen deletes the
+per-thread marker) — and doubles as the durable merge state for a delivery that arrives before its
+publication association commits: the publishing verdict's transaction reads the ledger and applies
+the closure inline, so a thread whose PR merged mid-run rests instead of parking. Association is
+`job_pr` and nothing else — never branch names, PR text or runner output — and a delivery for
+another installation, repo or PR number reaches nothing. A member running when the merge lands
+takes its done from whatever settles it — the verdict, a stop, a suspend, the dead retirement, the
+claim-time cancellation fence — through one shared conditional settle, so a merge-marked thread is
+never left marked-but-never-done, and the tree reclaims the moment its last member goes terminal.
+One stated bound of the ledger's durability: a thread the user reopens walks again — until it
+publishes to that same (merged) PR again, whose verdict re-reads the ledger and re-applies the
+closure; a re-publish normally mints a new PR number, so this is the rare shape, not the expected
+one.
+
 **A reclaim that cannot settle names why, once, until what refuses changes (issue #344).** The
 row is re-offered every lease expiry, so a refusal that will repeat identically — under
 kubernetes, an orphaned checkout claim whose holder job the board no longer knows: the driver
@@ -1702,7 +1731,10 @@ Since #324 the detail reads (`get()`, `thread()`) serve the wait triple too — 
 the wait nor the publication before — and expose the recorded publication itself as `publication`
 (`{ repo, prNumber, prUrl, headBranch, baseBranch }`), null for a thread that never published: a
 client can walk from a task to its PR without searching GitHub. The per-run lists answer null for
-both, the same rule they already followed for the wait fields.
+both, the same rule they already followed for the wait fields. The same identity is what a merged
+PR is answered by: the merge delivery resolves `job_pr` and closes the threads it names (issue
+#390 — the section above), which is why a thread that never recorded a publication is never closed
+by one.
 
 **Display precedence.** The web reads a task's state through ONE function, `taskTone`
 (`web/src/task-tree.ts`); `taskStatusLabel` and `taskDotClass` are lookups on it, and first match

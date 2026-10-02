@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -11,6 +12,8 @@ import {
     testConfig,
     type MemoryPrLifecycleStore,
 } from './helpers.js';
+
+import type { OrgRuntime } from '../src/orgs.js';
 
 const SECRET = 'webhook-secret-for-the-installation-round-trip';
 const ORG = '424242';
@@ -28,7 +31,8 @@ afterEach(async () => {
 async function build(
     webhookSecret: string | null = SECRET,
     prs: MemoryPrLifecycleStore = memoryPrLifecycleStore(),
-    orgsFor?: readonly string[]
+    orgsFor?: readonly string[],
+    jobs?: OrgRuntime['jobs']
 ) {
     const store = memoryAuthStore();
     const config = testConfig({ auth: githubAuth(), webhookSecret });
@@ -39,6 +43,7 @@ async function build(
             telemetry: stubTelemetryClient(),
             prs,
             ...(orgsFor ? { orgsFor } : {}),
+            ...(jobs ? { jobs } : {}),
         }),
         auth: store,
     });
@@ -381,5 +386,123 @@ describe('POST /api/github/webhook: PR families (036) — no-op guards', () => {
 
         expect(response.statusCode).toBe(HTTP_OK);
         expect(prs.deliveries()).toEqual([]);
+    });
+});
+
+/** Records the merged-close handoff — the one job-store call a merge delivery makes (issue #390). */
+function mergeCloseStub() {
+    const closed: { repo: string; prNumber: number; deliveryId: string }[] = [];
+    const store = {
+        closeMergedPr: async (repo: string, prNumber: number, deliveryId: string) => {
+            closed.push({ repo, prNumber, deliveryId });
+            return { outcome: 'applied' as const, closedRoots: 0 };
+        },
+    };
+    return { store: store as unknown as JobStore, closed };
+}
+
+describe('POST /api/github/webhook: a merged PR closes its tasks (390)', () => {
+    const REPO = PR_FAMILY_REPO;
+    const PR = PR_FAMILY_PR;
+    const pr = prFamilyEvent;
+    const headersFor = prFamilyHeadersFor;
+
+    it('hands a merged close to the job store, addressed by repo/pr/delivery', async () => {
+        const jobs = mergeCloseStub();
+        await build(SECRET, memoryPrLifecycleStore(), undefined, jobs.store);
+
+        const body = pr('closed', { pull_request: { number: PR, merged: true } });
+        const response = await deliver(body, headersFor(body, 'pull_request', 'm1'));
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual({ ok: true });
+        expect(jobs.closed).toEqual([{ repo: REPO, prNumber: PR, deliveryId: 'm1' }]);
+    });
+
+    it('an ordinary close (no merged flag) cancels waits and never reaches the job store', async () => {
+        const jobs = mergeCloseStub();
+        const { prs } = await build(SECRET, memoryPrLifecycleStore(), undefined, jobs.store);
+        prs.seedWait(REPO, PR);
+
+        const body = pr('closed', { pull_request: { number: PR } });
+        await deliver(body, headersFor(body, 'pull_request', 'c1'));
+
+        expect(jobs.closed).toEqual([]);
+        expect(prs.cancellations()).toEqual([{ repo: REPO, prNumber: PR, terminalReason: 'pr closed' }]);
+    });
+
+    it('a non-boolean merged flag is an ordinary close', async () => {
+        const jobs = mergeCloseStub();
+        const { prs } = await build(SECRET, memoryPrLifecycleStore(), undefined, jobs.store);
+        prs.seedWait(REPO, PR);
+
+        const stringFlag = pr('closed', { pull_request: { number: PR, merged: 'true' } });
+        await deliver(stringFlag, headersFor(stringFlag, 'pull_request', 'c2'));
+        const numberFlag = pr('closed', { pull_request: { number: PR, merged: 1 } });
+        await deliver(numberFlag, headersFor(numberFlag, 'pull_request', 'c3'));
+
+        expect(jobs.closed).toEqual([]);
+        expect(prs.cancellations()).toEqual([
+            { repo: REPO, prNumber: PR, terminalReason: 'pr closed' },
+            { repo: REPO, prNumber: PR, terminalReason: 'pr closed' },
+        ]);
+    });
+
+    it('a merged close with no delivery GUID names nothing', async () => {
+        const jobs = mergeCloseStub();
+        await build(SECRET, memoryPrLifecycleStore(), undefined, jobs.store);
+
+        const body = pr('closed', { pull_request: { number: PR, merged: true } });
+        const noGuid = await deliver(body, {
+            'x-github-event': 'pull_request',
+            'x-hub-signature-256': signature(body),
+        });
+
+        expect(noGuid.statusCode).toBe(HTTP_OK);
+        expect(jobs.closed).toEqual([]);
+    });
+
+    it('never closes another org: a merged close for a different installation is a no-op', async () => {
+        const jobs = mergeCloseStub();
+        await build(SECRET, memoryPrLifecycleStore(), [ORG], jobs.store);
+
+        const body = JSON.stringify({
+            action: 'closed',
+            installation: { id: 999999 },
+            repository: { full_name: REPO },
+            pull_request: { number: PR, merged: true },
+        });
+        const response = await deliver(body, headersFor(body, 'pull_request', 'x9'));
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(jobs.closed).toEqual([]);
+    });
+
+    it('a merged close behind a bad signature is refused', async () => {
+        const jobs = mergeCloseStub();
+        await build(SECRET, memoryPrLifecycleStore(), undefined, jobs.store);
+
+        const body = pr('closed', { pull_request: { number: PR, merged: true } });
+        const response = await deliver(body, {
+            'x-github-event': 'pull_request',
+            'x-github-delivery': 'm2',
+            'x-hub-signature-256': signature(body, 'a-secret-nobody-configured'),
+        });
+
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(jobs.closed).toEqual([]);
+    });
+
+    it('a runtime with no job store acks a merged close as a no-op', async () => {
+        // A deployment older than the closure store just acks — the same posture an org with no
+        // PR store takes for folds.
+        const { prs } = await build();
+        prs.seedWait(REPO, PR);
+
+        const body = pr('closed', { pull_request: { number: PR, merged: true } });
+        const response = await deliver(body, headersFor(body, 'pull_request', 'm3'));
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual({ ok: true });
     });
 });
