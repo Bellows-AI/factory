@@ -36,3 +36,31 @@ describe('OrgExecutorsSection refresh wiring', () => {
         expect(page).toMatch(/onRefresh=\{refresh\}/);
     });
 });
+
+/**
+ * The confirmation gate (issue 411). Delete and Make personal are org-wide and irreversible, so a
+ * row click may only open the confirmation — the writes themselves belong to the dialog's confirm.
+ * Source inspection for the same reason as above: the handlers run inside callbacks a static
+ * render never fires.
+ */
+describe('OrgExecutorsSection confirmation gate', () => {
+    it('never writes straight from a row click', () => {
+        const panel = section.slice(
+            section.indexOf('<OrgExecutorsPanel'),
+            section.indexOf('<OrgExecutorConfirmDialog')
+        );
+        expect(panel).not.toContain('deleteOrgExecutor');
+        expect(panel).not.toContain('changeOrgExecutorScope');
+        expect(panel).toContain('setConfirm(');
+    });
+
+    it('performs each write exactly once, from the confirmed dispatch', () => {
+        expect(section.match(/deleteOrgExecutor/g)?.length).toBe(2); // the import, then the dispatch
+        expect(section.match(/changeOrgExecutorScope/g)?.length).toBe(2);
+        expect(section).toContain('confirmedWrite(');
+    });
+
+    it('cancelling clears the pending confirmation, leaving the row untouched', () => {
+        expect(section).toMatch(/onClose=\{\(\) => setConfirm\(null\)\}/);
+    });
+});

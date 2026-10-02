@@ -40,6 +40,7 @@ describe('Icon', () => {
                 'sliders',
                 'menu',
                 'calendar',
+                'more-horizontal',
             ].sort()
         );
     });

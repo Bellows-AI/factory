@@ -31,7 +31,8 @@ export const AUTH_PORT = PORT_BASE + AUTH_PORT_OFFSET;
 const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
 /** The component-state specimen's test-only Vite server (#275): no database, nothing built. */
 export const SPECIMEN_PORT = PORT_BASE + SPECIMEN_PORT_OFFSET;
-const E2E_LOGIN = 'e2e-user';
+/** Exported with the auth database below: org-executors.spec.ts promotes exactly this member. */
+export const E2E_LOGIN = 'e2e-user';
 /**
  * A fresh GitHub identity every run. The seed writes no sign-in selection, so a fixed id would keep
  * its stored selection between runs and the selection screen (issue 125) would only ever be
@@ -58,10 +59,11 @@ const DB_HOST = process.env.E2E_DB_HOST ?? '127.0.0.1';
 const DB_PREFIX = process.env.E2E_DB_PREFIX ?? 'factory';
 const databaseUrl = (name: string) => `postgres://factory:factory@${DB_HOST}:5432/${name}`;
 export const E2E_DATABASE_URL = databaseUrl(`${DB_PREFIX}_e2e`);
-const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
+/** Exported for org-executors.spec.ts, which promotes its member to admin before it can act. */
+export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
-const AUTH_SPECS = /\/(auth|workspace|follow-up-auth)\.spec\.ts$/;
+const AUTH_SPECS = /\/(auth|workspace|follow-up-auth|org-executors)\.spec\.ts$/;
 /** The specimen browses its own server, never a board, so no board project may pick it up. */
 const SPECIMEN_SPEC = /\/specimen\.spec\.ts$/;
 
