@@ -45,6 +45,18 @@ case "$got" in
 *) bad "the CLI is the pinned $VERSION" "got: $got" ;;
 esac
 
+# npm resolves two 177MB platform packages and wires up one; the Dockerfile deletes the unreachable
+# baseline build. Asserted here because the saving is invisible from the outside — the image still
+# works with the duplicate present, so nothing else would notice it coming back. The companion
+# check is the `opencode --version` inside that RUN, which fails the BUILD if the hardlink ever
+# resolves to the package deleted here.
+dupe="$(docker run --rm --entrypoint sh "$IMAGE" -c \
+    'ls -d /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-baseline 2>&1')"
+case "$dupe" in
+*"No such file"*) ok "the duplicate baseline platform package is not in the image" ;;
+*) bad "the duplicate baseline platform package is not in the image" "found: $dupe" ;;
+esac
+
 # The shared skills (docker/skills/, the same files claude-executor bakes) are ones opencode itself
 # discovers, not just files on disk. Written to a file first: piped straight out, the listing is
 # cut short once it passes the pipe buffer.

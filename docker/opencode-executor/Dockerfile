@@ -20,9 +20,17 @@ FROM node:24-bookworm-slim
 # toolchain here would pull libc6-dev back in, and with it the `linux-libc-dev` findings this base
 # change exists to remove. context-mode's better-sqlite3 resolves a prebuilt binding for
 # linux/amd64 and linux/arm64 on node 24; the test below is what catches the day it stops.
+#
+# The doc/man/locale strip is in THIS layer, not a later one: deleting in a later layer leaves the
+# bytes in this one and saves nothing. Worth 0.9MB, measured — NOT the ~18MB `dpkg-query
+# --showformat='${Installed-Size}'` suggests when it reports perl at 28MB and git at 45MB. Those
+# live in the base image's own layers, and a whiteout here cannot reclaim a lower layer's bytes;
+# only the docs apt installs in THIS layer go. Kept because it is free and bounds the growth, not
+# because it is large. Byte-identical to the same layer in docker/claude-executor/Dockerfile,
+# deliberately — see the acli/gh note below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
 # npm stays in this image, so its own bundled dependency tree ships too — and the version node:24
 # pins carries the only fixable findings the release scan still reports here. Same pin and same
@@ -30,29 +38,14 @@ RUN apt-get update \
 ARG NPM_VERSION=11.21.0
 RUN npm install -g npm@${NPM_VERSION} && npm cache clean --force
 
-# Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
-# starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.
-# No --ignore-scripts: the install resolves its platform binary through install scripts, and
-# without them the CLI installs cleanly and then fails at run time.
-ARG OPENCODE_VERSION=1.18.29
-RUN npm install -g opencode-ai@${OPENCODE_VERSION} \
-    && npm cache clean --force
-
-# The OTLP metrics plugin, so a headless run actually reaches the collector. Pinned, and
-# self-contained — its OpenTelemetry SDK is bundled into dist/index.js, so the install needs no
-# transitive deps and the runtime needs no npm fetch. Referenced from the baked opencode.json by
-# its absolute path below.
-ARG OPENCODE_OTEL_VERSION=0.4.0
-RUN npm install -g @gcornut/opencode-otel@${OPENCODE_OTEL_VERSION} \
-    && npm cache clean --force
-
-# The context-mode plugin (https://github.com/mksglu/context-mode) — sandboxed ctx_* tools, session
-# memory, hook-based routing — registered by the baked opencode.json alongside the telemetry
-# plugin. Pinned like everything else here. Its install scripts must run: better-sqlite3 resolves
-# its platform binding through them, and without the binding the plugin fails at run time.
-ARG CONTEXT_MODE_VERSION=1.0.169
-RUN npm install -g context-mode@${CONTEXT_MODE_VERSION} \
-    && npm cache clean --force
+# acli and gh sit ABOVE this image's CLI install, and docker/claude-executor/Dockerfile spells
+# this whole block — ARG order included — identically. BuildKit keys a layer on the command string
+# it was built from, which carries the declared ARGs as a `|N NAME=VALUE` prefix, so the slightest
+# divergence here (an extra ARG above, a reworded flag) gives the two images four distinct layers
+# instead of two shared ones. Built in one daemon, as `make runners` does, identical means this
+# build reuses the claude image's layers: 59MB less to store and pull on any node that runs both
+# executors. Neither image gets smaller. Keep the two blocks in sync or the saving silently
+# evaporates.
 
 # Atlassian CLI — the only supported way to read and write Jira from here; the Atlassian MCP server
 # is deliberately not configured. TARGETARCH is amd64/arm64, which is exactly how the download
@@ -74,6 +67,42 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/d
     && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
     && rm -rf "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
     && gh --version
+
+# Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
+# starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.
+# No --ignore-scripts: the install resolves its platform binary through install scripts, and
+# without them the CLI installs cleanly and then fails at run time.
+#
+# npm resolves BOTH optional platform packages on linux/x64 — `opencode-linux-x64` and
+# `opencode-linux-x64-baseline`, 177MB each — and wires up only the first: `bin/opencode.exe` is a
+# hardlink into opencode-linux-x64/bin/opencode. The baseline build (the fallback for x86-64 CPUs
+# without the newer ISA extensions) is never reachable through that hardlink, present or not, so
+# deleting it removes storage and not a fallback. In THIS layer, or the bytes stay in it.
+#
+# The `opencode --version` is the guard, not a smoke test: if a future npm ever resolves the
+# baseline package into the hardlink instead, this build fails here rather than shipping an image
+# whose CLI is missing. docker/opencode-executor/test.sh asserts the directory stays gone.
+ARG OPENCODE_VERSION=1.18.34
+RUN npm install -g opencode-ai@${OPENCODE_VERSION} \
+    && rm -rf /usr/local/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64-baseline \
+    && opencode --version \
+    && npm cache clean --force
+
+# The OTLP metrics plugin, so a headless run actually reaches the collector. Pinned, and
+# self-contained — its OpenTelemetry SDK is bundled into dist/index.js, so the install needs no
+# transitive deps and the runtime needs no npm fetch. Referenced from the baked opencode.json by
+# its absolute path below.
+ARG OPENCODE_OTEL_VERSION=0.4.0
+RUN npm install -g @gcornut/opencode-otel@${OPENCODE_OTEL_VERSION} \
+    && npm cache clean --force
+
+# The context-mode plugin (https://github.com/mksglu/context-mode) — sandboxed ctx_* tools, session
+# memory, hook-based routing — registered by the baked opencode.json alongside the telemetry
+# plugin. Pinned like everything else here. Its install scripts must run: better-sqlite3 resolves
+# its platform binding through them, and without the binding the plugin fails at run time.
+ARG CONTEXT_MODE_VERSION=1.0.169
+RUN npm install -g context-mode@${CONTEXT_MODE_VERSION} \
+    && npm cache clean --force
 
 # Global config lives under XDG_CONFIG_HOME, and OPENCODE_CONFIG pins the file inside it. Both are
 # outside /workspace on purpose: config that resolved inside the checkout would enter its diff —
