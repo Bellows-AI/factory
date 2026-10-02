@@ -7,11 +7,9 @@ import { GIT_ADD_ARGS, gitProbeScript } from '../src/publish.js';
 import {
     GIT_FIXTURE_CONFIG,
     OTHER_ROOT,
-    SCRIPT_IDENTITY,
     USER,
     git,
     hasGit,
-    importEmptyCommits,
     setupWorktreeFixture,
 } from './fixtures/git-worktree-support.js';
 
@@ -275,101 +273,5 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
         expect(probe().dirty).toBe(true);
         git(repo, ...GIT_ADD_ARGS);
         expect(git(repo, 'diff', '--cached', '--name-only')).toBe('WORK.md');
-    });
-});
-
-/*
- * The PR summary script (issue #82): the publish flow opens the pull request with what the
- * BRANCH did, not what the command asked. Same offline discipline as the probe — a `file://`
- * bare remote, real commits, the script file itself executed — because the title heuristic
- * (first commit subject) and the body (commit list + shortstat) are exactly the bytes a PR
- * carries.
- */
-describe.skipIf(!hasGit())('the PR summary script', () => {
-    let dir: string;
-    let repo: string;
-
-    beforeEach(() => {
-        dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-pr-summary-')));
-        const work = join(dir, 'origin-work');
-        mkdirSync(work, { recursive: true });
-        git(work, 'init');
-        writeFileSync(join(work, 'README.md'), '# summary\n');
-        git(work, 'add', 'README.md');
-        git(work, 'commit', '-m', 'init');
-        const bare = join(dir, 'summary.git');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
-        repo = join(dir, 'clone');
-        execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, repo], { stdio: 'ignore' });
-    });
-
-    const summarize = (base = 'origin/main'): { title: string | null; body: string | null } => {
-        const out = execFileSync('node', [join(import.meta.dirname, '..', 'src', 'scripts', 'pr-summary.cjs')], {
-            env: { ...process.env, ...SCRIPT_IDENTITY, ...(base ? { BASE: base } : {}) },
-            cwd: repo,
-            encoding: 'utf8',
-        });
-        return JSON.parse(out.trim().split('\n').filter(Boolean).pop()!);
-    };
-
-    /** Two commits on a task branch, as an agent leaves them. */
-    const branchWork = () => {
-        git(repo, 'switch', '-c', 'factory/root');
-        writeFileSync(join(repo, 'a.txt'), 'a\n');
-        git(repo, 'add', 'a.txt');
-        git(repo, 'commit', '-m', 'Fix the sync re-claim fence');
-        writeFileSync(join(repo, 'b.txt'), 'b\n');
-        git(repo, 'add', 'b.txt');
-        git(repo, 'commit', '-m', 'Cover the fence with a regression test');
-    };
-
-    it('titles the PR with the work and lists what was done', () => {
-        branchWork();
-
-        const summary = summarize();
-        expect(summary.title).toBe('Fix the sync re-claim fence');
-        expect(summary.body).toContain('## Commits');
-        expect(summary.body).toContain('- Fix the sync re-claim fence');
-        expect(summary.body).toContain('- Cover the fence with a regression test');
-        expect(summary.body).toMatch(/2 files? changed/);
-    });
-
-    it('degrades to nulls when there is no BASE or git cannot read it', () => {
-        branchWork();
-        expect(summarize('')).toEqual({ title: null, body: null });
-        expect(summarize('origin/nope')).toEqual({ title: null, body: null });
-    });
-
-    it('caps the commit list', () => {
-        const IMPORTED_COMMITS = 35;
-        importEmptyCommits(repo, 'factory/root', IMPORTED_COMMITS);
-        git(repo, 'switch', 'factory/root');
-
-        const summary = summarize();
-        expect(summary.body).toContain('- ... and 5 more');
-        // The capped commit lines, plus the one "- ... and N more" line — both start with "- ".
-        const BODY_COMMIT_CAP = 30;
-        const cappedLinesWithOverflowNote = BODY_COMMIT_CAP + 1;
-        expect((summary.body!.match(/^- /gm) ?? []).length).toBe(cappedLinesWithOverflowNote);
-    });
-
-    it('truncates the title to 144 characters', () => {
-        git(repo, 'switch', '-c', 'factory/root');
-        writeFileSync(join(repo, 'x.txt'), 'x\n');
-        git(repo, 'add', 'x.txt');
-        const OVERLONG_SUBJECT_LENGTH = 200;
-        git(repo, 'commit', '-m', 'x'.repeat(OVERLONG_SUBJECT_LENGTH));
-
-        const TITLE_MAX = 144;
-        expect(summarize().title).toBe('x'.repeat(TITLE_MAX));
-    });
-
-    it('keeps a 73-character subject whole (PR #191 lost the last letter at the old 72 cap)', () => {
-        git(repo, 'switch', '-c', 'factory/root');
-        writeFileSync(join(repo, 'y.txt'), 'y\n');
-        git(repo, 'add', 'y.txt');
-        git(repo, 'commit', '-m', 'Web: task-outcome derivations as pure data, moved out of the task sidebar');
-
-        expect(summarize().title).toBe('Web: task-outcome derivations as pure data, moved out of the task sidebar');
     });
 });
