@@ -8,6 +8,9 @@ your own checkout, and tells you when it is done.
 
 What that buys you:
 
+- **Vendor-agnostic.** Bring your own agent. Claude Code and OpenCode each run as a first-class
+  executor, chosen per task and carrying your own settings, plugins and permissions — a new CLI is
+  a runner image and a profile type, not a rewrite.
 - **Close the laptop.** Tasks keep running; `DRIVER_CONCURRENCY` and cluster size set how many go
   at once, not your CPU.
 - **Your environment, not a generic one.** Each member gets private checkouts, their own env vars,
