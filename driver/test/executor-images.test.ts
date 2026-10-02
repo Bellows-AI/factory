@@ -641,11 +641,20 @@ describe('the shared executor skills', () => {
         }
     });
 
-    it('lands in claude-executor before the /opt/claude-home seed is snapshotted', () => {
+    it('reaches a seeded config dir, because /opt/claude-home IS the baked home', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
-        const copy = dockerfile.indexOf('COPY --from=skills');
-        expect(copy).toBeGreaterThan(-1);
-        expect(copy).toBeLessThan(dockerfile.indexOf('cp -a /home/node/.claude/. /opt/claude-home/'));
+        expect(dockerfile.indexOf('COPY --from=skills')).toBeGreaterThan(-1);
+        // The seed source is a symlink to /home/node/.claude, not a snapshot of it. That is what
+        // retires the ordering this test used to pin: a `cp -a` had to run AFTER the skills
+        // landed or the seeded directory came up without them, whereas a symlink cannot be
+        // stale whatever the order. It also keeps 34MB — the baked plugin tree, almost all of
+        // it — out of a second layer. A copy coming back reinstates both problems silently: the
+        // image still works, and only a seeded thread directory would show the missing skills.
+        expect(dockerfile).toContain('ln -s /home/node/.claude /opt/claude-home');
+        // Anchored past a leading `#` on purpose: the Dockerfile's own comment quotes the
+        // entrypoint's `cp -a /opt/claude-home/.`, which reads THROUGH the symlink and is the
+        // thing being kept, not the build-time snapshot being banned.
+        expect(dockerfile).not.toMatch(/^[^#\n]*cp -a[^\n]*\/opt\/claude-home/m);
     });
 
     it('is the only home: neither per-image config directory carries skills of its own', () => {
