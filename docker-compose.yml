@@ -66,7 +66,7 @@ services:
             # Required, and pointed at the service this file provisions. Not overridable from the
             # host: a factory_dev on the host is a different database from this one, and pointing
             # the container at it would silently split history across two.
-            DATABASE_URL: postgres://factory:factory@timescale:5432/factory_dev
+            DATABASE_URL: postgres://factory:factory@postgres:5432/factory_dev
             # A literal, and the one place in this file .env is deliberately NOT allowed to win.
             # `none` is still a supported mode and still the default everywhere else — `npm run
             # seed`, `verify:ui` and `scripts/test-jobs.sh` need it, and a clone with no OAuth app
@@ -127,7 +127,7 @@ services:
             # `docker compose exec dashboard sh` or `docker cp`.
             - workspaces:/workspaces
         depends_on:
-            timescale:
+            postgres:
                 condition: service_healthy
         # Not `unless-stopped`. A dev process that exits on a syntax error should stay exited and
         # show you the error, not loop.
@@ -254,9 +254,9 @@ services:
 
     # Plain Postgres: metric_point is a declaratively-partitioned table (#371), not a hypertable,
     # so no extension is involved and this is the same database a deployment points at — RDS,
-    # Aurora or anything else speaking PG17. The service keeps the name `timescale`: it is
-    # load-bearing in test-jobs.sh, test-k8s.sh, the Makefile and playwright.config.ts.
-    timescale:
+    # Aurora or anything else speaking PG17. The service name is load-bearing in test-jobs.sh,
+    # test-k8s.sh, the Makefile and playwright.config.ts — rename it in all four or in none.
+    postgres:
         image: postgres:17
         environment:
             POSTGRES_USER: factory
@@ -270,7 +270,7 @@ services:
         ports:
             - '127.0.0.1:5432:5432'
         volumes:
-            - timescale-data:/var/lib/postgresql/data
+            - postgres-data:/var/lib/postgresql/data
             # Only runs on a fresh volume, which is why the README also gives the manual
             # `create database` for an existing one.
             - ./docker/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
@@ -297,7 +297,7 @@ services:
         restart: unless-stopped
 
 volumes:
-    timescale-data:
+    postgres-data:
     # The organization's checkouts. Survives `docker compose down`; `down -v` discards them, and
     # they are re-cloned on the next boot.
     workspaces:

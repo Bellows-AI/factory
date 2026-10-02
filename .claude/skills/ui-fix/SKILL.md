@@ -35,7 +35,7 @@ unchanged.
 
 This skill needs two more things before anything else:
 
-- A running timescale: `docker compose up -d timescale`. `verify:ui` seeds `factory_e2e` and
+- A running postgres: `docker compose up -d postgres`. `verify:ui` seeds `factory_e2e` and
   `factory_auth_e2e` itself.
 - Chromium: `npx playwright install chromium` (once per machine).
 

@@ -10,6 +10,11 @@ import { describe, expect, it } from 'vitest';
  * directory up, and the board comes back with an empty database and no error anywhere. Neither is
  * migrated: `state-preflight` refuses, and `make reset` is how the user asks for the delete.
  *
+ * Both probes name the resources an EXISTING release renders, which the timescale -> postgres
+ * rename did not touch: a release installed before it holds `<release>-timescale`, and a release
+ * installed after it is by definition new and needs no refusal. Renaming either lookup makes the
+ * guard miss the layout it exists to catch.
+ *
  * There is no way to exercise the recipe offline — it is kubectl against a cluster — so the guard
  * is pinned as text, the way this suite pins the chart and document invariants beside it.
  */
@@ -18,7 +23,7 @@ const read = (path: string): string => readFileSync(new URL(path, import.meta.ur
 
 const makefile = read('../../Makefile');
 const kubernetes = read('../../docs/kubernetes.md');
-const timescale = read('../../charts/factory-local-state/templates/timescale.yaml');
+const chart = read('../../charts/factory-local-state/templates/postgres.yaml');
 
 /** The `state-preflight` recipe: the target line through the last line that is still indented. */
 const preflight = (() => {
@@ -36,6 +41,7 @@ const preflight = (() => {
 describe('the factory-state upgrade preflight', () => {
     it('still refuses the pre-#371 Deployment', () => {
         expect(preflight).toContain('deployment/$(K8S_STATE_RELEASE)-timescale');
+        expect(preflight).not.toContain('deployment/$(K8S_STATE_RELEASE)-postgres');
     });
 
     it('refuses a StatefulSet whose claim predates PGDATA', () => {
@@ -50,7 +56,12 @@ describe('the factory-state upgrade preflight', () => {
     });
 
     it('guards the value the chart actually sets', () => {
-        expect(timescale).toContain('value: /var/lib/postgresql/data/pgdata');
+        expect(chart).toContain('value: /var/lib/postgresql/data/pgdata');
+    });
+
+    it('describes the current claim with the name the chart actually mints', () => {
+        expect(chart).toContain('{{ .Release.Name }}-postgres');
+        expect(makefile).toContain('data-<release>-postgres-0');
     });
 
     it('is documented where the Deployment refusal is', () => {

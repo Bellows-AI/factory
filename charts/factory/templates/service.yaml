@@ -18,6 +18,6 @@ spec:
     selector:
         {{- include "factory.selectorLabels" . | nindent 8 }}
         # The component label matters: without it this selector also matches the driver and
-        # timescale pods, and anything that resolves the service to a pod — a port-forward, a
+        # postgres pods, and anything that resolves the service to a pod — a port-forward, a
         # probe — can land on a container that has no http port at all.
         app.kubernetes.io/component: dashboard

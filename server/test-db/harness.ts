@@ -33,7 +33,7 @@ export function assertTestDatabase(raw: string): void {
         throw new Error(
             `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.\n` +
                 `Create one and point DATABASE_URL at it:\n` +
-                `  docker compose exec timescale psql -U factory -d postgres -c 'create database factory_test'\n` +
+                `  docker compose exec postgres psql -U factory -d postgres -c 'create database factory_test'\n` +
                 `  DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db`
         );
     }

@@ -1,6 +1,6 @@
 {{/*
 Names are the release name plus a fixed suffix, so the factory release's values can name them
-without sharing values with this chart: `<release>-timescale` is the database service and
+without sharing values with this chart: `<release>-postgres` is the database service and
 `<release>-workspaces` the claim.
 */}}
 {{- define "state.labels" -}}

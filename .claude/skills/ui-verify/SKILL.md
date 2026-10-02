@@ -21,7 +21,7 @@ npx playwright test --ui                # pick and step through interactively
 
 `playwright.config.ts` builds all five packages and serves the built SPA from the API on
 127.0.0.1:8123 with `TELEMETRY_SOURCE=postgres` against a seeded `factory_e2e` database, so the
-run needs a running timescale but no token, no quota and no network. The server is never reused
+run needs a running postgres but no token, no quota and no network. The server is never reused
 between runs — a leftover process would verify stale code, which is the one failure this exists
 to catch.
 

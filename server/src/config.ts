@@ -583,7 +583,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     const databaseUrl = env.DATABASE_URL;
     if (!databaseUrl) {
         throw new Error(
-            'DATABASE_URL is required: the database is the only source the dashboard reads. Start one with `docker compose up -d timescale`, then let it sync from GitHub, or fill a disposable one with `npm run seed`.'
+            'DATABASE_URL is required: the database is the only source the dashboard reads. Start one with `docker compose up -d postgres`, then let it sync from GitHub, or fill a disposable one with `npm run seed`.'
         );
     }
 

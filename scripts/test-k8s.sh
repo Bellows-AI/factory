@@ -30,7 +30,7 @@ RELEASE="factory-k8s-test-$(date +%s)"
 # same way values-local.yaml points `dev` at `factory-state`.
 STATE_RELEASE="$RELEASE-state"
 STATE_SETS=(
-    --set "database.url=postgres://factory:factory@$STATE_RELEASE-timescale:5432/factory_dev"
+    --set "database.url=postgres://factory:factory@$STATE_RELEASE-postgres:5432/factory_dev"
     --set "workspaces.existingClaim=$STATE_RELEASE-workspaces"
 )
 # The chart refuses to render without its auth values, and values-local.yaml carries none (they come
@@ -320,7 +320,7 @@ expect_contains 'the wait probes the URL the server reads' "$dashboard" 'pg_isre
 
 # Production runs no database in the cluster: the app chart has no database objects to switch on,
 # and without a URL it refuses to render rather than boot a server with nowhere to write.
-expect_not_contains 'the app chart deploys no database' "$(cat "$work/rendered.yaml")" 'component: timescale'
+expect_not_contains 'the app chart deploys no database' "$(cat "$work/rendered.yaml")" 'component: postgres'
 if helm template "$RELEASE" charts/factory >/dev/null 2>&1; then
     bad 'the app chart refuses to render without database.url' 'helm template succeeded with no database.url'
 else
@@ -330,11 +330,11 @@ fi
 # The state chart: one database writer on one claim, held by a StatefulSet so the claim belongs to
 # the pod identity and no update can put a second writer on it.
 state="$(helm template "$STATE_RELEASE" charts/factory-local-state --namespace "$NAMESPACE")"
-expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-timescale"
+expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-postgres"
 expect_contains 'the state chart names the workspaces claim'  "$state" "name: $STATE_RELEASE-workspaces"
 expect_contains 'the state database is a StatefulSet'         "$state" 'kind: StatefulSet'
 expect_contains 'the database claim is the set’s own'         "$state" 'volumeClaimTemplates:'
-expect_contains 'the set is addressed by the database service' "$state" "serviceName: $STATE_RELEASE-timescale"
+expect_contains 'the set is addressed by the database service' "$state" "serviceName: $STATE_RELEASE-postgres"
 expect_contains 'the set runs one writer'                     "$state" '
     replicas: 1
     serviceName:'
@@ -867,7 +867,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
 }
 installed=1
 
-# The timescale StatefulSet is waited for deliberately: the dashboard listens the moment its
+# The postgres StatefulSet is waited for deliberately: the dashboard listens the moment its
 # process is up — health answers, availability reports — but its migrations only start landing
 # once the database accepts connections, and the server gives up retrying after ~45s. On a cold
 # kind node the database image is still being pulled through containerd in that window, so
@@ -878,7 +878,7 @@ kubectl wait --for=condition=available \
     "deployment/$RELEASE-factory" "deployment/$RELEASE-factory-driver" \
     "deployment/$RELEASE-factory-collector" \
     -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
-    kubectl rollout status "statefulset/$STATE_RELEASE-timescale" \
+    kubectl rollout status "statefulset/$STATE_RELEASE-postgres" \
         -n "$NAMESPACE" --timeout=600s >/dev/null 2>&1 &&
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
@@ -952,7 +952,7 @@ const t = "fat_" + c.randomBytes(32).toString("base64url");
 process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
 ')
 member="k8s-test-$(openssl rand -hex 6)"
-minted="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-timescale" -- \
+minted="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
     psql -q -v ON_ERROR_STOP=1 -v "member=$member" -v "hash=$token_hash" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 with o as (
@@ -993,7 +993,7 @@ done
 # admin-created shape, with this lane's member only ever a selector — and a task stamped
 # `executorScope: 'org'`. The stub prints the claude config content, so the org model marker in
 # the output is the proof the claim resolved the ORG row: the member's personal list is empty.
-org_seeded="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-timescale" -- \
+org_seeded="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
     psql -q -v ON_ERROR_STOP=1 -v "member=$member" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 insert into executor_profile (org_id, user_id, name, type, config)

@@ -257,7 +257,7 @@ App, the OAuth client, the session secret, the board token and — when set — 
 missing). The origin is `K8S_PUBLIC_URL`, default `http://127.0.0.1:8081` — the forward above.
 The executors are the real runner images, so a queued job runs the agent in a pod. Its
 `database.url` and `workspaces.existingClaim` name the `factory-state` release's objects
-(`factory-state-timescale`, `factory-state-workspaces`), so that release name is fixed.
+(`factory-state-postgres`, `factory-state-workspaces`), so that release name is fixed.
 `make start` does all of the above.
 
 Then open `http://127.0.0.1:8081`, sign in with GitHub, add an executor on the workspace page — a
