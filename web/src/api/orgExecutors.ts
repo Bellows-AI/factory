@@ -76,7 +76,12 @@ async function orgExecutorWrite(
     fallbackError: string
 ): Promise<string | null> {
     try {
-        const response = await fetch(url, { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
+        // A bodyless write (DELETE) sends no content type either: Fastify refuses a request that
+        // declares `application/json` and then carries nothing, with a 400 the handler never sees.
+        const response = await fetch(
+            url,
+            body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) }
+        );
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
             return 'Your session expired';
