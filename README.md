@@ -1,25 +1,32 @@
 # Bellows
 
-**Scale your workflows. Remote-first harness for your SDLC.**
+**Standardize and monitor your agentic coding workflows across the organization.**
 
 Bellows runs your coding agent somewhere else. The same task you would type into a terminal —
 Claude Code or OpenCode, your repository, your test commands — runs on a cluster instead, against
-your own checkout, and tells you when it is done.
+your own checkout, under a process the organization defines rather than whatever each developer
+pasted into a prompt.
 
 What that buys you:
 
+- **One definition of how work gets done.** A workflow is a graph the board walks —
+  implement → review → fix → publish — committed once and walked identically for every task and
+  every member. The process is a definition, not a paragraph of prompt that drifts per person.
+- **The same environment for everyone.** `.bellows.yaml` declares the setup, the service
+  containers and the gates in the repository, so a task runs the organization's checks, not the
+  ones a laptop happens to have. A failed gate can queue a repair round instead of landing broken
+  work.
+- **One dashboard for the whole organization.** Delivery measured from the agents' own telemetry —
+  sessions, tokens, lines, active time, coverage — org-wide by default and narrowable to one
+  member, beside every task's thread, logs and spend.
+- **Organization-scoped by construction.** An organization is a GitHub App installation, and it
+  partitions every stored row; membership is re-checked per request, so a GitHub-side removal ends
+  that person's reach. Inside it each member still gets private checkouts and their own env vars.
 - **Vendor-agnostic.** Bring your own agent. Claude Code and OpenCode each run as a first-class
   executor, chosen per task and carrying your own settings, plugins and permissions — a new CLI is
   a runner image and a profile type, not a rewrite.
 - **Close the laptop.** Tasks keep running; `DRIVER_CONCURRENCY` and cluster size set how many go
   at once, not your CPU.
-- **Your environment, not a generic one.** Each member gets private checkouts, their own env vars,
-  and the databases their tests need, declared in `.bellows.yaml` (below).
-- **Verified, not just finished.** The gates in `.bellows.yaml` run after the agent; a failed gate
-  can queue a repair round instead of landing broken work.
-- **Multi-step work without prompt engineering.** A workflow is a graph the board walks —
-  implement → review → fix → publish — so the process is a definition, not a paragraph of prompt.
-- **Visible.** Every task's thread, logs and token spend are on one dashboard.
 
 | Surface | What it is | Docs |
 | --- | --- | --- |
