@@ -9,12 +9,12 @@ import {
     formatConfig,
     INHERITED_NOTE,
     initialExecutorDraft,
-    mergeExecutors,
     parseExecutorConfig,
     readModel,
     withModel,
     type ExecutorDraft,
     type ExecutorRow,
+    type ValidExecutor,
 } from '../workspace/executors.js';
 import { useDraftReturnHref } from './DraftReturnBanner.js';
 import {
@@ -52,9 +52,11 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog.js';
  * settings area's discard confirmation, rendered INSIDE this panel: Headless nests a dialog only
  * when the child is in the parent's React tree, and a sibling would fight this panel's focus trap.
  *
- * The dialog receives the whole list as it opened — configs included, fetched on demand — because
- * the PUT is a whole-list replace: add appends to it, edit folds the changed row back in
- * (`mergeExecutors`), and the untouched rows travel through unchanged, defaults included.
+ * The dialog validates the draft and hands the SAVE to its owner: `onSave` receives the one
+ * validated row and the name it is editing (null to add), and the page decides the write — the
+ * personal page folds it into the whole-list PUT (`mergeExecutors`), the organization page PUTs
+ * the one row (issue 391). The list still comes in for the name-collision checks and the edit's
+ * pre-fill.
  */
 
 export interface ExecutorDialogProps {
@@ -64,7 +66,8 @@ export interface ExecutorDialogProps {
     /** The name of the row being edited, matched as it was when the dialog opened; null to add. */
     editing: string | null;
     onClose: () => void;
-    onSave: (executors: ExecutorRow[]) => Promise<string | null>;
+    /** The validated draft, and whether it edits (the row's original name) or adds (null). */
+    onSave: (next: ValidExecutor, editing: string | null) => Promise<string | null>;
     /** Told the success sentence just before the dialog closes. */
     onSaved: (message: string) => void;
     saving: boolean;
@@ -145,12 +148,7 @@ export function ExecutorDialog({ open, existing, editing, onClose, onSave, onSav
             setFailure(view.validation.error);
             return;
         }
-        const merged = mergeExecutors(existing, editing, view.validation.value);
-        if (!merged.ok) {
-            setFailure(merged.error);
-            return;
-        }
-        const message = await onSave(merged.value);
+        const message = await onSave(view.validation.value, editing);
         setFailure(message);
         if (!message) {
             onSaved(executorSavedMessage(view.validation.value.name, isEdit));

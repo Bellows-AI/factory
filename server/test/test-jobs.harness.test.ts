@@ -69,7 +69,9 @@ describe('the test-jobs harness', () => {
             /\*BAD_WORKFLOW_PARAMS\*'missing required workflow parameter \\"issue\\"'\*\|\*'missing required workflow parameter \\"issue\\"'\*BAD_WORKFLOW_PARAMS\*\)\s+seeded=1/
         );
         expect(SCRIPT).toContain('the seeded workflow never landed; refusing to truncate');
-        expect(SCRIPT.indexOf('warm="$(api POST /api/jobs')).toBeLessThan(SCRIPT.indexOf('truncate job, workflow'));
+        expect(SCRIPT.indexOf('warm="$(api POST /api/jobs')).toBeLessThan(
+            SCRIPT.indexOf('truncate job, workflow, job_artifact')
+        );
     });
 
     it('the truncate must succeed before the queue checks run', () => {
@@ -77,10 +79,11 @@ describe('the test-jobs harness', () => {
         // run unchecked, a failed truncate leaves those rows — and the seeded workflow — in place,
         // and the claim checks below then fail with queue or lease symptoms instead of naming the
         // fixture as the cause. A failed truncate stops the harness.
-        expect(SCRIPT).toMatch(/truncate job, workflow' >\/dev\/null 2>&1 \|\| \{/);
-        expect(SCRIPT).toContain("echo 'test-jobs: could not truncate job, workflow'");
+        // job_artifact (046) references job, so it truncates with it.
+        expect(SCRIPT).toMatch(/truncate job, workflow, job_artifact' >\/dev\/null 2>&1 \|\| \{/);
+        expect(SCRIPT).toContain("echo 'test-jobs: could not truncate job, workflow, job_artifact'");
         // No bare statement: the truncate line must carry the guard, not end there.
-        expect(SCRIPT).not.toMatch(/'truncate job, workflow' >\/dev\/null 2>&1\n/);
+        expect(SCRIPT).not.toMatch(/'truncate job, workflow, job_artifact' >\/dev\/null 2>&1\n/);
     });
 
     it('provisions the board-issued member subpath in the named driver volume', () => {

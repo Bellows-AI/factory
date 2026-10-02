@@ -16,6 +16,7 @@ import {
     type ResolvedWorkflow,
     validateCommandField,
     validateExecutorField,
+    validateExecutorScopeField,
     validateGates,
     validateRepoField,
 } from './job-field-validation.js';
@@ -54,8 +55,11 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     if (!repoResult.ok) return bad(reply, ERROR_CODES.BAD_REPO, repoResult.message);
     const executorResult = validateExecutorField(fields.executor);
     if (!executorResult.ok) return bad(reply, ERROR_CODES.BAD_EXECUTOR, executorResult.message);
+    const scopeResult = validateExecutorScopeField(fields.executorScope);
+    if (!scopeResult.ok) return bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, scopeResult.message);
     const repo = repoResult.value;
     const executor = executorResult.value;
+    const executorScope = scopeResult.value;
 
     // Read off the authenticated request, never off the body: a client-supplied author is
     // impersonation. Null only when the app was built with no auth store at all, which is the
@@ -78,6 +82,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         defaultsStore,
         executorsStore,
         executor,
+        executorScope,
         fields,
         repo,
         createdBy,
@@ -97,7 +102,13 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const created = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job create failed'),
-        () => store.create(command, createdBy, { repo, executor, ...(workflow ? { workflow } : {}) })
+        () =>
+            store.create(command, createdBy, {
+                repo,
+                executor,
+                executorScope,
+                ...(workflow ? { workflow } : {}),
+            })
     );
     if (!created.ok) return reply;
     // The author's checkout row was `purging` when the insert transaction took its lock (issue

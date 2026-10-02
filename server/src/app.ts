@@ -7,6 +7,7 @@ import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { OrgRegistry } from './orgs.js';
 import { workspaceRoutes } from './routes/workspace.js';
+import { orgExecutorRoutes } from './routes/org-executors.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -153,6 +154,9 @@ export async function buildApp({
     await app.register(workflowSettingsRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
     await app.register(workspaceRoutes({ config, orgs }));
+    // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
+    // routes, the same org-resolution the workflow routes make.
+    await app.register(orgExecutorRoutes({ orgs }));
 
     if (config.webRoot) {
         const { default: fastifyStatic } = await import('@fastify/static');

@@ -4,7 +4,7 @@
  * `exists` probe, the running-member check and the workspace-path rule.
  */
 
-import type { UserRef } from '@factory-ai/core';
+import { USER_SCOPE, type ExecutorScope, type UserRef } from '@factory-ai/core';
 import type { Sql, Fragment, TransactionSql } from 'postgres';
 import type { JobStatus, GateReport, RuntimeVitals, Job, TaskSummary, JobStoreContext } from './job-store-types.js';
 
@@ -49,6 +49,8 @@ export interface JobRow {
     runtime?: RuntimeVitals | null;
     repo: string | null;
     executor: string | null;
+    /** Null on rows stamped before 047; reads as 'user' — the pre-391 meaning. */
+    executor_scope: string | null;
     parent_job_id: string | null;
     root_job_id: string;
     /** The row's graph position (027); null on workflow-less rows and user follow-ups. */
@@ -90,6 +92,7 @@ export interface TaskRow {
     command: string;
     repo: string | null;
     executor: string | null;
+    executor_scope: string | null;
     created_at: Date | string;
     status: JobStatus;
     done_at: Date | string | null;
@@ -167,6 +170,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         runtime: row.runtime ?? null,
         repo: row.repo,
         executor: row.executor,
+        executorScope: (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
         followUpTo: row.parent_job_id,
         rootJobId: row.root_job_id,
         workflowNode: row.workflow_node ?? null,
@@ -212,6 +216,7 @@ export function toTask(row: TaskRow): TaskSummary {
         doneAt: stampOf(row.done_at),
         repo: row.repo,
         executor: row.executor,
+        executorScope: (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
         author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
         activity: row.runtime?.activity ?? null,
         summary: row.summary,
@@ -235,6 +240,7 @@ export interface WorkflowSuccessorInput {
     createdBy: string | null;
     repo: string | null;
     executor: string | null;
+    executorScope: ExecutorScope;
     parentJobId: string;
     sessionId: string | null;
     rootJobId: string;
@@ -245,9 +251,9 @@ export interface WorkflowSuccessorInput {
 
 export async function insertWorkflowSuccessor(tx: TransactionSql, input: WorkflowSuccessorInput): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-        insert into job (org_id, command, created_by, repo, executor, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node)
+        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node)
         values (${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
-                ${input.executor}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
+                ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
                 ${input.workflowId}, ${input.workflowName}, ${input.workflowNode})
         returning id
     `;
@@ -354,7 +360,7 @@ export function publicationColumnsFragment(sql: Sql): Fragment {
 // navigation-preview and page subquery, which read the derived set rather than the tables.
 export function taskPreviewColumnsFragment(sql: Sql): Fragment {
     return sql`
-        id, command, repo, executor, created_at, status, done_at, cancel_requested_at,
+        id, command, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
         summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url,
         wait_reason, waiting_since, wait_terminal_reason
     `;

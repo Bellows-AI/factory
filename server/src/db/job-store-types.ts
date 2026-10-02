@@ -5,7 +5,7 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
-import type { UserRef, ExecutorType } from '@factory-ai/core';
+import type { UserRef, ExecutorScope, ExecutorType } from '@factory-ai/core';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
@@ -141,11 +141,18 @@ export interface Job {
     /**
      * The repository (`owner/name`) the task was queued against, and the member's executor name it
      * was stamped with. Both remain audit labels; executor is additionally resolved against the
-     * author's current profile at claim time, and the resolved type chooses what the worker runs.
-     * See docs/jobs.md.
+     * stamped scope's profile at claim time (issue 391), and the resolved type chooses what the
+     * worker runs. See docs/jobs.md.
      */
     repo: string | null;
     executor: string | null;
+    /**
+     * The scope the executor label names (issue 391): `user` resolves against the author's own
+     * profiles, `org` against the organization's. Normalized to `user` on every read — rows
+     * stamped before the column existed carry null, which IS the pre-391 meaning. Copied by
+     * follow-ups, retries and workflow successors wherever the label is.
+     */
+    executorScope: ExecutorScope;
     /**
      * The finished task this job asks for adjustments on, when it is a follow-up. The tasks chat's
      * conversation thread; null on every job queued before the mechanic and on every first task.
@@ -593,6 +600,13 @@ export interface JobStore {
             repo: string | null;
             executor: string | null;
             /**
+             * The scope the executor label names (issue 391): which profile list claim-time
+             * resolution reads — the author's own rows (`user`) or the organization's (`org`).
+             * Absent is `user`, the pre-391 meaning; the route normalizes the body's field and
+             * refuses anything outside the pair, and the store stamps the resolved value.
+             */
+            executorScope?: ExecutorScope;
+            /**
              * When the task runs a workflow: the resolved workflow — the id, the NAME frozen on
              * the root row as workflow_name, the ENTRY node the thread's first run walks, the
              * definition SNAPSHOT frozen onto the root row, and the validated launch parameter
@@ -995,6 +1009,8 @@ export interface TaskSummary {
     /** The grouping labels the task was queued with, inherited by every follow-up. */
     repo: string | null;
     executor: string | null;
+    /** The scope `executor` names (issue 391), inherited with it; null rows read as 'user'. */
+    executorScope: ExecutorScope;
     /** The ROOT's creator, resolved at read time — the person the conversation belongs to. */
     author: UserRef | null;
     /** The head run's live activity line, as last sampled — not gated on still running here. */
@@ -1104,15 +1120,16 @@ export interface CreateJobStoreDeps {
     /**
      * The member executor store's claim-time reader. Declared inline like `env`, because `db/`
      * must not import from `db/user-executor-store.ts`'s surface — the claim needs exactly one
-     * question answered: the row the task's executor LABEL names. Its type selects the task's
-     * runner and its config travels under that runner's config env name. A reader failure throws,
-     * and the same rollback that guards the env resolver leaves the job queued with its attempt
-     * unburned.
+     * question answered: the row the task's executor LABEL names in the STAMPED scope (issue 391;
+     * absent scope reads as 'user'). Its type selects the task's runner and its config travels
+     * under that runner's config env name. A reader failure throws, and the same rollback that
+     * guards the env resolver leaves the job queued with its attempt unburned.
      */
     executorConfig?: {
         configFor(
             userId: string,
             name: string,
+            scope: ExecutorScope,
             exec: Sql | TransactionSql
         ): Promise<{ type: string; config: Record<string, unknown> } | null>;
     };

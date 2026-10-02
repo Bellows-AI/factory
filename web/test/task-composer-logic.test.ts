@@ -383,12 +383,13 @@ describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
     // The wire contract the issue's acceptance criteria name: "Preflight and submitted JSON
     // agree" and "Custom workflow selection sends no defaultWorkflow object" — pinned here so the
     // omission is a property of the body builder, not something a fetch mock has to observe.
-    it('carries no defaultWorkflow key beside a named custom workflow', () => {
+    it('carries no defaultWorkflow key beside a named custom workflow, and the stamped scope', () => {
         const body = queueBody(
             {
                 command: 'fix the bug',
                 repo: 'acme/web',
-                executor: 'main',
+                executor: 'team-runner',
+                executorScope: 'org',
                 workflow: 'fix-issue',
                 workflowParams: { issue: '#12' },
             },
@@ -397,7 +398,8 @@ describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
         expect(body).toEqual({
             command: 'fix the bug',
             repo: 'acme/web',
-            executor: 'main',
+            executor: 'team-runner',
+            executorScope: 'org',
             workflow: 'fix-issue',
             workflowParams: { issue: '#12' },
         });
@@ -406,13 +408,21 @@ describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
 
     it('carries the effective step pair beside Default workflow', () => {
         const body = queueBody(
-            { command: 'fix the bug', repo: 'acme/web', executor: 'main', workflow: null, workflowParams: null },
+            {
+                command: 'fix the bug',
+                repo: 'acme/web',
+                executor: 'main',
+                executorScope: 'user',
+                workflow: null,
+                workflowParams: null,
+            },
             { reviewReconciliation: true, mergeConflictAutofix: false }
         );
         expect(body).toEqual({
             command: 'fix the bug',
             repo: 'acme/web',
             executor: 'main',
+            executorScope: 'user',
             workflow: null,
             workflowParams: null,
             defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: false },
@@ -464,13 +474,18 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
         { owner: 'acme', name: 'web' },
         { owner: 'acme', name: 'api' },
     ];
-    const executors = [
-        { name: 'main', type: 'claude-code' },
-        { name: 'heavy', type: 'claude-code', isDefault: true },
+    // The combined list as the page builds it from the poll (issue 391): personal first, org
+    // after, each row carrying its scope.
+    const executors: readonly (ExecutorChoice & { type: string })[] = [
+        { name: 'main', type: 'claude-code', scope: 'user' },
+        { name: 'team-runner', type: 'claude-code', scope: 'org' },
     ];
+    // The poll's resolved default — the server's fallback chain, handed over whole.
+    const defaultExecutor: ExecutorChoice = { name: 'team-runner', scope: 'org' };
     const restored: ComposerDraftInput = {
         draft: 'fix the login crash',
         executor: 'main',
+        executorScope: 'user',
         repo: 'acme/api',
         repoTouched: true,
         workflowRepo: 'acme/api',
@@ -480,29 +495,38 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
         defaultStepOverrides: { reviewReconciliation: false },
     };
 
-    it('starts fresh from the lists: default executor, first repository, no workflow', () => {
-        expect(initialComposerState(null, { repos, executors })).toEqual({
+    it('starts fresh from the lists: the resolved default executor, first repository, no workflow', () => {
+        expect(initialComposerState(null, { repos, executors, defaultExecutor })).toEqual({
             draft: '',
-            executor: 'heavy',
+            executor: 'team-runner',
+            executorScope: 'org',
             repo: 'acme/web',
             repoTouched: false,
             workflowRepo: 'acme/web',
             ...freshWorkflowDraft(),
         });
+        // No resolved default (no preference, no rows at all): the fresh composer holds nothing,
+        // the missing-executor blocker's own state.
+        expect(initialComposerState(null, { repos: null, executors: [], defaultExecutor: null }).executor).toBe('');
+        expect(initialComposerState(null, { repos: null, executors: [], defaultExecutor: null }).executorScope).toBe(
+            'user'
+        );
         // The workflow was chosen under the repository the composer mounts with, so the
         // repo-reset has nothing to reset on mount.
-        expect(initialComposerState(null, { repos: null, executors: [] }).workflowRepo).toBe('');
+        expect(initialComposerState(null, { repos: null, executors: [], defaultExecutor: null }).workflowRepo).toBe('');
     });
 
     it('restores every field exactly as it was saved, whatever the lists say now', () => {
-        expect(initialComposerState(restored, { repos, executors })).toEqual(restored);
+        expect(initialComposerState(restored, { repos, executors, defaultExecutor })).toEqual(restored);
     });
 
     it('reads a fresh composer as clean, and any member input as a draft worth keeping', () => {
-        const lists = { repos, executors };
+        const lists = { repos, executors, defaultExecutor };
         const fresh = initialComposerState(null, lists);
         expect(draftIsFresh(fresh, lists)).toBe(true);
         expect(draftIsFresh({ ...fresh, draft: 'x' }, lists)).toBe(false);
+        // The scope is part of the choice: switching it alone is member input.
+        expect(draftIsFresh({ ...fresh, executorScope: 'user' }, lists)).toBe(false);
         expect(draftIsFresh({ ...fresh, executor: 'main' }, lists)).toBe(false);
         expect(draftIsFresh({ ...fresh, repo: '', repoTouched: true, workflowRepo: '' }, lists)).toBe(false);
         expect(draftIsFresh({ ...fresh, workflow: 'fix-issue' }, lists)).toBe(false);
@@ -515,6 +539,7 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
     const restored: ComposerDraftInput = {
         draft: 'fix the login crash',
         executor: 'main',
+        executorScope: 'user',
         repo: 'acme/web',
         repoTouched: false,
         workflowRepo: 'acme/web',
@@ -524,30 +549,65 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
         defaultStepOverrides: {},
     };
     const repos = [{ owner: 'acme', name: 'web' }];
-    const executors = [{ name: 'main', type: 'claude-code' }];
+    const executors: readonly (ExecutorChoice & { type: string })[] = [
+        { name: 'main', type: 'claude-code', scope: 'user' },
+    ];
+    const defaultExecutor: ExecutorChoice = { name: 'main', scope: 'user' };
     const workflows = [{ name: 'fix-issue' }];
 
     it('says nothing when everything the draft chose still exists', () => {
-        expect(restoredDraftNotices(restored, { repos, executors, workflows })).toEqual([]);
+        expect(restoredDraftNotices(restored, { repos, executors, workflows, defaultExecutor })).toEqual([]);
     });
 
     it('says nothing for a choice the draft never made', () => {
-        const bare = { ...restored, executor: '', repo: '', workflowRepo: '', workflow: '' };
-        expect(restoredDraftNotices(bare, { repos: [], executors: [], workflows: [] })).toEqual([]);
+        const bare = {
+            ...restored,
+            executor: '',
+            executorScope: 'user' as const,
+            repo: '',
+            workflowRepo: '',
+            workflow: '',
+        };
+        expect(restoredDraftNotices(bare, { repos: [], executors: [], workflows: [], defaultExecutor: null })).toEqual(
+            []
+        );
+    });
+
+    it('never matches across scopes — a same-named org profile is not the draft’s personal one', () => {
+        // The organization now offers its own "main". The draft chose the PERSONAL main; switching
+        // it silently would run the member's task on the shared configuration.
+        const bothScopes: readonly (ExecutorChoice & { type: string })[] = [
+            ...executors,
+            { name: 'main', type: 'claude-code', scope: 'org' },
+        ];
+        expect(restoredDraftNotices(restored, { repos, executors: bothScopes, workflows, defaultExecutor })).toEqual(
+            []
+        );
+        const orgDraft = { ...restored, executorScope: 'org' as const };
+        expect(restoredDraftNotices(orgDraft, { repos, executors: bothScopes, workflows, defaultExecutor })).toEqual(
+            []
+        );
+        // The org row gone: the personal same-name row does NOT stand in for it.
+        expect(restoredDraftNotices(orgDraft, { repos, executors, workflows, defaultExecutor })).not.toEqual([]);
     });
 
     it('names a deleted executor and the one selected instead', () => {
-        const others = [
-            { name: 'heavy', type: 'claude-code' },
-            { name: 'light', type: 'claude-code', isDefault: true },
+        const others: readonly (ExecutorChoice & { type: string })[] = [
+            { name: 'heavy', type: 'claude-code', scope: 'user' },
+            { name: 'light', type: 'claude-code', scope: 'org' },
         ];
-        expect(restoredDraftNotices(restored, { repos, executors: others, workflows })).toEqual([
-            'Executor ‘main’ is no longer available — light selected.',
-        ]);
+        expect(
+            restoredDraftNotices(restored, {
+                repos,
+                executors: others,
+                workflows,
+                defaultExecutor: { name: 'light', scope: 'org' },
+            })
+        ).toEqual(['Executor ‘main’ is no longer available — light selected.']);
     });
 
     it('asks for a new executor when the deleted one was the last', () => {
-        expect(restoredDraftNotices(restored, { repos, executors: [], workflows })).toEqual([
+        expect(restoredDraftNotices(restored, { repos, executors: [], workflows, defaultExecutor: null })).toEqual([
             'Executor ‘main’ is no longer available — add one to continue.',
         ]);
     });

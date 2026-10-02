@@ -1,11 +1,11 @@
 import { join } from 'node:path';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES, EXECUTOR_TYPES, MAX_GATE_FIX_ROUNDS } from '@factory-ai/core';
-import type { ErrorCode } from '@factory-ai/core';
+import { ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory-ai/core';
 import { callerOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
 import { handleDeleteRepo, orphansAndTotal, runtimeOf } from './workspace-purge.js';
-import type { UserExecutor } from '../db/user-executor-store.js';
+import { executorFieldRefusal, MAX_EXECUTORS_PER_USER, parseExecutorFields } from './executor-fields.js';
+import { ExecutorDefaultNotFoundError, type ExecutorProfile } from '../db/user-executor-store.js';
 import type { PurgeConflictError } from '../db/user-repo-store.js';
 import type { AppConfig, Repo } from '../config.js';
 import type { UserRepo } from '../db/user-repo-store.js';
@@ -18,6 +18,7 @@ const HTTP_OK = 200;
 const HTTP_ACCEPTED = 202;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_CONFLICT = 409;
+const HTTP_NOT_FOUND = 404;
 const HTTP_UNAVAILABLE = 503;
 
 /**
@@ -36,12 +37,6 @@ const HTTP_UNAVAILABLE = 503;
  * from cloning an entire GitHub organization onto a shared volume.
  */
 export const MAX_REPOS_PER_USER = 20;
-
-/**
- * A ceiling on how many executors one person can configure. Like MAX_REPOS_PER_USER, not a policy
- * about what anybody needs — just the bound that keeps one pasted list from growing without limit.
- */
-export const MAX_EXECUTORS_PER_USER = 10;
 
 const BYTES_PER_KIB = 1024;
 const BODY_LIMIT_KIB = 64;
@@ -81,52 +76,28 @@ function parseSelection(raw: unknown): Repo[] | string {
 }
 
 /**
- * One entry's gate-repair round limit (issue #49): optional, a whole number in 0..10, the code
- * default when absent. A refusal message starts with `gateFixRounds` so `validateExecutorList`
- * can name the code — the same prefix convention the executor-type refusal uses.
- */
-function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): number | string {
-    if (item.gateFixRounds === undefined) return DEFAULT_GATE_FIX_ROUNDS;
-    const rounds = item.gateFixRounds;
-    if (typeof rounds !== 'number' || !Number.isInteger(rounds) || rounds < 0 || rounds > MAX_GATE_FIX_ROUNDS) {
-        return `gateFixRounds for "${item.name}" must be a whole number between 0 and ${MAX_GATE_FIX_ROUNDS}`;
-    }
-    return rounds;
-}
-
-/**
- * One executor entry, validated: the name/type/config shape, the known type, the boolean default
- * flag and the round limit. A string return is the refusal message; the caller stops at the first.
+ * One PERSONAL executor entry: the shared fields plus the tamper refusals. The personal PUT writes
+ * the caller's own rows and nothing else — an entry claiming an org scope, another owner or the
+ * old default flag is refused loudly rather than rewritten (issue 391): scope and ownership are
+ * decided by the route, never by the body.
  */
 function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
     const item = entry as {
-        name?: unknown;
-        type?: unknown;
-        config?: unknown;
+        scope?: unknown;
+        userId?: unknown;
         isDefault?: unknown;
-        gateFixRounds?: unknown;
+        name?: unknown;
     };
-    if (typeof item?.name !== 'string' || typeof item?.type !== 'string') {
-        return 'each entry must be { name: string, type: string, config: object }';
+    if (item?.scope !== undefined) {
+        return 'scope in a personal entry is an organization tamper attempt; organization profiles are managed through /api/org/executors';
     }
-    if (typeof item.config !== 'object' || item.config === null || Array.isArray(item.config)) {
-        return `config for "${item.name}" must be a JSON object`;
+    if (item?.userId !== undefined) {
+        return 'userId in a personal entry is an ownership tamper attempt';
     }
-    if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
-        return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
+    if (item?.isDefault !== undefined) {
+        return 'isDefault is set through PUT /api/workspace/executors/default, not on the row';
     }
-    if (item.isDefault !== undefined && typeof item.isDefault !== 'boolean') {
-        return `isDefault for "${item.name}" must be a boolean`;
-    }
-    const gateFixRounds = parseGateFixRounds(item);
-    if (typeof gateFixRounds === 'string') return gateFixRounds;
-    return {
-        name: item.name,
-        type: item.type,
-        config: item.config as Record<string, unknown>,
-        isDefault: item.isDefault ?? false,
-        gateFixRounds,
-    };
+    return parseExecutorFields(entry);
 }
 
 /**
@@ -134,7 +105,7 @@ function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
  *
  * No field-level schema inside `config` for now: the contract is "raw JSON the member pastes", and
  * deepening validation belongs to the day an actual consumer exists and can be wrong about the
- * fields. The route guards shape; 012's check constraints guard the row.
+ * fields. The route guards shape; the check constraints guard the row.
  */
 function parseExecutors(raw: unknown): ExecutorEntry[] | string {
     const list = jsonBody(raw).executors;
@@ -155,7 +126,6 @@ type ExecutorEntry = {
     name: string;
     type: string;
     config: Record<string, unknown>;
-    isDefault: boolean;
     gateFixRounds: number;
 };
 
@@ -226,11 +196,7 @@ function validateExecutorList(
 ): { ok: true; value: ExecutorEntry[] } | { ok: false; code: string; message: string } {
     const list = parseExecutors(raw);
     if (typeof list === 'string') {
-        let code: ErrorCode = ERROR_CODES.BAD_BODY;
-        if (list.startsWith('at most')) code = ERROR_CODES.TOO_MANY_EXECUTORS;
-        else if (list.startsWith('unknown executor type')) code = ERROR_CODES.BAD_EXECUTOR_TYPE;
-        else if (list.startsWith('gateFixRounds')) code = ERROR_CODES.BAD_EXECUTOR_ROUNDS;
-        return { ok: false, code, message: list };
+        return { ok: false, code: executorFieldRefusal(list), message: list };
     }
     for (const executor of list) {
         const reason = badSegment('name', executor.name);
@@ -247,12 +213,6 @@ function validateExecutorList(
     const names = new Set(list.map((executor) => executor.name));
     if (names.size !== list.length) {
         return { ok: false, code: ERROR_CODES.EXECUTOR_NAME_CONFLICT, message: 'executor names must be unique' };
-    }
-    // Same argument, for the partial unique index 040 puts on `is_default`: a body naming two
-    // defaults would otherwise surface as that index's violation, a 503 for a 400 the client
-    // could have avoided by construction.
-    if (list.filter((executor) => executor.isDefault).length > 1) {
-        return { ok: false, code: ERROR_CODES.BAD_BODY, message: 'only one executor can be the default' };
     }
     return { ok: true, value: list };
 }
@@ -275,6 +235,8 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             repos: [],
             orphaned: [],
             executors: [],
+            orgExecutors: [],
+            defaultExecutor: null,
             checkoutTotalBytes: null,
         });
     }
@@ -297,16 +259,26 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
                 login: caller.user.login,
                 githubUserId: caller.user.githubUserId,
             });
-            return Promise.all([
-                store.list(caller.user.id),
-                store.orphaned(caller.user.id),
-                executors ? executors.list(caller.user.id) : Promise.resolve([]),
-            ]);
+            return executors
+                ? Promise.all([
+                      store.list(caller.user.id),
+                      store.orphaned(caller.user.id),
+                      executors.list(caller.user.id),
+                      executors.listOrg(),
+                      executors.resolvedDefault(caller.user.id),
+                  ])
+                : Promise.all([
+                      store.list(caller.user.id),
+                      store.orphaned(caller.user.id),
+                      Promise.resolve([] as ExecutorProfile[]),
+                      Promise.resolve([] as ExecutorProfile[]),
+                      Promise.resolve(null),
+                  ]);
         }
     );
     if (!loaded.ok) return reply;
 
-    const [selected, orphanedRows, executorRows] = loaded.value;
+    const [selected, orphanedRows, executorRows, orgExecutorRows, defaultExecutor] = loaded.value;
     const userDir = workspaceDir(root, caller.org.id, caller.user.id);
     const { orphaned, checkoutTotalBytes } = orphansAndTotal(facts, userDir, selected, orphanedRows);
 
@@ -317,14 +289,23 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
         orphaned,
         checkoutTotalBytes,
         // `config` is deliberately absent from these rows: it may hold credentials the member
-        // pasted, and this payload is fetched by a poll that can run every two seconds.
-        executors: executorRows.map((row: UserExecutor) => ({
+        // pasted, and this payload is fetched by a poll that can run every two seconds. The org
+        // rows are selection metadata for the same reason — their configuration answers to the
+        // admin list, never to the poll every member's browser runs.
+        executors: executorRows.map((row: ExecutorProfile) => ({
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
-            isDefault: row.isDefault,
             gateFixRounds: row.gateFixRounds,
         })),
+        orgExecutors: orgExecutorRows.map((row: ExecutorProfile) => ({
+            name: row.name,
+            type: row.type,
+            createdAt: row.createdAt,
+        })),
+        // The member's resolved default: their stored preference while it still resolves, else the
+        // deterministic fallback the store computes — what a new task draft autoselects.
+        defaultExecutor,
     });
 }
 
@@ -430,7 +411,6 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
-            isDefault: row.isDefault,
             gateFixRounds: row.gateFixRounds,
             config: row.config,
         })),
@@ -477,10 +457,56 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
-            isDefault: row.isDefault,
             gateFixRounds: row.gateFixRounds,
         })),
     });
+}
+
+/**
+ * The member's default-executor preference (issue 391): names a profile by scope and name, either
+ * scope, without touching the shared profile or anyone else's default. The store refuses a
+ * preference naming no accessible profile, which is this route's 404 — a selection the caller
+ * cannot resolve is not a default they can hold.
+ */
+async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+    if (!deps.root) {
+        return bad(
+            reply,
+            ERROR_CODES.WORKSPACE_DISABLED,
+            'This deployment has no workspace root configured',
+            HTTP_CONFLICT
+        );
+    }
+    const rt = await runtimeOf(deps.orgs, request);
+    if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
+    const { userExecutors: executors } = rt;
+    if (!executors) return reply.code(HTTP_UNAVAILABLE).send(NO_EXECUTOR_STORE);
+
+    const fields = jsonBody(request.body);
+    const name = fields.executor;
+    const scope = fields.executorScope;
+    if (typeof name !== 'string' || !name) return bad(reply, ERROR_CODES.BAD_BODY, 'executor must be a string');
+    if (scope !== USER_SCOPE && scope !== ORG_SCOPE) {
+        return bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, `executorScope must be one of: ${USER_SCOPE}, ${ORG_SCOPE}`);
+    }
+
+    // Not under `guard`: a preference naming no accessible profile is a 404 answer, not a
+    // failure — the store throws the typed refusal, this route names it; anything else is a real
+    // failure and reaches the error handler as one.
+    try {
+        await executors.setDefault(caller.user.id, { scope: scope as ExecutorScope, name });
+    } catch (error) {
+        if (!(error instanceof ExecutorDefaultNotFoundError)) throw error;
+        return bad(
+            reply,
+            ERROR_CODES.NOT_FOUND,
+            `no ${scope} executor named "${name}" is available to you`,
+            HTTP_NOT_FOUND
+        );
+    }
+    return reply.code(HTTP_OK).send({ defaultExecutor: { scope, name } });
 }
 
 export interface WorkspaceRoutesDeps {
@@ -502,5 +528,8 @@ export const workspaceRoutes =
         app.get('/api/workspace/executors', (request, reply) => handleGetExecutors(deps, request, reply));
         app.put('/api/workspace/executors', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handlePutExecutors(deps, request, reply)
+        );
+        app.put('/api/workspace/executors/default', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+            handlePutDefaultExecutor(deps, request, reply)
         );
     };

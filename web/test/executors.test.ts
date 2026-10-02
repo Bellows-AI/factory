@@ -8,7 +8,9 @@ import {
     NO_CHANGES_REASON,
     REQUIRED_FIELDS,
     SAVE_HINTS,
-    defaultExecutorName,
+    composerExecutorOptions,
+    executorChoiceId,
+    executorChoiceOf,
     executorDraftChanges,
     executorEditorView,
     executorSavedMessage,
@@ -25,7 +27,6 @@ import {
     validateExecutorDraft,
     validateExecutorName,
     validateGateFixRounds,
-    withDefault,
     withModel,
     type ExecutorDraft,
     type ExecutorRow,
@@ -36,7 +37,6 @@ const validRow = (): ExecutorRow => ({
     name: 'main',
     type: 'claude-code',
     config: {},
-    isDefault: false,
     gateFixRounds: 3,
 });
 
@@ -503,8 +503,8 @@ describe('EXECUTOR_TYPE_META', () => {
 describe('mergeExecutors', () => {
     const first: ValidExecutor = { name: 'main', type: 'claude-code', config: { model: 'sonnet' }, gateFixRounds: 3 };
     const second: ValidExecutor = { name: 'oc', type: 'opencode', config: { model: 'x' }, gateFixRounds: 1 };
-    const firstRow: ExecutorRow = { ...first, isDefault: false };
-    const secondRow: ExecutorRow = { ...second, isDefault: false };
+    const firstRow: ExecutorRow = { ...first };
+    const secondRow: ExecutorRow = { ...second };
 
     it('appends a new executor and preserves order', () => {
         const result = mergeExecutors([firstRow], null, second);
@@ -516,7 +516,7 @@ describe('mergeExecutors', () => {
         // the row had when the dialog opened.
         const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {}, gateFixRounds: 3 };
         const result = mergeExecutors([firstRow, secondRow], 'main', renamed);
-        expect(result).toEqual({ ok: true, value: [{ ...renamed, isDefault: false }, secondRow] });
+        expect(result).toEqual({ ok: true, value: [{ ...renamed }, secondRow] });
     });
 
     it('keeps the round limit the dialog saved on the edited row', () => {
@@ -538,7 +538,7 @@ describe('mergeExecutors', () => {
             gateFixRounds: 3,
         };
         const result = mergeExecutors([firstRow, secondRow], 'main', changed);
-        expect(result).toEqual({ ok: true, value: [{ ...changed, isDefault: false }, secondRow] });
+        expect(result).toEqual({ ok: true, value: [{ ...changed }, secondRow] });
     });
 
     it('rejects a rename onto another row’s name', () => {
@@ -557,62 +557,49 @@ describe('mergeExecutors', () => {
         const result = mergeExecutors([], 'main', first);
         expect(result.ok).toBe(false);
     });
-
-    it('keeps the default flag across a rename', () => {
-        const defaultRow: ExecutorRow = { ...firstRow, isDefault: true };
-        const renamed: ValidExecutor = { name: 'renamed', type: 'claude-code', config: {}, gateFixRounds: 3 };
-        const result = mergeExecutors([defaultRow, secondRow], 'main', renamed);
-        expect(result).toEqual({ ok: true, value: [{ ...renamed, isDefault: true }, secondRow] });
-    });
-
-    it('never makes an added row the default', () => {
-        const defaultRow: ExecutorRow = { ...firstRow, isDefault: true };
-        const result = mergeExecutors([defaultRow], null, second);
-        expect(result).toEqual({ ok: true, value: [defaultRow, secondRow] });
-    });
 });
 
-describe('withDefault', () => {
-    const first: ExecutorRow = validRow();
-    const second: ExecutorRow = { name: 'oc', type: 'opencode', config: {}, isDefault: true, gateFixRounds: 2 };
-
-    it('flags exactly the named row and clears every other', () => {
-        const result = withDefault([first, second], 'main');
-        expect(result).toEqual({
-            ok: true,
-            value: [
-                { ...first, isDefault: true },
-                { ...second, isDefault: false },
-            ],
+describe('executor choices — the scope-qualified selection identity (issue 391)', () => {
+    it('round-trips a choice through its select identity', () => {
+        const id = executorChoiceId({ scope: 'org', name: 'team-runner' });
+        expect(executorChoiceOf(id)).toEqual({ scope: 'org', name: 'team-runner' });
+        expect(executorChoiceOf(executorChoiceId({ scope: 'user', name: 'main' }))).toEqual({
+            scope: 'user',
+            name: 'main',
         });
     });
 
-    it('is a no-op when the named row is already the default', () => {
-        const result = withDefault([first, second], 'oc');
-        expect(result).toEqual({ ok: true, value: [first, second] });
+    it('keeps a personal and an org profile with the same name distinguishable', () => {
+        // The whole point of qualifying the identity: the same name in both scopes is TWO rows,
+        // and the select value — never the name alone — is what disambiguates them.
+        const personal = executorChoiceId({ scope: 'user', name: 'main' });
+        const org = executorChoiceId({ scope: 'org', name: 'main' });
+        expect(personal).not.toBe(org);
+        expect(executorChoiceOf(personal)).toEqual({ scope: 'user', name: 'main' });
+        expect(executorChoiceOf(org)).toEqual({ scope: 'org', name: 'main' });
     });
 
-    it('refuses a name that no longer exists', () => {
-        const result = withDefault([first, second], 'gone');
-        expect(result).toEqual({ ok: false, error: '"gone" no longer exists — refresh and try again.' });
+    it('answers null for a value that is not a choice', () => {
+        expect(executorChoiceOf('')).toBeNull();
+        expect(executorChoiceOf('main')).toBeNull();
+        expect(executorChoiceOf('repo:main')).toBeNull();
     });
 });
 
-describe('defaultExecutorName', () => {
-    it('answers the flagged row even when it is not first', () => {
-        const rows = [
-            { name: 'main', isDefault: false },
-            { name: 'heavy', isDefault: true },
-        ];
-        expect(defaultExecutorName(rows)).toBe('heavy');
+describe('composerExecutorOptions — the composer lists both scopes (issue 391)', () => {
+    it('offers the organization profiles beside the personal ones, personal first', () => {
+        const personal = [{ name: 'mine', type: 'opencode' }];
+        const org = [{ name: 'shared', type: 'claude-code' }];
+        expect(composerExecutorOptions(personal, org)).toEqual([
+            { scope: 'user', name: 'mine', type: 'opencode' },
+            { scope: 'org', name: 'shared', type: 'claude-code' },
+        ]);
     });
 
-    it('falls back to the first row when none is flagged', () => {
-        const rows = [{ name: 'main', isDefault: false }, { name: 'heavy' }];
-        expect(defaultExecutorName(rows)).toBe('main');
-    });
-
-    it('answers an empty string for an empty list', () => {
-        expect(defaultExecutorName([])).toBe('');
+    it('still offers the organization profiles when the member has no personal ones', () => {
+        expect(composerExecutorOptions([], [{ name: 'shared', type: 'claude-code' }])).toEqual([
+            { scope: 'org', name: 'shared', type: 'claude-code' },
+        ]);
+        expect(composerExecutorOptions([], [])).toEqual([]);
     });
 });

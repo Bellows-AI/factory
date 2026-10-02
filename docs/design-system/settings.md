@@ -47,4 +47,6 @@ contracts: [../design-system.md](../design-system.md).
 | `default-workflow-draft.ts` | helper — no markup |
 | `WorkflowsPanel.tsx` | panel, panel-head, table-wrap, data, pill, muted, status, primary, env-raw |
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
+| `OrgExecutorsPanel.tsx` | panel, pill, table-wrap, muted, primary — the organization executor profiles' read-only member view and the admin actions (issue 391) |
+| `OrgExecutorsSection.tsx` | composition over `OrgExecutorsPanel.tsx` + the shared `ExecutorDialog` — no primitives beyond `panel`, `status` |
 

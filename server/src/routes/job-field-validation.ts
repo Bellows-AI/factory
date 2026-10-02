@@ -1,4 +1,5 @@
-import { COMMAND_LIMIT, ERROR_CODES } from '@factory-ai/core';
+import { COMMAND_LIMIT, ERROR_CODES, EXECUTOR_SCOPES, USER_SCOPE } from '@factory-ai/core';
+import type { ExecutorScope } from '@factory-ai/core';
 import type { FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
@@ -88,6 +89,21 @@ export function validateExecutorField(
     const reason = executorReason(raw);
     if (reason) return { ok: false, message: reason };
     return { ok: true, value: raw };
+}
+
+/**
+ * The scope an executor selection names (issue 391): absent means `user` — the pre-391 meaning,
+ * which keeps every body that predates the field valid — and anything outside the pair refuses.
+ * An explicit scope is never overridden: a selection names its scope and profile unambiguously.
+ */
+export function validateExecutorScopeField(
+    raw: unknown
+): { ok: true; value: ExecutorScope } | { ok: false; message: string } {
+    if (raw === undefined || raw === null) return { ok: true, value: USER_SCOPE };
+    if (!EXECUTOR_SCOPES.includes(raw as ExecutorScope)) {
+        return { ok: false, message: `executorScope must be one of: ${EXECUTOR_SCOPES.join(', ')}` };
+    }
+    return { ok: true, value: raw as ExecutorScope };
 }
 
 export interface ResolvedWorkflow {

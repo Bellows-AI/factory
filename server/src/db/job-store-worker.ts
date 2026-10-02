@@ -5,6 +5,7 @@
  */
 
 import type { TransactionSql } from 'postgres';
+import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
 import { exists, insertWorkflowSuccessor, runtimePatch, workspacePathFor } from './job-store-rows.js';
 import type {
     JobStore,
@@ -408,9 +409,10 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
             session_id: string | null;
             repo: string | null;
             executor: string | null;
+            executor_scope: string | null;
         }[]
     >`
-        select id, workflow_node, status, output, gates, session_id, repo, executor
+        select id, workflow_node, status, output, gates, session_id, repo, executor, executor_scope
         from job
         where org_id = ${orgId} and root_job_id = ${rootJobId}
         order by created_at, id
@@ -491,6 +493,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         createdBy: root.created_by,
         repo: completed?.repo ?? root.repo,
         executor: completed?.executor ?? null,
+        executorScope: (completed?.executor_scope ?? USER_SCOPE) as ExecutorScope,
         parentJobId: completedId,
         sessionId: session,
         rootJobId,

@@ -16,6 +16,19 @@ export type ExecutorType = (typeof EXECUTOR_TYPES)[number];
 export const [CLAUDE_CODE, OPENCODE] = EXECUTOR_TYPES;
 
 /**
+ * The executor profile scopes (issue 391): a profile belongs either to one member (`user`) or to
+ * the organization (`org`), managed by its administrators and selectable by every member. The
+ * stored values on `executor_profile.user_id`'s nullness and `job.executor_scope`, and the wire
+ * value a task selection stamps — the workflows API spells its scopes the same way.
+ */
+export const EXECUTOR_SCOPES = ['user', 'org'] as const;
+
+export type ExecutorScope = (typeof EXECUTOR_SCOPES)[number];
+
+/** The scopes by name, destructured from the one list so no second copy can drift. */
+export const [USER_SCOPE, ORG_SCOPE] = EXECUTOR_SCOPES;
+
+/**
  * The default-workflow gate-repair round limit (issue #49): how many bounded gate-fix rounds an
  * ordinary task may spend repairing a failed gate before the thread rests. A value of zero turns
  * automatic gate repair off — the graph falls back to today's no-edge shape. The board reads the

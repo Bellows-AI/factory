@@ -97,10 +97,13 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   membership decision and an unscoped token reports none — every sign-in would be bounced to the
   install page with nothing to say why. The scope is org-level only: sign-in still reads no
   repository data, which is what the OAuth-vs-App split below is for.
-- **Roles survive as a column, unused.** GitHub's org role is not mapped onto Factory's, so every
-  membership is `member`; the `role` column and the `admin` value remain for the day something
-  needs them. Consequently the org-token mint and the env-wide scopes carry no admin gate —
-  installation access is one trust level.
+- **Roles survived as a column until issue 391 gave them their consumer.** GitHub's org role is
+  not mapped onto Factory's, so sign-in materializes `member` rows and an operator promotes an
+  administrator by hand. The first gate that reads `role` is the organization executor profiles'
+  CRUD (issue 391): only a current `admin` may create, edit, rename, delete or re-scope an org
+  profile, and every member may select one. Nothing else changed — the org-token mint and the
+  env-wide scopes still carry no admin gate, and installation access remains one trust level
+  everywhere else.
 - **`github_login` is stored lowercase**, because GitHub logins are case-insensitive and a match
   must survive case differences between what a report says and what the identity endpoint returned.
 - **`app_user` and `session` are global; only `org_membership` leads with `org_id`.**
