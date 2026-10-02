@@ -34,11 +34,12 @@ if (!DISPOSABLE.test(name)) {
 
 const sql = postgres(url, { max: 1 });
 try {
-    // The three tables the seed writes (job_summary is a column, not a table). A database that
+    // The three tables the seed writes, including dependent rows such as job_artifact through
+    // CASCADE. The disposable-name guard above bounds every deletion to test data. A database that
     // has never been seeded has none of them yet — "nothing to reset" is success, not an error.
     for (const table of ['metric_point', 'session_branch', 'job']) {
         try {
-            await sql.unsafe(`truncate table ${table}`);
+            await sql.unsafe(`truncate table ${table} cascade`);
         } catch (e) {
             if (e?.code !== '42P01') throw e;
         }

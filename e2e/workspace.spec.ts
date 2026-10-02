@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
 import { throughSignIn } from './signin.js';
+import { DEFAULT_CAPTION } from '../web/src/panels/WorkspaceExecutorsPanel.js';
 // The copy under assertion, imported from the module the app renders it from — see the note on
 // EXECUTOR_GUIDANCE in web/src/workspace/executors.ts for why these live in a React-free module.
 import {
@@ -316,7 +317,7 @@ test('an executor is added through guided setup, with no JSON typed', async ({ p
     await expect(page.getByRole('status').filter({ hasText: executorSavedMessage('main', false) })).toBeVisible();
     await expect(panel.getByText('main')).toBeVisible();
     await expect(panel.locator('.pill')).toHaveText('Claude Code');
-    await expect(panel.getByText('Selected first on new tasks')).toHaveCount(1);
+    await expect(panel.getByText(DEFAULT_CAPTION)).toHaveCount(1);
 
     // A duplicate name is refused beside the Name field, before any save.
     await add.click();

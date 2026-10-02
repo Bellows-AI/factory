@@ -19,6 +19,14 @@ contracts: [../design-system.md](../design-system.md).
 | Scope context | `scope-context`, `scope-context-label` | The readable scope/impact/editability block every environment editor renders before its controls (#180); the label is a small uppercase caption, the precedence sentence `muted` |
 
 
+## JSON editor alignment
+
+The highlighted `code` element inherits the textarea's full font and line height, with no inline
+code padding or background (issue #387). The shared `code` primitive's smaller font and inset
+would otherwise shift mouse hit testing away from the visible glyphs. Keep both layers' text
+metrics identical. `e2e/json-editor.spec.ts` clicks the painted text and checks the native caret,
+selection, editing and scrolling at desktop and phone widths in both themes.
+
 ## Inventory
 
 | File | Primitives |
