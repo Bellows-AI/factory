@@ -36,7 +36,7 @@ interface WebhookPayload {
     installation?: { id?: unknown } | null;
     membership?: { user?: { id?: unknown } | null } | null;
     repository?: { full_name?: unknown } | null;
-    pull_request?: { number?: unknown } | null;
+    pull_request?: { number?: unknown; merged?: unknown } | null;
     /** An issue # addresses a number here too; the PR clincher is `pull_request` on the issue. */
     issue?: { number?: unknown; pull_request?: unknown } | null;
 }
@@ -132,6 +132,39 @@ interface PrEventInput {
     deliveryIdHeader: unknown;
 }
 
+/**
+ * A MERGED close (issue #390) closes the tasks whose recorded publication names this PR, instead
+ * of merely cancelling their waits. Strict `=== true`: a missing or non-boolean flag falls
+ * through to the ordinary-close path — only a real merge is an automatic Done.
+ */
+function isMergedClose(event: unknown, payload: WebhookPayload): boolean {
+    return event === 'pull_request' && payload.action === 'closed' && payload.pull_request?.merged === true;
+}
+
+async function handlePrMerged(
+    orgs: OrgRegistry,
+    payload: WebhookPayload,
+    deliveryIdHeader: unknown,
+    reply: FastifyReply
+): Promise<void> {
+    const activity = parsePrActivity('pull_request', payload, deliveryIdHeader);
+    if (!activity) {
+        reply.code(HTTP_OK).send({ ok: true });
+        return;
+    }
+
+    // The org is the installation the delivery addresses, exactly as the fold/cancel path
+    // resolves it; a runtime without both stores (an older deployment, or no job store) acks.
+    const runtime = await orgs.for(String(activity.installation));
+    if (runtime?.prs === undefined || runtime?.jobs === undefined) {
+        reply.code(HTTP_OK).send({ ok: true });
+        return;
+    }
+
+    await runtime.jobs.closeMergedPr(activity.repo, activity.number, activity.deliveryId);
+    reply.code(HTTP_OK).send({ ok: true });
+}
+
 async function handlePrEvent(orgs: OrgRegistry, input: PrEventInput, reply: FastifyReply): Promise<void> {
     const { event, deed, payload, deliveryIdHeader } = input;
     // An issue comment counts as PR activity only when it sits on a pull request — plain issue
@@ -203,6 +236,12 @@ export const webhookRoutes =
 
             if (event === 'organization') {
                 return handleOrganizationEvent(store, payload, reply);
+            }
+
+            // A merged close closes tasks rather than folding waits — decided before the family
+            // routing, whose `closed` action would otherwise read as an ordinary cancel.
+            if (isMergedClose(event, payload)) {
+                return handlePrMerged(orgs, payload, request.headers['x-github-delivery'], reply);
             }
 
             const deed = resolveDeed(event, payload.action);

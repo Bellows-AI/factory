@@ -113,6 +113,15 @@ restart with a warm database serves real data on the first request rather than a
   first-writer coalesce at both write sites; not on the `Job` read model, because reopen reads it
   store-side and nothing else consumes it. The column starts at 045 — removals that ran before it
   are unknowable and their threads reopen with a 200, recovering through branch recreation.
+- **`048_pr_merge_close.sql` is the merge ledger and the closure marker, and they are two tables
+  on purpose (issue #390).** `pr_merge` (one row per org/repo/PR number) is the delivery dedupe
+  AND the durable merge state: immutable, never deleted — not even by remove — because "this PR
+  merged" is history (the `github_delivery` precedent) and because a redelivery arriving after a
+  manual Reopen must hit the ledger conflict rather than re-close the thread. `job_merge_close`
+  (one row per org/thread root) is the opposite lifecycle: the reversible per-thread marker the
+  completing transition reads to rest instead of walking, deleted by reopen (the thread walks
+  again) and by remove (the rows it discriminates are gone). Splitting them is what lets one
+  merge event be once-forever while its effect on any one thread stays takeable-back.
 
 **Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
 `npm test`**. That is the price of keeping the default suite offline and database-free; they are

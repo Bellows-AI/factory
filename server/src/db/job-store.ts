@@ -29,6 +29,7 @@ import {
     cancelThreadWait,
     pokeThreadWait,
 } from './job-store-actions.js';
+import { closeMergedPr } from './job-store-merge.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
 import {
     threadOf,
@@ -212,6 +213,11 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async markDone(id, doneBy) {
             await gate();
             return markJobDone(ctx, id, doneBy);
+        },
+
+        async closeMergedPr(repo, prNumber, deliveryId) {
+            await gate();
+            return closeMergedPr(ctx, repo, prNumber, deliveryId);
         },
 
         async stop(id, stoppedBy) {

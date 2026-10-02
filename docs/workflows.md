@@ -256,7 +256,12 @@ between a wake committing and that continuation being claimed. So every claim of
 checks, under its own already-held advisory lock, whether the just-claimed job is a `workflow_round`
 continuation (`job_id` match) whose wait was cancelled; if so it is settled `stopped` right there
 instead of handed to a worker, and the claim loop moves to the next candidate. This is what makes
-cancellation win the race against a wake rather than the other way around. Ordinary cancellation
+cancellation win the race against a wake rather than the other way around. A MERGE (issue #390)
+cancels through the same `cancelForRepoPr` with reason `pr merged`, inside the closure transaction,
+and closes the thread besides: the parked round becomes permanently unwakeable exactly as on a
+plain close, and a completing member of a merge-closed thread inserts no successor and re-parks
+nothing (`runWorkflowTransition` rests on the closure marker before it would walk) — the wait it
+would re-enter addresses a PR that can never reopen. Ordinary cancellation
 paths need no changes: a PR close arriving before any wake is simply never picked up by the sweep's
 "wait is open" predicate; stopping the QUEUED continuation (an ordinary `job` row once woken) already
 cancels the wait through the existing stop-settle path (`cancelWaitsForRoot`); removing the thread

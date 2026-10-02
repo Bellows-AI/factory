@@ -65,7 +65,12 @@ string repo it can name, no positive PR number, or no `x-github-delivery` GUID (
 the dedupe key AND the column's bound) and the delivery is acknowledged and dropped without a store
 call, and every fold is idempotent on that GUID — whatever GitHub retries, nothing can fold twice.
 An event for an installation this board has no runtime for resolves cleanly to a no-op: the folding
-never reaches another org's rows.
+never reaches another org's rows. The merged-close path (issue #390) lives under the same envelope
+and adds two bounds of its own: the merge flag must be the boolean `true` (anything else is the
+ordinary wait-cancel), and the closure it orders reaches only the threads the org's own `job_pr`
+rows resolve to — a delivery can never name a thread its publication did not record — and runs once
+per (org, repo, PR), deduped by the `pr_merge` ledger, so a redelivered merge cannot repeat cleanup
+or undo a manual Reopen.
 
 **Checkouts are per member, and the isolation is the mount itself.** Each person's clones live under
 their own `app_user.id`, and every container the driver starts — runner, gate, worktree sync,

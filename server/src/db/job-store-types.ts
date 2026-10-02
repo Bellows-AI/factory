@@ -705,6 +705,24 @@ export interface JobStore {
         doneBy: string | null
     ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict'>;
     /**
+     * The merge half of issue #390: a verified `pull_request closed, merged: true` delivery names
+     * this operation with the delivery's GUID, and every thread whose recorded publication
+     * (`job_pr`) resolves to the (org, repo, pr number) closes — done-stamped like a manual Done,
+     * with NO local actor (`done_by` stays whatever it was, null on a pure merge close). Runs in
+     * one transaction keyed by the delivery: the `pr_merge` ledger insert is the dedupe gate (a
+     * redelivery answers `duplicate` and touches nothing, so a redelivered merge cannot undo a
+     * manual Reopen), the open waits cancel with reason `pr merged`, queued members settle
+     * `stopped`, and the worktree reclaim queues only through the shared terminal-only rule.
+     * `closedRoots` counts the threads this delivery actually closed — zero is an honest answer
+     * (nothing published to this PR yet; the ledger row keeps the fact for the publishing verdict
+     * to apply).
+     */
+    closeMergedPr(
+        repo: string,
+        prNumber: number,
+        deliveryId: string
+    ): Promise<{ outcome: 'applied' | 'duplicate'; closedRoots: number }>;
+    /**
      * The user's stop. A QUEUED row never started, so it is settled `stopped` right here: the
      * turn is over. A RUNNING row whose lease is still live is
      * stamped `cancel_requested_at` (idempotently) and left running: the driver reads the request
@@ -1174,6 +1192,17 @@ export interface JobStorePrs {
         terminalReason?: string,
         exec?: Sql | TransactionSql,
         cancelledBy?: string | null
+    ): Promise<number>;
+    /**
+     * Cancels every open wait addressed to one repository's PR (036) — the webhook's close sweep,
+     * and issue #390's merge closure (reason `pr merged`) rides the same call inside the closure
+     * transaction. Returns the count.
+     */
+    cancelForRepoPr(
+        repo: string,
+        prNumber: number,
+        terminalReason?: string,
+        exec?: Sql | TransactionSql
     ): Promise<number>;
     /**
      * Enters (or re-enters) a durable wait for a workflow-block runtime boundary (issue #231) —

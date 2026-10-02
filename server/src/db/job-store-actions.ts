@@ -5,7 +5,8 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { USER_SCOPE } from '@factory-ai/core';
-import { exists, workspacePathFor, hasRunningMember } from './job-store-rows.js';
+import { exists, queueReclaimIfThreadDone, workspacePathFor, hasRunningMember } from './job-store-rows.js';
+import { settleIfMergeClosed } from './job-store-merge.js';
 import type { EditCommandResult, JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
 import { wakeOneRound } from './workflow-blocks/runtime.js';
 
@@ -432,46 +433,6 @@ export async function markJobDone(
     });
 }
 
-/**
- * `markDone`'s second half: if this done just made the whole thread terminal, queue its worktree
- * reclaim. The thread is one indexed read off the root column (022), and the ROOT row carries the
- * labels the reclaim is addressed by — the same fields removeThread queues. Terminal only: a
- * member still queued or running keeps the tree (its verdict will reclaim); one member
- * done (this one, usually — the UI marks the head) is what makes the done a THREAD's done and not
- * one turn's.
- */
-export async function queueReclaimIfThreadDone(
-    tx: TransactionSql,
-    orgId: string,
-    hasWorkspaces: boolean,
-    rootJobId: string
-): Promise<void> {
-    const [thread] = await tx<{ total: number; terminal: number }[]>`
-        select count(*)::int as total,
-               count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal
-        from job
-        where org_id = ${orgId} and root_job_id = ${rootJobId}
-    `;
-    if (!thread || thread.total === 0 || thread.total !== thread.terminal) return;
-
-    const [root] = await tx<{ repo: string | null; created_by: string | null }[]>`
-        select repo, created_by from job
-        where org_id = ${orgId} and id = ${rootJobId}
-    `;
-    const workspacePath = workspacePathFor(orgId, hasWorkspaces, root?.created_by ?? null);
-    // Idempotent against a row already queued (an earlier done, or a concurrent one): one tree,
-    // one reclaim. The claim-ack cycle removes the row; until then a duplicate insert would only
-    // re-offer an already-removed tree, so the guard is tidiness, not correctness.
-    await tx`
-        insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
-        select ${orgId}, ${rootJobId}, ${root?.repo ?? null}, ${workspacePath}
-        where not exists (
-            select 1 from task_reclaim
-            where org_id = ${orgId} and root_job_id = ${rootJobId}
-        )
-    `;
-}
-
 export type StopJobResult = Awaited<ReturnType<JobStore['stop']>>;
 
 export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: string | null): Promise<StopJobResult> {
@@ -538,10 +499,16 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
         `;
         return other ? { result: 'conflict', status: other.status } : 'missing';
     }
-    if (prs && row.cancel_requested_at === null) {
+    if (row.cancel_requested_at === null) {
         // A settled stop ends the thread's turn: its PR waits have nothing left to
         // fold for — the session a follow-up continues from starts its own wait cycle.
-        await prs.cancelWaitsForRoot(row.root_job_id, 'task stopped');
+        if (prs) {
+            await prs.cancelWaitsForRoot(row.root_job_id, 'task stopped');
+        }
+        // A merge-marked thread whose last moving member just stopped is closed by that stop
+        // (issue #390): done stamp, reclaim — the shared conditional settle, a no-op on any
+        // thread the closure never marked.
+        await settleIfMergeClosed(ctx, row.root_job_id);
     }
     return row.cancel_requested_at !== null
         ? { result: 'requested', cancelRequestedAt: row.cancel_requested_at.toISOString() }
@@ -562,7 +529,7 @@ export async function suspendJob(
     // lease the dying worker held. The command is in the transcript now
     // (command_delivered_at), the stamp clears — the stop has happened — and the attempt is
     // handed back: a park is not a failed try, so it must never exhaust max_attempts.
-    const rows = await sql<{ id: string; status: JobStatus }[]>`
+    const rows = await sql<{ id: string; status: JobStatus; root_job_id: string }[]>`
         update job set
             status           = 'stopped',
             finished_at      = now(),
@@ -584,9 +551,14 @@ export async function suspendJob(
             attempts         = greatest(attempts - 1, 0)
         where org_id = ${orgId} and id = ${id}
           and status = 'running' and lease_token = ${leaseToken}
-        returning id, status
+        returning id, status, root_job_id
     `;
-    if (rows[0]) return { result: 'ok', status: rows[0]!.status };
+    if (rows[0]) {
+        // The park settles a moving row; a merge-marked thread whose last moving member just
+        // parked is closed by it (issue #390) — the shared conditional settle.
+        await settleIfMergeClosed(ctx, rows[0].root_job_id);
+        return { result: 'ok', status: rows[0]!.status };
+    }
     return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
 }
 
@@ -650,6 +622,9 @@ export async function removeJobThread(
         // too — cancelWaitsForRoot above already makes it permanently unwakeable, this is just not
         // leaving it behind forever.
         await tx`delete from workflow_round where org_id = ${orgId} and root_job_id = ${rootJobId}`;
+        // The merge-closure marker (issue #390) is the thread's audit data the same way: the rows
+        // it discriminates are gone.
+        await tx`delete from job_merge_close where org_id = ${orgId} and root_job_id = ${rootJobId}`;
 
         // Queue the worktree reclaim. The driver polls this queue — nothing is holding a
         // lease on a removed thread, so no live driver would ever notice the deletion
@@ -844,6 +819,14 @@ export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<Jo
         await tx`
             update job set done_at = null, done_by = null
             where org_id = ${orgId} and root_job_id = ${rootJobId} and done_at is not null
+        `;
+        // A merge closure's marker (issue #390) is the discriminator complete's transition reads:
+        // gone with the stamps, so a thread the user reopens after an automatic Done walks its
+        // graph again — and the surviving `pr_merge` ledger row is what keeps a redelivered merge
+        // from re-closing it.
+        await tx`
+            delete from job_merge_close
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
         `;
         return { result: 'ok' };
     });
