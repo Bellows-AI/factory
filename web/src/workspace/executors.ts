@@ -2,10 +2,13 @@ import {
     CLAUDE_CODE,
     DEFAULT_GATE_FIX_ROUNDS,
     EXECUTOR_TYPES,
+    type ExecutorScope,
     type ExecutorType,
     MAX_GATE_FIX_ROUNDS,
     OPENCODE,
+    ORG_SCOPE,
     RUNNER_MANAGED_KEYS,
+    USER_SCOPE,
 } from '@factory-ai/core';
 
 /**
@@ -407,19 +410,19 @@ export function tokenizeJson(text: string): { kind: JsonTokenKind; text: string 
 }
 
 /**
- * One executor row as the API carries it — the config read returns `type` as the string it stored,
- * not the narrowed union, so the merge works on rows straight off the wire.
+ * One personal executor row as the API carries it — the config read returns `type` as the string
+ * it stored, not the narrowed union, so the merge works on rows straight off the wire. No
+ * `isDefault` since 391: the default is a per-member preference naming a scope, not a flag here.
  */
 export type ExecutorRow = {
     name: string;
     type: string;
     config: object;
-    isDefault: boolean;
     gateFixRounds: number;
 };
 
 /**
- * Folds one dialog save back into the whole list the PUT takes.
+ * Folds one dialog save back into the whole list the personal PUT takes.
  *
  * `existing` is the full list as the dialog opened it, configs included; `editing` is the name of
  * the row being edited, or null to append. The edited row is matched by its ORIGINAL name — a
@@ -435,39 +438,65 @@ export function mergeExecutors(
     const clash = existing.some((row) => row.name === next.name && row.name !== editing);
     if (clash) return { ok: false, error: `An executor named "${next.name}" already exists.` };
 
-    if (editing === null) return { ok: true, value: [...existing, { ...next, isDefault: false }] };
+    if (editing === null) return { ok: true, value: [...existing, { ...next }] };
 
     const index = existing.findIndex((row) => row.name === editing);
     if (index === -1) {
         return { ok: false, error: `"${editing}" no longer exists — refresh and try again.` };
     }
     const value = existing.slice();
-    value[index] = { ...next, isDefault: existing[index]!.isDefault };
+    value[index] = { ...next };
     return { ok: true, value };
 }
 
 /**
- * Flags exactly the named row as the default and clears every other — the "Make default" action's
- * whole effect, folded back into the list the PUT takes. Re-flagging the current default is a
- * no-op rather than an error: a stale click on a row that is already the default must not fail.
+ * A composer's executor choice, scope-qualified (issue 391): a personal and an organization
+ * profile may share a name, and the selection — the draft, the queue body, the stored default —
+ * names BOTH, so the two rows stay distinguishable and a choice never silently switches scopes.
  */
-export function withDefault(
-    existing: readonly ExecutorRow[],
-    name: string
-): { ok: true; value: ExecutorRow[] } | { ok: false; error: string } {
-    if (!existing.some((row) => row.name === name)) {
-        return { ok: false, error: `"${name}" no longer exists — refresh and try again.` };
-    }
-    return { ok: true, value: existing.map((row) => ({ ...row, isDefault: row.name === name })) };
+export interface ExecutorChoice {
+    name: string;
+    scope: ExecutorScope;
 }
 
 /**
- * The executor a new task draft autoselects: the flagged default, or the first row when none is
- * flagged — the fallback issue 183 shipped before this default existed. `''` when the list is
- * empty, the composer's own "nothing configured" sentinel.
+ * The scope-qualified identity a composer select values: `${scope}:${name}`. A name may hold any
+ * character except the path separators, so `:` is a safe delimiter.
  */
-export function defaultExecutorName(executors: readonly { name: string; isDefault?: boolean }[]): string {
-    return executors.find((executor) => executor.isDefault)?.name ?? executors[0]?.name ?? '';
+export function executorChoiceId(choice: ExecutorChoice): string {
+    return `${choice.scope}:${choice.name}`;
+}
+
+/** The choice behind a select value; null for anything that is not one — an old draft, a typo. */
+export function executorChoiceOf(id: string): ExecutorChoice | null {
+    if (id.startsWith(`${USER_SCOPE}:`)) return { scope: USER_SCOPE, name: id.slice(USER_SCOPE.length + 1) };
+    if (id.startsWith(`${ORG_SCOPE}:`)) return { scope: ORG_SCOPE, name: id.slice(ORG_SCOPE.length + 1) };
+    return null;
+}
+
+/** One row the composer's executor select offers, from either scope. */
+export interface ComposerExecutorOption extends ExecutorChoice {
+    type: string;
+}
+
+/**
+ * The composer's options, personal first then the organization's — the member's own rows where
+ * they have always been, the team's below. The organization's list stands alone when the member
+ * has configured nothing personal: that is the whole point of the shared scope.
+ */
+export function composerExecutorOptions(
+    personal: readonly { name: string; type: string }[],
+    org: readonly { name: string; type: string }[]
+): ComposerExecutorOption[] {
+    return [
+        ...personal.map((row) => ({ scope: USER_SCOPE, name: row.name, type: row.type })),
+        ...org.map((row) => ({ scope: ORG_SCOPE, name: row.name, type: row.type })),
+    ];
+}
+
+/** Whether a draft's selection still exists in the answered lists — the clamp's test. */
+export function selectionExists(options: readonly ExecutorChoice[], choice: ExecutorChoice): boolean {
+    return options.some((option) => option.name === choice.name && option.scope === choice.scope);
 }
 
 /**

@@ -188,6 +188,8 @@ describe('Settings workspace page', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -215,6 +217,8 @@ describe('Settings workspace page', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -235,6 +239,8 @@ describe('Settings workspace page', () => {
                     orphaned: [],
                     checkoutTotalBytes: null,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -274,6 +280,8 @@ describe('Settings workspace page', () => {
                         },
                     ],
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -303,6 +311,8 @@ describe('Settings workspace page', () => {
                     checkoutTotalBytes: null,
                     orphaned: [{ owner: 'acme', name: 'gone', status: 'queued', error: null, sizeBytes: null }],
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -330,6 +340,8 @@ describe('Settings workspace page', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
             env: { loading: false, data: { org: [], workspace: [], repos: [] } },
@@ -356,6 +368,8 @@ describe('Settings workspace page', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
             env: { loading: false, error: 'The environment request failed' },
@@ -374,7 +388,7 @@ describe('Settings executors page', () => {
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
-    it('scopes the list, carries the guidance, and marks only the first row selected first', () => {
+    it('scopes the list, carries the guidance, and marks the resolved default', () => {
         const html = render('/settings/executors', {
             workspace: {
                 loading: false,
@@ -383,16 +397,23 @@ describe('Settings executors page', () => {
                     repos: [],
                     orphaned: [],
                     executors: [
-                        { name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z' },
-                        { name: 'oc', type: 'opencode', createdAt: '2026-09-02T00:00:00.000Z' },
+                        { name: 'main', type: 'claude-code', createdAt: '2026-09-01T00:00:00.000Z', gateFixRounds: 3 },
+                        { name: 'oc', type: 'opencode', createdAt: '2026-09-02T00:00:00.000Z', gateFixRounds: 3 },
                     ],
+                    orgExecutors: [{ name: 'team-runner', type: 'claude-code', createdAt: '2026-09-03T00:00:00.000Z' }],
+                    defaultExecutor: { scope: 'user', name: 'main' },
                 },
             },
         });
         expect(html).toContain('page-header-description');
         expect(html).toContain('Each task runs with its selected executor');
         expect(html).toContain('<h2>My workspace</h2>');
-        expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
+        // The resolved default names the personal row: that one carries the caption (issue 391's
+        // preference shape, the old isDefault flag's successor).
+        expect(html.match(/Default — selected on new tasks/g)?.length).toBe(1);
+        // The organization panel renders below the personal one, with the shared profile.
+        expect(html).toContain('<h2>Organization</h2>');
+        expect(html).toContain('team-runner');
         expect(html).toContain('Add executor');
         // The save announcement's region is mounted before any save, so the sentence is heard
         // when it arrives (issue 261).
@@ -411,6 +432,8 @@ describe('Settings executors page', () => {
                     orphaned: [],
                     checkoutTotalBytes: null,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -498,6 +521,8 @@ describe('Settings repositories page', () => {
                     orphaned: [],
                     checkoutTotalBytes: null,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -583,6 +608,8 @@ describe('settings scope context (issue 182 invariants)', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
             env: { loading: false, data: envData },
@@ -641,6 +668,8 @@ describe('settings page headers', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -662,6 +691,8 @@ describe('settings page headers', () => {
                     orphaned: [],
                     checkoutTotalBytes: null,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });
@@ -679,6 +710,8 @@ describe('settings page headers', () => {
                     orphaned: [],
                     checkoutTotalBytes: 0,
                     executors: [],
+                    orgExecutors: [],
+                    defaultExecutor: null,
                 },
             },
         });

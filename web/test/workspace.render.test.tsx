@@ -16,12 +16,14 @@ const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];
 
 describe('the executors panel', () => {
     // The panel is the list itself plus the scope context (#183): the "My workspace" heading, the
-    // guidance that says the type controls task execution, and the rows.
-    const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z', isDefault = false) => ({
+    // guidance that says the type controls task execution, and the rows. Since 391 the default is
+    // a per-member preference naming a scope — the panel reads it off the poll's resolved
+    // default, never off a row flag.
+    const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z', gateFixRounds = 3) => ({
         name,
         type,
         createdAt,
-        isDefault,
+        gateFixRounds,
     });
     const noop = () => {};
 
@@ -34,12 +36,18 @@ describe('the executors panel', () => {
         expect(html).toContain('type chooses Claude Code or OpenCode');
     });
 
-    it('says an executor is required when the list is empty', () => {
+    it('says an executor is selectable when the list is empty, the org scope included', () => {
         const html = renderToStaticMarkup(
-            <WorkspaceExecutorsPanel executors={[]} onEdit={noop} onMakeDefault={noop} saving={false} />
+            <WorkspaceExecutorsPanel
+                executors={[]}
+                defaultExecutor={null}
+                onEdit={noop}
+                onMakeDefault={noop}
+                saving={false}
+            />
         );
         expect(html).toContain('No personal executors configured');
-        expect(html).toContain('Add one before starting a task');
+        expect(html).toContain('select an organization executor');
         expect(html).not.toContain('No executors configured');
     });
 
@@ -47,6 +55,7 @@ describe('the executors panel', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                defaultExecutor={null}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={false}
@@ -60,29 +69,33 @@ describe('the executors panel', () => {
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
-    it('marks only the first row as selected first when no default is set — the pre-215 fallback', () => {
+    it('carries no row caption when nothing is selectable — a poll without a resolved default', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                defaultExecutor={null}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={false}
             />
         );
-        expect(html.match(/Selected first on new tasks/g)?.length).toBe(1);
+        expect(html).not.toContain('Default — selected on new tasks');
+        expect(html).not.toContain('Selected first on new tasks');
     });
 
-    it('captions the flagged row as the default, even when it is not first', () => {
+    it('captions the row the resolved default names, even when it is not first', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
-                executors={[executor('main', 'claude-code'), executor('oc', 'opencode', undefined, true)]}
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                defaultExecutor={{ scope: 'user', name: 'oc' }}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={false}
             />
         );
         expect(html).toContain('Default — selected on new tasks');
-        expect(html).not.toContain('Selected first on new tasks');
+        // Exactly one row wears the caption.
+        expect(html.match(/Default — selected on new tasks/g)?.length).toBe(1);
     });
 
     it('never carries a row config — the poll payload has none, and the type enforces it', () => {
@@ -91,6 +104,7 @@ describe('the executors panel', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code')]}
+                defaultExecutor={null}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={false}
@@ -103,6 +117,7 @@ describe('the executors panel', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code')]}
+                defaultExecutor={null}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={false}
@@ -117,6 +132,7 @@ describe('the executors panel', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                defaultExecutor={null}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={false}
@@ -128,7 +144,8 @@ describe('the executors panel', () => {
     it('renders Make default on every non-default row, and not on the default row', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
-                executors={[executor('main', 'claude-code'), executor('oc', 'opencode', undefined, true)]}
+                executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                defaultExecutor={{ scope: 'user', name: 'oc' }}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={false}
@@ -141,6 +158,7 @@ describe('the executors panel', () => {
         const html = renderToStaticMarkup(
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
+                defaultExecutor={null}
                 onEdit={noop}
                 onMakeDefault={noop}
                 saving={true}

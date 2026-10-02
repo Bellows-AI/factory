@@ -142,15 +142,16 @@ describe('TaskComposer', () => {
         expect(empty).toContain('disabled');
     });
 
-    it('preselects the persisted default over the first row (issue 215)', () => {
+    it('preselects the poll-resolved default over the first row (issue 215, the preference by 391)', () => {
         const trigger = (html: string) => html.slice(html.indexOf('Executor'), html.indexOf('>Start task<'));
 
         const html = renderComposer({
             repos: [],
             executors: [
-                { name: 'main', type: 'claude' },
-                { name: 'heavy', type: 'claude', isDefault: true },
+                { name: 'main', type: 'claude', scope: 'user' },
+                { name: 'heavy', type: 'claude', scope: 'user' },
             ],
+            defaultExecutor: { name: 'heavy', scope: 'user' },
         });
         expect(trigger(html)).toContain('>heavy</span></button>');
     });

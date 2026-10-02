@@ -6,6 +6,7 @@ import { useWorkflows } from '../api/useWorkflows.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { TaskComposer, TaskComposerSkeleton } from '../panels/TaskComposer.js';
+import { composerExecutorOptions } from '../workspace/executors.js';
 import { useTasksPage } from './TasksLayout.js';
 
 /**
@@ -72,7 +73,11 @@ export function TaskComposerPage() {
                     repos={workspace.data?.repos.map(({ owner, name }) => ({ owner, name })) ?? null}
                     workspaceError={workspace.error}
                     onRetryWorkspace={workspace.refresh}
-                    executors={workspace.data?.executors ?? []}
+                    executors={composerExecutorOptions(
+                        workspace.data?.executors ?? [],
+                        workspace.data?.orgExecutors ?? []
+                    )}
+                    defaultExecutor={workspace.data?.defaultExecutor ?? null}
                     // Passed through as-is: null while the list is pending or from another context,
                     // and the composer hides the workflow selector for exactly that duration.
                     workflows={workflows.workflows}

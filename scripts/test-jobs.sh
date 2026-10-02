@@ -124,11 +124,11 @@ expect_contains() { # expect_contains <name> <haystack> <needle>
     esac
 }
 
-create_job() { # create_job <command> [executor] -> id, recorded in $work/created-jobs for teardown
+create_job() { # create_job <command> [executor] [scope] -> id, recorded in $work/created-jobs for teardown
     local id payload
     # One node call builds the whole body. Two `$(node -e '…')` spliced into an escaped JSON string
     # inside nested "$( … )" is a quoting shape macOS's bash 3.2 mis-parses into an invalid body.
-    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: process.argv[2] }))' "$1" "${2:-claude}")"
+    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: process.argv[2], ...(process.argv[3] ? { executorScope: process.argv[3] } : {}) }))' "$1" "${2:-claude}" "${3:-}")"
     id="$(field "$(body "$(api POST /api/jobs "$payload")")" id)"
     # A file, not a variable: every caller captures this function's output by command substitution,
     # which runs it in a subshell — an assignment here would be thrown away.
@@ -202,7 +202,7 @@ echo 'building the stub runner images'
 # contract a real model honours by emitting the marker last), and the one-line `echo "$@"` puts
 # the driver's `--session-id <uuid> -p` flags ahead of the prompt on that line, so every marker
 # edge missed and the stub-walk graph stalled after its first review round.
-printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' >"$work/Dockerfile.ok"
+printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' >"$work/Dockerfile.ok"
 printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo boom >&2; exit 3"]\n' >"$work/Dockerfile.fail"
 docker build -q -t "$IMAGE_OK" -f "$work/Dockerfile.ok" "$work" >/dev/null &&
     docker build -q -t "$IMAGE_FAIL" -f "$work/Dockerfile.fail" "$work" >/dev/null || {
@@ -276,13 +276,26 @@ done
     tail -20 "$work/server.log"
     exit 1
 }
-docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow' >/dev/null 2>&1 || {
-    echo 'test-jobs: could not truncate job, workflow'
+# job_artifact (046) references job, so it truncates with it.
+docker compose exec -T timescale psql -U factory -d "$DB" -c 'truncate job, workflow, job_artifact' >/dev/null 2>&1 || {
+    echo 'test-jobs: could not truncate job, workflow, job_artifact'
     exit 1
 }
 
 expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/executors \
     '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+
+# Organization-scoped executor profiles (issue 391). AUTH_MODE=none's stand-in account is the
+# seeded admin, so the create is allowed; the org config marker is what tells the run's output
+# apart from any personal row's — the personal list carries only empty configs. The name carries
+# a per-run suffix: the lane may run against a reused database, and a name is unique per scope.
+ORG_EXECUTOR="team-$(openssl rand -hex 3)"
+expect_status 'stores an org executor as the admin' 201 POST /api/org/executors \
+    "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{\"model\":\"org-team-model\"}}"
+expect_status 'refuses a duplicate org name'        409 POST /api/org/executors \
+    "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{}}"
+expect_status 'a scope outside the pair is refused' 400 POST /api/jobs \
+    "{\"command\":\"x\",\"executor\":\"$ORG_EXECUTOR\",\"executorScope\":\"repo\"}"
 
 expect_status 'health answers'            200 GET /api/health
 expect_status 'refuses an empty command'  400 POST /api/jobs '{"command":""}'
@@ -500,6 +513,15 @@ oc_body="$(body "$(api GET "/api/jobs/$oc")")"
 # headless form is `run --agent factory <prompt>`.
 expect_contains 'the opencode argv reached it' "$(field "$oc_body" output)" 'run --agent factory opencode prompt'
 expect_field    'no session was reported'      "$oc_body" sessionId ''
+
+# The org scope, end to end: the task stamps `executorScope: 'org'`, the claim resolves the ORG
+# row, and its configuration reaches the container — the marker in the output is the org profile's
+# `model`, which no personal row carries (issue 391).
+org_job="$(create_job 'org prompt' "$ORG_EXECUTOR" org)"
+expect_contains 'an org-scoped task runs' "$(await_settled "$org_job")" succeeded
+org_body="$(body "$(api GET "/api/jobs/$org_job")")"
+expect_contains 'the org config reached the runner' "$(field "$org_body" output)" 'org-team-model'
+expect_field    'the org scope is stamped'          "$org_body" executorScope org
 
 stop_driver
 

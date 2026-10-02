@@ -19,7 +19,7 @@ import {
     toggleDefaultStep,
     valuesForWorkflow,
 } from './task-composer.js';
-import { defaultExecutorName } from './workspace/executors.js';
+import { selectionExists, type ComposerExecutorOption, type ExecutorChoice } from './workspace/executors.js';
 
 /** One workflow choice as the composer's props hand it in — the shape `TaskComposer`'s
  * `workflows` prop carries, named so the draft can declare it without repeating it. */
@@ -31,7 +31,8 @@ export interface ComposerWorkflowOption {
 }
 
 type Repos = readonly { owner: string; name: string }[] | null;
-type Executors = readonly { name: string; type: string; isDefault?: boolean }[];
+/** The combined options, both scopes, as `composerExecutorOptions` builds them. */
+type Executors = readonly ComposerExecutorOption[];
 type Workflows = readonly ComposerWorkflowOption[] | null;
 type Update = (patch: Partial<ComposerDraftInput>) => void;
 
@@ -74,10 +75,10 @@ export interface ComposerDraft {
 function useListClamps(
     state: ComposerDraftInput,
     update: Update,
-    lists: { repos: Repos; executors: Executors; workflows: Workflows }
+    lists: { repos: Repos; executors: Executors; defaultExecutor: ExecutorChoice | null; workflows: Workflows }
 ) {
-    const { repos, executors, workflows } = lists;
-    const { repo, repoTouched, executor, workflow, workflowRepo } = state;
+    const { repos, executors, defaultExecutor, workflows } = lists;
+    const { repo, repoTouched, executor, executorScope, workflow, workflowRepo } = state;
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
     // repositories means their tasks to be stamped with one, not with nothing. Explicit `none`
@@ -89,24 +90,36 @@ function useListClamps(
         if (!repoTouched && repo === '' && repos !== null && repos.length > 0) update({ repo: firstRepo(repos) });
     }, [repos, repo, repoTouched, update]);
 
-    // The persisted default executor (issue 215), or the FIRST configured one when none is
-    // flagged, is selected when the async workspace poll lands. There is no deployment fallback:
-    // the selected profile type is the task's runner choice.
+    // The poll's resolved default (issue 391: the server's own fallback chain — the member's
+    // stored preference, else the first personal row, else the first org row) is selected when
+    // the async workspace poll lands. There is no deployment fallback: the selected profile type
+    // is the task's runner choice.
     useEffect(() => {
-        if (executor === '' && executors.length > 0) update({ executor: defaultExecutorName(executors) });
-    }, [executors, executor, update]);
-
-    // A configured executor can be deleted in Settings while a draft sits here; the select would
-    // go blank while `send` still submitted the stale name. Clamp to what exists — back to the
-    // default (or first) executor, or an explicit blocked state when the list is empty. Only
-    // against an ANSWERED list: the executors ride the same workspace poll as the repositories,
-    // and the empty list the page hands in while that poll is pending would clamp a restored
-    // executor away before its list could name it.
-    useEffect(() => {
-        if (repos !== null && executor !== '' && !executors.some((candidate) => candidate.name === executor)) {
-            update({ executor: defaultExecutorName(executors) });
+        if (executor === '' && defaultExecutor !== null) {
+            update({ executor: defaultExecutor.name, executorScope: defaultExecutor.scope });
         }
-    }, [repos, executors, executor, update]);
+    }, [defaultExecutor, executor, update]);
+
+    // A configured executor can be deleted — or demoted, or scope-changed — in Settings while a
+    // draft sits here; the select would go blank while `send` still submitted the stale name.
+    // Clamp to what exists — back to the resolved default, or an explicit blocked state when
+    // nothing is selectable. Only against an ANSWERED list: the executors ride the same workspace
+    // poll as the repositories, and the empty list the page hands in while that poll is pending
+    // would clamp a restored executor away before its list could name it. The clamp tests the
+    // PAIR — a personal and an org profile may share a name (issue 391).
+    useEffect(() => {
+        if (
+            repos !== null &&
+            executor !== '' &&
+            !selectionExists(executors, { name: executor, scope: executorScope })
+        ) {
+            update(
+                defaultExecutor === null
+                    ? { executor: '', executorScope: 'user' as const }
+                    : { executor: defaultExecutor.name, executorScope: defaultExecutor.scope }
+            );
+        }
+    }, [repos, executors, defaultExecutor, executor, executorScope, update]);
 
     // Same for the repository: a deselection must not survive invisibly in the draft and stamp a
     // task with a repository the member no longer works in. Clamp to what exists — the first
@@ -166,16 +179,16 @@ function useRepoReport(repo: string, onRepoChange: ((repo: string | null) => voi
  */
 function useRestoredNotices(
     restored: ComposerDraftInput | null,
-    lists: { repos: Repos; executors: Executors; workflows: Workflows }
+    lists: { repos: Repos; executors: Executors; workflows: Workflows; defaultExecutor: ExecutorChoice | null }
 ): { notices: string[]; dismiss: () => void } {
-    const { repos, executors, workflows } = lists;
+    const { repos, executors, workflows, defaultExecutor } = lists;
     // Null until the lists it is judged against have answered, then said once.
     const [notices, setNotices] = useState<string[] | null>(restored === null ? [] : null);
     useEffect(() => {
         if (restored === null || notices !== null || repos === null) return;
-        const said = restoredDraftNotices(restored, { repos, executors, workflows });
+        const said = restoredDraftNotices(restored, { repos, executors, workflows, defaultExecutor });
         if (said !== null) setNotices(said);
-    }, [restored, notices, repos, executors, workflows]);
+    }, [restored, notices, repos, executors, workflows, defaultExecutor]);
     return { notices: notices ?? [], dismiss: () => setNotices([]) };
 }
 
@@ -197,6 +210,7 @@ function queuedTask(
             command: state.draft,
             repo: state.repo === '' ? null : state.repo,
             executor: state.executor,
+            executorScope: state.executorScope,
             workflow: state.workflow === '' ? null : state.workflow,
             workflowParams: chosenParams,
         },
@@ -207,6 +221,11 @@ function queuedTask(
 export function useComposerDraft(input: {
     repos: Repos;
     executors: Executors;
+    /**
+     * The poll's resolved default executor (issue 391), from the same poll the option lists rode
+     * in on — null when nothing is selectable.
+     */
+    defaultExecutor: ExecutorChoice | null;
     workflows: Workflows;
     /**
      * The member's saved default-workflow step settings (issues 203/208), or null while they have
@@ -220,7 +239,17 @@ export function useComposerDraft(input: {
     /** The shell's held draft (F1): read once at mount, then kept in step with the state. */
     draftStore: ComposerDraftStore;
 }): ComposerDraft {
-    const { repos, executors, workflows, defaultWorkflowSettings, onRepoChange, sending, onSend, draftStore } = input;
+    const {
+        repos,
+        executors,
+        defaultExecutor,
+        workflows,
+        defaultWorkflowSettings,
+        onRepoChange,
+        sending,
+        onSend,
+        draftStore,
+    } = input;
     const { save, clear } = draftStore;
     // The draft held for this member when the composer mounted — a return from Settings — read
     // exactly once: the state starts from it, and the store follows the state after that.
@@ -236,7 +265,7 @@ export function useComposerDraft(input: {
     // untouched empty field is a hint, not a painted failure; `defaultStepOverrides` holds the
     // member's explicit inversions of the saved default-workflow steps for THIS task, so an
     // untouched checkbox keeps tracking a settings refresh live.
-    const [state, setState] = useState(() => initialComposerState(restored, { repos, executors }));
+    const [state, setState] = useState(() => initialComposerState(restored, { repos, executors, defaultExecutor }));
     const update = useCallback<Update>((patch) => setState((held) => ({ ...held, ...patch })), []);
 
     // The workflow whose inputs the composer shows: exactly the member's explicit choice, at the
@@ -250,15 +279,15 @@ export function useComposerDraft(input: {
     const workflowPending = state.workflow !== '' && workflows === null;
     const effectiveSteps = effectiveDefaultSteps(defaultWorkflowSettings, state.defaultStepOverrides);
 
-    useListClamps(state, update, { repos, executors, workflows });
+    useListClamps(state, update, { repos, executors, defaultExecutor, workflows });
     useRepoReport(state.repo, onRepoChange);
-    const { notices, dismiss } = useRestoredNotices(restored, { repos, executors, workflows });
+    const { notices, dismiss } = useRestoredNotices(restored, { repos, executors, workflows, defaultExecutor });
 
     // The store follows the draft, so a trip to Settings and back finds it as it was left. A
     // composer holding nothing a fresh one would not holds no draft at all — which is also what
     // clears the store after a launch or a discard. `fresh` is a boolean on purpose: the page
     // hands in new list arrays on every render, and a dependency on them would save forever.
-    const fresh = draftIsFresh(state, { repos, executors });
+    const fresh = draftIsFresh(state, { repos, executors, defaultExecutor });
     useEffect(() => {
         if (fresh) clear();
         else save(state);
@@ -266,7 +295,7 @@ export function useComposerDraft(input: {
 
     /** Back to exactly what a fresh mount would show; the sync above then holds no draft. */
     const discard = () => {
-        setState(initialComposerState(null, { repos, executors }));
+        setState(initialComposerState(null, { repos, executors, defaultExecutor }));
         clear();
     };
 

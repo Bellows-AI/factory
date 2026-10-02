@@ -1,4 +1,5 @@
 import { type ReactNode, createContext, useCallback, useContext, useMemo, useReducer } from 'react';
+import type { ExecutorScope } from '@factory-ai/core';
 import type { Session } from './api/useSession.js';
 import type { DefaultStepOverrides, freshWorkflowDraft } from './task-composer.js';
 
@@ -13,6 +14,8 @@ export interface ComposerDraftState {
     owner: string;
     draft: string;
     executor: string;
+    /** The scope `executor` names (issue 391): a personal and an org profile may share a name. */
+    executorScope: ExecutorScope;
     repo: string;
     repoTouched: boolean;
     workflowRepo: string;

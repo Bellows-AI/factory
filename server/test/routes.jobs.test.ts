@@ -47,7 +47,13 @@ const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 const RETRY_ID = '66666666-6666-4666-8666-666666666666';
 
 interface StoreStub extends JobStore {
-    created: { command: string; createdBy: string | null; repo: string | null; executor: string | null }[];
+    created: {
+        command: string;
+        createdBy: string | null;
+        repo: string | null;
+        executor: string | null;
+        executorScope: string | null;
+    }[];
     /** The workflow triple the create was handed, when one resolved — null when none did. */
     workflowTargets: {
         id: string | null;
@@ -182,6 +188,7 @@ function stubStore(
                 createdBy: createdBy ?? null,
                 repo: target?.repo ?? null,
                 executor: target?.executor ?? null,
+                executorScope: target?.executorScope ?? null,
             });
             if (target?.workflow) stub.workflowTargets.push(target.workflow);
             stub.commands.push(command);
@@ -455,7 +462,13 @@ describe('POST /api/jobs', () => {
         expect(response.statusCode).toBe(201);
         expect(response.json()).toEqual({ id: ID, status: 'queued' });
         expect(store.created).toEqual([
-            { command: 'claude -p "fix the build"', createdBy: null, repo: 'acme/web', executor: 'main' },
+            {
+                command: 'claude -p "fix the build"',
+                createdBy: null,
+                repo: 'acme/web',
+                executor: 'main',
+                executorScope: 'user',
+            },
         ]);
     });
 
@@ -466,7 +479,9 @@ describe('POST /api/jobs', () => {
         const response = await post(instance, '/api/jobs', { command: 'echo hi' });
 
         expect(response.statusCode).toBe(201);
-        expect(store.created).toEqual([{ command: 'echo hi', createdBy: null, repo: null, executor: null }]);
+        expect(store.created).toEqual([
+            { command: 'echo hi', createdBy: null, repo: null, executor: null, executorScope: 'user' },
+        ]);
     });
 
     // Absent and explicit null are the same "not given" — JSON null is what a client that clears
@@ -482,7 +497,41 @@ describe('POST /api/jobs', () => {
         });
 
         expect(response.statusCode).toBe(201);
-        expect(store.created).toEqual([{ command: 'echo hi', createdBy: null, repo: null, executor: null }]);
+        expect(store.created).toEqual([
+            { command: 'echo hi', createdBy: null, repo: null, executor: null, executorScope: 'user' },
+        ]);
+    });
+
+    it('stamps the organization scope beside the executor label (issue 391)', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', {
+            command: 'echo hi',
+            executor: 'team-runner',
+            executorScope: 'org',
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.created).toEqual([
+            {
+                command: 'echo hi',
+                createdBy: null,
+                repo: null,
+                executor: 'team-runner',
+                executorScope: 'org',
+            },
+        ]);
+    });
+
+    it.each([
+        ['a scope outside the pair', 'repo'],
+        ['a non-string scope', 7],
+    ])('refuses %s as executorScope', async (_label, executorScope) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', executor: 'x', executorScope });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_EXECUTOR_SCOPE');
     });
 
     it.each([
@@ -1928,7 +1977,15 @@ describe('lifecycle actor attribution', () => {
         const response = await postAs(instance, '/api/jobs', cookie, { command: 'echo hi' });
 
         expect(response.statusCode).toBe(201);
-        expect(store.created).toEqual([{ command: 'echo hi', createdBy: caller.user.id, repo: null, executor: null }]);
+        expect(store.created).toEqual([
+            {
+                command: 'echo hi',
+                createdBy: caller.user.id,
+                repo: null,
+                executor: null,
+                executorScope: 'user',
+            },
+        ]);
     });
 
     it('follow-up records the signed-in caller', async () => {

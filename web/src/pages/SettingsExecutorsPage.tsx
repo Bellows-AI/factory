@@ -5,24 +5,25 @@ import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
+import { OrgExecutorsSection } from '../panels/OrgExecutorsSection.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
-import { ADD_LABEL, EXECUTOR_GUIDANCE, EXECUTOR_SCOPE, withDefault } from '../workspace/executors.js';
+import { ADD_LABEL, EXECUTOR_SCOPE, mergeExecutors } from '../workspace/executors.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
- * The Executors section of the settings tree: the member's configured executors and the add/edit
- * dialog (issue 150), moved off the workspace page — executors configure what a runner runs with
- * and have nothing to do with checkouts. The page header owns the section's one action, "Add
- * executor"; the panel below is the list itself. The profile type and config together define the
- * runner selected by a task.
+ * The Executors section of the settings tree (issue 150, org scope by 391): the member's personal
+ * executors and the organization's profiles — managed by admins, selectable by every member —
+ * beside the add/edit dialog each opens. The personal surface's save is the whole-list PUT; the
+ * organization's state and CRUD live in `OrgExecutorsSection`. The profile type and config
+ * together define the runner selected by a task.
  */
 
-/** The executor dialog's state: adding, or editing the row that had this name when it opened. */
+/** The personal dialog's state: adding, or editing the row that had this name when it opened. */
 type ExecutorDialogState = { mode: 'add' } | { mode: 'edit'; name: string };
 
 export function SettingsExecutorsPage() {
-    const { workspace } = useSettingsPage();
-    const { data, loading, error, saving, saveExecutors, listExecutorConfigs } = workspace;
+    const { workspace, session } = useSettingsPage();
+    const { data, loading, error, saving, saveExecutors, setDefaultExecutor, listExecutorConfigs } = workspace;
     const [executorDialog, setExecutorDialog] = useState<ExecutorDialogState | null>(null);
     const [executorList, setExecutorList] = useState<WorkspaceExecutorFull[]>([]);
     const [executorDialogError, setExecutorDialogError] = useState<string | null>(null);
@@ -31,9 +32,9 @@ export function SettingsExecutorsPage() {
     const [savedMessage, setSavedMessage] = useState('');
 
     /**
-     * The dialog opens only with the whole list in hand — configs included, one on-demand read —
-     * because its save is a whole-list PUT and an edit cannot pre-fill without the row's config.
-     * The poll never carries configs, so it cannot serve either half.
+     * The personal dialog opens only with the whole list in hand — configs included, one on-demand
+     * read — because its save is a whole-list PUT and an edit cannot pre-fill without the row's
+     * config. The poll never carries configs, so it cannot serve either half.
      */
     const openExecutorDialog = async (editing: string | null) => {
         setExecutorDialogError(null);
@@ -54,30 +55,29 @@ export function SettingsExecutorsPage() {
         setExecutorDialog(editing === null ? { mode: 'add' } : { mode: 'edit', name: editing });
     };
 
-    /**
-     * The Make default action: re-reads the whole list with configs — the same on-demand read the
-     * dialog opens with — because the PUT this flag rides is a whole-list replace and every row's
-     * config must travel with it, not just the flagged row's name.
-     */
-    const makeDefault = async (name: string) => {
-        setExecutorDialogError(null);
-        const result = await listExecutorConfigs();
-        if (!result.ok) {
-            setExecutorDialogError(result.error);
-            return;
-        }
-        const flagged = withDefault(result.executors, name);
-        if (!flagged.ok) {
-            setExecutorDialogError(flagged.error);
-            return;
-        }
-        const message = await saveExecutors(flagged.value);
-        if (message) setExecutorDialogError(message);
+    /** The personal dialog's save: the validated row folded back into the whole-list PUT. */
+    const savePersonal = async (next: Parameters<typeof mergeExecutors>[2], editing: string | null) => {
+        const merged = mergeExecutors(executorList, editing, next);
+        if (!merged.ok) return merged.error;
+        return saveExecutors(merged.value);
     };
 
+    /**
+     * The Make default action (issue 391): a per-member preference naming this row's scope — the
+     * whole-list PUT the old flag rode is gone. Either scope routes through this one writer.
+     */
+    const makeDefault = async (scope: 'user' | 'org', name: string): Promise<string | null> => {
+        setExecutorDialogError(null);
+        return setDefaultExecutor(scope, name);
+    };
+
+    /** The personal panel's write, with the failure surfaced on the page's shared error line. */
+    const makePersonalDefault = (name: string) =>
+        void makeDefault('user', name).then((m) => m && setExecutorDialogError(m));
+
     // A deliberate configuration, not a failure (same posture as the workspace page): with no
-    // root the executor routes answer 409 WORKSPACE_DISABLED, so the page refuses before any
-    // dialog — the action simply never renders, and the sentence points at workspace setup.
+    // root the personal executor routes answer 409 WORKSPACE_DISABLED, so the page refuses before
+    // any dialog — the action simply never renders, and the sentence points at workspace setup.
     const noRoot = data !== null && data.root === null;
 
     if (loading && !data) {
@@ -113,24 +113,32 @@ export function SettingsExecutorsPage() {
             {/* Requiring `data` keeps the failed-poll state honest: with no response there is no
                 list to reason about, and the empty sentence beside the error would claim
                 "nothing configured" as a fact about the workspace rather than the request. */}
-            {data && noRoot ? (
+            {data ? (
                 <>
-                    <WorkspaceRootBanner>
-                        Personal executors are unavailable because this deployment has no workspace root. Tasks cannot
-                        run until <Link to="/settings/workspace">workspace setup</Link> is complete.
-                    </WorkspaceRootBanner>
-                    <section className="panel">
-                        <h2>My workspace</h2>
-                        <p className="muted">{EXECUTOR_GUIDANCE}</p>
-                    </section>
+                    {noRoot ? (
+                        <WorkspaceRootBanner>
+                            Personal executors are unavailable because this deployment has no workspace root. Tasks
+                            cannot run until <Link to="/settings/workspace">workspace setup</Link> is complete.
+                        </WorkspaceRootBanner>
+                    ) : (
+                        <WorkspaceExecutorsPanel
+                            executors={data.executors}
+                            defaultExecutor={data.defaultExecutor ?? null}
+                            onEdit={(name) => void openExecutorDialog(name)}
+                            onMakeDefault={makePersonalDefault}
+                            saving={saving}
+                        />
+                    )}
+                    <OrgExecutorsSection
+                        executors={data.orgExecutors ?? []}
+                        session={session}
+                        saving={saving}
+                        onError={setExecutorDialogError}
+                        onSaved={setSavedMessage}
+                        defaultExecutor={data.defaultExecutor ?? null}
+                        onMakeDefault={makeDefault}
+                    />
                 </>
-            ) : data ? (
-                <WorkspaceExecutorsPanel
-                    executors={data.executors}
-                    onEdit={(name) => void openExecutorDialog(name)}
-                    onMakeDefault={(name) => void makeDefault(name)}
-                    saving={saving}
-                />
             ) : null}
 
             {executorDialogError ? <p className="status">{executorDialogError}</p> : null}
@@ -139,7 +147,7 @@ export function SettingsExecutorsPage() {
                 existing={executorList}
                 editing={executorDialog?.mode === 'edit' ? executorDialog.name : null}
                 onClose={() => setExecutorDialog(null)}
-                onSave={saveExecutors}
+                onSave={savePersonal}
                 onSaved={setSavedMessage}
                 saving={saving}
             />

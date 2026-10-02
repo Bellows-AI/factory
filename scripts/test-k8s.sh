@@ -827,7 +827,7 @@ npm run build -w core >/dev/null 2>&1 && npm run build -w server >/dev/null 2>&1
 echo 'building the images on the host daemon'
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >/dev/null &&
     docker build -f docker/driver.Dockerfile -q -t "$DRIVER_IMAGE" . >/dev/null &&
-    printf 'FROM alpine:3\nENTRYPOINT ["echo"]\n' >"$work/stub.Dockerfile" &&
+    printf 'FROM alpine:3\nENTRYPOINT ["sh","-c","echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\""]\n' >"$work/stub.Dockerfile" &&
     docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work" >/dev/null &&
     docker pull -q "$COLLECTOR_IMAGE" >/dev/null 2>&1 || {
     echo 'test-k8s: image build or pull failed'
@@ -989,6 +989,22 @@ done
 [ -n "$configured" ] && ok 'the board stores the task executor' ||
     bad 'the board stores the task executor' 'PUT /api/workspace/executors never answered 200'
 
+# The organization-scope leg (issue 391): an org profile seeded straight into the table — the
+# admin-created shape, with this lane's member only ever a selector — and a task stamped
+# `executorScope: 'org'`. The stub prints the claude config content, so the org model marker in
+# the output is the proof the claim resolved the ORG row: the member's personal list is empty.
+org_seeded="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-timescale" -- \
+    psql -q -v ON_ERROR_STOP=1 -v "member=$member" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+insert into executor_profile (org_id, user_id, name, type, config)
+select id, null, 'team', 'claude-code', '{"model":"org-team-model"}'::jsonb from organization where id = :'member';
+SQL
+)" && ok 'an org executor profile is seeded' || {
+    bad 'an org executor profile is seeded' "$org_seeded"
+    give_up
+}
+ORG_BODY='{"command":"hello from the org scope","executor":"team","executorScope":"org"}'
+
 # The wait above covers the cold case (database image still pulling); this poll covers the
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
 # still land inside it. The server adopts the database on the attempt that works; the script
@@ -1064,6 +1080,49 @@ fetch(process.argv[1], { headers })
 done
 expect_contains 'the job ran to completion' "$result" 'succeeded'
 expect_contains 'the prompt reached the pod' "$result" 'hello from the cluster'
+
+# The organization-scope run (issue 391), the kubernetes counterpart of test-jobs.sh's leg: the
+# task stamps `executorScope: 'org'`, the claim resolves the ORG row seeded above, and the stub's
+# config echo carries the org model marker no personal row on this board could produce.
+org_id=""
+for _ in $(seq 1 60); do
+    response="$(node -e "$JS_HEADERS"'
+const [url, body] = process.argv.slice(2);
+fetch(url, { method: "POST", headers, body })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status + "|" + String(b.id ?? "")); })
+    .catch(() => process.stdout.write("000|"));
+' "$BASE/api/jobs" "$ORG_BODY")"
+    status="${response%%|*}"
+    org_id="${response#*|}"
+    case "$status" in
+    000 | 5*) sleep 1 ;;
+    201) break ;;
+    *) break ;;
+    esac
+done
+case "$org_id" in
+*-*) ok 'an org-scoped job was queued' ;;
+*) bad 'an org-scoped job was queued' "no id came back (last status: ${status:-none})"
+    give_up
+    ;;
+esac
+org_result=""
+for _ in $(seq 1 120); do
+    org_result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.executorScope ?? "") + "\t" + String(j.output ?? "")); })
+    .catch(() => process.stdout.write("queued\t\t"));
+' "$BASE/api/jobs/$org_id")"
+    case "$org_result" in
+    queued* | running*) sleep 1 ;;
+    *) break ;;
+    esac
+done
+expect_contains 'the org-scoped job ran to completion' "$org_result" 'succeeded'
+# The read model's second tab field is the stamped scope: matched strictly, because the output
+# itself is full of the substring "org" (the prompt, the marker).
+expect_contains 'the org scope is stamped on the read' "$org_result" "$(printf 'succeeded\torg\t')"
+expect_contains 'the org config reached the pod' "$org_result" 'org-team-model'
 
 # The runner object the executor created — the thing only kubernetes could prove. Found by the
 # factory.job label the spec stamps on it (the release labels belong to the chart's objects).

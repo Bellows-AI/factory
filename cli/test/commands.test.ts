@@ -110,6 +110,44 @@ describe('factory job create', () => {
         expect(err.join('')).toContain('usage:');
         expect(calls).toHaveLength(0);
     });
+
+    it('rides the executor scope the flag names into the body (issue 391)', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        const code = await run(
+            ['job', 'create', '--executor', 'team-runner', '--executor-scope', 'org', '--', 'npm test'],
+            io
+        );
+
+        expect(code).toBe(0);
+        expect(calls[0]!.body).toEqual({
+            command: 'npm test',
+            executor: 'team-runner',
+            executorScope: 'org',
+        });
+    });
+
+    it('sends no scope when the flag is absent — the board defaults to personal', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        const code = await run(['job', 'create', '--executor', 'main', '--', 'npm test'], io);
+
+        expect(code).toBe(0);
+        expect(calls[0]!.body).toEqual({ command: 'npm test', executor: 'main' });
+    });
+
+    it('refuses a scope outside user|org as a usage error, before any request', async () => {
+        const { err, calls, io } = harness(ENV, () => json({}));
+
+        const code = await run(
+            ['job', 'create', '--executor', 'main', '--executor-scope', 'repo', '--', 'npm test'],
+            io
+        );
+
+        expect(code).toBe(2);
+        expect(err.join('')).toContain('--executor-scope');
+        expect(calls).toHaveLength(0);
+    });
 });
 
 describe('factory job list', () => {

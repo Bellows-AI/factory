@@ -13,6 +13,7 @@
  * extra namespacing required.
  */
 import type { Sql, TransactionSql } from 'postgres';
+import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
 import type { JobStorePrs } from '../job-store-types.js';
 import { insertWorkflowSuccessor } from '../job-store-rows.js';
 import type { BlockConfigValue, WorkflowNode } from '../workflow-schema.js';
@@ -74,6 +75,7 @@ export interface PendingSuccessor {
     parentJobId: string;
     repo: string | null;
     executor: string | null;
+    executorScope: ExecutorScope;
     sessionId: string | null;
     workflowNode: string;
     command: string;
@@ -127,6 +129,7 @@ export async function enterRuntimeBoundary(
                 repo = ${publication.repo}, pr_number = ${publication.prNumber},
                 command = ${successor.command}, session_id = ${successor.sessionId},
                 job_repo = ${successor.repo}, executor = ${successor.executor},
+                executor_scope = ${successor.executorScope},
                 parent_job_id = ${successor.parentJobId}, parked_at = now()
             where org_id = ${successor.orgId} and root_job_id = ${successor.rootJobId}
               and workflow_node = ${successor.workflowNode} and round = ${parked.round}
@@ -142,12 +145,12 @@ export async function enterRuntimeBoundary(
     await tx`
         insert into workflow_round (
             org_id, root_job_id, workflow_node, round, repo, pr_number,
-            command, session_id, job_repo, executor, parent_job_id
+            command, session_id, job_repo, executor, executor_scope, parent_job_id
         ) values (
             ${successor.orgId}, ${successor.rootJobId}, ${successor.workflowNode}, ${round},
             ${publication.repo}, ${publication.prNumber},
             ${successor.command}, ${successor.sessionId}, ${successor.repo}, ${successor.executor},
-            ${successor.parentJobId}
+            ${successor.executorScope}, ${successor.parentJobId}
         )
     `;
 }
@@ -161,6 +164,7 @@ interface RoundRow {
     session_id: string | null;
     job_repo: string | null;
     executor: string | null;
+    executor_scope: string | null;
     parent_job_id: string;
 }
 
@@ -206,7 +210,7 @@ export async function wakeOneRound(
         if (active?.any) return null;
 
         const [round] = await tx<RoundRow[]>`
-            select workflow_node, command, session_id, job_repo, executor, parent_job_id
+            select workflow_node, command, session_id, job_repo, executor, executor_scope, parent_job_id
             from workflow_round
             where org_id = ${orgId} and root_job_id = ${rootJobId}
               and workflow_node = ${workflowNode} and woken_at is null
@@ -255,6 +259,7 @@ async function insertWakeContinuation(
         createdBy: root.created_by,
         repo: round.job_repo,
         executor: round.executor,
+        executorScope: (round.executor_scope ?? USER_SCOPE) as ExecutorScope,
         parentJobId: round.parent_job_id,
         sessionId: round.session_id,
         rootJobId: ctx.rootJobId,
