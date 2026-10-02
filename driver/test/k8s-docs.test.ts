@@ -87,6 +87,17 @@ describe('the executor isolation record (#382)', () => {
         expect(securityDocs).toContain('required by admission');
     });
 
+    // The table is the part a reviewer reads instead of the section below it, so it has to carry
+    // the one exception itself. An unqualified "with no switch to turn it off" over a row that a
+    // declared service CAN turn off is the exact overstatement the opt-out subsection then
+    // contradicts.
+    it('qualifies the capability row in the control table rather than claiming it is unconditional', () => {
+        const table = prose(securityDocs);
+        expect(table).not.toContain('on every pod and every container, with no switch to turn it off');
+        expect(table).toContain('| No capabilities | `capabilities.drop: [ALL]` unless `unhardened: true`');
+        expect(table).toContain('`--cap-drop ALL` unless `unhardened: true` |');
+    });
+
     it('states that the declared-service opt-out reaches the capabilities and nothing else', () => {
         expect(securityDocs).toContain('unhardened: true');
         expect(securityDocs).toContain('escalation bit stays off');
@@ -107,8 +118,9 @@ describe('the executor isolation record (#382)', () => {
         expect(kubernetesDocs).toContain('A CNI that enforces NetworkPolicy');
         expect(kubernetesDocs).toContain('ValidatingAdmissionPolicy, Kubernetes ≥ 1.30');
         expect(kubernetesDocs).toContain('httpPutResponseHopLimit');
-        // The IP family: documented as a limit, since only IPv4 rules exist.
-        expect(kubernetesDocs).toContain('dual-stack cluster is not covered');
+        // The IP family: documented as a limit, since only IPv4 rules exist. The IPv4 rules still
+        // cover IPv4 on a dual-stack cluster; what is missing there is the IPv6 half.
+        expect(kubernetesDocs).toContain('IPv6 egress is not covered');
     });
 
     it('names each residual rather than leaving it to be discovered', () => {

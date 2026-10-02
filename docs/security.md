@@ -163,11 +163,12 @@ repository's scripts, every gate, every block helper, and every image a `.bellow
 a service. None of it was written by this project, and the boundary has to hold whether the code
 inside is hostile or merely careless.
 
-**What is enforced, on every pod and every container, with no switch to turn it off:**
+**What is enforced on every pod and every container. Only the capability drop has a switch, and
+only a declared service may reach it:**
 
 | Control | Kubernetes | Docker |
 | --- | --- | --- |
-| No capabilities | `capabilities.drop: [ALL]` | `--cap-drop ALL` |
+| No capabilities | `capabilities.drop: [ALL]` unless `unhardened: true` | `--cap-drop ALL` unless `unhardened: true` |
 | No privilege escalation | `allowPrivilegeEscalation: false` | `--security-opt no-new-privileges` |
 | Syscall filter | `seccompProfile: RuntimeDefault` (pod level) | the daemon's default profile, applied unless told otherwise |
 | No cluster credential | `automountServiceAccountToken: false` | no socket, no credential |

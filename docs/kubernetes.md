@@ -700,8 +700,11 @@ install succeeds, and the isolation story reads as enforced:
   enforces. `httpPutResponseHopLimit: 1` on the runner node group is the defence that does not
   depend on the CNI being right.
 - **IPv4.** Every rule in the runner policy is written for IPv4 — the egress rule names
-  `0.0.0.0/0`. **An IPv6 or dual-stack cluster is not covered by the egress rules at all** and
-  must add its own policy. This is a stated limit, not a defect to be discovered.
+  `0.0.0.0/0`, which covers IPv4 egress and only IPv4 egress. On a dual-stack cluster those rules
+  still hold for IPv4; what is missing is the other family — **IPv6 egress is not covered by the
+  runner policy at all**, so a dual-stack or IPv6-only cluster must add its own IPv6 rules
+  (a `::/0` egress rule and the IPv6 forms of `blockedCidrs`/`allowedCidrs`) or the runner's IPv6
+  path is unrestricted. This is a stated limit, not a defect to be discovered.
 
 **An unsupported configuration must not be read as a sandbox.** If the CNI does not enforce, the
 network half of this section is decoration; if admission is unavailable, the pod half rests
