@@ -504,6 +504,24 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         }
     });
 
+    it('keeps the narrow-width card reflow on the spacing scale (#411)', () => {
+        // The card is new, so every space it sets comes from the one scale — 4, 8, 12, 16, 24,
+        // 32, 48px — rather than a value picked to look right at one width.
+        const SCALE = [0, 4, 8, 12, 16, 24, 32, 48];
+        const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
+        const offScale = rules(css)
+            .filter(([prelude]) => prelude.includes('table-cards'))
+            .flatMap(([prelude, body]) =>
+                [...body.matchAll(/(?:padding|margin)[a-z-]*:([^;]+);/g)].flatMap((decl) =>
+                    [...decl[1]!.matchAll(/(\d+(?:\.\d+)?)px/g)]
+                        .map((pixels) => Number(pixels[1]))
+                        .filter((pixels) => !SCALE.includes(pixels))
+                        .map((pixels) => `${prelude} { ${decl[0]!.trim()} } is ${pixels}px`)
+                )
+            );
+        expect(offScale).toEqual([]);
+    });
+
     it('bootstraps the theme before paint with no inline or remote script (CSP: script-src self)', () => {
         const html = readFileSync(join(webSrc, '..', 'index.html'), 'utf8');
         // The external same-origin bootstrap must execute before the application entry, so the
