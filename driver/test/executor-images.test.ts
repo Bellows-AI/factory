@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 /*
  * The executor images carry the branch reporter — the in-container twin of
@@ -230,11 +230,21 @@ const STUB = `#!/bin/sh
 # marker), records that it started, then blocks in the wait builtin, which a trap interrupts
 # at once, where a foreground sleep would defer it. Without a signal it exits with STUB_STATUS
 # after STUB_SLEEP seconds.
-trap 'echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
+# The trap kills AND REAPS the sleep it is interrupting: exiting straight out of it would
+# orphan a process that outlives the whole suite by STUB_SLEEP seconds, and killing without
+# waiting would leave a zombie that is still signalable. The marker is written after the
+# wait, so a test that sees the marker knows the sleep is gone.
+# The guard covers a TERM landing before the sleep exists (STUB_SETTLE): an unset pid would
+# make kill and wait no-ops anyway, and an empty "$VAR" is an argument, not nothing.
+trap '[ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null && wait "$SLEEP_PID" 2>/dev/null; echo "$$" > "$STUB_DIR/signaled"; exit 143' TERM
 sleep "\${STUB_SETTLE:-0}"
-echo started > "$STUB_DIR/started"
 sleep "\${STUB_SLEEP:-0}" &
-wait "$!"
+SLEEP_PID=$!
+# The readiness marker goes LAST, so a test that waits for it can read every file written
+# above: written first, a TERM landing in the gap leaves the pid file absent.
+echo "$SLEEP_PID" > "$STUB_DIR/sleep-pid"
+echo started > "$STUB_DIR/started"
+wait "$SLEEP_PID"
 exit "\${STUB_STATUS:-0}"
 `;
 
@@ -266,8 +276,21 @@ const CONTAINER_GUARD_NAMES = [
     'XDG_DATA_HOME',
     'DEFAULT_BRANCH',
 ];
-const EXIT_TIMEOUT_MS = 10_000;
-const STARTED_TIMEOUT_MS = 5_000;
+// Budgets for the cases below that run a real entrypoint under /bin/sh. One such run boots four
+// node processes serially plus a git or two; the original 10s/5s were measured on an idle box and
+// expired under the contention of a full run while passing in the next (issue #403). These are the
+// same kind of per-spawn allowance core/test/biome.test.ts carries, and well under its 300s. They
+// bound a hang, not a slow machine: a case that genuinely needs this much is a stall to report,
+// not a budget to raise again.
+const EXIT_TIMEOUT_MS = 60_000;
+const STARTED_TIMEOUT_MS = 30_000;
+/** Vitest's own budget for a spawning case. The forwarding case spends BOTH child budgets in
+ * sequence — the readiness wait, then the exit wait — so it is their sum plus room for the
+ * sandbox and the git fixtures: their diagnostic must print before vitest's generic timeout. */
+const CASE_TIMEOUT_MS = STARTED_TIMEOUT_MS + EXIT_TIMEOUT_MS + 30_000;
+/** The TERM-proof stub's sleep. Must outlast EXIT_TIMEOUT_MS, or the forwarding case proves
+ * nothing: an unforwarded TERM would let the stub finish inside the budget on its own. */
+const TERM_PROOF_SLEEP_S = (EXIT_TIMEOUT_MS / 1000) * 3;
 /** The stub CLI's own chosen exit status, for the "re-raises it" assertion. */
 const STUB_EXIT_CODE = 7;
 /** A signal death's exit status: 128 + the signal number (SIGTERM is 15). */
@@ -326,16 +349,45 @@ const makeSandbox = (): Sandbox => {
     };
 };
 
+// detached: the shell leads its own process group, so a timeout can kill the whole tree rather
+// than leave a node or a sleep behind to starve the next case. It stays PID-1-shaped: a kill
+// aimed at the child still reaches only the shell, which is what the forwarding case asserts.
+const killGroup = (child: ReturnType<typeof spawn>) => {
+    try {
+        process.kill(-child.pid!, 'SIGKILL');
+    } catch {
+        // Already gone, or never grouped — nothing left to reap either way.
+    }
+};
+
+// Every detached spawn is registered here and killed after its case, however the case ended. A
+// detached child is a session leader: it survives the group kill that takes the vitest run down,
+// so an assertion that throws between the spawn and the exit would otherwise leave a shell and a
+// TERM_PROOF_SLEEP_S-long sleep behind to starve the next case — the very thing this file is
+// being fixed for.
+const spawned: ReturnType<typeof spawn>[] = [];
+
+const spawnDetached = (args: string[], env: NodeJS.ProcessEnv) => {
+    const child = spawn('/bin/sh', args, { env, stdio: 'ignore', detached: true });
+    spawned.push(child);
+    return child;
+};
+
+afterEach(() => {
+    // Only what is still running: a reaped child's pid is free, and on a box recycling pids
+    // under this suite's own load the group kill would land on a stranger.
+    for (const child of spawned.splice(0)) {
+        if (child.exitCode === null && child.signalCode === null) killGroup(child);
+    }
+});
+
 const runEntrypoint = (entrypoint: string, sandbox: Sandbox, stubEnv: Record<string, string>) =>
-    spawn('/bin/sh', [join(ROOT, entrypoint), '-p', 'test run'], {
-        env: { ...sandbox.env, ...stubEnv },
-        stdio: 'ignore',
-    });
+    spawnDetached([join(ROOT, entrypoint), '-p', 'test run'], { ...sandbox.env, ...stubEnv });
 
 const whenExited = (child: ReturnType<typeof spawn>, ms: number): Promise<number | null> =>
     new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
-            child.kill('SIGKILL');
+            killGroup(child);
             reject(new Error(`entrypoint did not exit within ${ms}ms — a child was never reaped`));
         }, ms);
         child.once('exit', (code) => {
@@ -361,38 +413,53 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
     it.each([
         ['docker/claude-executor/entrypoint.sh', 'claude'],
         ['docker/opencode-executor/entrypoint.sh', 'opencode'],
-    ])('%s re-raises the CLI’s own chosen exit status', async (entrypoint) => {
-        const sandbox = makeSandbox();
-        try {
-            const child = runEntrypoint(entrypoint, sandbox, { STUB_STATUS: String(STUB_EXIT_CODE) });
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
-        } finally {
-            sandbox.cleanup();
-        }
-    });
+    ])(
+        '%s re-raises the CLI’s own chosen exit status',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runEntrypoint(entrypoint, sandbox, { STUB_STATUS: String(STUB_EXIT_CODE) });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
 
     it.each([
         ['docker/claude-executor/entrypoint.sh', 'claude'],
         ['docker/opencode-executor/entrypoint.sh', 'opencode'],
-    ])('%s forwards TERM to the CLI and still exits, reporter reaped', async (entrypoint) => {
-        const sandbox = makeSandbox();
-        try {
-            // Thirty seconds of stub sleep: the only way the shell can be done within the
-            // bound below is by forwarding the TERM it was sent.
-            const child = runEntrypoint(entrypoint, sandbox, { STUB_SLEEP: '30' });
-            await whenFileExists(join(sandbox.bin, 'started'), STARTED_TIMEOUT_MS);
-            child.kill('SIGTERM');
-            // 143 is the CLI's own signal death (128+TERM), re-raised by the shell — and
-            // reaching an exit at all proves the reporter was reaped: the shell would
-            // otherwise still sit in wait on it when the timeout SIGKILLs the lot.
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(TERM_DEATH_EXIT_CODE);
-            // The substance: the marker is written by the STUB's own trap, so it exists only
-            // if the signal truly reached the CLI rather than the shell merely dying.
-            expect(readFileSync(join(sandbox.bin, 'signaled'), 'utf8')).toMatch(/^\d+$/m);
-        } finally {
-            sandbox.cleanup();
-        }
-    });
+    ])(
+        '%s forwards TERM to the CLI and still exits, reporter reaped',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                // A stub sleep that outlasts the bound below: the only way the shell can be done
+                // within it is by forwarding the TERM it was sent.
+                const child = runEntrypoint(entrypoint, sandbox, { STUB_SLEEP: String(TERM_PROOF_SLEEP_S) });
+                await whenFileExists(join(sandbox.bin, 'started'), STARTED_TIMEOUT_MS);
+                child.kill('SIGTERM');
+                // 143 is the CLI's own signal death (128+TERM), re-raised by the shell — and
+                // reaching an exit at all proves the reporter was reaped: the shell would
+                // otherwise still sit in wait on it when the timeout SIGKILLs the lot.
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(TERM_DEATH_EXIT_CODE);
+                // The substance: the marker is written by the STUB's own trap, so it exists only
+                // if the signal truly reached the CLI rather than the shell merely dying.
+                expect(readFileSync(join(sandbox.bin, 'signaled'), 'utf8')).toMatch(/^\d+$/m);
+                // And nothing of the CLI survives it: the stub's sleep outlasts the whole suite
+                // if the trap exits without killing it, which is how a torn-down case leaves
+                // minutes of idle processes behind for the next one to compete with.
+                const sleepPid = Number(readFileSync(join(sandbox.bin, 'sleep-pid'), 'utf8').trim());
+                expect(() => process.kill(sleepPid, 0)).toThrow(
+                    expect.objectContaining({ code: 'ESRCH' }) as unknown as Error
+                );
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
 });
 
 /*
@@ -407,54 +474,66 @@ describe('the entrypoint acli sign-in', () => {
     };
     const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
 
-    it.each(ENTRYPOINTS)('%s logs acli in with the token on stdin', async (entrypoint) => {
-        const sandbox = makeSandbox();
-        try {
-            const child = runEntrypoint(entrypoint, sandbox, ATLASSIAN_ENV);
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-            const argv = readFileSync(join(sandbox.bin, 'acli-argv'), 'utf8').trimEnd().split('\n');
-            expect(argv).toEqual([
-                'jira',
-                'auth',
-                'login',
-                '--site',
-                ATLASSIAN_ENV.ATLASSIAN_SITE,
-                '--email',
-                ATLASSIAN_ENV.ATLASSIAN_EMAIL,
-                '--token',
-            ]);
-            expect(readFileSync(join(sandbox.bin, 'acli-stdin'), 'utf8')).toBe(ATLASSIAN_ENV.ATLASSIAN_API_TOKEN);
-        } finally {
-            sandbox.cleanup();
-        }
-    });
+    it.each(ENTRYPOINTS)(
+        '%s logs acli in with the token on stdin',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runEntrypoint(entrypoint, sandbox, ATLASSIAN_ENV);
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                const argv = readFileSync(join(sandbox.bin, 'acli-argv'), 'utf8').trimEnd().split('\n');
+                expect(argv).toEqual([
+                    'jira',
+                    'auth',
+                    'login',
+                    '--site',
+                    ATLASSIAN_ENV.ATLASSIAN_SITE,
+                    '--email',
+                    ATLASSIAN_ENV.ATLASSIAN_EMAIL,
+                    '--token',
+                ]);
+                expect(readFileSync(join(sandbox.bin, 'acli-stdin'), 'utf8')).toBe(ATLASSIAN_ENV.ATLASSIAN_API_TOKEN);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
 
-    it.each(ENTRYPOINTS)('%s still runs the CLI when the sign-in fails', async (entrypoint) => {
-        const sandbox = makeSandbox();
-        try {
-            const child = runEntrypoint(entrypoint, sandbox, {
-                ...ATLASSIAN_ENV,
-                ACLI_STATUS: '1',
-                STUB_STATUS: String(STUB_EXIT_CODE),
-            });
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
-            expect(existsSync(join(sandbox.bin, 'acli-argv'))).toBe(true);
-        } finally {
-            sandbox.cleanup();
-        }
-    });
+    it.each(ENTRYPOINTS)(
+        '%s still runs the CLI when the sign-in fails',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runEntrypoint(entrypoint, sandbox, {
+                    ...ATLASSIAN_ENV,
+                    ACLI_STATUS: '1',
+                    STUB_STATUS: String(STUB_EXIT_CODE),
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
+                expect(existsSync(join(sandbox.bin, 'acli-argv'))).toBe(true);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
 
-    it.each(ENTRYPOINTS)('%s skips the sign-in unless all three names are set', async (entrypoint) => {
-        const sandbox = makeSandbox();
-        try {
-            const { ATLASSIAN_API_TOKEN: _omitted, ...partial } = ATLASSIAN_ENV;
-            const child = runEntrypoint(entrypoint, sandbox, partial);
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-            expect(existsSync(join(sandbox.bin, 'acli-argv'))).toBe(false);
-        } finally {
-            sandbox.cleanup();
-        }
-    });
+    it.each(ENTRYPOINTS)(
+        '%s skips the sign-in unless all three names are set',
+        async (entrypoint) => {
+            const sandbox = makeSandbox();
+            try {
+                const { ATLASSIAN_API_TOKEN: _omitted, ...partial } = ATLASSIAN_ENV;
+                const child = runEntrypoint(entrypoint, sandbox, partial);
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(existsSync(join(sandbox.bin, 'acli-argv'))).toBe(false);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
 });
 
 /*
@@ -473,46 +552,54 @@ describe('the claude-executor workspace trust', () => {
             projects?: Record<string, { hasTrustDialogAccepted?: boolean; allowedTools?: string[] }>;
         }) ?? {};
 
-    it('trusts the worktree and the main checkout it belongs to, keeping what was there', async () => {
-        const sandbox = makeSandbox();
-        try {
-            const repo = join(sandbox.work, 'leeloo.ai');
-            const worktree = join(sandbox.work, '.worktrees', 'root-job');
-            mkdirSync(repo);
-            git(repo, 'init', '-q');
-            git(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
-            git(repo, 'worktree', 'add', '-q', '-b', 'factory/root-job', worktree);
-            // git names the main checkout by its real path (macOS: /var is /private/var).
-            const main = realpathSync(repo);
-            const configDir = sandbox.env.CLAUDE_CONFIG_DIR!;
-            writeFileSync(
-                join(configDir, '.claude.json'),
-                JSON.stringify({ hasCompletedOnboarding: true, projects: { [main]: { allowedTools: ['Bash'] } } })
-            );
+    it(
+        'trusts the worktree and the main checkout it belongs to, keeping what was there',
+        async () => {
+            const sandbox = makeSandbox();
+            try {
+                const repo = join(sandbox.work, 'leeloo.ai');
+                const worktree = join(sandbox.work, '.worktrees', 'root-job');
+                mkdirSync(repo);
+                git(repo, 'init', '-q');
+                git(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+                git(repo, 'worktree', 'add', '-q', '-b', 'factory/root-job', worktree);
+                // git names the main checkout by its real path (macOS: /var is /private/var).
+                const main = realpathSync(repo);
+                const configDir = sandbox.env.CLAUDE_CONFIG_DIR!;
+                writeFileSync(
+                    join(configDir, '.claude.json'),
+                    JSON.stringify({ hasCompletedOnboarding: true, projects: { [main]: { allowedTools: ['Bash'] } } })
+                );
 
-            const child = runEntrypoint(ENTRYPOINT, sandbox, { WORKDIR: worktree });
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                const child = runEntrypoint(ENTRYPOINT, sandbox, { WORKDIR: worktree });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
 
-            const config = projectsOf(configDir);
-            expect(config.hasCompletedOnboarding).toBe(true);
-            expect(config.projects?.[worktree]?.hasTrustDialogAccepted).toBe(true);
-            expect(config.projects?.[main]).toEqual({ allowedTools: ['Bash'], hasTrustDialogAccepted: true });
-        } finally {
-            sandbox.cleanup();
-        }
-    });
+                const config = projectsOf(configDir);
+                expect(config.hasCompletedOnboarding).toBe(true);
+                expect(config.projects?.[worktree]?.hasTrustDialogAccepted).toBe(true);
+                expect(config.projects?.[main]).toEqual({ allowedTools: ['Bash'], hasTrustDialogAccepted: true });
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
 
-    it('trusts a plain directory that is no git checkout at all', async () => {
-        const sandbox = makeSandbox();
-        try {
-            const child = runEntrypoint(ENTRYPOINT, sandbox, {});
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-            const config = projectsOf(sandbox.env.CLAUDE_CONFIG_DIR!);
-            expect(config.projects?.[sandbox.work]?.hasTrustDialogAccepted).toBe(true);
-        } finally {
-            sandbox.cleanup();
-        }
-    });
+    it(
+        'trusts a plain directory that is no git checkout at all',
+        async () => {
+            const sandbox = makeSandbox();
+            try {
+                const child = runEntrypoint(ENTRYPOINT, sandbox, {});
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                const config = projectsOf(sandbox.env.CLAUDE_CONFIG_DIR!);
+                expect(config.projects?.[sandbox.work]?.hasTrustDialogAccepted).toBe(true);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
 });
 
 /*
@@ -838,10 +925,7 @@ describe('the opencode-executor git guard policy', () => {
             mkdirSync(config, { recursive: true });
             writeFileSync(join(config, 'opencode.json'), read(PATH));
             const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig') };
-            const child = spawn('/bin/sh', [join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run'], {
-                env,
-                stdio: 'ignore',
-            });
+            const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run'], env);
             expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
             return JSON.parse(readFileSync(join(config, 'opencode.json'), 'utf8')).permission.bash as Record<
                 string,
@@ -852,21 +936,29 @@ describe('the opencode-executor git guard policy', () => {
         }
     };
 
-    it('allows merging the origin/HEAD default when it is not main, ranked last', async () => {
-        const bash = await runWithDefault('develop');
-        const keys = Object.keys(bash);
-        expect(keys.slice(-3)).toEqual(MERGE_ALLOWS('origin/develop'));
-        for (const rule of MERGE_ALLOWS('origin/develop')) expect(bash[rule]).toBe('allow');
-        expect(bash['git merge *']).toBe('deny');
-    });
+    it(
+        'allows merging the origin/HEAD default when it is not main, ranked last',
+        async () => {
+            const bash = await runWithDefault('develop');
+            const keys = Object.keys(bash);
+            expect(keys.slice(-3)).toEqual(MERGE_ALLOWS('origin/develop'));
+            for (const rule of MERGE_ALLOWS('origin/develop')) expect(bash[rule]).toBe('allow');
+            expect(bash['git merge *']).toBe('deny');
+        },
+        CASE_TIMEOUT_MS
+    );
 
     it.each([
         ['main', 'main'],
         ['no origin/HEAD', null],
-    ])('adds nothing when the default is %s', async (_label, defaultBranch) => {
-        const bash = await runWithDefault(defaultBranch);
-        expect(bash).toEqual(JSON.parse(read(PATH)).permission.bash);
-    });
+    ])(
+        'adds nothing when the default is %s',
+        async (_label, defaultBranch) => {
+            const bash = await runWithDefault(defaultBranch);
+            expect(bash).toEqual(JSON.parse(read(PATH)).permission.bash);
+        },
+        CASE_TIMEOUT_MS
+    );
 });
 
 /*
