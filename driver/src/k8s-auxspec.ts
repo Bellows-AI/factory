@@ -1,4 +1,4 @@
-import { FLEET_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
+import { FLEET_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL, UNHARDENED_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { claimCarriesGithubToken, claimContinuesSession, workspacePath } from './claim.js';
@@ -14,7 +14,15 @@ import {
     workspaceMount,
     type AuxJobSpec,
 } from './k8s-podspec.js';
-import { doNotDisruptField, resourcesField, schedulingField, type PodResources } from './k8s-podfields.js';
+import {
+    containerHardeningField,
+    doNotDisruptField,
+    podHardeningField,
+    resourcesField,
+    schedulingField,
+    type PodResources,
+    type PodSecurityContext,
+} from './k8s-podfields.js';
 import { JOB_ID, LOG_TAIL_LINES, MS_PER_SECOND } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import {
@@ -304,6 +312,8 @@ export function servicePodSpec(
     spec: {
         restartPolicy: 'Never';
         automountServiceAccountToken: false;
+        /** The executor hardening (#382) — `podHardeningField`, always present, opt-out or not. */
+        securityContext: PodSecurityContext;
         hostname: string;
         subdomain: string;
         imagePullSecrets?: { name: string }[];
@@ -316,6 +326,11 @@ export function servicePodSpec(
             image: string;
             imagePullPolicy: string;
             resources?: PodResources;
+            /**
+             * The executor hardening (#382). Always carries `allowPrivilegeEscalation: false`;
+             * the capability drop is absent on a service that declared `unhardened: true`.
+             */
+            securityContext: { allowPrivilegeEscalation: false; capabilities?: { drop: string[] } };
             env: { name: string; value: string }[];
         }[];
     };
@@ -325,6 +340,8 @@ export function servicePodSpec(
         [LEASE_LABEL]: job.leaseToken,
         [SERVICE_LABEL]: spec.name,
         [FLEET_LABEL]: serviceSubdomain(job),
+        // The declared opt-out, surfaced to admission (#382). Absent unless the file asked.
+        ...(spec.unhardened ? { [UNHARDENED_LABEL]: 'true' } : {}),
         ...releaseLabel(config),
     };
     return {
@@ -348,6 +365,9 @@ export function servicePodSpec(
         spec: {
             restartPolicy: 'Never',
             automountServiceAccountToken: false,
+            // The seccomp profile is on every service pod, opt-out or not (#382): what breaks a
+            // stock image is the capability drop below, never the syscall filter.
+            securityContext: { ...podHardeningField() },
             // The declared name as the pod's hostname under the attempt's subdomain: the DNS
             // record the runner's and gates' search domain resolves `db` to (serviceSubdomain).
             // The bellows parser constrains names to lowercase DNS labels, so it is legal as-is.
@@ -361,6 +381,14 @@ export function servicePodSpec(
                     image: spec.image,
                     imagePullPolicy: config.imagePullPolicy,
                     ...resourcesField(config),
+                    // The opt-out's whole reach (#382): a service that declared `unhardened: true`
+                    // keeps the image's default capability set, because a root entrypoint that
+                    // chowns its data directory needs CHOWN/DAC_OVERRIDE/FOWNER back. It does not
+                    // need to ESCALATE to do that, so that bit stays off either way — the drop is
+                    // the only half a stock image trips over.
+                    securityContext: spec.unhardened
+                        ? { allowPrivilegeEscalation: false }
+                        : containerHardeningField().securityContext,
                     env: spec.environment.map(({ key, value }) => {
                         if (!SERVICE_ENV_KEY.test(key)) {
                             throw new Error(

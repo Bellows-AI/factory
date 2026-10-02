@@ -20,7 +20,16 @@ import {
 } from './container-scripts.js';
 import { ARTIFACT_LIMIT, type RunSession } from './runner.js';
 import { JOB_ID, MS_PER_SECOND, TTL_SECONDS } from './k8s-transport.js';
-import { doNotDisruptField, resourcesField, schedulingField, type PodResources } from './k8s-podfields.js';
+import {
+    containerHardeningField,
+    doNotDisruptField,
+    podHardeningField,
+    resourcesField,
+    schedulingField,
+    type ContainerSecurityContext,
+    type PodResources,
+    type PodSecurityContext,
+} from './k8s-podfields.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 import { assertedWorkspacePath, bellowsReadEnv, bellowsReadScript } from './services.js';
@@ -67,6 +76,8 @@ export interface RunnerJobSpec {
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
+                /** The executor hardening (#382) — `podHardeningField`, always present. */
+                securityContext: PodSecurityContext;
                 imagePullSecrets?: { name: string }[];
                 dnsConfig?: FleetDnsConfig;
                 /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
@@ -78,6 +89,8 @@ export interface RunnerJobSpec {
                     image: string;
                     imagePullPolicy: string;
                     resources?: PodResources;
+                    /** The executor hardening (#382) — `containerHardeningField`, always present. */
+                    securityContext: ContainerSecurityContext;
                     env: EnvVar[];
                     args: string[];
                     volumeMounts: { name: string; mountPath: string; subPath: string }[];
@@ -242,6 +255,10 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                     // Claude container the driver's own job-creating credentials — the docker
                     // socket riding along with the dashboard, refused here for the same reason.
                     automountServiceAccountToken: false,
+                    // The agent's own commands run in this container (issue #382): the runtime's
+                    // seccomp profile over the whole pod, every capability dropped and no
+                    // escalation back out of the drop on the container below.
+                    securityContext: { ...podHardeningField() },
                     ...pullSecretsField(config),
                     ...schedulingField(config),
                     ...fleetDnsField(config, job),
@@ -258,6 +275,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             // already holds — which is how the docker runner finds it.
                             imagePullPolicy: config.imagePullPolicy,
                             ...resourcesField(config),
+                            ...containerHardeningField(),
                             env,
                             args,
                             volumeMounts: [
@@ -337,9 +355,12 @@ export interface AuxJobSpec {
             spec: {
                 restartPolicy: 'Never';
                 automountServiceAccountToken: false;
-                imagePullSecrets?: { name: string }[];
-                /** The uid:gid the gate writes the shared worktree as — GATE_UID/GATE_GID. */
-                securityContext?: { runAsUser: number; runAsGroup: number };
+                /**
+                 * The executor hardening's pod half (#382, always present) MERGED with the uid:gid
+                 * the gate writes the shared worktree as (GATE_UID/GATE_GID, gate only). One
+                 * field, two writers — see `auxJobSpec`, which spreads rather than assigns.
+                 */
+                securityContext: PodSecurityContext;
                 /** The attempt's service search domain — gate only. */
                 dnsConfig?: FleetDnsConfig;
                 /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
@@ -351,6 +372,8 @@ export interface AuxJobSpec {
                     image: string;
                     imagePullPolicy: string;
                     resources?: PodResources;
+                    /** The executor hardening (#382) — `containerHardeningField`, always present. */
+                    securityContext: ContainerSecurityContext;
                     /** One gate run: `sh -c` with the command as the single argv element. */
                     command?: string[];
                     workingDir?: string;
@@ -369,8 +392,12 @@ export interface AuxJobSpec {
     };
 }
 
-/** One aux Job's container — the part every builder below decides for itself. */
-type AuxContainer = AuxJobSpec['spec']['template']['spec']['containers'][number];
+/**
+ * One aux Job's container — the part every builder below decides for itself. The hardening
+ * (#382) is NOT part of it: `auxJobSpec` adds that to every container it builds, so a new aux Job
+ * cannot be written without it the way it could if each builder had to remember.
+ */
+type AuxContainer = Omit<AuxJobSpec['spec']['template']['spec']['containers'][number], 'securityContext'>;
 
 /** What one aux Job builder supplies beyond the skeleton every one of them shares. */
 interface AuxJobSpecInput {
@@ -431,12 +458,16 @@ export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpe
                     automountServiceAccountToken: false,
                     ...pullSecretsField(config),
                     ...schedulingField(config),
-                    ...(input.securityContext ? { securityContext: input.securityContext } : {}),
+                    // One field, two writers (#382): the hardening's seccomp profile is on every
+                    // aux Job, the uid:gid only on the gate. SPREAD, never assigned — an
+                    // assignment here drops whichever of the two was written first, and only one
+                    // of the two has a symptom anybody would notice.
+                    securityContext: { ...input.securityContext, ...podHardeningField() },
                     ...(input.dnsConfig ? { dnsConfig: input.dnsConfig } : {}),
                     // One spread covers every aux Job — the gates, the readouts, the sync, the
                     // reclaim, the publish steps, the block helpers — the same way
                     // pullSecretsField above covers their image pulls.
-                    containers: [{ ...input.container, ...resourcesField(config) }],
+                    containers: [{ ...input.container, ...resourcesField(config), ...containerHardeningField() }],
                     volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
                 },
             },

@@ -12,7 +12,7 @@ PostgreSQL, or the OTLP collector actually accepted the artifact handed to it.
 | `npm run test:coverage:executors` | The same surface with a regression threshold | 95.14% lines/statements, 89.21% branches, 96.28% functions |
 | `DATABASE_URL=…/factory_test npm run test:db` | Real lease, fencing, attribution, deduplication and rollup SQL | 308 tests |
 | `npm run test:jobs` | Real board HTTP, Docker daemon, containers and disposable database | Required before changing Docker runner behavior |
-| `npm run test:k8s` | Helm assertions, including an EKS-shaped render lane; `--cluster` adds real Jobs in kind | Required before changing Kubernetes runner behavior |
+| `npm run test:k8s` | Helm assertions, including an EKS-shaped render lane; `--cluster` adds real Jobs in kind; `--netpol` builds an enforcing-CNI cluster | Required before changing Kubernetes runner behavior |
 
 The focused coverage gate excludes `driver/src/index.ts`, content-injected scripts under
 `driver/src/scripts/`, and the Postgres telemetry store. V8 cannot attribute child-process code to
@@ -102,3 +102,54 @@ suites, per the executor-parity rule in AGENTS.md.
 - A new slow boundary test must replace a missing boundary, not repeat an already-covered branch.
 - Review the slowest-test report before deleting tests; process startup cost often points to a
   fixture optimization rather than a low-value assertion.
+
+## Executor isolation: which lane proves what (#382)
+
+Isolation is the one area where a passing test is not automatically evidence. A "denied" assertion
+run against a CNI that does not enforce NetworkPolicy passes **vacuously** — it reports success
+while proving nothing, which is worse than having no test. The lanes are therefore split by what
+they can actually establish, and each one states its own limit.
+
+| Lane | Needs | Proves |
+| --- | --- | --- |
+| `npx vitest run driver/test` | nothing | Every spec builder and every `docker run` argv carries the hardening — driven off the builder list, so a new aux Job that forgets it fails here. The `.bellows.yaml` opt-out parses, and reaches only the capability drop. |
+| `driver/test/k8s-admission.test.ts` | nothing | The admission policy *requires* the hardening, **and** the driver's own output satisfies what it requires. The second half is what keeps a policy tightened past the driver from becoming a cluster-wide outage. |
+| `bash scripts/test-k8s.sh` | helm | The rendered CEL and the port-scoped egress rules are in the manifests, in both the local and the EKS value shapes. |
+| `bash scripts/test-k8s.sh --cluster` | kind, kubectl, docker | A **real apiserver** compiles the policy and refuses a pod missing each field in turn; the labelled opt-out is admitted and still cannot escalate or go unconfined. Plus the **workspace boundary**, probed from inside a pod: traversal, absolute path, symlink-to-`/`, symlink-upward, and the volume root. |
+| `bash scripts/test-k8s.sh --netpol` | kind, kubectl, docker, **network** | The network denials, on a cluster this lane creates with kindnet disabled and Calico installed. |
+
+### Why `--netpol` owns a cluster
+
+kind's default CNI does not enforce NetworkPolicy, and `--cluster` deliberately refuses every
+context it has not fingerprinted (it deletes Jobs). Rather than weaken that guard, `--netpol`
+creates its own cluster, installs Calico, and deletes it on exit. It never touches the caller's
+current context.
+
+It also runs an **honest-probe control on every denial target, not just one**: each target is
+probed before the policy is applied and must answer `reachable` there, and the same target must
+answer `denied` after. An address nothing listens on would answer `denied` either way, so the lane
+would report a pass having proved nothing — which is why each target is a real listener: the
+unrelated pod on two ports, the apiserver ClusterIP, the kubelet, a `hostNetwork` pod bound to a
+high port on the node's own address, and the dashboard's non-serving port (the one the port
+scoping is actually about, so it is the last one that may be asserted standalone). A target that is already unreachable before the policy fails the lane
+loudly rather than passing quietly.
+
+This is the one lane that needs the network: Calico's manifest and the probe image are pulled.
+
+### What no lane covers
+
+- **IPv6.** Every policy rule is IPv4; the limit is documented, not implemented.
+- **Cross-attempt network isolation (#257)** and **declared-service DNS shadowing (#296)** are
+  owned elsewhere. `--netpol` pins cross-attempt traffic as *reachable* on purpose, so #257 landing
+  is visible rather than silent.
+- **Task-level workspace isolation.** It does not exist; the mount is a member boundary. See
+  [workspace.md](workspace.md).
+- **Kernel isolation.** Not claimed anywhere. See [security.md](security.md).
+- **The cloud metadata endpoint (169.254.169.254) is not probed.** Nothing answers on it in a kind
+  cluster, so the probe could only ever report `denied` whether or not the policy covered it —
+  the vacuous pass this lane exists to prevent, and the worst place to have one. What the lane
+  *does* prove is the mechanism the endpoint's denial rests on: `169.254.0.0/16` and
+  `172.16.0.0/12` are both `blockedCidrs` entries excluded from the same `0.0.0.0/0` egress rule,
+  and the node probe shows that rule dropping traffic to a blocked private range for real. The
+  endpoint's own defence is a node-level setting outside the chart (`httpPutResponseHopLimit: 1`,
+  [kubernetes.md](kubernetes.md)).

@@ -4,10 +4,20 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import type { HelperPlan } from '../src/helpers.js';
-import { helperEnvSecretName, publishEnvSecretName, syncEnvSecretName } from '../src/k8s-auxspec.js';
+import {
+    helperEnvSecretName,
+    publishEnvSecretName,
+    servicePodSpec,
+    syncEnvSecretName,
+    syncJobSpec,
+} from '../src/k8s-auxspec.js';
 import { workspacePath } from '../src/claim.js';
-import { gateEnvSecretName, secretName } from '../src/k8s-podspec.js';
+import { loadDriverConfig } from '../src/config.js';
+import { UNHARDENED_LABEL } from '../src/labels.js';
+import { gateEnvSecretName, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
+
+const SESSION = '33333333-3333-4333-8333-333333333333';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -99,5 +109,60 @@ describe('the admission policy stays silent on forwarded scheduling fields', () 
 
     it.each(['nodeSelector', 'tolerations', 'affinity'])('never constrains %s', (field) => {
         expect(template).not.toContain(`variables.spec.${field}`);
+    });
+});
+
+/*
+ * Issue #382. The policy already FORBIDS the dangerous shapes — `privileged`, added capabilities —
+ * which is a different thing from REQUIRING the safe ones: a driver that silently stopped setting
+ * `capabilities.drop` would be admitted by every expression above it. These three validations close
+ * that, and they are the half that can fail closed: `failurePolicy: Fail` means a CEL expression
+ * that does not compile refuses every pod this driver creates, so the assertions below come in
+ * pairs — the expression is in the template, AND the driver's own output satisfies the field it
+ * names. The second half is what turns "the policy is stricter than the driver" into an offline
+ * failure instead of a cluster-wide outage.
+ */
+describe('the admission policy requires the pod hardening (#382)', () => {
+    it.each([
+        ['the seccomp profile', 'seccompProfile'],
+        // The full expression fragment, never the bare field name: that also appears in the
+        // template's own header comment, so a bare needle passes with the validation deleted.
+        ['the escalation bit', 'c.securityContext.allowPrivilegeEscalation == false'],
+        ['the capability drop', "'ALL' in c.securityContext.capabilities.drop"],
+        // A CONTAINER-level seccomp profile overrides the pod-level one, so pinning only the pod
+        // leaves `Unconfined` on a container admitted — the policy would require the invariant and
+        // permit its exact negation one field deeper. The needle names `variables.containers`
+        // explicitly: `c.securityContext.seccompProfile` alone is a SUBSTRING of the pod-level
+        // expression's `variables.spec.securityContext.seccompProfile`, so it passes against a
+        // template that never looks at a container at all.
+        ['the container-level seccomp override', 'has(c.securityContext.seccompProfile)'],
+    ])('names %s', (_label, needle) => {
+        expect(template).toContain(needle);
+    });
+
+    // The opt-out has to be visible to the policy, which sees the object and nothing else: a
+    // declared `unhardened: true` service and a driver that quietly stopped hardening look
+    // identical without the label.
+    it('lets a declared opt-out through by its label, and only by its label', () => {
+        expect(template).toContain(UNHARDENED_LABEL);
+    });
+
+    // The honest half. Every spec the driver builds must satisfy the fields the expressions name;
+    // a template tightened past the driver fails here rather than at a real apiserver.
+    it('is satisfied by every pod spec the driver builds', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' });
+        // The file's shared fixture carries no master prompt, which `runnerJobSpec` refuses; only
+        // the pod's security fields matter here, so the cheapest legal one is enough.
+        const promptedJob: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
+        const pods = [
+            runnerJobSpec(config, promptedJob, { id: SESSION, resume: false }).spec.template.spec,
+            syncJobSpec(config, { ...job, repo: 'Bellows-AI/factory' }, null).spec.template.spec,
+            servicePodSpec(config, job, { name: 'cache', image: 'redis', environment: [] }, 'uid').spec,
+        ];
+        for (const pod of pods) {
+            expect(pod.securityContext?.seccompProfile?.type).toBe('RuntimeDefault');
+            expect(pod.containers[0]!.securityContext?.allowPrivilegeEscalation).toBe(false);
+            expect(pod.containers[0]!.securityContext?.capabilities?.drop).toContain('ALL');
+        }
     });
 });

@@ -67,6 +67,27 @@ describe('parseBellows: shapes', () => {
         ]);
     });
 
+    // Issue #382: a declared service runs a stock image the repository author named, and the
+    // default hardening drops every capability — which breaks the common entrypoint that chowns
+    // its data directory as root before dropping down. The opt-out is a declared key, so the
+    // relaxation is visible in the repository rather than inferred from a crash loop. It is
+    // ABSENT, not `false`, on a service that did not ask: nothing else in this parser renders a
+    // field nobody wrote.
+    it('parses the hardening opt-out, and leaves it absent on every service that did not ask', () => {
+        const text = [
+            'services:',
+            '  - name: db',
+            '    image: postgres:16',
+            '    unhardened: true',
+            '  - name: cache',
+            '    image: redis',
+        ].join('\n');
+        expect(parseBellows(text)).toEqual([
+            { name: 'db', image: 'postgres:16', environment: [], unhardened: true },
+            { name: 'cache', image: 'redis', environment: [] },
+        ]);
+    });
+
     it('reads a file with no services as no services', () => {
         // An empty file, a file of comments, or one that simply does not use the key yet: none of
         // these is an error. A checkout carries `.bellows.yaml` only when it wants services.
@@ -280,6 +301,19 @@ describe('parseBellows: refusals', () => {
         );
     });
 
+    it('refuses an unhardened value that is not the literal true', () => {
+        // The one key that LOOSENS a security control (#382), so it is spelled exactly one way.
+        // A yaml-ish `yes`/`on`/`1` would each be a reasonable author guess and each would have to
+        // be read as truthy somewhere; refusing them keeps "did this service opt out?" a question
+        // with one answer rather than a parser trivia question.
+        for (const bad of ['yes', 'on', '1', 'True', 'false', '']) {
+            expect(
+                () => parseBellows(`services:\n  - name: db\n    image: postgres\n    unhardened: ${bad}\n`),
+                bad
+            ).toThrow(/"unhardened" must be `true`/);
+        }
+    });
+
     it('refuses a duplicate service name in one file', () => {
         expect(() =>
             parseBellows('services:\n  - name: cache\n    image: redis\n  - name: cache\n    image: valkey\n')
@@ -434,10 +468,15 @@ describe('the bellows readout arguments', () => {
     // busybox: every job already needs it present.
     it("cats every checkout's .bellows.yaml over the workspaces volume, marked per checkout", () => {
         const line = readBellowsArgs(loadDriverConfig({}), job);
-        const EXPECTED_ARGV_PREFIX_LENGTH = 14;
+        const EXPECTED_ARGV_PREFIX_LENGTH = 18;
         expect(line.slice(0, EXPECTED_ARGV_PREFIX_LENGTH)).toEqual([
             'run',
             '--rm',
+            // The default hardening (#382), on the readout container like every other.
+            '--cap-drop',
+            'ALL',
+            '--security-opt',
+            'no-new-privileges',
             '--mount',
             // Read-only: the script only cats. Scoped to the job's own `<orgId>/<userId>`
             // subtree — this readout sees one member's checkouts, never the whole volume.
@@ -512,6 +551,11 @@ describe('the service container arguments', () => {
         expect(line).toEqual([
             'run',
             '-d',
+            // The default hardening (#382) — this service declared no opt-out.
+            '--cap-drop',
+            'ALL',
+            '--security-opt',
+            'no-new-privileges',
             '--name',
             serviceContainerName(job, 'cache'),
             '--label',
