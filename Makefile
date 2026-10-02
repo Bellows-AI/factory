@@ -74,8 +74,9 @@ runners: runners-build
 # release and reaps the runner Jobs (created at runtime by the driver, so not the release's) —
 # database and checkouts survive, and the next `make start` picks them up. `make reset` is `stop`
 # plus the state release and its claims: an empty database next start. `make cleanup` deletes the
-# kind cluster itself. A state release installed before #371 is the one thing `make start` will not
-# upgrade — see `state-preflight`.
+# kind cluster itself. Two state releases are the thing `make start` will not upgrade — one
+# installed before #371, and one whose database claim was initialised before the chart set PGDATA
+# — see `state-preflight`.
 
 CLUSTER ?= factory
 K8S_RELEASE ?= dev
@@ -96,11 +97,30 @@ COLLECTOR_IMAGE ?= $(shell $(LOCAL_VALUES) 2>/dev/null | helm template x charts/
 # resource the new manifest does not contain and carries no `helm.sh/resource-policy: keep`, so
 # `helm upgrade --install` deletes it — and the data — and the StatefulSet then starts on an empty
 # claim. `make start` promises a re-run keeps the release's data, so it refuses instead: destroying
-# a local database is a thing the user types, and `make reset` is how they type it.
+# a local database is a thing the user types, and `make reset` is how they type it. The same
+# reasoning covers the second refusal below — a current StatefulSet whose claim was initialised
+# before this chart set PGDATA. Neither is migrated: there is no backward-compatibility arm here,
+# only a refusal that names `make reset`.
 state-preflight:
 	@if kubectl --context kind-$(CLUSTER) get deployment/$(K8S_STATE_RELEASE)-timescale >/dev/null 2>&1; then \
 		echo "make start: $(K8S_STATE_RELEASE) is a pre-#371 release — the database is a Deployment"; \
 		echo "  with a standalone PVC. Upgrading it deletes that claim and every row in it."; \
+		echo "  Run 'make reset' to drop the local state, then 'make start' again."; \
+		exit 1; \
+	fi
+	@# The second one. A claim initialised before the chart set PGDATA holds its cluster at the
+	@# mount point, /var/lib/postgresql/data; this chart points postgres at the pgdata subdirectory
+	@# under it, which on that claim is empty. The entrypoint does not move a cluster — it initdb's
+	@# a fresh one there and comes up healthy, so the board runs on an empty database with the real
+	@# rows sitting one directory up and nothing anywhere saying so. Read the env names off the
+	@# running StatefulSet: no PGDATA among them is exactly the claim that cannot be upgraded.
+	@if kubectl --context kind-$(CLUSTER) get statefulset/$(K8S_STATE_RELEASE)-timescale >/dev/null 2>&1 && \
+		! kubectl --context kind-$(CLUSTER) get statefulset/$(K8S_STATE_RELEASE)-timescale \
+			-o jsonpath='{.spec.template.spec.containers[*].env[*].name}' 2>/dev/null \
+			| tr ' ' '\n' | grep -qx 'PGDATA'; then \
+		echo "make start: $(K8S_STATE_RELEASE)'s database claim predates PGDATA — its cluster lives"; \
+		echo "  at the mount point, and this chart would initialise an empty one in the pgdata"; \
+		echo "  subdirectory beside it. The board would start on an empty database."; \
 		echo "  Run 'make reset' to drop the local state, then 'make start' again."; \
 		exit 1; \
 	fi
