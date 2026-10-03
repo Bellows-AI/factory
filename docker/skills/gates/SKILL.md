@@ -28,7 +28,6 @@ your own commands instead. Do not guess the URL.
 
 - Only gates the repository declares can run. The gate **name** goes in the request; you cannot
   send an arbitrary command. Read `.bellows.yaml` to see what is declared.
-- Running a gate writes nothing. It is safe to run one at any point to check partial progress —
-  the environment container stays warm, so repeated runs are cheap.
-- A gate that fails is information, not a verdict on you: read its output, fix the cause, re-run.
-  Do not mark work finished while a declared gate is failing.
+- Running a gate writes nothing, and the environment container stays warm — run one at any point
+  to check partial progress.
+- Do not mark work finished while a declared gate is failing.

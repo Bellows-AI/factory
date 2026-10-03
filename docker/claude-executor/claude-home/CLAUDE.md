@@ -1,8 +1,7 @@
 # Agent guide
 
-Global instructions for every session in this image. Behavioural guidelines that reduce common LLM
-coding mistakes; project-level `CLAUDE.md` / `AGENTS.md` files in the mounted checkout take
-precedence over anything here.
+Global instructions for every session in this image. Project-level `CLAUDE.md` / `AGENTS.md` files
+in the mounted checkout take precedence over anything here.
 
 **Tradeoff:** these guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
@@ -64,32 +63,26 @@ For multi-step tasks, state a brief plan:
 2. [Step] → verify: [check]
 ```
 
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant
-clarification.
+Strong success criteria let you loop independently.
 
 ## 5. Tool discipline
 
-Derived from an audit of real tool failures. No hook can fix these; they are decisions made before
-the call.
-
-**Read the file before you edit it — every time.** Roughly a third of all tool errors are edits
-rejected with "File has not been read yet", and in most of those the path had never been touched in
-the session. Knowing the content is not the same as having read it:
+**Read the file before you edit it — every time.** Knowing the content is not the same as having
+read it:
 
 - Grep output, a subagent's report, and sandboxed script output do **not** count as a read.
 - A file already in context because the harness injected it does **not** count either.
 - After any command that rewrites files (`prettier`, `eslint --fix`, `lint-staged`,
   `git checkout/merge/stash`), an earlier read is stale. Read again before the next edit.
 
-**Never use a relative `cd`.** Use absolute paths. The session's cwd may be a worktree or a
-subdirectory rather than the repo root, and the resulting error does not say what the cwd was.
+**Never use a relative `cd`.** Use absolute paths; the session's cwd may be a worktree or a
+subdirectory rather than the repo root.
 
-**Do not retry a command the permission settings deny.** Re-issuing a blocked command wastes a call
-and does not prompt the user. Reach for the non-destructive equivalent — `git restore`,
-`git merge --no-ff`, `trash` — or ask.
+**Do not retry a command the permission settings deny.** Reach for the non-destructive equivalent —
+`git restore`, `git merge --no-ff`, `trash` — or ask.
 
-**Check auth once, before a batch, not per call.** An expired session makes every tool in a
-sequence fail identically. One probe up front, then re-authenticate, before firing the rest.
+**Check auth once, before a batch, not per call.** One probe up front, then re-authenticate, before
+firing the rest.
 
 ## Testing
 

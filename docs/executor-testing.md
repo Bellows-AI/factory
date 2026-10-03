@@ -1,155 +1,58 @@
 # Executor testing
 
-This is the coverage map for the board/driver/runner/telemetry control plane. It separates code
-coverage from boundary coverage: a high V8 percentage does not prove Docker, Kubernetes, Git,
-PostgreSQL, or the OTLP collector actually accepted the artifact handed to it.
-
-## Fast gates
-
-| Command | Boundary | Current result |
-| --- | --- | --- |
-| `npm run test:executors` | Offline board routes, orchestration, both runners, image/config artifacts, OTLP parsing | 1,279 tests |
-| `npm run test:coverage:executors` | The same surface with a regression threshold | 95.14% lines/statements, 89.21% branches, 96.28% functions |
-| `DATABASE_URL=…/factory_test npm run test:db` | Real lease, fencing, attribution, deduplication and rollup SQL | 308 tests |
-| `npm run test:jobs` | Real board HTTP, Docker daemon, containers and disposable database | Required before changing Docker runner behavior |
-| `npm run test:k8s` | Helm assertions, including an EKS-shaped render lane; `--cluster` adds real Jobs in kind; `--netpol` builds an enforcing-CNI cluster | Required before changing Kubernetes runner behavior |
-
-The focused coverage gate excludes `driver/src/index.ts`, content-injected scripts under
-`driver/src/scripts/`, and the Postgres telemetry store. V8 cannot attribute child-process code to
-the parent Vitest process, and the stores deliberately need a real PostgreSQL. Those paths are tested by
-the real-process/script suites and `test:db`; adding them as zeroes would make the percentage less
-truthful, not more strict.
-
-## Coverage by responsibility
-
-| Responsibility | Primary suites | What must remain pinned |
-| --- | --- | --- |
-| Board protocol | `board.test.ts`, `routes.jobs.test.ts`, `server/test-db/job-store*` | credential on every worker write, lease conflict distinctions, claim/heartbeat/complete idempotence |
-| Orchestration | `loop.test.ts` | first/periodic heartbeat, setup races, stop/remove, stale lease kill, reclaim barriers, report degradation, block-helper pre/post fencing |
-| Docker runner | `docker.test.ts`, `gates.test.ts`, `scripts.test.ts`, `worktree.test.ts` | argv/env secrecy, attempt labels, kill/fence isolation, bounded output, real Git behavior |
-| Kubernetes runner | `k8s.test.ts`, `k8s-transport.test.ts` | Docker parity plus claim arbitration, attempt Secrets, API retry bounds, token rotation and cleanup ordering |
-| Block-helper transport (issue #207) | `helpers.test.ts`, plus the block-helper cases in `docker.test.ts`, `k8s.test.ts` and `loop.test.ts` | registry lookup closed before any container/Job starts, versioned bounded-JSON parsing, named failure reasons, docker/kubernetes argv-and-spec parity, pre-phase agent-launch gating, post-phase publish gating |
-| Master prompt (issue #244) | `server/test/master-prompt.test.ts`, `driver/test/master-prompt.test.ts`, the argv/config pins in `docker.test.ts`/`k8s.test.ts`, `loop.test.ts`'s pre-spawn refusal | bounded, versioned renderer output; fail-closed on a missing/malformed claim; identical docker/kubernetes argv; the reserved OpenCode `factory` agent surviving a hostile member config |
-| Runner images | `executor-images.test.ts`, `branch-reporter.test.ts` | PID 1 signal forwarding, exact shipped scripts, session attribution, agent-specific startup |
-| Analytics | `telemetry-shipping.test.ts`, `routes.ingest.test.ts`, `telemetry*.test.ts`, `telemetry.sql.test.ts` | compatible OTLP/JSON, retry configuration, privacy filters, malformed-payload semantics, deduplication |
-
-Platform-parity cases are not duplicates. Keep both when the same contract is encoded in Docker
-argv and Kubernetes object specs. Consolidate only when setup, branch, and expected failure are the
-same; the consecutive Kubernetes polling/Secret cleanup cases are the reference pattern.
-
-## The gate-repair round and the runner transports (issue #49)
-
-The default workflow's bounded `gate-fix` round (docs/workflows.md, "The code-owned default
-workflow") adds nothing to either runner transport, and that is the tested claim: a repair round's
-claim is byte-shape identical to any gated publishing claim (`resumeSessionId`, `publish: true`,
-gates present), and the one shared loop in `driver/src/loop.ts` drives Docker and Kubernetes from
-exactly that shape. The pin lives board-side in `server/test-db/job-store.workflow.default.test.ts`
-("the gate-fix claim runs through the ordinary machinery"), the offline graph/walk behavior in
-`server/test/default-workflow.test.ts`, and the launch resolution (executor row → frozen limit) in
-`server/test/routes.jobs.default-workflow.test.ts`. Neither `docker.test.ts` nor `k8s.test.ts`
-grows a gate-repair case, because neither transport grew a gate, a retry, or a config key — a
-future change that DOES touch a transport for repair must land the parity pair here and in both
-suites, per the executor-parity rule in AGENTS.md.
-
-## Remaining gaps, in priority order
-
-1. The real collector is not in either end-to-end assertion path. Add a synthetic runner export to
-   `test:jobs` and `test:k8s --cluster`, pass it through the actual collector, then assert the
-   stored row and dashboard rollup. Include a dashboard restart inside the collector's 300-second
-   retry window and prove one logical datapoint is stored once.
-2. No lane runs the chart against a cloud cluster. The `test:k8s --cluster` phase refuses every
-   non-kind kubectl context deliberately — it deletes runner Jobs, and the endpoint-bound guard is
-   what keeps that from ever firing against something shared — so the EKS value shape is only
-   rendered offline (`EKS_SETS` in `scripts/test-k8s.sh`, which cannot catch EFS permissions or
-   add-on enforcement) and exercised for real only by the by-hand pre-release walk,
-   `docs/eks-runbook.md` (issue #364, unwalked until its walk record says otherwise). A real cloud
-   lane in CI is an open decision on the epic (#365), and its admitting fingerprint must be at
-   least as hard to spoof as the kind endpoint check.
-3. The real Docker harness does not kill the driver after claim and prove a replacement fences the
-   orphan before writing. The unit suite covers the sequence; the daemon boundary does not.
-4. The kind phase proves successful execution, not API outage, stop-during-sync, superseded claim,
-   or failed cleanup. Add one fault-injection case at a time; do not recreate the unit matrix in a
-   slow cluster suite.
-5. Neither real-agent image can emit telemetry offline without the vendor binary/plugin runtime.
-   Keep artifact contract tests fast, and reserve image-level emission for a pinned smoke job rather
-   than making every unit run depend on external credentials.
-6. The `test:k8s --cluster` phase (`scripts/test-k8s.sh`) has no case for an allowlisted block
-   helper (`merge-conflict-autofix`, `github-review-reconcile`) — only the bare echo-executor happy
-   path. Deferred (issue #210): both real blocks need a "GitHub" to talk to (a git remote to probe/
-   rebase against, or `gh`-shaped HTTP responses and a recorded PR publication), and there is no
-   agreed shape yet for faking that inside a kind cluster without live GitHub — a fake local git
-   remote in the test's own scaffolding and a stub of the helper script's HTTP/`gh` calls inside the
-   executor image are the two candidates. Picking one is a test-harness design decision, not an
-   integration fix, so it is left open here rather than decided unilaterally.
-7. The board-owned master prompt (issue #244) is pinned offline down to the exact argv/config each
-   transport builds (`master-prompt.test.ts` on both sides, plus the argv/spec parity pins in
-   `docker.test.ts`/`k8s.test.ts`) and against a real database only where `server/test-db` already
-   runs. Nothing offline proves the CLIs themselves honor the flags: that the pinned
-   `CLAUDE_CODE_VERSION` actually accepts `--append-system-prompt`/`--system-prompt-snapshot off`
-   without erroring, or that OpenCode's `run --agent factory` with the merged
-   `OPENCODE_CONFIG_CONTENT` really seats a primary agent rather than silently ignoring an unknown
-   flag. That needs a real container running the real CLI — an executor-image smoke case, in the
-   same family as `executor-images.test.ts`'s static pins but requiring the daemon those pins
-   deliberately avoid — and a behavioral fixture proving a task prompt that asks the agent to push
-   or open a PR is refused by the CLI's own tool gating while the master prompt is in force. Neither
-   exists yet; both need a real model credential, which is out of scope for the offline gates above.
-
-## Efficiency rules
-
-- Prefer one table-driven failure contract over duplicated fixtures.
-- Keep real Git tests for semantics the mocks cannot represent, but create large histories with
-  `git fast-import`; the PR commit-cap case fell from about 7.7 seconds to 0.77 seconds.
-- A new slow boundary test must replace a missing boundary, not repeat an already-covered branch.
-- Review the slowest-test report before deleting tests; process startup cost often points to a
-  fixture optimization rather than a low-value assertion.
-
-## Executor isolation: which lane proves what (#382)
-
-Isolation is the one area where a passing test is not automatically evidence. A "denied" assertion
-run against a CNI that does not enforce NetworkPolicy passes **vacuously** — it reports success
-while proving nothing, which is worse than having no test. The lanes are therefore split by what
-they can actually establish, and each one states its own limit.
+Which lane proves what for the board/driver/runner/telemetry control plane. A V8 percentage does
+not prove docker, Kubernetes, git, PostgreSQL or the collector accepted the artifact handed to it,
+so the lanes are listed by boundary, not by coverage.
 
 | Lane | Needs | Proves |
 | --- | --- | --- |
-| `npx vitest run driver/test` | nothing | Every spec builder and every `docker run` argv carries the hardening — driven off the builder list, so a new aux Job that forgets it fails here. The `.bellows.yaml` opt-out parses, and reaches only the capability drop. |
-| `driver/test/k8s-admission.test.ts` | nothing | The admission policy *requires* the hardening, **and** the driver's own output satisfies what it requires. The second half is what keeps a policy tightened past the driver from becoming a cluster-wide outage. |
-| `bash scripts/test-k8s.sh` | helm | The rendered CEL and the port-scoped egress rules are in the manifests, in both the local and the EKS value shapes. |
-| `bash scripts/test-k8s.sh --cluster` | kind, kubectl, docker | A **real apiserver** compiles the policy and refuses a pod missing each field in turn; the labelled opt-out is admitted and still cannot escalate or go unconfined. Plus the **workspace boundary**, probed from inside a pod: traversal, absolute path, symlink-to-`/`, symlink-upward, and the volume root. |
-| `bash scripts/test-k8s.sh --netpol` | kind, kubectl, docker, **network** | The network denials, on a cluster this lane creates with kindnet disabled and Calico installed. |
+| `npm run test:executors` | nothing | Board routes, orchestration, both runners, image/config artifacts, OTLP parsing — offline. Config in `vitest.executors.config.ts`. |
+| `npm run test:coverage:executors` | nothing | The same surface against the thresholds in that config. |
+| `DATABASE_URL=…/factory_test npm run test:db` | postgres | Real lease, fencing, attribution, deduplication and rollup SQL (`vitest.db.config.ts`). |
+| `npm run test:jobs` | docker, port 8129 | Real board HTTP, a real driver, real containers, a disposable database (`scripts/test-jobs.sh`). Required before changing docker runner behavior. |
+| `npm run test:k8s` | helm | `helm lint`/`helm template` assertions in both the local and the EKS value shapes, including the rendered CEL and the port-scoped egress rules. Required before changing Kubernetes runner behavior. |
+| `npm run test:k8s -- --cluster` | kind, kubectl, docker | A real apiserver compiles the admission policy and refuses a pod missing each field in turn; a queued job comes back succeeded; the workspace boundary is probed from inside a pod. |
+| `npm run test:k8s -- --netpol` | kind, kubectl, docker, network | The network denials, on a cluster this lane creates with kindnet disabled and Calico installed. |
+| `npx vitest run driver/test/k8s-admission.test.ts` | nothing | The policy requires the hardening **and** the driver's own output satisfies what it requires — the half that keeps a tightened policy from becoming a cluster-wide outage. |
 
-### Why `--netpol` owns a cluster
+## Invariants
 
-kind's default CNI does not enforce NetworkPolicy, and `--cluster` deliberately refuses every
-context it has not fingerprinted (it deletes Jobs). Rather than weaken that guard, `--netpol`
-creates its own cluster, installs Calico, and deletes it on exit. It never touches the caller's
-current context.
+- **A "denied" assertion run against a CNI that does not enforce NetworkPolicy passes
+  vacuously** — it reports success while proving nothing. That is why `--netpol` owns its own
+  Calico cluster instead of borrowing the `--cluster` one, and why it runs an **honest-probe
+  control on every denial target**: each target must answer `reachable` before the policy and
+  `denied` after, so a target nothing listens on fails the lane loudly.
+- **Platform-parity cases are not duplicates.** When a contract is encoded in both docker argv and
+  Kubernetes object specs, both pins stay. Consolidate only when setup, branch and expected failure
+  are identical.
+- **The focused coverage gate excludes `driver/src/index.ts`, `driver/src/scripts/` and the
+  Postgres telemetry store.** V8 cannot attribute child-process code to the parent Vitest process,
+  and the stores need a real PostgreSQL; those paths are covered by the script suites and
+  `test:db`. Adding them as zeroes would make the number less truthful, not stricter.
+- **A new slow boundary test must close a missing boundary, not repeat a covered branch.** Build
+  large git histories with `git fast-import` rather than real commits.
 
-It also runs an **honest-probe control on every denial target, not just one**: each target is
-probed before the policy is applied and must answer `reachable` there, and the same target must
-answer `denied` after. An address nothing listens on would answer `denied` either way, so the lane
-would report a pass having proved nothing — which is why each target is a real listener: the
-unrelated pod on two ports, the apiserver ClusterIP, the kubelet, a `hostNetwork` pod bound to a
-high port on the node's own address, and the dashboard's non-serving port (the one the port
-scoping is actually about, so it is the last one that may be asserted standalone). A target that is already unreachable before the policy fails the lane
-loudly rather than passing quietly.
+## What no lane covers
 
-This is the one lane that needs the network: Calico's manifest and the probe image are pulled.
-
-### What no lane covers
-
-- **IPv6.** Every policy rule is IPv4; the limit is documented, not implemented.
-- **Cross-attempt network isolation (#257)** and **declared-service DNS shadowing (#296)** are
-  owned elsewhere. `--netpol` pins cross-attempt traffic as *reachable* on purpose, so #257 landing
-  is visible rather than silent.
-- **Task-level workspace isolation.** It does not exist; the mount is a member boundary. See
-  [workspace.md](workspace.md).
-- **Kernel isolation.** Not claimed anywhere. See [security.md](security.md).
-- **The cloud metadata endpoint (169.254.169.254) is not probed.** Nothing answers on it in a kind
-  cluster, so the probe could only ever report `denied` whether or not the policy covered it —
-  the vacuous pass this lane exists to prevent, and the worst place to have one. What the lane
-  *does* prove is the mechanism the endpoint's denial rests on: `169.254.0.0/16` and
-  `172.16.0.0/12` are both `blockedCidrs` entries excluded from the same `0.0.0.0/0` egress rule,
-  and the node probe shows that rule dropping traffic to a blocked private range for real. The
-  endpoint's own defence is a node-level setting outside the chart (`httpPutResponseHopLimit: 1`,
-  [kubernetes.md](kubernetes.md)).
+- **IPv6.** Every policy rule is IPv4; the limit is stated, not implemented.
+- **The real collector** is in neither end-to-end path; `test:jobs` and `--cluster` assert the
+  driver's export, not a stored-and-rolled-up datapoint.
+- **A cloud cluster.** `--cluster` refuses every non-kind context deliberately (it deletes runner
+  Jobs), so the EKS value shape is only rendered offline and walked by hand
+  ([eks-runbook.md](eks-runbook.md)).
+- **Fault injection in the kind phase** — it proves successful execution, not API outage,
+  stop-during-sync, a superseded claim or a failed cleanup.
+- **A real agent CLI honouring the master prompt's flags.** Both transports' argv is pinned
+  offline; nothing proves the vendor binaries accept them. That needs a model credential.
+- **Allowlisted block helpers under `--cluster`** — only the bare echo-executor happy path. Both
+  real blocks need a "GitHub" to talk to, and no agreed way to fake one inside kind.
+- **The cloud metadata endpoint (169.254.169.254) is not probed.** Nothing answers on it in kind,
+  so the probe could only ever report `denied` — the vacuous pass this file exists to prevent.
+  What the lane does prove is the mechanism underneath: `169.254.0.0/16` is a `blockedCidrs` entry
+  excluded from the same `0.0.0.0/0` egress rule the node probe shows dropping traffic for real.
+  The endpoint's own defence is a node setting outside the chart ([kubernetes.md](kubernetes.md)).
+- **Cross-attempt network isolation** and **declared-service DNS shadowing** are owned elsewhere;
+  `--netpol` pins cross-attempt traffic as reachable on purpose.
+- **Task-level workspace isolation** does not exist — the mount is a member boundary
+  ([workspace.md](workspace.md)). **Kernel isolation** is claimed nowhere
+  ([security.md](security.md)).

@@ -1,79 +1,46 @@
 # Architecture
 
-Read before: changing the data flow, touching `server/src/main.ts` wiring, or touching anything
-under `server/src/github/`.
+The hub: what each package is, how a measurement reaches a panel, and where the detail lives.
 
 | Package | Role |
 | --- | --- |
-| `core/` | Telemetry aggregation + shared types. No I/O, no dependencies. |
-| `server/` | Fastify API: telemetry store, the GitHub App credential and repo list, job/workspace/env stores, static SPA hosting. |
-| `web/` | Vite + React 19 SPA, polls `/api/stats`. |
-| `plugins/agent-telemetry/` | Installable Claude Code plugin. Reports `session -> (repo, branch)`. |
-| `driver/` | Job driver: claims jobs from the board and spawns a runner container per job. |
+| `core/` | Telemetry aggregation, ranges, shared types. No I/O, no dependencies. |
+| `server/` | Fastify API: telemetry store, GitHub App credential and repo list, job/workspace/env/auth stores, static SPA hosting. |
+| `web/` | Vite + React 19 SPA, polls `/api/stats` and `/api/tasks`. |
+| `plugins/agent-telemetry/` | Installable Claude Code plugin; reports `session -> (repo, branch)`. |
+| `driver/` | Claims jobs from the board over HTTP and runs one runner per job. |
 | `cli/` | Board CLI: HTTP client that queues and inspects tasks. |
 
-Data flow: Claude Code → OTEL collector → `POST /api/otlp/v1/metrics` → `flattenMetrics()` →
-PostgreSQL (`metric_point`, `session_branch`) → `createPostgresTelemetryClient()` → `TelemetryInput`
-→ `telemetryStats()` → `{ telemetry, meta }` → panels. **There is one stats pipeline.** The
-pull-request fetch, PR store, PR aggregation and their panels were removed with issue #62 —
-`023_drop_pull_requests.sql` drops the schema they owned — and `telemetry` is the whole payload
-rather than the sibling of a `Stats` object. `core/src/types.ts` is the contract the SPA imports
-rather than redeclares; `core/src/canonical.ts` is gone with the forge adapters that fed it.
+Data flow: agent → OTEL collector → `POST /api/otlp/v1/metrics` → `flattenMetrics()` → PostgreSQL
+(`metric_point`, `session_branch`) → `createPostgresTelemetryClient()` → `TelemetryInput` →
+`filterTelemetryInput()` → `telemetryStats()` → `{ telemetry, tasks, meta }` → panels.
 
-**Aggregation happens at read time, over one read.** The cache slot holds the fetched
-`TelemetryInput` — every session in the store, unfiltered — and `current(range)` re-runs
-`filterTelemetryInput()` and `telemetryStats()` per request. Every range is served from the one
-database read the TTL paid for, and no cache key mentions a range. Pre-aggregating per range would
-either bucket the cache by range or force the selector to be cosmetic.
+| Concern | Code | Test |
+| --- | --- | --- |
+| Boot wiring and start order | `server/src/main.ts` | `server/test/helpers-harness.ts` drives `buildApp` |
+| Per-org runtimes (repo source, telemetry, stats cache, stores) | `server/src/orgs.ts` | `server/test/orgs.test.ts` |
+| Read-time aggregation and the cache slot | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
+| Telemetry sources (`postgres`/`fixture`/`off`) | `server/src/telemetry/client.ts` | `server/test/telemetry.fixture-client.test.ts` |
+| Installation token, repo listing, repo source | `server/src/github/app-token.ts`, `app-client.ts`, `repo-source.ts` | `server/test/github.app-token.test.ts`, `server/test/repo-source.test.ts` |
+| Range parsing, filtering, bucketing | `core/src/range.ts` (`parseRange` lives in `routes/stats.ts`) | `core/test/range.test.ts` |
+| The shared payload contract the SPA imports | `core/src/types.ts` | `core/test/metrics.invariants.test.ts` |
 
-Server wiring (`server/src/main.ts`): `resolveConfig()` → GitHub App client (or the code-only `none`
-arm) → pool + `migrate()` (un-awaited) → telemetry client (`postgres`, `fixture` or `off`) → ingest
-store → repo source → job/workspace/env/auth stores → `createStatsService()` → `buildApp()` →
-`orgs.warmAll()` (un-awaited; warms every known org's cache so the first visitor does not eat the
-cold read) → `listen()`. `buildApp` deliberately does not `listen`, which is
-what lets `server/test/` drive the whole app in-process via `app.inject()` with stubbed clients.
+Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations.md) ·
+[repos.md](repos.md) · [configuration.md](configuration.md) · [date-range.md](date-range.md) ·
+[jobs.md](jobs.md) · [metrics.md](metrics.md) · [persistence.md](persistence.md) ·
+[telemetry.md](telemetry.md) · [workspace.md](workspace.md) · [limits.md](limits.md).
 
-**The GitHub App stack stays, and none of it fetches pull requests any more.** `github/app-token.ts`
-signs an RS256 JWT with the App's private key and exchanges it for an installation token, refreshed
-five minutes before expiry; that token is what the clone queue clones private source with and what
-rides the claim env as the runner's `GITHUB_TOKEN`. `github/app-client.ts` reads the installation's
-repository list, and `github/repo-source.ts` caches it behind the two accessors the rest of the
-server needs: an async `list()` for the refresh path and a synchronous `snapshot()` for
-`StatsService.current()`, which aggregates an already-fetched payload and must never become a fetch.
-The list is what scopes every stored read (`meta.repos`, `telemetryStats({ repos })`), what
-`/api/repos` serves to the picker, and what the env and workspace routes validate a repo label
-against. Without an App client — the offline tooling's code-only `none` arm — the source falls back
-to the distinct repos in `session_branch` (`db/stored-repos.ts`), which is what keeps a seeded
-database browsable with no credential, since every stored read is scoped by that list.
+## Invariants
 
-`TelemetryClient` (`server/src/telemetry/client.ts`) has three sources, and `postgres` is the
-default. `fixture` replays `core/test/fixtures/telemetry-sessions.json` — **synthetic**, generated
-by `generate-telemetry.mjs` next to it — so the read path runs with no database and no collector,
-and the UI badges it loudly, because invented token counts are exactly what the limitations panel
-exists to warn about. `off` is a product choice — render no AI panels — not a way to avoid the
-database, which is why the ingest store's registration, not the route, is what follows it.
-
-## How a session reaches a repo
-
-Claude Code's OTEL metrics carry **no branch and no repo** — only the standard attributes, of which
-the only useful one is `session.id`. So the scoping needs a side channel: the `agent-telemetry`
-plugin samples the current checkout and posts `session -> (repo, branch)` to
-`POST /api/sessions/branch`, and `telemetryStats()` counts a session in its totals only when the
-hook tagged it with a repo in the installation list.
-
-Two things about that channel are not obvious:
-
-- **The session id is the only join key there is.** `OTEL_METRICS_INCLUDE_SESSION_ID` must stay
-  true (it is the default). Disabling it severs the only link between a metric and a checkout:
-  every session reads as hook-less, `sessionsWithoutHook` grows without bound — indistinguishable
-  from the plugin being broken — and no scoping filter can place the sessions it drops.
-- **A repo outside the installation list is a distinct bucket, not a dropped session.**
-  `otherRepoSessions` counts it, so a repo removed from the installation shows up as a move into
-  that bucket rather than as a silent loss of history.
-
-The plugin is installed at **user scope**, not into this repo, because the dashboard reports on
-`bellows.ai` and the sessions that matter happen there. See
-`plugins/agent-telemetry/README.md`.
-
-Metric definitions and the reasoning behind them live in `../factory-stats/SPEC.md` (outside this
-repo). Every definition corrects a specific measurement distortion.
+- **Aggregation is read-time, over one read.** The cache slot holds the whole fetched
+  `TelemetryInput`; every range and scope re-filters it, so no cache key names a range and a scope
+  switch never refetches. `server/test/routes.stats.scope.test.ts`.
+- **`buildApp` does not `listen`** — that is what lets `server/test/` drive the whole app
+  in-process with `app.inject()` and stubbed clients.
+- **Every module in `core/src` must be re-exported from `core/src/index.ts`**, or the server sees
+  "module has no exported member". `core/test/core-index.test.ts`.
+- **The session id is the only join key** between a metric and a checkout:
+  `OTEL_METRICS_INCLUDE_SESSION_ID` must stay true, or every session reads as hook-less. A session
+  counts only when the hook tagged it with an in-list repo; the other outcomes are named buckets,
+  never drops ([repos.md](repos.md)).
+- Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.

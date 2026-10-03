@@ -1,78 +1,42 @@
 # Configuration
 
-Read before: touching `server/src/config.ts` or the `docker-compose.yml` environment blocks.
+One source of configuration: environment variables (`.env` via `--env-file-if-exists`, compose, or
+the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
 
-One source: environment variables (`.env` via `--env-file-if-exists`, compose, or the shell).
+| Concern | Code | Test |
+| --- | --- | --- |
+| `loadConfig` purity, auth variables, the `AuthConfig` union | `server/src/config.ts` | `server/test/config.auth.test.ts` |
+| App id, key, `_FILE`/base64, API host, webhook secret | `server/src/config.ts`, `server/src/github/app-token.ts` | `server/test/config.github.test.ts` |
+| Retired variables that are fatal | `server/src/config.ts` | `server/test/config.persistence.test.ts`, `server/test/config.org.test.ts` |
+| `DATABASE_URL`, disposable-database refusal | `server/src/config.ts` | `server/test/config.persistence.test.ts` |
+| `ORG_WORKSPACE_ROOT` | `server/src/config.ts` | `server/test/config.workspace.test.ts` |
+| The credential-free entry point | `server/src/offline.ts` | `server/test/routes.repos.test.ts` |
 
-- **`loadConfig` does no I/O.** `loadConfig({})` has to mean the same thing on every machine; if
-  the validator read the disk, the existing `describe('loadConfig')` cases would start reading
-  whatever the developer happens to keep around and fail on exactly one machine. That block's
-  survival is the regression test.
-- **An unknown environment variable is ignored — with named exceptions.** `GITHUB_TOKEN`,
-  `GITHUB_OWNER`, `ORG_REPOS`, `GITHUB_REPOS`, `DATA_SOURCE`, `BASE_BRANCH`, `BOTS`,
-  `SYNC_TTL_SECONDS` and `CACHE_TTL_SECONDS` are fatal rather than ignored: every one of them *was*
-  meaningful, so ignoring one now would change behaviour silently. The last four parameterised the
-  pull-request statistics and are gone with them (issue #62) — a deployment that had raised a sync
-  TTL to protect its quota would otherwise silently drop to the 5s telemetry floor, so the refusal
-  is load-bearing, not archival. Each message names what replaced it rather than reporting a typo;
-  the TTL ones point at `TELEMETRY_TTL_SECONDS`, the only cache floor left (default 30s, floor 5s).
-- **`DATABASE_URL` is required, and so are the App id and key.** The database is the only source
-  the dashboard reads, and the GitHub App is the only credential there is: the environment can
-  produce nothing else. `app` with `GITHUB_APP_ID` or `GITHUB_APP_PRIVATE_KEY` missing is fatal
-  and names the missing key. There is no mode to select, and no offline way to obtain a private
-  key — so the tooling that must run without one (`npm run seed`, `npm run verify:ui`,
-  `scripts/test-jobs.sh`, the route-test harness) says so in CODE, by passing the code-only
-  `none` arm of `GitHubConfig` to `resolveConfig` or by booting the compiled offline entry,
-  `server/dist/offline.js`. An environment variable that selects it does not exist, and a
-  dashboard that silently fetches nothing presents as data loss rather than as a missing
-  credential.
-- **A process that fetches refuses a disposable database** (`_test`, `_seed`, `_synthetic`,
-  `_demo`, `_e2e`). `npm run test:db` truncates one and `npm run seed` fills one with synthetic
-  agent sessions, so real history put there is destroyed or made indistinguishable from synthetic.
-  The code-only `none` arm is exempt by construction, because nothing is fetched to lose — which is
-  exactly how the seeding CLI and the browser check run. The guard used to key on `GITHUB_TOKEN`,
-  then on a mode; now every env-booted process fetches, so the guard is simply refused.
-- **There is no repo list to configure.** It is whatever the GitHub App installation reports, read
-  at runtime and cached by `RepoSource` (`INSTALLATION_REPOS_TTL_MS`, 10 min) — a network answer
-  cannot be a boot-time field. A configured copy beside it would be a second roster to keep in step
-  with the credential. `AppConfig` therefore has no `repos`; the offline `none` arm derives the list
-  from the `session_branch` rows the database already holds.
-- **`ORG_ID`, `ORG_NAME`, `GITHUB_APP_INSTALLATION_ID`, `AUTH_AUTO_JOIN_GITHUB_ORG` and
-  `AUTH_BOOTSTRAP_ADMIN` are FATAL rather than ignored (#99).** Each used to decide who the
-  deployment served or who could sign in; an ignored one boots a deployment that silently serves a
-  different set of organizations. The orgs are the App's installations now, materialized at
-  sign-in — the App's Setup URL should point at `<publicUrl>/api/auth/github/setup` so the install
-  round trip returns.
-- **`resolveConfig` reads `GITHUB_APP_PRIVATE_KEY_FILE`, and `loadConfig` never learns a file
-  exists.** The whole `describe('loadConfig')` suite depends on the validator being a pure function
-  of its argument, and an App private key normally arrives as a path — so the read happens in
-  `resolveConfig`, before the validator sees the record. The validator only shape-checks the PEM;
-  `createPrivateKey()` runs when the token provider is constructed, so a well-shaped but unusable
-  key is still fatal at boot rather than at the first fetch. An inline key wins over a `_FILE` path.
-  The key may also be base64: a PEM is multi-line and neither `.env` nor compose handles that well.
-- **`GITHUB_API_URL` is environment-only and undocumented on purpose**, for the same reason as the
-  three OAuth endpoint overrides below: a configurable API host that ships with a deployment is
-  somewhere to send a private key. `main.ts` logs loudly when it is set.
+## Invariants
+
+- **`loadConfig` does no I/O** — it must mean the same thing on every machine, so a key given as
+  `GITHUB_APP_PRIVATE_KEY_FILE` is read in `resolveConfig`, before the validator sees the record,
+  and `~` expands against `env.HOME` rather than `os.homedir()`. The validator shape-checks the
+  PEM; `createPrivateKey()` runs at provider construction, so an unusable key is fatal at boot.
+- **An unknown environment variable is ignored — with named exceptions that are fatal.** Every one
+  of them was once meaningful, so ignoring it would change behaviour silently; each message names
+  the replacement. `server/test/config.persistence.test.ts`.
+- **`DATABASE_URL`, `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are required, and there is no
+  environment variable that turns fetching off.** Tooling that must run without a credential says
+  so in CODE — `server/dist/offline.js`, or the `none` arm of `GitHubConfig` passed to
+  `resolveConfig` — because a dashboard that silently fetches nothing presents as data loss.
+- **A fetching process refuses a disposable database** (`_test`, `_seed`, `_synthetic`, `_demo`,
+  `_e2e`): `npm run test:db` truncates one and `npm run seed` fills one with synthetic sessions.
+  The `none` arm is exempt by construction, which is how seed and `verify:ui` run.
+- **There is no repo list to configure** — `AppConfig` has no `repos` ([repos.md](repos.md)).
 - **`AUTH_MODE` is an explicit enum, never inferred from whether a client id is set**, and
-  `AUTH_MODE=github` with an incomplete set of auth variables is fatal and names the missing key.
-  Both are the same instinct as `TELEMETRY_SOURCE` being an explicit enum with no
-  fall-back-to-something value: a mode you can fall into by
-  typo is worse than one that refuses. Full reasoning in [auth.md](auth.md). `AuthConfig` is a
-  discriminated union rather than a record of optionals, so "half-configured" is unrepresentable
-  rather than merely rejected. `GITHUB_WEBHOOK_SECRET` is the sibling that is optional in both
-  modes, parsed like `INGEST_TOKEN` (trim, empty meaning unset): set, it enables the installation
-  webhook (`POST /api/github/webhook`), which deletes a membership the moment GitHub reports the
-  member gone; unset, the route does not exist and removals wait for the next sign-in. Set, it is
-  a credential — the HMAC decides whose memberships get deleted — so a value under 32 characters
-  refuses to boot, exactly like a short `SESSION_SECRET` (`openssl rand -hex 32` is the generator).
-- **`GITHUB_OAUTH_AUTHORIZE_URL` / `_TOKEN_URL` / `_USER_URL` are a test seam**, not documented
-  configuration — a configurable authorize URL that reached a real deployment would be a phishing
-  vector, and `main.ts` logs loudly when one is in use. `AUTH_ALLOW_PUBLIC_BIND` is restricted for a
-  different reason: it asserts something about the network in front of the process, which is a
-  property of the host rather than of the deployment.
-- **`ORG_WORKSPACE_ROOT` is unset by default, must be absolute, and expands `~` against `env.HOME`
-  rather than `os.homedir()`** — that last one is what keeps `loadConfig` a pure function of its
-  argument. See [workspace.md](workspace.md) for the rest, including why a relative path is rejected
-  rather than resolved.
-- **Never log the merged environment.** It holds the App private key. Log key names and the
-  resolved values that are not secrets only.
+  `AuthConfig` is a discriminated union so "half-configured" is unrepresentable. Same instinct as
+  `TELEMETRY_SOURCE`. Reasoning in [auth.md](auth.md).
+- **A secret shorter than 32 characters refuses to boot** (`SESSION_SECRET`,
+  `GITHUB_WEBHOOK_SECRET`) — the webhook HMAC decides whose memberships get deleted. Unset,
+  `GITHUB_WEBHOOK_SECRET` simply does not register the route.
+- **`GITHUB_API_URL` and `GITHUB_OAUTH_*_URL` are test seams, undocumented on purpose** — a
+  configurable API host in a shipped deployment is somewhere to send a private key, and a
+  configurable authorize URL is a phishing vector. `main.ts` logs loudly when one is set.
+- **Never log the merged environment.** It holds the App private key: key names and non-secret
+  resolved values only.
