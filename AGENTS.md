@@ -42,6 +42,37 @@ left as a refusal message. Touching `driver/`? Ask what it does to `EXECUTOR=kub
 
 Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.
 
+## Writing documentation
+
+A doc's only job is to get a reader to the right file fast. Prose that explains what the code
+already says is read *instead of* the code and rots while the code does not, so the default action
+on a paragraph is **delete and link**. Every doc is one sentence of purpose, a
+`| Concern | Code | Test |` table, then `## Invariants`. 60 lines; 120 for an area with several
+independent surfaces; a runbook of literal commands is exempt from the cap, not from the rules.
+
+Only four kinds of sentence survive: **where things live** (the table), **cross-file invariants** no
+single file can state, **operational facts** with consequences outside the process, and **stated
+limits** that tell a reader to stop looking. Everything else goes — narrative how-it-works, issue
+numbers, history ("X is gone"; this repo ships no compatibility, so an absent thing needs no page),
+rationale nobody is re-litigating, example payloads and argv, restated route/env/flag tables, and
+warnings about traps a test already catches. Name the test; it is the enforcement.
+
+- **Every row and bullet carries a path, and the path must resolve today.** A claim with no anchor
+  is deleted, not researched. Never invent one to make a row look complete.
+- **Changed code with an owning doc updates that doc's table row, not its prose.** Tempted to add a
+  paragraph? Add a row, or a one-line comment at the code. Never grow a doc past its cap to fit a
+  new fact — if it does not fit, something in it is dead.
+- **A test that pins doc prose is the enforcement, not an obstacle.** `docs.terminology`,
+  `k8s-docs`, `docs.eks-storage`, `styles` and `skills.task-control` assert literal sentences;
+  restore the sentence, never relax the test. Those suites are whitespace-sensitive — a reflow
+  breaks them.
+- **Skills and the runner agent-home guides are prompts, not docs.** `.claude/skills/`,
+  `docker/skills/`, `claude-home/CLAUDE.md`, `opencode-home/AGENTS.md`: dedupe rationale and
+  repetition, but preserve every directive, command and step order, and never leave a runtime
+  agent a back-reference to resolve.
+
+The `doc-maintenance` skill states this contract in full and runs a repo-wide pass.
+
 ## Commands
 
 Booting the board — `npm run dev`, `npm run dev:server`, `npm start` — needs PostgreSQL
