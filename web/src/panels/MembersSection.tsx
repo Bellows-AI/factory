@@ -1,7 +1,7 @@
 import { ADMIN_ROLE, type Role } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
 import { listMembers, setMemberRole, type MemberView } from '../api/orgMembers.js';
-import type { Session } from '../api/useSession.js';
+import { reportUnauthenticated, type Session } from '../api/useSession.js';
 import { MembersPanel } from './MembersPanel.js';
 
 /**
@@ -39,6 +39,13 @@ export function MembersSection({ session }: { session: Session | null }) {
      * The row's role write: refused means the message on this section's own error line. When the
      * write itself lands but the refetch fails, `members` still shows the pre-write roles beside
      * that error — the selects snap back until a reload refetches; the server holds the truth.
+     *
+     * A write that demotes the signed-in admin is the one success that must not refetch: the
+     * roster read is admin-gated server-side, so the GET would paint this section with the 403
+     * the next write would meet, over a table that no longer works. The broadcast re-checks
+     * `/api/auth/me` in every mounted `useSession`; the fresh session carries the member role,
+     * `isAdmin` flips, and the member sentence replaces the table — here and on the page's
+     * "Your role" and the shell's user menu, which read the same stale prop otherwise.
      */
     const changeRole = async (member: MemberView, role: Role) => {
         setError(null);
@@ -47,6 +54,10 @@ export function MembersSection({ session }: { session: Session | null }) {
         setSaving(false);
         if (message) {
             setError(message);
+            return;
+        }
+        if (session?.user.id === member.userId && role !== ADMIN_ROLE) {
+            reportUnauthenticated();
             return;
         }
         await refresh();

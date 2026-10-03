@@ -36,14 +36,30 @@ describe('MembersSection audience split', () => {
 });
 
 describe('MembersSection refresh wiring', () => {
+    const write = () => section.slice(section.indexOf('const changeRole'), section.indexOf('if (session === null'));
+
     it('refetches after a successful role write and reports failures unrefreshed', () => {
-        const write = section.slice(section.indexOf('const changeRole'), section.indexOf('if (session === null'));
-        expect(write).toMatch(/if \(message\) \{\s*setError\(message\);\s*return;\s*\}\s*await refresh\(\);/);
+        expect(write()).toMatch(
+            /if \(message\) \{\s*setError\(message\);\s*return;\s*\}\s*if \(session\?\.user\.id === member\.userId && role !== ADMIN_ROLE\) \{[\s\S]*?await refresh\(\);/
+        );
     });
 
     it('freezes the controls while a write is in flight', () => {
         expect(section).toMatch(/setSaving\(true\)/);
         expect(section).toMatch(/setSaving\(false\)/);
+    });
+});
+
+describe('MembersSection self-demotion', () => {
+    const write = () => section.slice(section.indexOf('const changeRole'), section.indexOf('if (session === null'));
+
+    it('re-checks the session instead of refetching when a successful write demotes the signed-in admin — the refetch is admin-gated and would meet the 403 the next write would', () => {
+        expect(write()).toMatch(
+            /if \(session\?\.user\.id === member\.userId && role !== ADMIN_ROLE\) \{[\s\S]*?reportUnauthenticated\(\);[\s\S]*?return;[\s\S]*?\}/
+        );
+        // The broadcast must be the session module's, so every mounted useSession (the page's
+        // "Your role", the shell's user menu) hears the demotion, not just this section's state.
+        expect(section).toMatch(/reportUnauthenticated[^;]*from '\.\.\/api\/useSession\.js';/);
     });
 });
 
