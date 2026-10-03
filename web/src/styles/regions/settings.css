@@ -820,6 +820,7 @@
         .settings-actions button,
         .unsaved-actions button,
         .env-add,
+        .org-executor-add,
         .env-advanced-toggle,
         .env-raw input,
         .env-raw select,

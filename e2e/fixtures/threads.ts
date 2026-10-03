@@ -42,6 +42,14 @@ export interface ThreadRuntime {
     costUsd?: number | null;
 }
 
+export interface ThreadPublication {
+    repo: string;
+    prNumber: number;
+    prUrl: string;
+    headBranch: string;
+    baseBranch: string;
+}
+
 export interface ThreadJob {
     id: string;
     command: string;
@@ -65,6 +73,8 @@ export interface ThreadJob {
     runtime: ThreadRuntime | null;
     repo: string | null;
     executor: string | null;
+    /** Which list the executor label was chosen from (issue 391); `user` on every fixture here. */
+    executorScope: 'user' | 'org';
     followUpTo: string | null;
     rootJobId: string;
     workflowNode: string | null;
@@ -82,6 +92,8 @@ export interface ThreadJob {
     waitReason: string | null;
     waitingSince: string | null;
     waitTerminalReason: string | null;
+    /** The matched `job_pr` row (036), null unless the run published one. */
+    publication: ThreadPublication | null;
 }
 
 type Wait = Pick<ThreadJob, 'waitReason' | 'waitingSince' | 'waitTerminalReason'>;
@@ -159,6 +171,7 @@ function run(fields: RunFields): ThreadJob {
         runtime: null,
         repo: null,
         executor: 'main',
+        executorScope: 'user',
         followUpTo: null,
         rootJobId: fields.id,
         workflowNode: null,
@@ -172,6 +185,7 @@ function run(fields: RunFields): ThreadJob {
         finishedAt: '2026-09-01T12:30:00.000Z',
         wallClockMs: 1_799_000,
         taskWallClockMs: null,
+        publication: null,
         ...NO_WAIT,
         ...fields,
         author,
