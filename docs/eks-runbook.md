@@ -20,7 +20,8 @@ Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
 ## 2. Storage: EFS under uid 1000
 
 The workspaces claim is `ReadWriteMany`; EBS cannot serve that on EKS. Install the EFS CSI driver
-(its controller needs IRSA), create the file system with a mount target in every node subnet, then
+(its controller needs IRSA), create the file system with one mount target in a subnet in each node
+Availability Zone, then
 a StorageClass, then set `workspaces.storageClass`:
 
 ```yaml

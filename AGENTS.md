@@ -44,9 +44,11 @@ Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.
 
 ## Commands
 
-Everything below needs PostgreSQL (`docker compose up -d postgres`) and the GitHub App
-(`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`); either missing refuses to boot. Offline tooling boots
-`server/dist/offline.js`, which is code, not a flag.
+Booting the board — `npm run dev`, `npm run dev:server`, `npm start` — needs PostgreSQL
+(`docker compose up -d postgres`) and the GitHub App (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`);
+either missing refuses to boot. Offline tooling boots `server/dist/offline.js`, which is code, not
+a flag. `npm install`, `npm test`, `npm run typecheck`, `npm run lint` and `npm run build` need
+none of it; the `DATABASE_URL=…` commands below name the database they need.
 
 ```bash
 npm install

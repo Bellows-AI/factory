@@ -28,6 +28,6 @@ your own commands instead. Do not guess the URL.
 
 - Only gates the repository declares can run. The gate **name** goes in the request; you cannot
   send an arbitrary command. Read `.bellows.yaml` to see what is declared.
-- Running a gate writes nothing, and the environment container stays warm — run one at any point
-  to check partial progress.
+- Gates can write generated files to the shared workspace. The environment container stays warm —
+  run one at any point to check partial progress.
 - Do not mark work finished while a declared gate is failing.

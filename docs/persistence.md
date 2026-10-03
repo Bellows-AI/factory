@@ -35,7 +35,9 @@ the in-memory stores in `server/test/helpers*.ts`.
   file cannot see the config; the read path checks `expires_at` regardless.
 - **Synthetic data reaches a database only through `npm run seed`, into a disposable one.** Both
   halves matter: the seeding CLI refuses any name not ending `_seed`/`_synthetic`/`_demo`/`_e2e`/
-  `_test`, and `loadConfig` refuses a disposable name for every env-booted process.
+  `_test`, and `loadConfig` refuses a disposable name for a fetching (App-mode) process — the
+  `none` arm is exempt by construction, which is how seed and `verify:ui` run
+  ([configuration.md](configuration.md)).
 - **Every stored read is scoped by the repo list and by `org_id`**, or it renders another
   organization's or another repo's sessions as this dashboard's.
 - A data directory initialised by `timescale/timescaledb` cannot start under `postgres:17` — it exits

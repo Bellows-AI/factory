@@ -123,10 +123,15 @@ Then:
      planner output if the intent is unclear — that is a stop condition, not a guess).
    - After every merge — clean, fast-forward or conflict-resolved — re-run `npm test`,
      `npm run typecheck` and `npm run lint`.
-   - An attempt fails if its conflicts or its post-merge suite cannot be resolved: run
-     `git merge --abort`, fetch again (the default branch may have moved under you), and spend
-     the second attempt. Two failed attempts: STOP — report the conflicting files and why
-     resolution failed, and leave the branch unpushed.
+   - Record the pre-merge commit (`git rev-parse HEAD`) before each merge.
+   - If conflict resolution fails while the merge is still in progress, run `git merge --abort`,
+     fetch again (the default branch may have moved under you), and spend the second attempt.
+     `git merge --abort` only aborts a merge in progress; it does not undo a completed one.
+   - If the post-merge suite cannot be resolved after the merge has completed, restore the branch
+     to the recorded pre-merge commit before fetching again and spending the second attempt —
+     otherwise the retry reports "Already up to date" and walks straight to pushing unverified.
+   - Two failed attempts: STOP — report the conflicting files and why resolution failed, and
+     leave the branch unpushed.
 4. Push the branch.
 5. Open the PR:
    `gh pr create --title "<short title>" --body <body> --base <default-branch>`
