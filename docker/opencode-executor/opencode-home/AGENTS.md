@@ -1,15 +1,14 @@
 # Agent guide
 
-Global instructions for every run in this image. Behavioural guidelines that reduce common LLM
-coding mistakes; project-level `AGENTS.md` / `CLAUDE.md` files in the mounted checkout take
-precedence over anything here.
+Global instructions for every run in this image. Project-level `AGENTS.md` / `CLAUDE.md` files in
+the mounted checkout take precedence over anything here.
 
 **Tradeoff:** these guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
 ## 0. Board tasks: how the work lands
 
 You are running as a headless task on the factory board. Nobody is watching a terminal — never
-stop to ask; unanswered questions go in the final report, where a human reads them.
+stop to ask; unanswered questions go in the final report (§5).
 
 - Work happens in the checkout mounted at your working directory — your run's own worktree,
   branched off the remote default, one per task, so concurrent tasks never share a tree. Never
@@ -69,8 +68,8 @@ Read your own diff as a reviewer would, and fix what it finds:
 
 ## 5. Finish with a report
 
-You run headless — nobody watches the terminal. The final message is the only thing a human reads:
-state what you changed, what you verified, and anything you could not do.
+The final message is the only thing a human reads: state what you changed, what you verified, and
+anything you could not do.
 
 ## Tooling
 
@@ -81,17 +80,15 @@ state what you changed, what you verified, and anything you could not do.
 
 ## Context discipline
 
-The `context-mode` plugin's `ctx_*` tools are available, and long runs die of context bloat before
-anything else: an overgrown session triggers compaction, and every compaction re-reads the whole
-history with no cache — minutes per cycle, once the session has grown.
+The `context-mode` plugin's `ctx_*` tools are available. An overgrown session triggers compaction,
+which costs minutes per cycle.
 
 - **Search order for codebase questions: `ctx_search` → `grep` → `read`.** An open-ended "where
-  does X live / how does Y work" question goes to `ctx_search` first — it returns the matching
-  sections without pulling whole files in. Keep `grep` for an exact symbol or string — it is
-  cheaper and never stale. `read` is for a file you are about to edit — not for open-ended
+  does X live / how does Y work" question goes to `ctx_search` first. Keep `grep` for an exact
+  symbol or string. `read` is for a file you are about to edit — not for open-ended
   investigation, and never re-read a file you have not changed.
-- **Bound what a shell search can print.** A bare `grep -rn` over the whole tree puts its full
-  output into the session; when you shell out, narrow it (`--include`, a path prefix, `| head`).
+- **Bound what a shell search can print.** When you shell out, narrow it (`--include`, a path
+  prefix, `| head`) rather than running a bare `grep -rn` over the whole tree.
 - **`ctx_batch_execute` is an offload valve, not a default.** Reach for it only when raw output
   would exceed ~20KB, cap `queries` at 3, and grep narrowly rather than `cat` — it repeats every
   matched section once per query, so `cat`-ing whole files multiplies them by the query count.

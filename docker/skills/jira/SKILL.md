@@ -5,8 +5,8 @@ description: Read, search, create and comment on Jira work items with the Atlass
 
 # Jira through acli
 
-`acli` is at `/usr/local/bin/acli`. It is the only supported way to reach Jira from this container;
-the Atlassian MCP server is deliberately not configured.
+`acli` is at `/usr/local/bin/acli` and is the only supported way to reach Jira from this
+container; the Atlassian MCP server is deliberately not configured.
 
 Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it with
 `acli` rather than fetching the page.
@@ -32,11 +32,10 @@ acli jira workitem comment <KEY> --body "..."
 ## Reading a ticket properly
 
 - **Always read the comments.** Clarifications and changed requirements land there, not in the
-  description — a ticket read without its comments is routinely out of date.
+  description.
 - **A subtask is not self-contained.** If `issuetype.subtask` is true or `parent` is non-null,
   fetch the parent too; the actual requirement usually lives there.
-- Prefer `--json` and name the fields you need. The default human output is wordy and the extra
-  fields cost context for nothing.
+- Prefer `--json` and name the fields you need.
 
 ## Authentication
 

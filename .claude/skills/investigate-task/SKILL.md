@@ -5,9 +5,8 @@ description: Investigate a Factory task (a job on the board) — retrieve the wh
 
 # Investigate a task
 
-A task is a thread of runs on the job board. The investigation has three moves: retrieve the
-whole thread, read the evidence the rows carry, and answer with a conclusion that cites those
-rows. Everything below is read-only — an investigation never POSTs.
+A task is a thread of runs on the job board. Everything below is read-only — an investigation
+never POSTs.
 
 ## 1. Retrieve the task
 

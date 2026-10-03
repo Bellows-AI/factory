@@ -7,9 +7,7 @@ description: Fix a UI defect in the Factory dashboard end to end — reproduce i
 
 Fix the UI defect given as a GitHub issue or described in chat. The flow mirrors the [`fix`](../fix/SKILL.md)
 skill — worktree, TDD, review gate, PR — with two additions: the reproduction is driven by what the
-page shows, and nothing ships until Playwright has verified the fix in a real browser. `npm test`
-renders the panels with `react-dom/server` and proves they do not throw; it does not prove they look
-right. That gap is what this skill closes.
+page shows, and nothing ships until Playwright has verified the fix in a real browser.
 
 ## Phase 0 — Intake
 
@@ -52,14 +50,13 @@ the walk and read the screenshot it leaves in `artifacts/ui/`. Then name the roo
 - Numbers wrong, rendering fine → `core` aggregation or the API payload first.
 - Renders wrong with right data → `web/src`, checked against `docs/design-system.md`.
 - Blank panel, a literal `NaN`/`undefined`/`[object Object]` → the null-guard contract; the e2e
-  forbidden-token sweep exists for exactly this class of defect.
+  forbidden-token sweep covers this class.
 
 If you cannot explain the failure, stop and ask. Do not pick an interpretation silently.
 
 ## Phase 3 — Red repro at the right layer
 
-TDD order is non-negotiable: the failing test exists before the fix, and they never land in one
-commit.
+TDD order is non-negotiable: the failing test exists before the fix.
 
 - Pure logic — a formatter, a hook's derived state, a reducer — → vitest in `web/test/`, in the
   suite's existing style.
@@ -100,23 +97,21 @@ npm run verify:ui                       # all specs, chromium, headless
 npx playwright show-trace artifacts/ui/trace/<name>/trace.zip   # on a failure
 ```
 
-The config builds all five packages and boots fresh servers against freshly seeded databases —
-a leftover server can never verify stale code. Never point Playwright at `npm run dev`; the built
-SPA served by the API is the arrangement under test.
+Never point Playwright at `npm run dev`; the built SPA served by the API is the arrangement under
+test, and the config builds all five packages and boots fresh servers against freshly seeded
+databases.
 
 Then, in order:
 
 1. Every spec green on `chromium` — and on `auth` too if sessions, sign-in or the workspace page
    were touched.
-2. **Read every screenshot in `artifacts/ui/`** (the Read tool on the `.png` files). A passing
-   assertion proves the DOM was right; the screenshot is the only thing that proves the layout was.
-   A fix is not verified until its screenshot shows the fix.
+2. **Read every screenshot in `artifacts/ui/`** (the Read tool on the `.png` files). A fix is not
+   verified until its screenshot shows the fix.
 3. Read the report, not just the exit code: pass counts non-zero, no `.skip`, no `.only`, and the
    console-error / failed-request assertions included in the green.
 
 Gates after, all green: `npm test`, `npm run typecheck`, `npm run lint` (`npm run format` for pure
-drift). Never delete, skip or weaken an assertion — yours or the repo's — to get there. `retries`
-is 0 on purpose: a pass that needs a retry is not a fix.
+drift). Never delete, skip or weaken an assertion — yours or the repo's — to get there.
 
 ## Phase 6 — Review and ship
 
@@ -134,8 +129,7 @@ is 0 on purpose: a pass that needs a retry is not a fix.
 
 ## Hard rules
 
-- **No fix without a red first; no done without a screenshot read.** These are the two failure
-  modes this skill exists to close, and both shortcuts recreate them.
+- **No fix without a red first; no done without a screenshot read.**
 - **Never weaken a test to go green** — not the new one, not an existing one, not a timeout.
 - **`retries: 0`, `workers: 1`.** Do not restore either to paper over flakiness; find the race.
 - **Playwright observes, it does not set up.** Page state comes from UI actions on the seeded
