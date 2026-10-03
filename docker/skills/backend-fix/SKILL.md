@@ -14,23 +14,20 @@ them** — the commands in this skill are placeholders, not literals.
 ## Hard rules — read first
 
 - **TDD order is non-negotiable.** Red repro test → fix → green. Never bundle the test and the fix
-  into one commit: the red commit is what proves the bug was real, and a reviewer cannot
-  reconstruct it afterwards.
+  into one commit.
 - **Reproduce at the right layer.** If the fault isolates without I/O — a util, validator, pure
   function, calculation, model method — the failing **unit** test is the repro. Otherwise
   (controller→service→store flow, query scope/filter, permission gate, cross-service side effect)
   the failing **integration** test is the repro. Most backend bugs are integration-level; default
   there unless the fault is provably pure.
 - **No coverage means build the harness first, then fix.** Never attempt a fix in a module with no
-  test harness — you would have no way to tell a fix from a coincidence. Build the baseline
-  yourself (Step 4) and continue to the fix in the same run.
+  test harness. Build the baseline yourself (Step 4) and continue to the fix in the same run.
 - **Business correctness, not shape smoke.** Every list/filter/scope/guard test must assert
   behaviour, not `status === 200` and "an array came back". Seed **both** sides of any predicate
   and assert inclusion *and* exclusion by id. Test boundaries (`N`, `N-1`, `N+1`). Assert exact
   error codes, never "some error occurred". Cover every entry point that shares the logic.
 - **Never hardcode ids in tests that touch a database.** Generate data with the project's faker or
-  factory layer; take framework ids from the project's seeded constants. A hardcoded id passes
-  until someone reseeds.
+  factory layer; take framework ids from the project's seeded constants.
 - **Surgical changes.** Do not refactor adjacent code while fixing. Match existing style. Touch
   only what the ticket requires. Follow the project's error-handling and logging conventions
   rather than inventing new ones.
@@ -38,10 +35,9 @@ them** — the commands in this skill are placeholders, not literals.
   red→green. Once green, fold their assertions into the permanent suites under
   behaviour-descriptive names and delete the ticket-named files. The merged branch must contain
   zero files named after the ticket key.
-- **Lint and tests pass locally before every push.** Not once — before *every* push, including the
-  ones made while addressing review feedback. Never `--no-verify`, never skip a check.
-- **Local review gate before every push.** See [Local review gate](#local-review-gate). Runs after
-  lint and tests are green, before the push.
+- **Lint and tests pass locally before *every* push**, including the ones made while addressing
+  review feedback. Never `--no-verify`, never skip a check.
+- **Local review gate before every push.** See [Local review gate](#local-review-gate).
 - **CI red is a blocker, not an end state.** After each push, poll the checks and fix the root
   cause until green.
 
@@ -112,10 +108,9 @@ No coverage at all → **Step 4**. Some coverage → **Step 5**.
 Cut the ticket branch first (Step 5.1 logic) so the harness commits land on it, then:
 
 1. **Setup helpers** — functions that build the state a test needs, through the application's own
-   model or API layer rather than raw inserts, so the tests exercise real invariants. Reuse the
-   project's existing helpers; add to them rather than starting a parallel set.
-2. **Fixtures** — factory *functions* that take overrides, not static objects. Static fixtures get
-   mutated by one test and break the next.
+   model or API layer rather than raw inserts. Reuse the project's existing helpers; add to them
+   rather than starting a parallel set.
+2. **Fixtures** — factory *functions* that take overrides, never static objects.
 3. **A baseline spec** — one authenticated request to the module's main entry point, asserting one
    business-meaningful fact (a seeded entity comes back by id), not just a status code.
 4. **Verify green.** A red baseline means the harness is wrong; debug the harness, not the
@@ -154,8 +149,8 @@ plumbing.
 ### 5.4 Decide the reproduction layer
 
 Apply the hard rule above. If unit-reproducible, write the failing unit test now and confirm it
-fails **for the right reason** — a test that fails because of a typo in the setup proves nothing.
-Otherwise state explicitly why the fault is not unit-reproducible and go to 5.5b.
+fails **for the right reason**. Otherwise state explicitly why the fault is not unit-reproducible
+and go to 5.5b.
 
 ### 5.5 Write the failing test
 
@@ -205,8 +200,7 @@ blocks the push. Fix errors; warnings are acceptable unless CI disagrees.
 Stage the source fix, the permanent tests, and the deletion of the repro files:
 `<KEY> [fix] <one-line summary>`.
 
-**Do not amend the first commit.** Two commits is the point: the red one preserves the repro for
-review history.
+**Do not amend the first commit.**
 
 ### 5.12 Local review gate, then push
 
@@ -226,14 +220,13 @@ green.
 
 ## Step 6 — Land the PR (one loop, max 5 iterations)
 
-The PR is the board's: its publish opens (or reuses) the pull request after your run ends and the
-gates pass — so on the run that fixed the ticket there is nothing to poll; finish at 5.13. On a
-follow-up run, after review feedback arrives, the PR exists and this loop applies. Per iteration:
+On the run that fixed the ticket there is nothing to poll; finish at 5.13. On a follow-up run,
+after review feedback arrives, the PR exists and this loop applies. Per iteration:
 
 1. Poll the checks. Red → fix the **root cause** and re-push (each push repeats 5.10 and the review
    gate). Never bypass a check to make it green.
-2. Read the review feedback — the **review summary** as well as the line comments. The substantive
-   objection is often in the summary while the line comments are details.
+2. Read the review feedback — the **review summary** as well as the line comments; the substantive
+   objection is often in the summary.
 3. Address each comment under the same rules that got you here: TDD red→green, surgical changes, no
    hardcoded ids, lint and tests green, review gate before the push.
 4. Reply to each comment saying *what changed and how*, not just the SHA.
@@ -246,8 +239,7 @@ needing a product decision).
 
 ## Step 7 — Contradiction: stop and ask
 
-The only place the flow pauses. A contradiction is feedback that cannot be reconciled
-automatically:
+A contradiction is feedback that cannot be reconciled automatically:
 
 - Two reviewers, or a reviewer and the ticket, ask for mutually exclusive changes.
 - A comment demands behaviour that contradicts the ticket's acceptance criteria.
@@ -273,8 +265,7 @@ anything left unresolved with the reason.
 ## Local review gate
 
 A headless review of the exact diff about to be pushed, run after lint and tests are green and
-before every push. It catches convention violations and correctness gaps locally, so the remote
-reviewer sees a cleaner diff.
+before every push.
 
 ```
 tries = 0
@@ -298,7 +289,7 @@ loop:
 ```
 
 **Use the merge-base form before the first push.** A fixed `HEAD~N` offset silently drops the
-earliest commits, and by then the branch may carry harness, repro, fix and gate commits.
+earliest commits.
 
 Run the review as a subagent (Claude Code: `code-reviewer`, else `general-purpose`; OpenCode:
 `general`) with the diff, or through a headless CLI if the environment has one. Skip pure style

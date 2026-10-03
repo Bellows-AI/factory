@@ -25,7 +25,7 @@ summarized from the branch's commits by the driver's publish flow. Your job ends
 work.
 
 A PR that already exists is yours to read — reviews, checks, diffs — and to fix on request,
-never to create. Reading a PR's diff happens with `gh pr diff`, never by checking the branch out:
+never to create. Read a PR's diff with `gh pr diff`, never by checking the branch out:
 `gh pr checkout` moves HEAD off the task branch and is denied for the same reason.
 
 ## Addressing review feedback
@@ -34,12 +34,9 @@ never to create. Reading a PR's diff happens with `gh pr diff`, never by checkin
 objection often lives in the summary while the line comments are details.
 
 After pushing fixes, reply to each comment you addressed. Every reply must say *what changed and
-how* — "fixed in `<sha>`" alone is useless to a reviewer:
+how* — "fixed in `<sha>`" alone is not enough:
 
 ```bash
 gh pr comment <N> --body "Fixed in <sha> — clamped limit to MAX_LIMIT=100 in the validator before
 the DB query, so an oversized page can no longer reach Postgres"
 ```
-
-That lets the reviewer verify without re-reading the diff, and keeps the thread an accurate record
-of what is still open.

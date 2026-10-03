@@ -9,25 +9,19 @@ Fix the GitHub issue given as the argument. Run all seven phases in order, auton
 pause for approval between phases; stop only when genuinely blocked (see the stop conditions in
 each phase). Track progress with the todo tool throughout.
 
-Everything from Phase 1 on runs inside a dedicated git worktree, never the main checkout — its
-dirty state, stale builds and checked-out branches cannot leak into the fix, and two concurrent
-fixes cannot touch each other.
+Everything from Phase 1 on — planning included — runs inside a dedicated git worktree, never the
+main checkout.
 
 ## Phase 0 — Fetch the issue
 
 - If no issue URL/number was given, ask for one and stop.
-- Fetch the issue with full detail, comments included — clarifications and changed requirements
-  often live there:
+- Fetch the issue with full detail, comments included:
   `gh issue view <url-or-number> --json number,title,body,labels,comments,state`
 - If the issue is already closed, say so and ask whether to proceed.
 - Before touching any code, read this repo's AGENTS.md and the `docs/` file that covers the area
-  you will change — the "Read before you touch" table maps areas to files. These hold conventions
-  that look like cruft and are not.
+  you will change — the "Read before you touch" table maps areas to files.
 
 ## Phase 1 — Create the worktree
-
-Everything from here on — planning included — runs inside the worktree: the planner must read the
-same tree the executors will edit.
 
 **Factory task exception:** if the current branch already matches `factory/<uuid>`
 (`git branch --show-current`), this run is a Factory board task — the worktree and the branch
@@ -49,8 +43,7 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
    copy-on-write, near-instant), falling back to `npm install`. Copy any gitignored local files
    the toolchain needs too (`.env` and the like).
 4. Prove the worktree can actually run the test suite (`npm test` — offline, no token, no
-   database, no docker) before moving on. A worktree where tests cannot execute poisons every
-   later phase.
+   database, no docker) before moving on.
 5. Record the worktree path as WORKTREE. From now on every command runs with WORKTREE as its
    working directory — absolute path, never a relative `cd`.
 
@@ -59,9 +52,8 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
 - Gather context: AGENTS.md and the docs file covering the area the issue concerns, read from
   WORKTREE.
 - Spawn the `fix-planner` subagent (task tool) with the issue JSON and that context, and tell it
-  the repository root is WORKTREE. It runs on a stronger model with high reasoning effort — trust
-  its analysis and work with its output; do not re-plan unless it is demonstrably wrong, in which
-  case say why.
+  the repository root is WORKTREE. Trust its analysis and work with its output; do not re-plan
+  unless it is demonstrably wrong, in which case say why.
 - Turn its plan into your todo list, one todo per approach step, each with the test or command
   that verifies it.
 - If the plan marks anything `BLOCKER` in Risks / ambiguity, STOP: present the ambiguity and the
@@ -76,7 +68,7 @@ The suite commands here are `npm test` (vitest, offline) and `npm run typecheck`
 In order:
 
 1. RED: write a test that reproduces the issue. Run it (in WORKTREE) and confirm it FAILS for the
-   expected reason — a test that fails with a setup error proves nothing.
+   expected reason — a setup error is not a red.
 2. GREEN: write the minimum implementation that makes it pass. No features beyond the issue, no
    speculative abstractions.
 3. Run the full suite plus `npm run typecheck`. If existing tests break, fix them before
@@ -95,7 +87,7 @@ For each round, up to 3:
    uncommitted changes staged first into a temp view if needed — the reviewer must see everything
    you changed).
 2. Spawn the `reviewer` subagent (task tool) with: the diff, the issue title and body, and a
-   one-paragraph summary of the approach. It has fresh context and cannot edit.
+   one-paragraph summary of the approach.
 3. Triage its findings:
    - Blockers (bugs, broken error handling, missing coverage for the change, security issues):
      fix, re-run the full suite, continue to the next round.
@@ -103,14 +95,14 @@ For each round, up to 3:
 4. A round with zero blockers ends the loop.
 
 After 3 rounds with blockers remaining: STOP. Commit nothing, push nothing. Report the remaining
-findings to the user with your analysis — do not open a PR you know is dirty.
+findings to the user with your analysis.
 
 ## Phase 5 — Ship
 
 Pre-flight (all inside WORKTREE):
 
-- `git status` must show only the files your change touched. The worktree started clean, so
-  anything else was made during this run — revert it; never mix it into the PR.
+- `git status` must show only the files your change touched. Anything else was made during this
+  run — revert it; never mix it into the PR.
 - `git log --oneline -10` — match the repo's existing commit message style.
 - Stage only the files your change touched. Never commit secrets, keys, or .env files.
 
@@ -119,24 +111,27 @@ Then:
 1. You are already on the branch chosen in Phase 1 — `fix/<issue-number>-<short-slug>`, or the
    Factory task branch (`factory/<uuid>`) when this run is a board task; do not cut another.
 2. Commit with a message referencing the issue.
-3. Bring the branch up to date with the default branch before pushing — a PR that conflicts with
-   its base wastes the review loop. Up to 2 attempts; each attempt is fetch, merge, resolve,
-   verify:
+3. Bring the branch up to date with the default branch before pushing. Up to 2 attempts; each
+   attempt is fetch, merge, resolve, verify:
    - `git fetch origin <default-branch>` then `git merge origin/<default-branch>`. "Already up
      to date" is a completed attempt, not a failed one — move straight to pushing.
-   - Merge, never rebase: the branch becomes public on push and Phase 6 keeps appending commits;
-     a merge commit never needs the forbidden force-push.
+   - Merge, never rebase: Phase 6 keeps appending commits to a public branch, and a merge commit
+     never needs the forbidden force-push.
    - On conflict, resolve each hunk to the correct combined result — never a blanket
      `--ours`/`--theirs`. In files your change did not touch, take the default branch's side;
      where it touched the same lines as the fix, combine both intents (re-read the issue and the
      planner output if the intent is unclear — that is a stop condition, not a guess).
    - After every merge — clean, fast-forward or conflict-resolved — re-run `npm test`,
-     `npm run typecheck` and `npm run lint`: a merge can resurrect code the fix removed or break
-     assumptions both sides made independently.
-   - An attempt fails if its conflicts or its post-merge suite cannot be resolved: run
-     `git merge --abort`, fetch again (the default branch may have moved under you), and spend
-     the second attempt. Two failed attempts: STOP — report the conflicting files and why
-     resolution failed, leave the branch unpushed, and never open a PR you know is broken.
+     `npm run typecheck` and `npm run lint`.
+   - Record the pre-merge commit (`git rev-parse HEAD`) before each merge.
+   - If conflict resolution fails while the merge is still in progress, run `git merge --abort`,
+     fetch again (the default branch may have moved under you), and spend the second attempt.
+     `git merge --abort` only aborts a merge in progress; it does not undo a completed one.
+   - If the post-merge suite cannot be resolved after the merge has completed, restore the branch
+     to the recorded pre-merge commit before fetching again and spending the second attempt —
+     otherwise the retry reports "Already up to date" and walks straight to pushing unverified.
+   - Two failed attempts: STOP — report the conflicting files and why resolution failed, and
+     leave the branch unpushed.
 4. Push the branch.
 5. Open the PR:
    `gh pr create --title "<short title>" --body <body> --base <default-branch>`
@@ -151,9 +146,9 @@ worktree whose PR is open.
 
 ## Phase 6 — Wait for GitHub review (max 5 rounds)
 
-Opening the PR is not the end. This repo has no CI — its PR checks are the automated reviewers
-themselves (CodeRabbit, Greptile), and their completion is what posts the comments. Loop until no
-unaddressed comments remain; one round = one wait, one fetch, one address cycle:
+This repo has no CI — its PR checks are the automated reviewers themselves (CodeRabbit, Greptile),
+and their completion is what posts the comments. Loop until no unaddressed comments remain; one
+round = one wait, one fetch, one address cycle:
 
 1. Wait for the review to land: poll `gh pr checks <PR_NUMBER>` until nothing is pending (exit 8
    means still pending; the bots can take a few minutes). Then fetch everything with full detail —
@@ -163,10 +158,8 @@ unaddressed comments remain; one round = one wait, one fetch, one address cycle:
    summary bodies too, not just the line comments — a "Request changes" verdict is ground for
    another round even with no line comments.
 2. Address the **line-level comments** by invoking the **`github-review-fix`** skill on this PR.
-   It owns every mechanical step — fetching with pagination, dropping threads whose last comment is
-   already yours, bucketing by file, one TDD agent per file, the repo's own checks, one commit +
-   push, a threaded reply per comment, and verification that every reply landed. The conversation
-   keeps only its ambiguity gate (next step).
+   It owns every mechanical step through to verifying each reply landed; the conversation keeps
+   only its ambiguity gate (next step).
 3. Handle what the skill hands back, and what it does not cover:
    - A comment that is ambiguous or contradicts the code, the issue, or another comment → its
      ambiguity gate: STOP and ask the user. Never invent a resolution.

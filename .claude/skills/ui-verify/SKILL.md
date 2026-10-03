@@ -5,11 +5,6 @@ description: Verify the Factory Stats dashboard in a real browser with Playwrigh
 
 # Verify the dashboard in a browser
 
-`npm test` renders the panels with `react-dom/server` — it proves they do not throw. It does not
-prove they look right, and several past defects (a scatter filtered down to nothing, a `null`
-reaching a chart coordinate as `NaN`) passed types, tests and the fixture while being visibly
-broken. This skill closes that gap.
-
 ## Run it
 
 ```bash
@@ -22,19 +17,17 @@ npx playwright test --ui                # pick and step through interactively
 `playwright.config.ts` builds all five packages and serves the built SPA from the API on
 127.0.0.1:8123 with `TELEMETRY_SOURCE=postgres` against a seeded `factory_e2e` database, so the
 run needs a running postgres but no token, no quota and no network. The server is never reused
-between runs — a leftover process would verify stale code, which is the one failure this exists
-to catch.
+between runs.
 
-Full-page screenshots land in `artifacts/ui/*.png` (gitignored). **Read them.** A passing
-assertion means the DOM was right; the screenshot is the only thing that shows the layout was.
-Traces for failures are written next to them and open with
+Full-page screenshots land in `artifacts/ui/*.png` (gitignored). **Read them** — a passing
+assertion means the DOM was right; only the screenshot shows the layout was. Traces for failures
+are written next to them and open with
 `npx playwright show-trace artifacts/ui/trace/<name>/trace.zip`.
 
 ## What the specs assert
 
 - Every range preset re-renders the five headline cards and more than two panels.
-- No `NaN`, `undefined`, `Infinity` or `[object Object]` anywhere in `main` — that is what a
-  missing null guard looks like on screen, and it is invisible to `tsc`.
+- No `NaN`, `undefined`, `Infinity` or `[object Object]` anywhere in `main`.
 - No console errors, page errors or failed requests during the whole walk.
 - A narrowed range changes the headline numbers *and* states its scope.
 - The custom picker sends both bounds, widens an inclusive day into the exclusive `to`, and

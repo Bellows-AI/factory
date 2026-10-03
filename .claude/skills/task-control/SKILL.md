@@ -5,18 +5,16 @@ description: Drive a Factory task through its whole lifecycle from a local sessi
 
 # Drive a task from a local session
 
-A task is a thread of runs on a board. This skill is the write half of the lifecycle; reading the
-evidence of a run that already happened belongs to `investigate-task`, which this extends —
-when the question is "what went wrong", stop here and use that one.
+A task is a thread of runs on a board. This skill is the write half of the lifecycle; when the
+question is "what went wrong", stop here and use `investigate-task` instead.
 
 Two surfaces, same board. The CLI (`cli/`, issue #21) covers every verb below and is invoked as
 `npm run dev -w cli -- job <verb> …` from the repo root — ONE npm layer, because a second one
 swallows `--timeout`, `--json` and `--yes` as its own configuration before the CLI sees them.
 There is no `factory` on PATH either. Plain `curl` is the fallback anywhere else.
 
-The CLI's exit codes are the reason to prefer it: `0` ok, `1` the board refused or was
-unreachable, `2` usage, `3` the wait ended with no terminal row — `3` is not a failure, it means
-the task is still going.
+The CLI's exit codes: `0` ok, `1` the board refused or was unreachable, `2` usage, `3` the wait
+ended with no terminal row — `3` is not a failure, it means the task is still going.
 
 ## 1. Configure
 
@@ -30,14 +28,13 @@ export FACTORY_TOKEN=fat_...                    # a personal access token from t
 author. Against an open board (`AUTH_MODE=none`) leave it unset — the header is then omitted
 rather than sent empty. An `oat_` organization token authenticates only the stats, repo and job
 READS — the executor and workflow discovery below, and every write, answer `403`. Never offer or
-accept the driver's worker credential for this: it is the fleet's secret, not a person's, and
-none of these routes want it.
+accept the driver's worker credential for this: it is the fleet's secret, not a person's.
 
 The `investigate-task` skill reads its own board from `FACTORY_BOARD`; this one uses the CLI's
 `FACTORY_URL`. Running the pair against one board means setting both.
 
-Ask the user for the board URL rather than guessing one. A board is a real deployment, and a
-guessed host queues real work somewhere nobody asked for.
+Ask the user for the board URL rather than guessing one — a guessed host queues real work
+somewhere nobody asked for.
 
 ## 2. Discover before you create
 
@@ -92,15 +89,14 @@ curl -s -H "authorization: Bearer $FACTORY_TOKEN" \
 That `timeout` is one hold, in whole seconds `1..60`; more is clamped, `0` is refused. **A hold
 that runs out answers `200` with the ordinary row and no marker of its own**, so the row is the
 only thing that tells a timeout from a settle. Terminal statuses: `succeeded`, `failed`, `dead`,
-`stopped`. A non-terminal row means re-issue the same request — that re-issue is the wait, and a
-loop that sleeps between reads is the thing this route exists to replace.
+`stopped`. A non-terminal row means re-issue the same request — that re-issue is the wait; never
+sleep between reads.
 
-With one exception, and it matters: **the board also settles the hold on an open PR or review
-wait**, and that answer comes back immediately with a `queued` or `running` row. Re-issuing on it
-is a request storm, not a wait. So if the answer arrives far sooner than the hold asked for and
-the row is not terminal, the thread is parked on a workflow wait — stop waiting and say so
-(the CLI's `job wait` does this itself, and exits `3`). Nothing the wait can do moves a parked
-thread.
+With one exception: **the board also settles the hold on an open PR or review wait**, and that
+answer comes back immediately with a `queued` or `running` row. Re-issuing on it is a
+request storm, not a wait. If the answer arrives far sooner than the hold asked for and the row is not
+terminal, the thread is parked on a workflow wait — stop waiting and say so (the CLI's `job wait`
+does this itself, and exits `3`). Nothing the wait can do moves a parked thread.
 
 Two more details that bite:
 
@@ -154,9 +150,9 @@ status. `200 { id, status, doneAt }`, idempotent. `409 NOT_FINISHED` while a tur
 running. A done thread takes no more follow-ups.
 
 **Remove** deletes the whole thread — every run, every output, the audit rows — and queues the
-worktree for reclaim. It **cannot be undone**, and there is no copy to restore from, which is why
-the CLI demands `--yes` on top of the user's confirmation. `200 { id, removed: true }`.
-`409 TASK_RUNNING` means a turn is live: stop it first, wait for the settle, then remove.
+worktree for reclaim. It **cannot be undone**, which is why the CLI demands `--yes` on top of
+the user's confirmation. `200 { id, removed: true }`. `409 TASK_RUNNING` means a turn is live:
+stop it first, wait for the settle, then remove.
 
 ## Reporting back
 

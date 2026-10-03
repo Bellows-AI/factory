@@ -1,133 +1,50 @@
 # Persistence
 
-Read before: touching `server/src/db/*`, `stats-service.ts`, or any migration under
-`server/migrations/`.
+PostgreSQL is the only store. A process without `DATABASE_URL` refuses to boot; there is no in-memory
+mode and no degraded-persistence state on the payload. The offline suite stays database-free through
+the in-memory stores in `server/test/helpers*.ts`.
 
-Telemetry is **always** persisted; there is no other place for it to live, and no in-memory mode —
-a process without `DATABASE_URL` refuses to boot rather than quietly forgetting. There is no
-`persistence.status` on the payload and no degraded-persistence state to reason about: the ingest
-store exists in the `postgres` source — the default — and is absent only when telemetry is switched
-off outright or replaying the fixture. The read cache warms at boot via `ensureFresh()`, so a
-restart with a warm database serves real data on the first request rather than a 202.
+| Concern | Code | Test |
+| --- | --- | --- |
+| Migration runner, boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts` |
+| Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
+| Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
+| Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
+| Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
+| db-suite harness: name guard, migrate, truncate and reseed per test | `server/test-db/harness.ts` | `server/test/test-db.harness.test.ts` |
 
-- **The offline suite needs no container, and that is a statement about persistence being the only
-  source, not about PostgreSQL.** `stubTelemetryClient()` in `server/test/helpers.ts` feeds the read
-  path a `TelemetryInput` directly, and the other features keep in-memory stores
-  (`memoryUserRepoStore()`, `memoryUserExecutorStore()`, `memoryEnvVarStore()`, `memoryAuthStore()`)
-  so `npm test` stays offline and database-free. Do not read the mandatory database as "tests need
-  a container".
-- **Applied migrations are never edited.** They are skipped by filename, so editing one changes
-  nothing for an existing database and only lies about how the schema got there. Every schema change
-  is a new file — 013 adding a check value and 023 removing the pull-request schema are the two
-  precedents.
-- **`001_init.sql` is the one exception to that rule, taken deliberately in #371.** It used to
-  `create extension timescaledb` and call `create_hypertable('metric_point', …)`; it now declares
-  `metric_point` `partition by range (time)` with a single DEFAULT partition, and the schema names
-  no extension at all — which is what lets `database.url` point at RDS or Aurora. It was rewritten
-  rather than converted by a new file because a converting migration would have to rebuild the
-  table under every existing database, and the project ships no backward compatibility
-  (`AGENTS.md`). **An existing data directory must be destroyed, and the symptom if it is not is a
-  container that never starts.** A directory initialised by `timescale/timescaledb` carries
-  `shared_preload_libraries = 'timescaledb'` in its own `postgresql.conf`, and `postgres:17` cannot
-  load that library — it exits at startup ("could not access file \"timescaledb\"") and compose
-  crash-loops the service. The schema would be stale regardless: 001 is already recorded in
-  `schema_migrations`, so an old database stays a hypertable and is never converted. So:
-  `docker compose down -v` before `docker compose up`, which discards `factory_dev` with the
-  volume. On a local cluster the same applies to the database claim, which survives `make stop` by
-  design — `make reset` deletes it, or, by hand, `helm uninstall factory-state` and then
+## Invariants
+
+- **Applied migrations are never edited.** They are skipped by filename, so an edit changes nothing
+  for an existing database. Every schema change is a new file; a feature's schema is removed by a
+  new `drop` migration (`023_drop_pull_requests.sql`), children listed before parents.
+- **Versioned migrations run before repeatable ones, regardless of filename order.** Otherwise a
+  new versioned file adding a column the views read fails purely on sort order.
+- **`*.repeatable.sql` files are re-applied every boot and drop their views first.** Recording them
+  would strand a view fix until a volume is deleted, and `create or replace` cannot retype a column.
+- **The schema names no extension** — `metric_point` is `partition by range (time)` with a single
+  DEFAULT partition, which is what lets `database.url` point at RDS or Aurora.
+- **Removing that DEFAULT partition breaks every write.** A range-partitioned table rejects any row
+  no partition covers, and neither writer can promise a range: `npm run backfill` imports
+  transcripts of arbitrary age and an OTLP client's clock can run ahead. Every unique index on the
+  table must keep `time` among its columns.
+- **Migrations are not awaited before `listen()`.** They retry with backoff while the database
+  container starts; every store gates its own queries on `ready` and degrades until then.
+- **`migrate()` also seeds the `AUTH_MODE=none` org and its stand-in account, and reaps expired
+  sessions, at boot only.** Those parts are TypeScript beside the `.sql` runner because a `.sql`
+  file cannot see the config; the read path checks `expires_at` regardless.
+- **Synthetic data reaches a database only through `npm run seed`, into a disposable one.** Both
+  halves matter: the seeding CLI refuses any name not ending `_seed`/`_synthetic`/`_demo`/`_e2e`/
+  `_test`, and `loadConfig` refuses a disposable name for a fetching (App-mode) process — the
+  `none` arm is exempt by construction, which is how seed and `verify:ui` run
+  ([configuration.md](configuration.md)).
+- **Every stored read is scoped by the repo list and by `org_id`**, or it renders another
+  organization's or another repo's sessions as this dashboard's.
+- A data directory initialised by `timescale/timescaledb` cannot start under `postgres:17` — it exits
+  with "could not access file \"timescaledb\"" and compose crash-loops; `docker compose down -v`
+  discards it. On a local cluster: `make reset`, or `helm uninstall factory-state` then
   `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=postgres`
-  (in that order: pvc-protection holds a claim its pod still mounts, and `make stop` leaves the
-  database running, so the delete alone sits in `Terminating` forever). The component half is not decoration: the instance label alone also matches
-  `factory-state-workspaces`, the checkouts claim, which this image change does not touch.
-  (`make reset` drops the whole local state on purpose, so it selects by instance alone.) Select the
-  claim by those labels rather than by name: it belongs to a StatefulSet's
-  `volumeClaimTemplate`, so it is called `data-<release>-postgres-0`. Leave it and the database pod
-  crash-loops after the image change. Disposable databases recreate themselves.
-- **`metric_point`'s DEFAULT partition is the whole partitioning strategy, and removing it breaks
-  every write.** A range-partitioned table rejects any row no partition covers — a failure mode the
-  hypertable did not have — and neither writer can promise a range: `npm run backfill` imports
-  transcripts of arbitrary age and an OTLP client's clock can run ahead of ours. Nothing prunes by
-  partition (the views filter on `time`; bucketing lives in core), so attaching real ranges later is
-  a performance decision, not a correctness one — and not a free one: `attach partition` **fails**
-  while the default holds a row the new range would cover, so it means moving those rows first.
-  Every unique index on the table must keep `time` among its columns — postgres requires the
-  partition key in each one, which is why `metric_point_dedup` was already legal.
-- **`023_drop_pull_requests.sql` is how a feature's schema is removed.** It drops
-  `pull_request`, its four `pr_*` children, and `branch_commit`, `branch_history`, `sync_state` and
-  `session_pr` — children listed before their parents, so the drops need no FK juggling. 004 and
-  005 stay in place: a fresh database applies them and then drops what they made, which is the
-  accepted cost of the filename-tracking rule. The telemetry tables and `002`'s views are untouched.
-- **`migrate()` also seeds the AUTH_MODE=none org and its stand-in account, once, at boot.** The
-  config-reading parts of the migration (the `AUTH_MODE=none` local org, the stand-in account) are
-  TypeScript beside the `.sql` runner for one reason: a `.sql` file cannot see the config, and
-  guessing wrong is silent.
-- **`migrate()` also reaps expired sessions**, at boot only. The read path checks `expires_at`
-  regardless, so this is about the table not growing without bound on a deployment whose users never
-  log out — not about enforcement.
-- **Migrations are not awaited before `listen()`.** They retry with backoff for the better part of a
-  minute while the database container starts, and blocking would hold the whole dashboard hostage to
-  it. Every store and the telemetry client gate their own queries on `ready` and degrade until then.
-- **Synthetic data reaches a database only through `npm run seed`, into a disposable one.** The
-  dangerous combination is inexpressible from two sides: the seeding CLI refuses any database whose
-  name does not end in `_seed`/`_synthetic`/`_demo`/`_e2e`/`_test`, and `loadConfig` refuses a
-  disposable database for every env-booted process. Both halves matter — one stops synthetic rows
-  landing in `factory_dev`, the other stops real history landing somewhere `npm run test:db` will
-  truncate.
-- **Every stored read is scoped by the repo list and the organization.** The repo list comes from the
-  GitHub App installation — or, with no credential, from the distinct repos already in
-  `session_branch` — and `org_id` partitions every session row. A read that ignored either would
-  render another partition's or another repo's sessions as this dashboard's.
-- **`035_default_workflow_settings.sql` stores absence, not defaults.** `user_workflow_default`
-  holds a row only for a member who has saved something; `createDefaultWorkflowSettingsStore().get()`
-  answers both switches `true` with a null `updatedAt` for a missing row and never inserts one, so
-  the default lives in one place — the read — instead of a column that would need migrating the day
-  the default changes. Keyed `(org_id, user_id)`, the same argument 012 made for `user_executor`.
-- **`040_user_executor_default.sql` was a flag on the row — retired by 047.** The difference WAS
-  `replace()`: `user_executor` is deleted and re-inserted wholesale on every PUT (012's header), so
-  a preference keyed by executor name in a separate table would lose its link on every save. That
-  argument died with the second ownership scope (issue 391): one org row is shared by every member,
-  so a member's default could not stay on the row at all. `047_executor_profile_scope.sql` reshapes
-  `user_executor` into `executor_profile` — nullable `user_id`, NULL the org scope (027's
-  sibling-scopes shape); a surrogate `id` with PK `(org_id, id)` because the old PK could not hold
-  a NULL; per-ownership name uniqueness by the coalesce index; `created_by` an audit fact on org
-  rows — backfills 040's flags into `user_executor_default` (one preference per member, keyed
-  `(org_id, user_id)`, holding `{ scope, name }` — name, not id, because the whole-list PUT still
-  severs id-keyed links), drops `is_default`, and stamps `job.executor_scope` beside the audit
-  label (null reads as `'user'`, the pre-391 meaning) with `workflow_round.executor_scope` riding
-  the block-wait park/wake copy.
-- **`044_job_failure_kind.sql` is one nullable text column, and that is the whole migration.**
-  `job.failure_kind` names a failed run's terminal reason (issue #339 — the six spellings and the
-  driver's precedence live in docs/jobs.md). No check constraint, unlike `status`: the database
-  never transitions this column — the verdict's overwrite is the only write, so the value boundary
-  is the route's validation, and a constraint would be a second list to keep in step. Null is
-  "not a failure" (a success, or a pre-column row) and there is no backfill, by the same reasoning
-  043 states: a historical tail usually does not name a kind, and guessing one would manufacture
-  history.
-- **`045_job_worktree_reclaimed.sql` is one nullable timestamp that replaces an absence the board
-  could not otherwise see.** `job.worktree_reclaimed_at` records that a thread's task worktree
-  removal has been ISSUED — stamped at the reclaim ack (whose row delete was the only trace, and
-  the trace deleted itself) and at a `threadDone`-true verdict (which orders the driver to remove
-  the tree directly, with no queue row at all). Without it, "done + all-terminal + no reclaim row"
-  was ambiguous between tree present and tree gone, and reopen (#327) would have had to guess
-  which. Null is "no removal was ever issued" — the only state reopen may reverse. Root rows only,
-  first-writer coalesce at both write sites; not on the `Job` read model, because reopen reads it
-  store-side and nothing else consumes it. The column starts at 045 — removals that ran before it
-  are unknowable and their threads reopen with a 200, recovering through branch recreation.
-- **`048_pr_merge_close.sql` is the merge ledger and the closure marker, and they are two tables
-  on purpose (issue #390).** `pr_merge` (one row per org/repo/PR number) is the delivery dedupe
-  AND the durable merge state: immutable, never deleted — not even by remove — because "this PR
-  merged" is history (the `github_delivery` precedent) and because a redelivery arriving after a
-  manual Reopen must hit the ledger conflict rather than re-close the thread. `job_merge_close`
-  (one row per org/thread root) is the opposite lifecycle: the reversible per-thread marker the
-  completing transition reads to rest instead of walking, deleted by reopen (the thread walks
-  again) and by remove (the rows it discriminates are gone). Splitting them is what lets one
-  merge event be once-forever while its effect on any one thread stays takeable-back.
-
-**Tradeoff worth knowing:** the SQL, the views and the migration runner have **no coverage in
-`npm test`**. That is the price of keeping the default suite offline and database-free; they are
-covered by `npm run test:db`, which needs a running container — and refuses any database not named
-`*_test`, because the suite resets and reseeds every table before each test. The suites share
-`server/test-db/harness.ts`: one `_test`-name guard, one migration run, one truncate-everything
-reset per test with the suite's declared fakes re-planted, and a final truncate teardown — so a
-fresh empty database works and no suite can quietly depend on rows a previous run left behind
-(which is how they once came to pass on a used database and fail on a fresh one).
+  in that order (pvc-protection holds a claim its pod still mounts). The component label keeps the
+  delete off the `factory-state-workspaces` checkouts claim.
+- **Stated limit:** the SQL, the views and the migration runner have no coverage in `npm test`; they
+  are covered by `npm run test:db`, which refuses any database not named `*_test`.
