@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import postgres from 'postgres';
-import { ADMIN_ROLE, MEMBER_ROLE } from '@factory-ai/core';
+import { ADMIN_ROLE } from '@factory-ai/core';
 import { AUTH_DATABASE_URL, E2E_LOGIN } from '../playwright.config.js';
 import { throughSignIn } from './signin.js';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
@@ -15,10 +15,11 @@ import { confirmLabel, confirmTitle } from '../web/src/panels/org-executor-confi
  * On the `auth` project, and it is the only board that can show this surface at all: the open board
  * deliberately has no ORG_WORKSPACE_ROOT, and `/api/workspace` answers a rootless deployment with
  * `orgExecutors: []`, so organization rows are invisible there however they got into the database.
- * The auth board has a real root — and its signed-in member is a member, because a materialized
- * membership takes the column default (010_auth.sql), and nothing in the product promotes one. So
- * the promotion below is test infrastructure, the same direct-SQL idiom as e2e/reset-db.mjs: the
- * role is read per request through the session join, so a reload is all it takes to see.
+ * The auth board has a real root — and its signed-in member is an admin, because the stub account
+ * is the installation's FIRST member and the bootstrap rule lands admin (#410). The setRole below
+ * is still test infrastructure — belt and braces over what sign-in now does, and the same
+ * direct-SQL idiom as e2e/reset-db.mjs; the role is read per request through the session join, so
+ * a reload is all it takes to see.
  *
  * Every profile this spec creates it also deletes, through the gate itself.
  */
@@ -53,13 +54,6 @@ async function setRole(role: string) {
         await sql.end();
     }
 }
-
-/**
- * Put back. The four auth specs share one board and one database, and `auth.spec.ts` asserts the
- * materialized membership reads `member` — a promotion left behind would fail it from here,
- * depending only on which order the files happened to run in.
- */
-test.afterAll(() => setRole(MEMBER_ROLE));
 
 async function asAdmin(page: Page) {
     await throughSignIn(page);

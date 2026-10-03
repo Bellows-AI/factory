@@ -57,6 +57,7 @@ or {
                 r"^['\"]EXECUTOR_NAME_CONFLICT['\"]$",
                 r"^['\"]FORBIDDEN['\"]$",
                 r"^['\"]JOBS_UNAVAILABLE['\"]$",
+                r"^['\"]LAST_ADMIN['\"]$",
                 r"^['\"]LEASE_LOST['\"]$",
                 r"^['\"]NAME_TAKEN['\"]$",
                 r"^['\"]NO_OPEN_WAIT['\"]$",

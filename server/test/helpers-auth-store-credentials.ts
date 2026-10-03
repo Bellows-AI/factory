@@ -283,6 +283,23 @@ function signInMethod(state: AuthState): Pick<MemoryAuthStore, 'signIn'> {
                 }
             }
 
+            // The admin bootstrap (issue 410), the same rule the SQL store runs beside its
+            // membership upsert: an org with no admin promotes this account's membership — its
+            // FIRST member is its admin, per organization, and a re-sign-in changes nothing.
+            // Accepted race, stated here as the SQL comment states it: two accounts signing into
+            // the same empty org concurrently can both land admin; an org whose last admin is
+            // swept re-promotes at the next sign-in.
+            for (const install of installations) {
+                const member = state.members.find((m) => m.orgId === install.id && m.userId === user.id);
+                if (
+                    member &&
+                    member.role === 'member' &&
+                    !state.members.some((m) => m.orgId === install.id && m.role === 'admin')
+                ) {
+                    member.role = 'admin';
+                }
+            }
+
             // The propagation half: memberships of ANY org GitHub does not report are gone, and
             // with them this account's reach into those orgs — legacy (pre-#99) orgs included,
             // since no installation will ever report them.

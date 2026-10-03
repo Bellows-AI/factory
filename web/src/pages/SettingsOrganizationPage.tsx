@@ -3,6 +3,7 @@ import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
+import { MembersSection } from '../panels/MembersSection.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
@@ -28,7 +29,7 @@ export function SettingsOrganizationPage() {
             {session ? (
                 <section className="panel">
                     {/* Identity, not authority: the display name and the role title. No internal id,
-                        and no powers inferred beyond what the API grants. */}
+                        no powers inferred beyond what the API grants. */}
                     <KeyValues
                         pairs={[
                             ['Organization', session.organization.name],
@@ -39,6 +40,10 @@ export function SettingsOrganizationPage() {
             ) : (
                 <p className="muted">Checking your session…</p>
             )}
+
+            {/* The roster and its role writes (issue 410): the section owns its state and CRUD,
+                the way OrgExecutorsSection does — the page composes. */}
+            <MembersSection session={session} />
 
             <ConfigurationScope scope="organization" />
 

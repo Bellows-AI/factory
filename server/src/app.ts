@@ -8,6 +8,7 @@ import type { InstallationRepo } from './github/app-client.js';
 import type { OrgRegistry } from './orgs.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
+import { orgMemberRoutes } from './routes/org-members.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -157,6 +158,9 @@ export async function buildApp({
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs }));
+    // The member roster and its role writes (issue 410), the same person-shaped surface: the
+    // caller's role decides, the store has no role of its own to check.
+    if (auth) await app.register(orgMemberRoutes({ store: auth }));
 
     if (config.webRoot) {
         const { default: fastifyStatic } = await import('@fastify/static');

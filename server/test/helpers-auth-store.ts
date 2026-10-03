@@ -234,6 +234,8 @@ export function membershipMethods(
     | 'seedOrg'
     | 'removeMembership'
     | 'removeMember'
+    | 'listMembers'
+    | 'setMemberRole'
     | 'findOrg'
     | 'membershipsOf'
     | 'localCaller'
@@ -320,6 +322,36 @@ export function membershipMethods(
             if (index === -1) return false;
             state.members.splice(index, 1);
             return true;
+        },
+
+        async listMembers(orgId) {
+            return state.members
+                .filter((m) => m.orgId === orgId)
+                .map((m) => {
+                    const user = state.users.find((u) => u.id === m.userId)!;
+                    return {
+                        githubLogin: m.login,
+                        userId: m.userId,
+                        role: m.role,
+                        invitedAt: m.invitedAt,
+                        claimedAt: m.claimedAt,
+                        lastLoginAt: user.lastLoginAt,
+                    };
+                })
+                .sort((a, b) => a.githubLogin.localeCompare(b.githubLogin));
+        },
+
+        async setMemberRole(orgId, userId, role) {
+            const member = state.members.find((m) => m.orgId === orgId && m.userId === userId);
+            if (!member) return 'missing';
+            // The last-admin refusal, the same rule the SQL statement encodes: a demotion that
+            // would leave the org with none is refused, row untouched.
+            if (role === 'member' && member.role === 'admin') {
+                const admins = state.members.filter((m) => m.orgId === orgId && m.role === 'admin');
+                if (admins.length <= 1) return 'last-admin';
+            }
+            member.role = role;
+            return 'updated';
         },
 
         async findOrg(orgId) {

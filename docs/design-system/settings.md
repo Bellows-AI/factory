@@ -58,6 +58,8 @@ selection, editing and scrolling at desktop and phone widths in both themes.
 | `WorkspaceExecutorsPanel.tsx` | panel, pill, table-wrap, data, muted |
 | `OrgExecutorsPanel.tsx` | panel, pill, table-wrap, muted, primary, data, table-cards, row-actions (via `RowActions`) — the organization executor profiles' read-only member view and the admin actions (issue 391), the actions cell recomposed on the row-actions pattern (issue 411) |
 | `OrgExecutorsSection.tsx` | composition over `OrgExecutorsPanel.tsx` + the shared `ExecutorDialog` and `OrgExecutorConfirmDialog` — no primitives beyond `panel`, `status` |
+| `MembersPanel.tsx` | panel, muted, table-wrap, data, table-cards — the member roster's table with a per-row role control (issue 410) |
+| `MembersSection.tsx` | composition over `MembersPanel.tsx`, owning the roster's state and CRUD — no primitives beyond `status`, `muted` |
 | `RowActions.tsx` | row-actions, row-actions-trigger, popover, popover-option, popover-separator, danger, icon — the shared row-actions primitive (issue 411), documented in [../design-system.md](../design-system.md) |
 | `OrgExecutorConfirmDialog.tsx` | dialog, task-remove, task-remove-title, task-remove-actions, chat-resume, chat-remove, primary |
 | `org-executor-confirm.ts` | helper — the confirmation copy and the single confirmed-write dispatch, no markup |

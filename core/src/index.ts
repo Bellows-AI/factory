@@ -17,7 +17,7 @@ export {
 export { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, JSON_HEADERS } from './http.js';
 export { COMMAND_LIMIT } from './limits.js';
 export type { Role } from './roles.js';
-export { ADMIN_ROLE, MEMBER_ROLE } from './roles.js';
+export { ADMIN_ROLE, MEMBER_ROLE, ROLES } from './roles.js';
 export { dayKey, dayStart, isoWeekKey, ratio, weekStart } from './metrics.js';
 export {
     ALL_TIME,
