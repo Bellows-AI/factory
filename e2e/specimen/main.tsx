@@ -5,6 +5,7 @@ import type { OrganizationMeta } from '@factory-ai/core';
 import { Icon } from '../../web/src/components/Icon.js';
 import { OrgSelector } from '../../web/src/components/OrgSelector.js';
 import { PageHeader } from '../../web/src/components/PageHeader.js';
+import { RowActions } from '../../web/src/components/RowActions.js';
 import { COLUMNS, cellId, LONG_LABEL, OPEN_SELECTOR_ORG, ROWS } from './matrix.js';
 import type { Column, Row } from './matrix.js';
 import '../../web/src/styles.css';
@@ -163,6 +164,23 @@ function TableRow({ selected, label }: { selected?: boolean; label: string }) {
     );
 }
 
+/** The real primitive (issue 411). The overflow panel is portalled, so the sheet shows the trigger. */
+function RowActionsCell({ name, disabled = false }: { name: string; disabled?: boolean }) {
+    return (
+        <RowActions
+            rowName={name}
+            // The name is the inline label too, so the Long-content column shows what the primitive
+            // does with one rather than hiding it in the trigger's accessible name.
+            primary={{ label: name === 'Main ORG' ? 'Edit' : name, onSelect: () => {} }}
+            actions={[
+                { label: 'Make personal', onSelect: () => {} },
+                { label: 'Delete', onSelect: () => {}, danger: true },
+            ]}
+            disabled={disabled}
+        />
+    );
+}
+
 const button = (className: string | undefined, label: string, busyLabel: string) =>
     ({
         Default: (
@@ -302,6 +320,11 @@ const CELLS: Record<Row, Partial<Record<Column, ReactNode>>> = {
         Default: <TableRow label="fix-login-redirect" />,
         Selected: <TableRow label="fix-login-redirect" selected />,
         'Long content': <TableRow label={LONG_LABEL} />,
+    },
+    'Row actions': {
+        Default: <RowActionsCell name="Main ORG" />,
+        Disabled: <RowActionsCell name="Main ORG" disabled />,
+        'Long content': <RowActionsCell name={LONG_LABEL} />,
     },
     Avatar: {
         Default: (

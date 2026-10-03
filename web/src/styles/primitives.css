@@ -477,6 +477,75 @@
         font-family: var(--font-mono);
     }
 
+    /* A row's actions, with a hierarchy (issue 411): the common action as a visible button, the
+        rest behind one overflow trigger whose panel is the shared `popover`. Shared rather than
+        lane-owned because the pattern is the table's, not any one page's — the repos, workflows
+        and members tables adopt it by rendering `RowActions`, not by re-deciding. */
+    .row-actions {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    /* The small square icon control, the shape `env-row-remove` already uses. The 36px desktop
+        floor is `button`'s and the 44px compact one is `table.data button`'s, in touch-targets. */
+    .row-actions-trigger {
+        align-items: center;
+        display: inline-flex;
+        justify-content: center;
+        padding: 0;
+        width: 36px;
+    }
+
+    /* Narrow widths reflow a row into a labeled card instead of pushing the table off the screen,
+        the way the env editor's own table does: the header row steps aside and each cell names
+        itself through its `data-label`. An opt-in class, so a table that wants the behavior asks
+        for it. */
+    @media (max-width: 640px) {
+        .table-cards tbody {
+            display: block;
+        }
+
+        .table-cards thead {
+            display: none;
+        }
+
+        .table-cards tr {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            display: block;
+            margin-bottom: 8px;
+            padding: 12px;
+        }
+
+        /* Qualified by `table.data`, not `.table-cards` alone: the cell base above is (0,1,2) and
+            would otherwise keep its hairline, its desktop padding and — the one that undoes the
+            whole reflow — `white-space: nowrap`, so a long name would still widen the scroll
+            region. `.env-vars` needs no such qualifier; it is not a `data` table. */
+        table.data.table-cards td {
+            border-bottom: none;
+            display: block;
+            padding: 4px 0;
+            text-align: left;
+            white-space: normal;
+            width: auto;
+        }
+
+        /* A profile name has no spaces to break at; the card may not widen the page for it. */
+        table.data.table-cards td:first-child {
+            overflow-wrap: anywhere;
+        }
+
+        .table-cards td[data-label]::before {
+            color: var(--ink-muted);
+            content: attr(data-label);
+            display: block;
+            font-size: 12px;
+        }
+    }
+
     .kv {
         display: grid;
         grid-template-columns: auto auto;
@@ -1123,6 +1192,13 @@
     .popover-option:hover,
     .popover-option[data-focus] {
         background: var(--accent-wash);
+    }
+
+    /* A destructive item keeps its own wash under the keyboard too: `button.danger`'s hover rule
+        only answers the pointer, so without this the red item reads red-on-accent under Tab and
+        red-on-`--bad-wash` under the mouse — the same item, two meanings. */
+    .popover-option.danger[data-focus] {
+        background: var(--bad-wash);
     }
 
     /* The selected row (an equivalent to the reference's checkmark): bolder text plus a trailing

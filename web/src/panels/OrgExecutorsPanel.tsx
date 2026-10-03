@@ -1,3 +1,4 @@
+import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
 import { EXECUTOR_GUIDANCE, executorTypeLabel } from '../workspace/executors.js';
 import type { OrgExecutor } from '../api/useWorkspace.js';
@@ -37,28 +38,25 @@ function OrgExecutorActions({
     onDemote: ((name: string) => void) | undefined;
     onMakeDefault: (name: string) => void;
 }) {
+    // The row's common action is the one the viewer does most: an admin edits, a member picks a
+    // default. Everything else collapses into the overflow, and the destructive Delete sorts last.
+    const makeDefault = isDefault ? null : { label: 'Make default', onSelect: () => onMakeDefault(executor.name) };
+    const edit = isAdmin && onEdit ? { label: 'Edit', onSelect: () => onEdit(executor.name) } : null;
+    // A member's overflow is empty, so the member sees one button and no trigger — never an empty
+    // menu. Make default joins the admin's overflow only when Edit took the inline slot from it.
+    const overflow: RowAction[] = isAdmin
+        ? [
+              ...(edit && makeDefault ? [makeDefault] : []),
+              ...(onDemote ? [{ label: DEMOTE_LABEL, onSelect: () => onDemote(executor.name) }] : []),
+              ...(onDelete ? [{ label: 'Delete', onSelect: () => onDelete(executor.name), danger: true }] : []),
+          ]
+        : [];
+    // No label on an empty cell: a member on the default row has no action, and the card reflow's
+    // `data-label` caption would otherwise write "Actions" over nothing at all.
+    const empty = !edit && !makeDefault && overflow.length === 0;
     return (
-        <td>
-            {isDefault ? null : (
-                <button type="button" disabled={saving} onClick={() => onMakeDefault(executor.name)}>
-                    Make default
-                </button>
-            )}
-            {isAdmin && onEdit ? (
-                <button type="button" disabled={saving} onClick={() => onEdit(executor.name)}>
-                    Edit
-                </button>
-            ) : null}
-            {isAdmin && onDemote ? (
-                <button type="button" disabled={saving} onClick={() => onDemote(executor.name)}>
-                    {DEMOTE_LABEL}
-                </button>
-            ) : null}
-            {isAdmin && onDelete ? (
-                <button type="button" disabled={saving} onClick={() => onDelete(executor.name)}>
-                    Delete
-                </button>
-            ) : null}
+        <td data-label={empty ? undefined : 'Actions'}>
+            <RowActions rowName={executor.name} primary={edit ?? makeDefault} actions={overflow} disabled={saving} />
         </td>
     );
 }
@@ -110,7 +108,9 @@ export function OrgExecutorsPanel({
             ) : (
                 // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
                 <section className="table-wrap" tabIndex={0} aria-label="Organization executors">
-                    <table className="data">
+                    {/* `table-cards`: at ≤640px the row reflows into a labeled card, the way the
+                        env table does, instead of pushing the actions off a phone's screen. */}
+                    <table className="data table-cards">
                         <thead>
                             <tr>
                                 <th scope="col">Name</th>
@@ -124,16 +124,16 @@ export function OrgExecutorsPanel({
                         <tbody>
                             {executors.map((executor) => (
                                 <tr key={executor.name}>
-                                    <td>
+                                    <td data-label="Name">
                                         {executor.name}
                                         {defaultName === executor.name ? (
                                             <p className="muted">{ORG_DEFAULT_CAPTION}</p>
                                         ) : null}
                                     </td>
-                                    <td>
+                                    <td data-label="Type">
                                         <span className="pill">{executorTypeLabel(executor.type)}</span>
                                     </td>
-                                    <td>{commitDate(executor.createdAt)}</td>
+                                    <td data-label="Added">{commitDate(executor.createdAt)}</td>
                                     <OrgExecutorActions
                                         executor={executor}
                                         isAdmin={isAdmin}

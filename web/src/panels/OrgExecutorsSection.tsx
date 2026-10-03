@@ -10,7 +10,9 @@ import {
 } from '../api/orgExecutors.js';
 import type { DefaultExecutor, OrgExecutor } from '../api/useWorkspace.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
+import { OrgExecutorConfirmDialog } from '../components/OrgExecutorConfirmDialog.js';
 import type { Session } from '../api/useSession.js';
+import { confirmedWrite, type OrgRowConfirm } from './org-executor-confirm.js';
 import { OrgExecutorsPanel } from './OrgExecutorsPanel.js';
 
 /**
@@ -55,6 +57,9 @@ export function OrgExecutorsSection({
     const isAdmin = session?.role === ADMIN_ROLE;
     const [dialog, setDialog] = useState<OrgDialogState | null>(null);
     const [list, setList] = useState<OrgExecutorFull[]>([]);
+    /** The pending ownership-changing action, or null: no confirmation, no write (issue 411). */
+    const [confirm, setConfirm] = useState<OrgRowConfirm | null>(null);
+    const [confirming, setConfirming] = useState(false);
 
     /** The dialog opens with the org list — configs included for an admin, one on-demand read. */
     const openDialog = async (editing: string | null) => {
@@ -112,6 +117,24 @@ export function OrgExecutorsSection({
         onRefresh();
     };
 
+    /**
+     * The confirmed write (issue 411): the only place Delete and Make personal reach their routes.
+     * A row click opens the confirmation and nothing else — both actions are org-wide and take the
+     * profile away from every other member, so neither may happen on one unguarded click.
+     */
+    const runConfirmed = async (): Promise<void> => {
+        if (!confirm) return;
+        setConfirming(true);
+        await withRow(confirm.name, (row) =>
+            confirmedWrite(confirm.action, row, {
+                remove: deleteOrgExecutor,
+                demote: (id) => changeOrgExecutorScope(id, 'user'),
+            })
+        );
+        setConfirming(false);
+        setConfirm(null);
+    };
+
     return (
         <>
             <OrgExecutorsPanel
@@ -121,11 +144,15 @@ export function OrgExecutorsSection({
                 defaultName={defaultExecutor?.scope === 'org' ? defaultExecutor.name : null}
                 onAdd={isAdmin ? () => void openDialog(null) : undefined}
                 onEdit={isAdmin ? (name) => void openDialog(name) : undefined}
-                onDelete={isAdmin ? (name) => void withRow(name, (row) => deleteOrgExecutor(row.id)) : undefined}
-                onDemote={
-                    isAdmin ? (name) => void withRow(name, (row) => changeOrgExecutorScope(row.id, 'user')) : undefined
-                }
+                onDelete={isAdmin ? (name) => setConfirm({ action: 'delete', name }) : undefined}
+                onDemote={isAdmin ? (name) => setConfirm({ action: 'demote', name }) : undefined}
                 onMakeDefault={(name) => void onMakeDefault('org', name).then((message) => message && onError(message))}
+            />
+            <OrgExecutorConfirmDialog
+                confirm={confirm}
+                busy={confirming}
+                onClose={() => setConfirm(null)}
+                onConfirm={() => void runConfirmed()}
             />
             <ExecutorDialog
                 open={dialog !== null}

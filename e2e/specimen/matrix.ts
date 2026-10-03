@@ -25,6 +25,7 @@ export const ROWS = [
     'Disclosure (closed)',
     'Disclosure (open)',
     'Table row',
+    'Row actions',
     'Avatar',
     'Kbd',
 ] as const;
