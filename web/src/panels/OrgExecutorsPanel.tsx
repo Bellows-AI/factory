@@ -94,7 +94,7 @@ export function OrgExecutorsPanel({
             </p>
             {onAdd ? (
                 <p>
-                    <button type="button" onClick={onAdd}>
+                    <button type="button" className="org-executor-add" onClick={onAdd}>
                         Add organization executor
                     </button>
                 </p>

@@ -76,7 +76,11 @@ export async function mockExecutors(
                 root: '/e2e/workspace',
                 executors,
                 orgExecutors: [],
-                defaultExecutor: held.executors.length > 0 ? E2E_DEFAULT_EXECUTOR : null,
+                // The server's own fallback chain (issue 391) resolves the default to the first
+                // personal row, so the mock names the row it actually holds — a fixed name would
+                // answer a default the list no longer carries.
+                defaultExecutor:
+                    held.executors.length > 0 ? { scope: 'user' as const, name: held.executors[0]!.name } : null,
                 ...withRepos,
             },
         });
