@@ -328,11 +328,13 @@ describe('organization access tokens: allowlist and reads', () => {
             expect(response.statusCode, `${method} ${url}`).toBe(expected);
         }
 
-        // Off the list — a person route, a management route, and the retired cache poke — is 403,
+        // Off the list — a person route, a management route, the member roster (person data the
+        // role routes gate on a human's role, issue 410), and the retired cache poke — is 403,
         // before the route runs (or, for /api/refresh, before there is a route to run at all).
         const refused: [string, string][] = [
             ['POST', '/api/jobs'],
             ['GET', '/api/tokens'],
+            ['GET', '/api/org/members'],
             ['POST', '/api/refresh'],
         ];
         for (const [method, url] of refused) {

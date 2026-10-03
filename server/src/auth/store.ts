@@ -1,4 +1,4 @@
-import type { Role } from '@factory-ai/core';
+import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
 import { hashToken, mintToken } from './session.js';
@@ -20,6 +20,17 @@ export interface AuthUser {
 export interface Membership {
     invitedAt: string | null;
     claimedAt: string | null;
+}
+
+/** One row of an organization's roster — what `GET /api/org/members` serves (issue 410). */
+export interface MemberView {
+    githubLogin: string;
+    /** The account's id; membership rows are keyed on it, and 029 made it NOT NULL. */
+    userId: string;
+    role: Role;
+    invitedAt: string | null;
+    claimedAt: string | null;
+    lastLoginAt: string | null;
 }
 
 /** One installation-reported organization, as the store sees it: the id and its login label. */
@@ -155,6 +166,21 @@ export interface AuthStore {
      * the account's next sign-in.
      */
     removeMember(orgId: string, githubUserId: number): Promise<boolean>;
+    /**
+     * The organization's roster — every membership of `orgId`, login-ordered (issue 410). An
+     * admin surface: the route gates it on the caller's role before this runs.
+     */
+    listMembers(orgId: string): Promise<MemberView[]>;
+    /**
+     * Sets one member's role. The last-admin refusal is IN the statement: the target's
+     * demotion is conditional on another admin existing, with every admin row locked
+     * `for update` first — two admins demoting each other concurrently serialize, and the
+     * second one counts the org the first left behind. An org with no admin is the exact
+     * hole this issue closes, so the refusal races no one. Outcomes: `updated` (the row now
+     * holds `role` — a no-op rewrite included), `last-admin` (refused, row untouched),
+     * `missing` (no such member of this org).
+     */
+    setMemberRole(orgId: string, userId: string, role: Role): Promise<'updated' | 'last-admin' | 'missing'>;
     /** The stand-in account AUTH_MODE=none attributes every request to. */
     localCaller(orgId: string): Promise<Caller | null>;
 
@@ -297,6 +323,23 @@ function buildIdentityMethods(
                 insert into org_membership (org_id, github_login, user_id, claimed_at)
                 select id, ${login}, ${userId}::uuid, now() from unnest(${orgIds}::text[]) as t(id)
                 on conflict (org_id, user_id) do update set github_login = excluded.github_login
+            `;
+
+            // The admin bootstrap (issue 410): an organization's FIRST materialized membership
+            // lands `admin` — per organization, not per deployment, and conditional on the org
+            // having no admin right now, so a re-sign-in neither demotes one nor promotes beside
+            // one. Accepted race, stated here on purpose: two accounts signing into the same
+            // empty org concurrently can both read "no admin" and both land admin — both are
+            // first-signers of an installation they can already see, and many admins stay legal.
+            // An org whose last admin is swept re-promotes here at the next sign-in, which is the
+            // same rule bootstrapping it in the first place.
+            await sql`
+                update org_membership m set role = ${ADMIN_ROLE}
+                from unnest(${orgIds}::text[]) as t(id)
+                where m.org_id = t.id and m.user_id = ${userId}::uuid and m.role = ${MEMBER_ROLE}
+                  and not exists (
+                      select 1 from org_membership a where a.org_id = t.id and a.role = ${ADMIN_ROLE}
+                  )
             `;
 
             // The materialized fact, re-synced at every sign-in: a membership of an organization
@@ -521,6 +564,76 @@ function buildOrgMethods(
 }
 
 /**
+ * The organization's roster and its role writes (issue 410): the admin surface the members
+ * section serves. Like everything in this store, the organization is a parameter — the caller's
+ * role is the route's question, the org scoping is this statement's.
+ */
+function buildMemberMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'listMembers' | 'setMemberRole'> {
+    return {
+        async listMembers(orgId) {
+            await gate();
+            // Inner join is safe: 029 made org_membership.user_id NOT NULL — there is no
+            // unclaimed invite for the join to miss.
+            const rows = await sql<
+                {
+                    github_login: string;
+                    user_id: string;
+                    role: Role;
+                    invited_at: Date | null;
+                    claimed_at: Date | null;
+                    last_login_at: Date | null;
+                }[]
+            >`
+                select m.github_login, m.user_id, m.role, m.invited_at, m.claimed_at, u.last_login_at
+                from org_membership m join app_user u on u.id = m.user_id
+                where m.org_id = ${orgId}
+                order by m.github_login
+            `;
+            return rows.map((row) => ({
+                githubLogin: row.github_login,
+                userId: row.user_id,
+                role: row.role,
+                invitedAt: toIso(row.invited_at),
+                claimedAt: toIso(row.claimed_at),
+                lastLoginAt: toIso(row.last_login_at),
+            }));
+        },
+
+        async setMemberRole(orgId, userId, role) {
+            await gate();
+            // One statement, race-safe: the `locked` CTE takes row locks on every admin of the
+            // org plus the target, so two admins demoting each other concurrently serialize —
+            // the second counts the org the first left behind and refuses, rather than leaving
+            // it admin-less. The overlapping lock sets can deadlock in principle; PostgreSQL
+            // then aborts one statement whole and `guard` answers a 503 — no partial state, and
+            // the retry is the caller's next click. The demotion runs only when it would not:
+            // promoting, demoting a member, or demoting an admin while another one is locked.
+            const rows = await sql<{ target: boolean; changed: boolean }[]>`
+                with locked as (
+                    select user_id, role from org_membership
+                    where org_id = ${orgId} and (role = ${ADMIN_ROLE} or user_id = ${userId}::uuid)
+                    for update
+                ),
+                demoted as (
+                    update org_membership m set role = ${role}
+                    where m.org_id = ${orgId} and m.user_id = ${userId}::uuid
+                      and (${role} <> ${MEMBER_ROLE}
+                           or m.role <> ${ADMIN_ROLE}
+                           or (select count(*) from locked where role = ${ADMIN_ROLE}) > 1)
+                    returning m.user_id
+                )
+                select exists (select 1 from locked where user_id = ${userId}::uuid) as target,
+                       exists (select 1 from demoted) as changed
+            `;
+            const row = rows[0];
+            if (!row) return 'missing';
+            if (row.changed) return 'updated';
+            return row.target ? 'last-admin' : 'missing';
+        },
+    };
+}
+
+/**
  * Access tokens (fat_/oat_). Each row carries the org it was minted for, and resolves through the
  * same org_membership join a session does, so removing a member ends their tokens' reach on the
  * very next request.
@@ -679,6 +792,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         ...buildTrackedRepoMethods(sql, gate),
         ...buildSessionMethods(sql, gate),
         ...buildOrgMethods(sql, gate),
+        ...buildMemberMethods(sql, gate),
         ...buildTokenMethods(sql, gate),
     };
 }

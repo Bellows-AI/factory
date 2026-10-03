@@ -305,10 +305,11 @@ test("sign-in materializes the chosen installation as the member's organization"
     const me = await page.request.get('/api/auth/me');
     expect(me.status()).toBe(200);
     // The chosen installation was materialized as the member's organization — the org, the
-    // membership and the session's binding to it, no invite anywhere in the flow (#99).
+    // membership and the session's binding to it, no invite anywhere in the flow (#99). This
+    // account is the installation's FIRST member, so its membership lands `admin` (#410).
     expect(await me.json()).toMatchObject({
         user: { login: 'e2e-user' },
-        role: 'member',
+        role: 'admin',
         organization: { id: chosen.id, name: chosen.account },
         organizations: [{ id: chosen.id, name: chosen.account }],
         mode: 'github',

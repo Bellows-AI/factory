@@ -504,6 +504,150 @@ describe.skipIf(!enabled)('the local org (AUTH_MODE=none)', () => {
     });
 });
 
+describe.skipIf(!enabled)('the admin bootstrap (issue 410)', () => {
+    const roleOf = async (userId: string, orgId = ORG): Promise<string | null> => {
+        const [row] = await sql<{ role: string }[]>`
+            select role from org_membership where org_id = ${orgId} and user_id = ${userId}
+        `;
+        return row?.role ?? null;
+    };
+
+    it('the first member of an organization is its admin', async () => {
+        const caller = await member(40, 'first-here');
+        expect(caller.role).toBe('admin');
+        expect(await roleOf(caller.user.id)).toBe('admin');
+    });
+
+    it('the second account into the same org lands member', async () => {
+        await member(41, 'first-here');
+        const second = await member(42, 'second-here');
+        expect(second.role).toBe('member');
+        const [admins] = await sql<{ count: number }[]>`
+            select count(*)::int as count from org_membership where org_id = ${ORG} and role = 'admin'
+        `;
+        expect(admins?.count).toBe(1);
+    });
+
+    it('is per organization: first into one installation, late into another', async () => {
+        // One account may be the first signer of one installation and the fifth of another — the
+        // rule keys on the org having no admin, never on the deployment.
+        const first = await member(43, 'early-adopter', [{ id: ORG, name: ORG }]);
+        const late = await member(44, 'late-adopter', [{ id: SECOND_ORG, name: SECOND_ORG }]);
+
+        // Now the late account also selects the org the early one already administers.
+        await store.signIn(identity(44, 'late-adopter'), ORG, [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
+
+        expect(first.role).toBe('admin');
+        expect(await roleOf(first.user.id, ORG)).toBe('admin');
+        // Admin of its own first org; plain member of the org that already had one.
+        expect(await roleOf(late.user.id, SECOND_ORG)).toBe('admin');
+        expect(await roleOf(late.user.id, ORG)).toBe('member');
+    });
+
+    it('a re-sign-in neither demotes an admin nor promotes beside an existing one', async () => {
+        const admin = await member(45, 'stays-admin');
+        const plain = await member(46, 'stays-member');
+
+        await store.signIn(identity(45, 'stays-admin'), ORG, [{ id: ORG, name: ORG }]);
+        await store.signIn(identity(46, 'stays-member'), ORG, [{ id: ORG, name: ORG }]);
+
+        expect(await roleOf(admin.user.id)).toBe('admin');
+        expect(await roleOf(plain.user.id)).toBe('member');
+    });
+
+    it('an org left admin-less re-promotes at the next sign-in', async () => {
+        // The sweep deletes memberships GitHub no longer reports; if that takes the last admin,
+        // the org is not stranded — the same rule that bootstrapped it re-arms on the next
+        // sign-in (docs/auth.md).
+        const admin = await member(47, 'leaving-admin');
+        const remaining = await member(48, 'remaining-member');
+
+        expect(await store.removeMember(ORG, admin.user.githubUserId)).toBe(true);
+        await store.signIn(identity(48, 'remaining-member'), ORG, [{ id: ORG, name: ORG }]);
+
+        expect(await roleOf(remaining.user.id)).toBe('admin');
+    });
+});
+
+describe.skipIf(!enabled)('member role management (issue 410)', () => {
+    it('promotes and demotes a member, and the row follows', async () => {
+        const admin = await member(50, 'the-admin');
+        const memberUser = await member(51, 'the-member');
+
+        await expect(store.setMemberRole(ORG, memberUser.user.id, 'admin')).resolves.toBe('updated');
+        expect(await store.listMembers(ORG)).toEqual(
+            expect.arrayContaining([expect.objectContaining({ userId: memberUser.user.id, role: 'admin' })])
+        );
+
+        await expect(store.setMemberRole(ORG, memberUser.user.id, 'member')).resolves.toBe('updated');
+        expect(await store.listMembers(ORG)).toEqual(
+            expect.arrayContaining([expect.objectContaining({ userId: memberUser.user.id, role: 'member' })])
+        );
+        // The caller's own row is untouched by the round trip.
+        expect(await store.listMembers(ORG)).toEqual(
+            expect.arrayContaining([expect.objectContaining({ userId: admin.user.id, role: 'admin' })])
+        );
+    });
+
+    it('refuses to demote the last admin', async () => {
+        const admin = await member(52, 'last-admin-here');
+        await member(53, 'plain-member');
+
+        await expect(store.setMemberRole(ORG, admin.user.id, 'member')).resolves.toBe('last-admin');
+        expect(await store.listMembers(ORG)).toEqual(
+            expect.arrayContaining([expect.objectContaining({ userId: admin.user.id, role: 'admin' })])
+        );
+    });
+
+    it('allows demoting yourself while another admin exists', async () => {
+        const first = await member(54, 'first-admin');
+        const second = await member(55, 'second-admin');
+
+        await expect(store.setMemberRole(ORG, second.user.id, 'member')).resolves.toBe('updated');
+        expect(await store.listMembers(ORG)).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ userId: second.user.id, role: 'member' }),
+                expect.objectContaining({ userId: first.user.id, role: 'admin' }),
+            ])
+        );
+    });
+
+    it('answers missing for a user outside the org', async () => {
+        const outsider = await member(56, 'elsewhere-org-admin', [{ id: SECOND_ORG, name: SECOND_ORG }]);
+        await member(57, 'org-admin');
+
+        await expect(store.setMemberRole(ORG, outsider.user.id, 'member')).resolves.toBe('missing');
+    });
+
+    it('lists the roster of one org only, login-ordered, with the fields the route serves', async () => {
+        const admin = await member(58, 'roster-admin', [
+            { id: ORG, name: ORG },
+            { id: SECOND_ORG, name: SECOND_ORG },
+        ]);
+        const other = await member(59, 'roster-member');
+
+        const members = await store.listMembers(ORG);
+        expect(members.map((m) => m.githubLogin)).toEqual(['roster-admin', 'roster-member']);
+        for (const row of members) {
+            expect(typeof row.userId).toBe('string');
+            expect(['admin', 'member']).toContain(row.role);
+            expect(row.invitedAt).not.toBeNull();
+            expect(row.claimedAt).not.toBeNull();
+            expect(row.lastLoginAt).not.toBeNull();
+        }
+        // The other org's membership of the same account does not leak into this list.
+        expect(members).toHaveLength(2);
+        expect(members[0]!.userId).toBe(admin.user.id);
+        expect(members[1]!.userId).toBe(other.user.id);
+
+        const elsewhere = await store.listMembers(SECOND_ORG);
+        expect(elsewhere.map((m) => m.githubLogin)).toEqual(['roster-admin']);
+    });
+});
+
 describe.skipIf(!enabled)('the migration runner', () => {
     it('keeps a membership from existing without an account — invites are gone, irrecoverably', async () => {
         // 029 set user_id NOT NULL and re-keyed the table. The row type this suite used to spend

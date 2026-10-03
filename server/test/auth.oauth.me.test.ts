@@ -51,7 +51,8 @@ describe('/api/auth/me', () => {
                 githubUserId: 4242,
                 avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png',
             },
-            role: 'member',
+            // The org's FIRST member signs in as its admin (issue 410) — the bootstrap rule.
+            role: 'admin',
             account: { createdAt: expect.any(String), lastLoginAt: expect.any(String) },
             // The org the session is bound to — the first installation — and both options.
             organization: { id: ORG, name: 'acme' },

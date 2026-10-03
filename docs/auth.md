@@ -61,7 +61,9 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   person what to track (see The OAuth flow); one installation signs straight in; a stored choice
   is reused without re-prompting, and the membership rows ARE that stored choice — "has a
   selection" and "has memberships" are the same fact, so an abandoned screen leaves nothing
-  behind. There is no invite, no auto-join flag, no bootstrap admin, and no roster sweep: what
+  behind. There is no invite and no auto-join flag. What a first sign-in DOES carry since #410
+  is the bootstrap rule below: an organization's first materialized membership lands `admin`.
+  And there is no roster sweep beyond the sign-in one: what
   the selection materialized at the last sign-in IS the materialized fact — and since #123, the
   sweep at sign-in deletes a membership of ANY org outside the passed selection, whether because
   GitHub stopped reporting it or because the account deselected it: one predicate, two meanings
@@ -97,13 +99,29 @@ opening sentence was that the `127.0.0.1` bind *is* the access control — which
   membership decision and an unscoped token reports none — every sign-in would be bounced to the
   install page with nothing to say why. The scope is org-level only: sign-in still reads no
   repository data, which is what the OAuth-vs-App split below is for.
-- **Roles survived as a column until issue 391 gave them their consumer.** GitHub's org role is
-  not mapped onto Factory's, so sign-in materializes `member` rows and an operator promotes an
-  administrator by hand. The first gate that reads `role` is the organization executor profiles'
-  CRUD (issue 391): only a current `admin` may create, edit, rename, delete or re-scope an org
-  profile, and every member may select one. Nothing else changed — the org-token mint and the
-  env-wide scopes still carry no admin gate, and installation access remains one trust level
-  everywhere else.
+- **Roles survived as a column until issue 391 gave them their consumer; issue 410 gave them
+  their writer.** GitHub's org role is not mapped onto Factory's, and an operator never promotes
+  an administrator by hand any more — the bootstrap rule writes it. **An organization's FIRST
+  materialized membership lands `admin`**, per organization rather than per deployment (one
+  account may be first into one installation and fifth into another): `signIn` runs a promotion
+  beside its membership upsert, conditional on the org having no admin right now, so a
+  re-sign-in neither demotes an admin nor promotes beside one. Two accounts signing into the
+  same empty org concurrently can both read "no admin" and both land admin — accepted, and
+  stated here rather than left to be discovered: both are first-signers of an installation they
+  can already see, and many admins stay legal afterwards (no partial unique index, by the same
+  token). The sign-in sweep can take an org's last admin; the org is not stranded — the next
+  sign-in re-promotes under the same rule, which is the behavior wanted, not an accident to
+  patch. The admins' surface over the rest of the roster is `GET /api/org/members` and
+  `PUT /api/org/members/:userId/role` (docs/api.md), served from `/settings/organization`; the
+  one refusal with its own code is the demotion of an org's LAST admin (`409 LAST_ADMIN`) — an
+  org with no admin can only be fixed by SQL again, which is the hole #410 closes, so the API
+  never opens it; demoting yourself while another admin exists is allowed. The role is read
+  fresh per request through the `org_membership` join — never cached on the session row — so a
+  change bites the target's very next request, with no re-login. The first gate that reads
+  `role` was the organization executor profiles' CRUD (issue 391): only a current `admin` may
+  create, edit, rename, delete or re-scope an org profile, and every member may select one.
+  Nothing else changed — the org-token mint and the env-wide scopes still carry no admin gate,
+  and installation access remains one trust level everywhere else.
 - **`github_login` is stored lowercase**, because GitHub logins are case-insensitive and a match
   must survive case differences between what a report says and what the identity endpoint returned.
 - **`app_user` and `session` are global; only `org_membership` leads with `org_id`.**

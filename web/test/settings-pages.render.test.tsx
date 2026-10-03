@@ -167,6 +167,30 @@ describe('Settings organization page', () => {
         expect(html).not.toContain('No variables configured.');
         expect(html).not.toContain('Add variable');
     });
+
+    it('carries the members section for an admin of a github-mode deployment (issue 410)', () => {
+        const html = render('/settings/organization', {
+            session: { ...session, mode: 'github', role: 'admin' },
+        });
+        // Effects never fire under a static render: the section is at its loading posture, which
+        // is the renderable proof it mounted. The row work is members-panel's suite.
+        expect(html).toContain('Loading members…');
+    });
+
+    it('renders no member table for a member — the roster read is admin-gated, so the section fetches nothing', () => {
+        const html = render('/settings/organization', {
+            session: { ...session, mode: 'github', role: 'member' },
+        });
+        expect(html).toContain('Member roles are managed by your organization');
+        expect(html).not.toContain('<table');
+        expect(html).not.toContain('Loading members…');
+    });
+
+    it('renders no members section at all under AUTH_MODE=none — no session, no role', () => {
+        const html = render('/settings/organization', { session: { ...session, mode: 'none' } });
+        expect(html).not.toContain('Member roles are managed');
+        expect(html).not.toContain('Loading members…');
+    });
 });
 
 describe('Settings workspace page', () => {
