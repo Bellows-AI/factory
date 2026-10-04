@@ -62,8 +62,10 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
 ## Phase 3 — Implement, TDD
 
 The suite commands here are `npm test` (vitest, offline) and `npm run typecheck`. Single file:
-`npx vitest run <path>`. Style is enforced by biome — run `npm run lint` before committing, and
-`npm run lint:fix` (or `npm run format` for pure format drift) to settle what it flags.
+`npx vitest run <path>`. Style is enforced by biome — run `npm run lint:changed` before
+committing (only the files the branch touched, at low CPU priority; never the whole-repo
+`npm run lint`, which CI runs), and `npm run lint:changed -- --write` (or `npm run format` for pure
+format drift) to settle what it flags.
 
 In order:
 
@@ -122,7 +124,7 @@ Then:
      where it touched the same lines as the fix, combine both intents (re-read the issue and the
      planner output if the intent is unclear — that is a stop condition, not a guess).
    - After every merge — clean, fast-forward or conflict-resolved — re-run `npm test`,
-     `npm run typecheck` and `npm run lint`.
+     `npm run typecheck` and `npm run lint:changed`.
    - Record the pre-merge commit (`git rev-parse HEAD`) before each merge.
    - If conflict resolution fails while the merge is still in progress, run `git merge --abort`,
      fetch again (the default branch may have moved under you), and spend the second attempt.
@@ -165,8 +167,8 @@ round = one wait, one fetch, one address cycle:
      ambiguity gate: STOP and ask the user. Never invent a resolution.
    - **PR-level comments and review-summary bodies** (the skill covers line comments only): judge
      each point yourself. Fix what is real with the full Phase 3 discipline — RED test first,
-     minimal fix, `npm test` + `npm run typecheck` + `npm run lint` — and run one Phase 4 reviewer
-     round on the new diff before pushing.
+     minimal fix, `npm test` + `npm run typecheck` + `npm run lint:changed` — and run one Phase 4
+     reviewer round on the new diff before pushing.
 4. Every addressed comment gets a reply saying what was fixed and how — never a bare
    "fixed in <sha>". github-review-fix posts its own; for the ones you handled:
    `gh pr comment <PR_NUMBER> --body "✅ Fixed in <sha> — <what changed and why>"`. Each push

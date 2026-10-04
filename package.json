@@ -32,6 +32,7 @@
         "verify:ui": "playwright test",
         "typecheck": "tsc -b",
         "lint": "biome check .",
+        "lint:changed": "sh scripts/lint-changed.sh",
         "format": "biome format --write .",
         "lint:fix": "biome check --write .",
         "backfill": "npm run build -w core && npm run build -w server && node server/dist/backfill/cli.js",
