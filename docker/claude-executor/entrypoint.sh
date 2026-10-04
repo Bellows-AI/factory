@@ -67,12 +67,14 @@ CLAUDE_JSON="$CLAUDE_CONFIG_DIR/.claude.json" node -e "
 # the site's REST base on the api.atlassian.com gateway, the only host a scoped (service-account)
 # token authenticates against; acli only takes unscoped tokens. The cloud id comes from the site's
 # public tenant_info. A failed lookup does not fail the run: most tasks never touch Jira, and the
-# jira skill tells the agent to stop and report when JIRA_API is missing.
+# jira skill tells the agent to stop and report when JIRA_API is missing. JIRA_API is derived here,
+# never inherited: a stale one would send the token wherever it points.
+unset JIRA_API
 if [ -n "${ATLASSIAN_SITE:-}" ] && [ -n "${ATLASSIAN_EMAIL:-}" ] && [ -n "${ATLASSIAN_API_TOKEN:-}" ]; then
     jira_host=${ATLASSIAN_SITE#*://}
     jira_host=${jira_host%%/*}
     jira_cloud_id=$(curl -fsS --proto '=https' -m 10 "https://$jira_host/_edge/tenant_info" 2>/dev/null \
-        | sed -n 's/.*"cloudId":"\([^"]*\)".*/\1/p')
+        | node -e "try { const id = JSON.parse(require('fs').readFileSync(0, 'utf8')).cloudId; if (typeof id === 'string') process.stdout.write(id); } catch {}")
     if [ -n "$jira_cloud_id" ]; then
         export JIRA_API="https://api.atlassian.com/ex/jira/$jira_cloud_id/rest/api/3"
     else

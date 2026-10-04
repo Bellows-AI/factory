@@ -477,15 +477,23 @@ describe('the entrypoint Jira gateway', () => {
     };
     const CLOUD_ID = 'bc18dcc3-123a-4216-a5a2-4f7b0e55b297';
     const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
+    /** Any valid JSON layout of tenant_info yields the cloud id. */
+    const TENANT_BODIES = {
+        compact: `{"cloudId":"${CLOUD_ID}"}`,
+        spaced: `{ "cloudId" : "${CLOUD_ID}" }`,
+        multiline: `{\n  "cloudId": "${CLOUD_ID}"\n}\n`,
+    };
+    /** A JIRA_API the claim env carried in: the entrypoint derives the name, never inherits it. */
+    const STALE_JIRA_API = 'https://stale.example/rest/api/3';
 
-    it.each(ENTRYPOINTS)(
-        '%s exports JIRA_API from the site tenant_info',
-        async (entrypoint) => {
+    it.each(ENTRYPOINTS.flatMap((entrypoint) => Object.keys(TENANT_BODIES).map((layout) => [entrypoint, layout])))(
+        '%s exports JIRA_API from a %s site tenant_info',
+        async (entrypoint, layout) => {
             const sandbox = makeSandbox();
             try {
                 const child = runEntrypoint(entrypoint, sandbox, {
                     ...ATLASSIAN_ENV,
-                    CURL_BODY: `{"cloudId":"${CLOUD_ID}"}`,
+                    CURL_BODY: TENANT_BODIES[layout as keyof typeof TENANT_BODIES],
                 });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
                 const argv = readFileSync(join(sandbox.bin, 'curl-argv'), 'utf8').trimEnd().split('\n');
@@ -508,6 +516,7 @@ describe('the entrypoint Jira gateway', () => {
             try {
                 const child = runEntrypoint(entrypoint, sandbox, {
                     ...ATLASSIAN_ENV,
+                    JIRA_API: STALE_JIRA_API,
                     CURL_BODY: '<!DOCTYPE html>',
                     CURL_STATUS: '22',
                     STUB_STATUS: String(STUB_EXIT_CODE),
@@ -528,7 +537,7 @@ describe('the entrypoint Jira gateway', () => {
             const sandbox = makeSandbox();
             try {
                 const { ATLASSIAN_API_TOKEN: _omitted, ...partial } = ATLASSIAN_ENV;
-                const child = runEntrypoint(entrypoint, sandbox, partial);
+                const child = runEntrypoint(entrypoint, sandbox, { ...partial, JIRA_API: STALE_JIRA_API });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
                 expect(existsSync(join(sandbox.bin, 'curl-argv'))).toBe(false);
                 expect(readFileSync(join(sandbox.bin, 'jira-api'), 'utf8')).toBe('unset');
@@ -782,6 +791,21 @@ describe('the shared executor skills', () => {
             }
         }
         expect(builds).toBeGreaterThan(0);
+    });
+
+    // An argv is world-readable in a process listing, so the token reaches curl as a config on
+    // stdin from printf, a shell builtin that never execs.
+    it('the jira skill keeps the token out of every curl argv', () => {
+        const text = read(`${SKILLS}/jira/SKILL.md`);
+        const fences = text.match(/^```bash\n[\s\S]*?^```$/gm)?.join('\n') ?? '';
+        const curls = fences.match(/^.*\bcurl\b.*$/gm) ?? [];
+        expect(curls.length).toBeGreaterThan(0);
+        for (const line of curls) {
+            expect(line).toMatch(
+                /^printf 'user = "%s:%s"\\n' "\$ATLASSIAN_EMAIL" "\$ATLASSIAN_API_TOKEN" \| curl -K - /
+            );
+        }
+        expect(text).not.toMatch(/-u "\$ATLASSIAN_EMAIL/);
     });
 
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {

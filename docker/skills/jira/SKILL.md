@@ -14,26 +14,28 @@ Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key a
 
 ## Commands
 
-Every call is one self-contained command; shell state does not carry between them.
+Every call is one self-contained command; shell state does not carry between them. Credentials
+reach curl as a config on stdin from `printf`, a shell builtin, because an argv shows in any
+process listing — never pass the token through `-u` or in a URL.
 
 ```bash
 # Full detail, including the comment thread
-curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Accept: application/json' \
+printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' \
     "$JIRA_API/issue/<KEY>?fields=summary,description,status,issuetype,parent,fixVersions,components,labels,comment"
 
 # Search by JQL
-curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Accept: application/json' -G \
+printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' -G \
     --data-urlencode "jql=project = ABC AND status = 'In Progress' ORDER BY updated DESC" \
     --data-urlencode "fields=summary,status,issuetype,parent,fixVersions,components,labels" \
     "$JIRA_API/search/jql"
 
 # Comment — the body is Atlassian Document Format, not plain text
-curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Content-Type: application/json' \
+printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
     -X POST "$JIRA_API/issue/<KEY>/comment" \
     -d '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"..."}]}]}}'
 
 # Create
-curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Content-Type: application/json' \
+printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
     -X POST "$JIRA_API/issue" \
     -d '{"fields":{"project":{"key":"ABC"},"issuetype":{"name":"Task"},"summary":"..."}}'
 ```
