@@ -365,3 +365,21 @@ describe('primarySessionId', () => {
         expect(primarySessionId(null, rows)).toBe('s1');
     });
 });
+
+describe('nextTransition: a follow-up completing beside a live graph row', () => {
+    it.each(['queued', 'running'])('rests thread_busy while a graph row is %s', (status) => {
+        const output = 'extra work\nVERDICT: BLOCKERS';
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot,
+            rows: [
+                row({ id: 'a', node: 'review', output: 'blockers listed\nVERDICT: BLOCKERS' }),
+                row({ id: 'g', node: 'fix', status, output: null }),
+                row({ id: 'c', node: null, output }),
+            ],
+            completed: done({ id: 'c', node: null, output }),
+        });
+        expect(t).toEqual({ action: 'rest', reason: 'thread_busy' });
+    });
+});

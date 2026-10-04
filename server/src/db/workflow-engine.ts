@@ -22,6 +22,8 @@ import {
 } from './workflow-schema.js';
 
 /** What the engine needs to know about one thread row, oldest first. The store reads this shape. */
+const LIVE_STATUSES: ReadonlySet<string> = new Set(['queued', 'running']);
+
 export interface EngineRow {
     id: string;
     /** The row's graph position; null on an off-graph row (a user follow-up, or a pre-027 job). */
@@ -65,6 +67,9 @@ export interface CompletedRun {
  *                       (`FACTORY_BLOCKED:`) — a human must act; no edge, custom `failed` included.
  * - `no_progress`       the matched rule is `gate-failed` and the run left the tree unchanged:
  *                       a gate-fix round over the same tree can only fail the same way.
+ * - `thread_busy`       an off-graph follow-up completed while a graph row of the thread is still
+ *                       queued or running: that row owns the next step, and a second insert would
+ *                       fork the thread (two gate-fix rows, the round budget burned twice).
  */
 export type RestReason =
     | 'off_graph'
@@ -73,7 +78,8 @@ export type RestReason =
     | 'command_too_large'
     | 'no_publication'
     | 'blocked'
-    | 'no_progress';
+    | 'no_progress'
+    | 'thread_busy';
 
 export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }
@@ -128,6 +134,9 @@ export function nextTransition(input: {
     // The graph position the completion happens AT: the completed row's own node, or — an
     // off-graph user follow-up completing — the halted node, the thread's newest carried node
     // (design.md Decision 8): the human's extra work sits at the node, then the graph continues.
+    if (input.completed.node === null && hasLiveGraphRow(input.rows, input.completed.id)) {
+        return { action: 'rest', reason: 'thread_busy' };
+    }
     const halted = input.completed.node ?? haltedNode(input.rows, input.completed.id);
     if (halted === null) return { action: 'rest', reason: 'off_graph' };
     if (input.completed.failureKind === 'blocked') return { action: 'rest', reason: 'blocked' };
@@ -182,6 +191,11 @@ function followEdge(
         session: target.session,
         publish: target.publish === true,
     };
+}
+
+/** True when another graph row of the thread is queued or running — it, not the completed row, owns the next step. */
+function hasLiveGraphRow(rows: EngineRow[], completedId: string): boolean {
+    return rows.some((row) => row.id !== completedId && row.node !== null && LIVE_STATUSES.has(row.status));
 }
 
 /** The thread's newest row that carries a node, excluding the completed row itself. */
