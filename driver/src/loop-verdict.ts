@@ -170,7 +170,8 @@ export function verdictFailureKind(
     if (finish.blocked !== null) return 'blocked';
     if (finish.deadServices.length > 0) return 'services';
     if (finish.failure) return 'gate';
-    if (finish.helperFailure) return 'helper';
+    // Post-helpers run after an unclean run too, so a non-zero exit is named before the helper.
+    if (finish.helperFailure) return finish.outcome.exitCode !== 0 ? 'runner_error' : 'helper';
     if (publishUnlanded) return 'publish';
     // Everything else that lands failed — a non-zero exit, a premature finish, a refused
     // `.bellows.yaml` — is the runner erroring. A success carries no kind at all.

@@ -31,7 +31,7 @@ built-in block list is `workflow-blocks/index.ts`'s registry. Read those, not a 
 | Session policy and the follow-up's primary-session copy | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.sessions.test.ts` |
 | Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql`, `039_default_workflow_snapshot.sql`, `043_job_default_gate_fix_rounds.sql` | `server/test-db/job-store.workflow.frozen-name.test.ts`, `job-store.workflow.params.test.ts` |
 | Stop/done/remove against a workflow thread | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.control.test.ts` |
-| The driver's one publish gate | `driver/src/loop.ts` | `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
+| The driver's one publish gate | `driver/src/loop-verdict.ts` | `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | The blocks' driver-side helper scripts | `driver/src/review-helpers.ts`, `driver/src/scripts/merge-conflict-probe.cjs`, `review-collect.cjs`, `review-reply.cjs` | `driver/test/review-helpers.test.ts`, `merge-conflict-probe-script.test.ts`, `scripts.test.ts` |
 | Composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/components/WorkflowParameterFields.tsx`, `web/src/api/useWorkflows.ts` | `web/test/use-workflows.test.ts` |
 | Management panel and the default-step settings page | `web/src/panels/WorkflowsPanel.tsx`, `DefaultWorkflowPanel.tsx`, `web/src/pages/SettingsWorkflowsPage.tsx` | `web/test/workflows-panel.render.test.tsx`, `default-workflow.render.test.tsx`, `default-workflow-draft.test.ts` |

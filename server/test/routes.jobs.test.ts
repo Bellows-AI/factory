@@ -2654,6 +2654,19 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(response.json().code).toBe('BAD_FAILURE_KIND');
     });
 
+    it.each(['blocked', 'gate', 'services'])('refuses status succeeded with failureKind %s', async (failureKind) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            status: 'succeeded',
+            failureKind,
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_FAILURE_KIND');
+        expect(store.completed).toEqual([]);
+    });
+
     it('rejects a report from a worker whose lease was reclaimed', async () => {
         const instance = await harnessWith(stubStore({ verdict: 'lost' }));
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);

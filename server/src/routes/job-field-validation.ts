@@ -292,6 +292,9 @@ function closingFieldRefusal(fields: Record<string, unknown>): { code: string; m
             message: `failureKind must be one of ${FAILURE_KINDS.join(', ')} or null`,
         };
     }
+    if (fields.status === 'succeeded' && fields.failureKind !== undefined && fields.failureKind !== null) {
+        return { code: ERROR_CODES.BAD_FAILURE_KIND, message: 'a succeeded run carries no failureKind' };
+    }
     if (fields.treeChanged !== undefined && fields.treeChanged !== null && typeof fields.treeChanged !== 'boolean') {
         return { code: ERROR_CODES.BAD_TREE_CHANGED, message: 'treeChanged must be a boolean or null' };
     }
