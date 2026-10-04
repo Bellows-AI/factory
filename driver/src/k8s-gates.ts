@@ -2,6 +2,7 @@ import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import { keyQueue } from './gates.js';
 import type { GateManager, GateRun } from './gates.js';
 import { deleteJob, deleteSecret, secretsPath } from './k8s-auxspec.js';
 import { readImagePullStatus, readJobPodVerdict, readJobStatus, timedOutOf, unpullableImage } from './k8s-poll.js';
@@ -136,10 +137,76 @@ export function createKubernetesGateManager({
 }): GateManager {
     const deps: K8sDeps = { config, request, sleep };
     const entries = new Map<string, GateEntry>();
+    /**
+     * Every env Secret this manager created and has not deleted, by the lease that owns it. Apart
+     * from `entries` because a reclaimed attempt's entry is overwritten by the next acquire of the
+     * key while its Secret, credentials and all, still has to be deleted — by ITS release.
+     */
+    const secrets = new Map<string, string>();
+    const serialize = keyQueue();
 
     /** The finished Job goes, on every path — its pod has read the env Secret by then. */
     const reap = (jobName: string): void => {
         void deleteJob(deps, jobName);
+    };
+
+    /**
+     * One gate run: a Job over the checkout. The entry is read when the run's turn comes, not when
+     * it was asked for — an attempt that took the key over while it waited is the one whose
+     * environment it uses.
+     */
+    const runGateJob = async (
+        key: string,
+        name: string,
+        command: string,
+        signal: AbortSignal | undefined
+    ): Promise<GateRun> => {
+        const entry = entries.get(key);
+        if (!entry) throw gateHarness(`no gate environment for ${key}`);
+        // The run counter, bumped then read — one statement each, so the increment is not hidden
+        // inside the expression that consumes it. It keeps a second ad-hoc call of the same gate
+        // off the first's Job name.
+        entry.run += 1;
+        const run = entry.run;
+        const { job, image, secretName } = entry;
+        const jobName = gateJobName(job, name, run);
+        // A cancelled gate: its Job goes now, Foreground, so the pod dies with it rather than
+        // running its suite to the deadline; the poll stops at its next turn.
+        const cancel = (): void => {
+            void deleteJob(deps, jobName, 'Foreground');
+        };
+        if (signal?.aborted) throw gateHarness(`the gate ${name} was cancelled before it started`);
+        signal?.addEventListener('abort', cancel, { once: true });
+        try {
+            const created = await request(
+                'POST',
+                jobsPath(config.k8sNamespace),
+                gateJobSpec(config, job, {
+                    key,
+                    image,
+                    gateName: name,
+                    command,
+                    run,
+                    envSecretName: secretName,
+                    gateTimeoutMs,
+                })
+            );
+            const refused = refusal(created, 'creating the gate job');
+            if (refused) throw gateHarness(refused);
+
+            const { succeeded, timedOut } = await pollGateJobToTerminal(deps, jobName, image, signal);
+            const { exitCode, output } = await readGateJobResult(deps, jobName, succeeded);
+
+            // The docker manager's timeout shape: exit 124, and a named reason when the
+            // gate had nothing to say for itself.
+            return {
+                exitCode: timedOut ? TIMEOUT_EXIT_CODE : exitCode,
+                output: timedOut && !output ? `[driver] gate killed after ${gateTimeoutMs}ms` : output,
+            };
+        } finally {
+            signal?.removeEventListener('abort', cancel);
+            reap(jobName);
+        }
     };
 
     return {
@@ -165,7 +232,10 @@ export function createKubernetesGateManager({
                 throw gateHarness(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
             }
             const secretName = envBody ? gateEnvSecretName(job) : null;
-            if (secretName) await createGateEnvSecret(deps, job, secretName, envBody);
+            if (secretName) {
+                await createGateEnvSecret(deps, job, secretName, envBody);
+                secrets.set(job.leaseToken, secretName);
+            }
             // A re-acquire of the SAME attempt — the loop's per-gate re-acquire (issue #78) —
             // keeps the run counter, so a run never lands on a name a previous run of that gate
             // already used (the reaped Job can still exist when the create lands). A different
@@ -176,69 +246,34 @@ export function createKubernetesGateManager({
         },
 
         runGate(key, name, command, signal) {
-            const entry = entries.get(key);
-            if (!entry) {
+            if (!entries.has(key)) {
                 return Promise.reject(gateHarness(`no gate environment for ${key}`));
             }
-            // The run counter, bumped then read — one statement each, so the increment is not
-            // hidden inside the expression that consumes it. It keeps a second ad-hoc call of the
-            // same gate off the first's Job name.
-            entry.run += 1;
-            const run = entry.run;
-            const { job, image, secretName } = entry;
-            const jobName = gateJobName(job, name, run);
-            // A cancelled gate: its Job goes now, Foreground, so the pod dies with it rather than
-            // running its suite to the deadline; the poll stops at its next turn.
-            const cancel = (): void => {
-                void deleteJob(deps, jobName, 'Foreground');
-            };
-            return (async (): Promise<GateRun> => {
-                if (signal?.aborted) throw gateHarness(`the gate ${name} was cancelled before it started`);
-                signal?.addEventListener('abort', cancel, { once: true });
-                try {
-                    const created = await request(
-                        'POST',
-                        jobsPath(config.k8sNamespace),
-                        gateJobSpec(config, job, {
-                            key,
-                            image,
-                            gateName: name,
-                            command,
-                            run,
-                            envSecretName: secretName,
-                            gateTimeoutMs,
-                        })
-                    );
-                    const refused = refusal(created, 'creating the gate job');
-                    if (refused) throw gateHarness(refused);
-
-                    const { succeeded, timedOut } = await pollGateJobToTerminal(deps, jobName, image, signal);
-                    const { exitCode, output } = await readGateJobResult(deps, jobName, succeeded);
-
-                    // The docker manager's timeout shape: exit 124, and a named reason when the
-                    // gate had nothing to say for itself.
-                    return {
-                        exitCode: timedOut ? TIMEOUT_EXIT_CODE : exitCode,
-                        output: timedOut && !output ? `[driver] gate killed after ${gateTimeoutMs}ms` : output,
-                    };
-                } finally {
-                    signal?.removeEventListener('abort', cancel);
-                    reap(jobName);
-                }
-            })();
+            // One gate at a time per checkout, as docker's queue does: two suites in one worktree
+            // give flaky verdicts.
+            return serialize(key, () => runGateJob(key, name, command, signal));
         },
 
-        /** The attempt's env Secret goes here — every gate run of the attempt has read it by now. */
-        release(key) {
-            const entry = entries.get(key);
-            if (!entry?.secretName) return;
-            entries.delete(key);
-            void deleteSecret(deps, entry.secretName);
+        /**
+         * The releasing attempt's own env Secret goes here — every gate run of it has read it by
+         * now — and the key's entry only if the attempt still owns it: a late release of a
+         * reclaimed attempt must neither delete the Secret of the one that replaced it nor leave
+         * its own, credentials and all, behind.
+         */
+        release(key, job) {
+            const secretName = secrets.get(job.leaseToken);
+            if (secretName) {
+                secrets.delete(job.leaseToken);
+                void deleteSecret(deps, secretName);
+            }
+            if (entries.get(key)?.job.leaseToken === job.leaseToken) entries.delete(key);
         },
 
         /** A drained driver has no more turns coming: whatever the cooldown would have kept is moot. */
         async stop() {
-            for (const key of [...entries.keys()]) this.release(key);
+            for (const secretName of secrets.values()) void deleteSecret(deps, secretName);
+            secrets.clear();
+            entries.clear();
         },
     };
 }

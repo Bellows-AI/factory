@@ -27,6 +27,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Docker runner, env, argv | `driver/src/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker.test.ts`, `config.test.ts` |
 | Kubernetes runner | `driver/src/k8s-*.ts` | `driver/test/k8s.test.ts`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |
 | Gates, execution | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts`, `gates-limits.test.ts` |
+| Gate environment owned by the lease: release/cancel no-op for another attempt, per-lease k8s Secret, teardown awaited by acquire, one run per key | `driver/src/gates.ts`, `k8s-gates.ts`, `loop-gates.ts` | `driver/test/gates-ownership.test.ts` |
 | Gates skipped over an unclean run; the agent's `FACTORY_BLOCKED:` report | `driver/src/loop-verdict.ts`, `loop-run.ts` | `driver/test/loop.test.ts` |
 | Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
 | Tree fingerprint: sync before, probe after a failed gate, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |

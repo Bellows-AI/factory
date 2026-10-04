@@ -97,8 +97,12 @@ export interface GateManager {
      * the run answers whatever the cancellation left; the caller discards it.
      */
     runGate(key: string, name: string, command: string, signal?: AbortSignal): Promise<GateRun>;
-    /** Arms the cooldown teardown. Safe to call repeatedly; acquire cancels it. */
-    release(key: string): void;
+    /**
+     * Arms the cooldown teardown. Safe to call repeatedly; acquire cancels it. The job is the
+     * releaser: a no-op unless it is the attempt the environment is currently filed under — a
+     * reclaimed attempt's late release must not tear down the attempt that replaced it.
+     */
+    release(key: string, job: BoardJob): void;
     /** Tears every environment down now — the driver drain. */
     stop(): Promise<void>;
 }
@@ -149,6 +153,25 @@ function gateRunFromExecError(error: DockerExecError, gateTimeoutMs: number): Ga
     return { exitCode: error.code, output: output || error.message || `exit ${error.code}` };
 }
 
+/**
+ * The per-checkout serialization point, held OUTSIDE the manager's entries on purpose: an entry
+ * exists only once its container does, and two cold acquires of the same key (two queued tasks on
+ * one member+repo — the concurrency-2 default makes that ordinary) would otherwise both see
+ * "no entry" and race their `docker run`s on the same name. Gate runs share it, docker and
+ * kubernetes alike: two suites in one worktree give flaky verdicts.
+ */
+export function keyQueue(): <T>(key: string, work: () => Promise<T>) => Promise<T> {
+    const queues = new Map<string, Promise<unknown>>();
+    return (key, work) => {
+        const chained = (queues.get(key) ?? Promise.resolve()).then(work, work);
+        queues.set(
+            key,
+            chained.catch(() => undefined)
+        );
+        return chained;
+    };
+}
+
 export function createGateManager({
     config,
     cooldownMs,
@@ -162,21 +185,30 @@ export function createGateManager({
     execDocker?: ExecDocker;
 }): GateManager {
     const entries = new Map<string, Entry>();
-    /**
-     * The per-checkout serialization point, held OUTSIDE `entries` on purpose: an entry exists
-     * only once its container does, and two cold acquires of the same key (two queued tasks on
-     * one member+repo — the concurrency-2 default makes that ordinary) would otherwise both see
-     * "no entry" and race their `docker run`s on the same name.
-     */
-    const queues = new Map<string, Promise<unknown>>();
-
     const envFileFor = (key: string): string => join(tmpdir(), `factory-gateenv-${gateEnvContainerName(key)}.env`);
+
+    /**
+     * The removal still in flight per key. Not run through `serialize`: a cancel tears the
+     * environment down to kill the gate holding that queue, so it would wait on itself. The
+     * acquire waits on it instead — a re-create must not meet the name or the env file of the
+     * environment still being removed.
+     */
+    const removals = new Map<string, Promise<void>>();
 
     const teardown = (key: string, entry: Entry): void => {
         entries.delete(key);
-        void execDocker(['rm', '-f', entry.name]).catch(() => undefined);
-        void rmFile(envFileFor(key)).catch(() => undefined);
+        const removal: Promise<void> = Promise.all([
+            execDocker(['rm', '-f', entry.name]).catch(() => undefined),
+            rmFile(envFileFor(key)).catch(() => undefined),
+        ]).then(() => {
+            if (removals.get(key) === removal) removals.delete(key);
+        });
+        removals.set(key, removal);
     };
+
+    /** An entry the job does not own is another attempt's: its release and cancel are no-ops. */
+    const ownedBy = (entry: Entry, job: BoardJob | null): boolean =>
+        !entry.job || !job || entry.job.leaseToken === job.leaseToken;
 
     /**
      * Re-arms the cooldown after activity. A no-op at cooldown 0, where teardown is
@@ -198,14 +230,7 @@ export function createGateManager({
         }, cooldownMs);
     };
 
-    const serialize = <T>(key: string, work: () => Promise<T>): Promise<T> => {
-        const chained = (queues.get(key) ?? Promise.resolve()).then(work, work);
-        queues.set(
-            key,
-            chained.catch(() => undefined)
-        );
-        return chained;
-    };
+    const serialize = keyQueue();
 
     /**
      * Joins the attempt's services network, so a gate reaches `.bellows.yaml`'s services by name
@@ -244,6 +269,7 @@ export function createGateManager({
                     if (job) queued.job = job;
                     return;
                 }
+                await removals.get(key);
                 // The fence every spawn here shares: anything holding the name is a leftover of a
                 // container whose teardown never ran (a dead driver's), and this claim exists only
                 // because that one is gone.
@@ -277,8 +303,10 @@ export function createGateManager({
             }
             // A cancelled gate: killing the `docker exec` client leaves its process running in
             // the container, so the environment itself goes — the next acquire recreates it.
+            // Unless the entry has since passed to another attempt, whose gates share it.
+            const owner = entry.job;
             const cancel = (): void => {
-                if (entries.get(key) !== entry) return;
+                if (entries.get(key) !== entry || !ownedBy(entry, owner)) return;
                 if (entry.teardown) clearTimeout(entry.teardown);
                 teardown(key, entry);
             };
@@ -318,9 +346,9 @@ export function createGateManager({
             );
         },
 
-        release(key) {
+        release(key, job) {
             const entry = entries.get(key);
-            if (!entry) return;
+            if (!entry || !ownedBy(entry, job)) return;
             // Cooldown 0 means "tear down the moment the run's exits are walked" — the loop's
             // release, not a gate's finish.
             if (cooldownMs <= 0) {
@@ -336,6 +364,7 @@ export function createGateManager({
                 if (entry.teardown) clearTimeout(entry.teardown);
                 teardown(key, entry);
             }
+            await Promise.all(removals.values());
         },
     };
 }
@@ -367,12 +396,13 @@ export interface GateServer {
      * path by the loop.
      */
     register(token: string, claim: GateClaim): void;
-    unregister(token: string): void;
     /**
-     * A stop, lost lease or Remove: unregisters the token — no new ad-hoc run — and cancels
-     * every ad-hoc run of it still in flight (the manager kills its process or deletes its Job).
-     * Killing the runner does not stop a gate the agent asked for.
+     * Ends the token: no new ad-hoc run, and every one of it still in flight is cancelled (the
+     * manager kills its process or deletes its Job) — a finished attempt must not leave a gate
+     * writing its worktree. Killing the runner does not stop a gate the agent asked for.
      */
+    unregister(token: string): void;
+    /** A stop, lost lease or Remove: the same as `unregister`, named for the loop's intent. */
     cancel(token: string): void;
     /**
      * The latest ad-hoc run per declared gate name, as the server recorded it completing (issue
@@ -431,6 +461,9 @@ const runRegisteredGate = async (
     gate: { name: string; command: string },
     signal: AbortSignal
 ): Promise<{ status: number; body: unknown }> => {
+    // A cancelled token must not re-create the environment its cancel just tore down: at
+    // cooldown 0 nothing would ever tear the new one down again.
+    if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
     try {
         await manager.acquire(claim.key, claim.image, claim.envBody ?? '', claim.job);
     } catch (e) {
@@ -451,6 +484,18 @@ const runRegisteredGate = async (
         }
         return { status: HTTP_INTERNAL_SERVER_ERROR, body: { error: (e as Error).message } };
     }
+};
+
+/**
+ * Aborts when the agent hangs up before the answer is written (its runner was killed): the run
+ * it asked for is cancelled the same as by the token's own cancel.
+ */
+const hangupSignal = (reply: ServerResponse): AbortSignal => {
+    const hangup = new AbortController();
+    reply.on('close', () => {
+        if (!reply.writableFinished) hangup.abort();
+    });
+    return hangup.signal;
 };
 
 export function createGateServer({
@@ -482,7 +527,9 @@ export function createGateServer({
         const claim = claims.get(auth);
         if (!claim) return respond(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
 
-        const parsedRequest = await parseGateRequest(request);
+        const hangup = hangupSignal(reply);
+
+        const parsedRequest = await readGateRequest(request, auth, claim);
         if (!parsedRequest.ok) return respond(reply, parsedRequest.status, { error: parsedRequest.error });
 
         // Only a DECLARED name runs. An arbitrary command string here would make the runner's
@@ -491,15 +538,26 @@ export function createGateServer({
         const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
         if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
 
-        const cancelled = cancels.get(auth)?.signal ?? AbortSignal.abort();
+        const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
         const result = await runRegisteredGate(manager, claim, gate, cancelled);
-        if (result.status === HTTP_OK) {
-            const verdict = result.body as { exitCode: number | null };
-            const runs = history.get(auth) ?? new Map<string, GateRunNote>();
-            runs.set(gate.name, { name: gate.name, exitCode: verdict.exitCode, at: new Date().toISOString() });
-            history.set(auth, runs);
-        }
+        if (result.status === HTTP_OK) record(auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
         return respond(reply, result.status, result.body);
+    };
+
+    /**
+     * The request's body, unless its token was cancelled while the body was still arriving: the
+     * claim read before is then the dead session's, and nothing may be acquired for it.
+     */
+    const readGateRequest = async (request: IncomingMessage, token: string, claim: GateClaim): Promise<GateRequest> => {
+        const parsed = await parseGateRequest(request);
+        if (claims.get(token) !== claim) return { ok: false, status: HTTP_CONFLICT, error: 'gate run cancelled' };
+        return parsed;
+    };
+
+    const record = (token: string, name: string, exitCode: number | null): void => {
+        const runs = history.get(token) ?? new Map<string, GateRunNote>();
+        runs.set(name, { name, exitCode, at: new Date().toISOString() });
+        history.set(token, runs);
     };
 
     return {
@@ -509,14 +567,14 @@ export function createGateServer({
             cancels.set(token, new AbortController());
         },
         unregister(token) {
+            const controller = cancels.get(token);
             claims.delete(token);
             history.delete(token);
             cancels.delete(token);
+            controller?.abort();
         },
         cancel(token) {
-            const controller = cancels.get(token);
             this.unregister(token);
-            controller?.abort();
         },
         lastRuns(token) {
             return [...(history.get(token)?.values() ?? [])];

@@ -217,7 +217,7 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         let gateSession = gateOut === null ? null : gateOut.value;
         if (down(state)) {
             if (gateSession) {
-                releaseGateSession(rt, gateSession);
+                releaseGateSession(rt, gateSession, job);
                 gateSession = null;
             }
             await runner.releaseFence?.(job);
@@ -612,7 +612,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 treeChanged: outcome.treeChanged,
             });
         } finally {
-            if (gateSession) releaseGateSession(rt, gateSession);
+            if (gateSession) releaseGateSession(rt, gateSession, job);
             // The services outlived run() for the declared gates' sake; they go now, on every
             // exit path — a thrown run included, whose own cleanup no longer takes them.
             await rt.runner
