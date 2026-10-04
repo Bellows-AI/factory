@@ -8,7 +8,8 @@ import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-atte
 import type { GateRunNote } from './timeout-note.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
-import { TRANSIENT_SYNC_REASON, type SyncResult } from './publish.js';
+import type { HelperFailureReport } from './helpers.js';
+import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
 import { blockedReason, gateSkipReason, publishIfDue, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
@@ -381,7 +382,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
     const treeChanged = gated.failure ? await treeChangedSinceSync(ctx) : null;
     if (down(state)) {
-        await settleDownAfterGates(ctx);
+        await settleDown(ctx, 'its gates');
         return { done: true };
     }
 
@@ -416,22 +417,60 @@ async function runGatesPhase(
 }
 
 /**
- * A stop, lost lease or Remove observed while the declared gates ran: the running gate was
- * cancelled (`runDeclaredGates`), and the attempt settles exactly as a stop of the run itself
+ * A stop, lost lease or Remove observed after the run ended (the gates, a post-helper, the publish
+ * ask, or a killed run that rejected): nothing past it runs, and a running gate was
+ * cancelled (`runDeclaredGates`). The attempt settles exactly as a stop of the run itself
  * does — parked `stopped`, never a verdict a `gate-failed` edge could read.
  */
-async function settleDownAfterGates(ctx: AttemptCtx): Promise<void> {
+async function settleDown(ctx: AttemptCtx, phase: string): Promise<void> {
     const { rt, job, state, settle } = ctx;
     await settle();
     if (state.stopped) {
         const verdict = await rt.board.suspend(job);
         rt.log(
             verdict === 'lost'
-                ? `job ${job.id}: stopped during its gates, but the board had already reclaimed it`
-                : `job ${job.id}: stopped during its gates — the gates were cancelled, the board has settled the turn`
+                ? `job ${job.id}: stopped during ${phase}, but the board had already reclaimed it`
+                : `job ${job.id}: stopped during ${phase} — nothing more ran, the board has settled the turn`
         );
     } else if (state.removed) {
-        rt.log(`job ${job.id}: removed during its gates; the queue owns the tree`);
+        rt.log(`job ${job.id}: removed during ${phase}; the queue owns the tree`);
+    }
+}
+
+/**
+ * The post-helpers, then the publish, each fenced on a stand-down: a Stop, lost lease or Remove
+ * that lands during either must not push to a tree another attempt owns or open a PR for a
+ * deleted thread. Null when the attempt stood down (already settled), nothing left to report.
+ */
+async function runPostHelpersAndPublish(
+    ctx: AttemptCtx,
+    outcome: RunPhaseResult
+): Promise<{ helperFailure: HelperFailureReport | null; published: PublishResult | null } | null> {
+    const { rt, job, state } = ctx;
+    const helperFailure = await runPostHelperPhase(rt, job, state);
+    if (down(state)) return settleDown(ctx, 'its post-helpers').then(() => null);
+    const published = await publishIfDue(rt, job, state, {
+        outcome: outcome.outcome,
+        failure: outcome.failure,
+        deadServices: outcome.deadServices,
+        helperFailure,
+        blocked: outcome.blocked,
+    });
+    if (down(state)) return settleDown(ctx, 'its publish').then(() => null);
+    return { helperFailure, published };
+}
+
+/** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */
+async function reportNewSession(
+    rt: LoopRuntime,
+    job: BoardJob,
+    session: ReturnType<typeof pickSession>
+): Promise<void> {
+    if (!session || session.resume) return;
+    try {
+        await rt.board.session(job, session.id);
+    } catch (e) {
+        rt.log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
     }
 }
 
@@ -533,6 +572,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         }
     };
 
+    const ctx: AttemptCtx = { rt, job, state, settle, standDown, treeBefore: null };
     try {
         log(
             `job ${job.id}: attempt ${job.attempts} ` +
@@ -540,15 +580,8 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                     ? `${session.resume ? 'resuming' : 'starting as'} session ${session.id}`
                     : 'starting (headless opencode run: no session id)')
         );
-        if (session && !session.resume) {
-            try {
-                await rt.board.session(job, session.id);
-            } catch (e) {
-                log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
-            }
-        }
+        await reportNewSession(rt, job, session);
 
-        const ctx: AttemptCtx = { rt, job, state, settle, standDown, treeBefore: null };
         const gateSession = await runSetup(ctx);
         if (gateSession === STOOD_DOWN) return;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and
@@ -558,14 +591,9 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         try {
             const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput });
             if (outcome.done) return;
-            const helperFailure = await runPostHelperPhase(rt, job, state);
-            const published = await publishIfDue(rt, job, {
-                outcome: outcome.outcome,
-                failure: outcome.failure,
-                deadServices: outcome.deadServices,
-                helperFailure,
-                blocked: outcome.blocked,
-            });
+            const closing = await runPostHelpersAndPublish(ctx, outcome);
+            if (closing === null) return;
+            const { helperFailure, published } = closing;
             await settle();
             // The liveness read and the gate verdicts are read BEFORE the finally below
             // releases the gate session — unregistering clears the recorded runs.
@@ -595,6 +623,9 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         // The container never ran — docker is missing, or the daemon refused. Deliberately NOT
         // reported as a failed job: that would blame the command for the driver's problem. The
         // lease simply expires and the job is offered again, which is visible in `attempts`.
+        // A killed run can reject (the runner's own Job vanished under it): the stand-down
+        // that killed it owns the settlement, not the lease.
+        if (down(state)) return await settleDown(ctx, 'its run');
         await settle();
         log(`job ${job.id}: could not run, leaving it to the lease: ${(e as Error).message}`);
     }

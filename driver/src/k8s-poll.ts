@@ -13,6 +13,7 @@ import {
     syncJobName,
     syncJobSpec,
 } from './k8s-auxspec.js';
+import { vanishedRunner } from './k8s-kill.js';
 import { envBodyToData, jobsPath, runnerName, secretBody } from './k8s-podspec.js';
 import {
     answerPreview,
@@ -373,7 +374,7 @@ export async function pollRunnerJobUntilTerminal(
         if (result.kind === 'notFound') {
             // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
             // never arrive, so waiting longer is holding a slot for nothing.
-            throw new Error(`the runner job ${runnerName(job)} no longer exists`);
+            throw vanishedRunner(runnerName(job));
         }
         if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
         if (result.kind === 'terminal') {

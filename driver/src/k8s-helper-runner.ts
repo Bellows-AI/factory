@@ -5,6 +5,7 @@ import { lookupHelper, parseHelperOutput } from './helpers.js';
 import type { HelperPlan, HelperResult } from './helpers.js';
 import { helperEnvSecretName, helperJobName, helperJobSpec, jobPath, secretsPath } from './k8s-auxspec.js';
 import { envBodyToData, jobsPath, secretBody } from './k8s-podspec.js';
+import { trackHelperJob } from './k8s-kill.js';
 import { helperVerdict } from './k8s-poll.js';
 import { refusal } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
@@ -36,6 +37,8 @@ export async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, 
     const env = plan.githubWriting ? envBodyToData(envFileBody(withPublishToken(job, token))) : {};
     const secret = Object.keys(env).length ? helperEnvSecretName(job, plan, nonce) : null;
     const jobName = helperJobName(job, plan, nonce);
+    // A Stop's kill deletes this aux Job at once, not when the verdict poll finally returns.
+    const untrack = trackHelperJob(job.id, jobName);
     try {
         if (secret) {
             const response = await deps.request(
@@ -68,6 +71,7 @@ export async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, 
     } catch (e) {
         return { ok: false, reason: 'runner_error', message: (e as Error).message };
     } finally {
+        untrack();
         void deps.request('DELETE', `${jobPath(deps.config.k8sNamespace, jobName)}?propagationPolicy=Background`).then(
             () => undefined,
             () => undefined

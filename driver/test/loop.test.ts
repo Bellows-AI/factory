@@ -4066,3 +4066,89 @@ describe('a verdict the board refuses with a 5xx', () => {
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'publish' });
     });
 });
+
+describe('a stand-down after the gates (issue #427)', () => {
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const ticks = async (n = 30) => {
+        for (let i = 0; i < n; i++) await tick();
+    };
+    const landed: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'fix/1',
+        prUrl: 'https://github.com/o/r/pull/1',
+        reason: null,
+        repository: 'o/r',
+        baseBranch: 'main',
+        prNumber: 1,
+    };
+
+    type Verdict = 'stop' | 'lost' | 'removed';
+    /** Arms the board's heartbeat to answer `kind` once `fire()` is called. */
+    function armHeartbeat(board: BoardStub, kind: Verdict): () => void {
+        let fired = false;
+        board.heartbeat = async () => {
+            board.beats += 1;
+            if (!fired) return { result: 'held', cancelRequested: false };
+            return kind === 'stop' ? { result: 'held', cancelRequested: true } : kind;
+        };
+        return () => {
+            fired = true;
+        };
+    }
+    const postPlan: HelperPlan = { helperId: 'noop', phase: 'post', input: null, githubWriting: false };
+
+    it.each(['stop', 'lost', 'removed'] as const)(
+        'G1 %s landing during a post-helper publishes nothing and reports no verdict',
+        async (kind) => {
+            const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory', helperPlans: [postPlan] }]);
+            const fire = armHeartbeat(board.board, kind);
+            const runner = stubRunner(async () => ok(), { publish: landed });
+            runner.runHelper = async () => {
+                fire();
+                await ticks();
+                return { ok: true, output: null };
+            };
+
+            await drive({ ...board, runner });
+
+            expect(runner.killed).toEqual([job(1).id]); // the heartbeat DID observe it
+            expect(runner.published).toEqual([]);
+            expect(board.board.completed).toEqual([]);
+            if (kind === 'stop') expect(board.board.suspended).toEqual([job(1).id]);
+        }
+    );
+
+    it('G2 a stop landing during the publish-token ask publishes nothing and parks the run', async () => {
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const fire = armHeartbeat(board.board, 'stop');
+        board.board.publishToken = async () => {
+            fire();
+            await ticks();
+            return null;
+        };
+        const runner = stubRunner(async () => ok(), { publish: landed });
+
+        await drive({ ...board, runner });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(runner.published).toEqual([]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('G5 parks a stopped run even when the killed run() rejects', async () => {
+        const board = stubBoard([job(1)]);
+        const fire = armHeartbeat(board.board, 'stop');
+        const runner = stubRunner(async () => {
+            fire();
+            while (!runner.killed.length) await tick();
+            throw new Error('the container vanished under the CLI');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+});

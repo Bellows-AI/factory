@@ -9,6 +9,7 @@
 import type { Board, BoardJob, FailureKind, LeaseState } from './board.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
+import { down, type JobState } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import { type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
@@ -77,7 +78,12 @@ interface PublishGate {
  * Publishes a succeeded, ungated-or-passed run — the deterministic end of a task. Answers null
  * when the run does not qualify (a failure, a timeout, a premature stop, or publish disabled).
  */
-export async function publishIfDue(rt: LoopRuntime, job: BoardJob, gate: PublishGate): Promise<PublishResult | null> {
+export async function publishIfDue(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    gate: PublishGate
+): Promise<PublishResult | null> {
     const { outcome, failure, deadServices, helperFailure, blocked } = gate;
     const { board, runner, log } = rt;
     if (
@@ -97,6 +103,8 @@ export async function publishIfDue(rt: LoopRuntime, job: BoardJob, gate: Publish
     // board for a publish-fresh one; null keeps the claim env, the shape every short run still
     // publishes with.
     const publishToken = await board.publishToken(job);
+    // A Stop that landed during the ask killed the runner; publishing now outlives it.
+    if (down(state)) return null;
     if (!publishToken) {
         log(`job ${job.id}: publish-token ask answered nothing fresh — publishing with the claim env`);
     }
