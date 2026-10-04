@@ -9,6 +9,7 @@ environment:
 services:
     - name: postgres
       image: postgres:17
+      user: "999:999"
       environment:
           POSTGRES_USER: factory
           POSTGRES_PASSWORD: factory

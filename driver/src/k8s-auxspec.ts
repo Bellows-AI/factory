@@ -328,9 +328,16 @@ export function servicePodSpec(
             resources?: PodResources;
             /**
              * The executor hardening (#382). Always carries `allowPrivilegeEscalation: false`;
-             * the capability drop is absent on a service that declared `unhardened: true`.
+             * the capability drop is absent on a service that declared `unhardened: true`, and the
+             * uid:gid is present on one that declared `user`.
              */
-            securityContext: { allowPrivilegeEscalation: false; capabilities?: { drop: string[] } };
+            securityContext: {
+                allowPrivilegeEscalation: false;
+                capabilities?: { drop: string[] };
+                runAsNonRoot?: true;
+                runAsUser?: number;
+                runAsGroup?: number;
+            };
             env: { name: string; value: string }[];
         }[];
     };
@@ -386,9 +393,15 @@ export function servicePodSpec(
                     // chowns its data directory needs CHOWN/DAC_OVERRIDE/FOWNER back. It does not
                     // need to ESCALATE to do that, so that bit stays off either way — the drop is
                     // the only half a stock image trips over.
-                    securityContext: spec.unhardened
-                        ? { allowPrivilegeEscalation: false }
-                        : containerHardeningField().securityContext,
+                    securityContext: {
+                        ...(spec.unhardened
+                            ? { allowPrivilegeEscalation: false as const }
+                            : containerHardeningField().securityContext),
+                        // The declared uid:gid — the same reach as docker's `--user`.
+                        ...(spec.user
+                            ? { runAsNonRoot: true as const, runAsUser: spec.user.uid, runAsGroup: spec.user.gid }
+                            : {}),
+                    },
                     env: spec.environment.map(({ key, value }) => {
                         if (!SERVICE_ENV_KEY.test(key)) {
                             throw new Error(

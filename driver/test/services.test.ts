@@ -88,6 +88,28 @@ describe('parseBellows: shapes', () => {
         ]);
     });
 
+    // The hardened alternative to the opt-out: a stock image whose entrypoint skips its root-only
+    // chown and user switch when it already starts as its own uid (postgres as 999:999) boots with
+    // every capability still dropped. Quoted or bare, the value is one `uid:gid` pair.
+    it('parses a declared uid:gid, and leaves it absent on every service that did not ask', () => {
+        const text = [
+            'services:',
+            '  - name: db',
+            '    image: postgres:17',
+            '    user: "999:999"',
+            '  - name: cache',
+            '    image: redis',
+            '    user: 1001:0',
+            '  - name: queue',
+            '    image: rabbitmq',
+        ].join('\n');
+        expect(parseBellows(text)).toEqual([
+            { name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } },
+            { name: 'cache', image: 'redis', environment: [], user: { uid: 1001, gid: 0 } },
+            { name: 'queue', image: 'rabbitmq', environment: [] },
+        ]);
+    });
+
     it('reads a file with no services as no services', () => {
         // An empty file, a file of comments, or one that simply does not use the key yet: none of
         // these is an error. A checkout carries `.bellows.yaml` only when it wants services.
@@ -311,6 +333,18 @@ describe('parseBellows: refusals', () => {
                 () => parseBellows(`services:\n  - name: db\n    image: postgres\n    unhardened: ${bad}\n`),
                 bad
             ).toThrow(/"unhardened" must be `true`/);
+        }
+    });
+
+    it('refuses a user that is not a numeric non-root uid:gid', () => {
+        // Numeric only: a name resolves against the image's /etc/passwd on docker and not at all
+        // under runAsUser, so the two executors would disagree. uid 0 is root — the opposite of
+        // what the key is for.
+        for (const bad of ['postgres', '999', '0:0', '0:999', '999:', ':999', '-1:1', '999:999:1', '1234567890:1']) {
+            expect(
+                () => parseBellows(`services:\n  - name: db\n    image: postgres\n    user: "${bad}"\n`),
+                bad
+            ).toThrow(/"user" must be a numeric non-root "uid:gid"/);
         }
     });
 

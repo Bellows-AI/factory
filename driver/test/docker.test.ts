@@ -4707,4 +4707,22 @@ describe('every container the driver runs is hardened (#382)', () => {
         expect(argv).not.toContain('--cap-drop');
         expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
     });
+
+    // The hardened alternative: the declared uid:gid, with every capability still dropped.
+    it('runs a declared service as its declared uid:gid, still hardened', () => {
+        const argv = serviceRunArgs(job, {
+            name: 'db',
+            image: 'postgres:17',
+            environment: [],
+            user: { uid: 999, gid: 999 },
+        });
+        expect(hasPair(argv, '--user', '999:999')).toBe(true);
+        expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
+        expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
+        expect(argv.indexOf('--user')).toBeLessThan(argv.indexOf('postgres:17'));
+    });
+
+    it('passes no --user to a service that declared none', () => {
+        expect(serviceRunArgs(job, { name: 'db', image: 'postgres:17', environment: [] })).not.toContain('--user');
+    });
 });

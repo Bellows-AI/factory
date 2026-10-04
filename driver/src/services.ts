@@ -40,6 +40,12 @@ export interface ServiceSpec {
      * broke. Absent rather than `false` when unasked, so the field's presence IS the declaration.
      */
     unhardened?: true;
+    /**
+     * The declared `user: "uid:gid"` the container runs as, present only when the file asked. The
+     * hardened alternative to `unhardened`: a stock entrypoint that already starts as its own uid
+     * skips the root-only chown and user switch, so it boots with every capability dropped.
+     */
+    user?: { uid: number; gid: number };
 }
 
 /**
@@ -63,6 +69,12 @@ const SERVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/;
 
 /** What an environment variable name may look like before it is put on an argv. */
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * What a service `user:` may be: numeric `uid:gid`, uid never 0. Numeric because runAsUser takes
+ * no name, and nine digits keeps both inside the int32 the kubelet accepts.
+ */
+const SERVICE_USER = /^([1-9][0-9]{0,8}):([0-9]{1,9})$/;
 
 /**
  * What an image reference may look like before it goes on an argv — the one field that names what
@@ -314,6 +326,7 @@ interface BellowsItem {
     environment: { key: string; value: string }[];
     /** The declared `unhardened: true` (issue #382). Never set from any other spelling. */
     unhardened: boolean;
+    user: { uid: number; gid: number } | null;
     inEnvironment: boolean;
     keys: Set<string>;
     envKeys: Set<string>;
@@ -322,7 +335,7 @@ interface BellowsItem {
 /** Validates and files the just-finished item, when there is one. A no-op on a null item. */
 function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
     if (!item) return;
-    const { name, image, environment, unhardened } = item;
+    const { name, image, environment, unhardened, user } = item;
     if (!name) throw new Error('.bellows.yaml: a service is missing "name"');
     if (!image) throw new Error('.bellows.yaml: a service is missing "image"');
     if (!SERVICE_NAME.test(name)) {
@@ -337,7 +350,13 @@ function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
     if (specs.some((s) => s.name === name)) {
         throw new Error(`.bellows.yaml: duplicate service name "${name}"`);
     }
-    specs.push({ name, image, environment, ...(unhardened ? { unhardened: true as const } : {}) });
+    specs.push({
+        name,
+        image,
+        environment,
+        ...(unhardened ? { unhardened: true as const } : {}),
+        ...(user ? { user } : {}),
+    });
 }
 
 /** Applies one `name:`/`image:`/`environment:` field to the item mid-parse. */
@@ -369,7 +388,15 @@ function applyServiceField(item: BellowsItem, key: string, value: string): void 
         item.unhardened = true;
         return;
     }
-    throw new Error(`.bellows.yaml: unknown service key "${key}" — supported: name, image, environment, unhardened`);
+    if (key === 'user') {
+        const m = value.match(SERVICE_USER);
+        if (!m) throw new Error('.bellows.yaml: "user" must be a numeric non-root "uid:gid", e.g. "999:999"');
+        item.user = { uid: Number(m[1]), gid: Number(m[2]) };
+        return;
+    }
+    throw new Error(
+        `.bellows.yaml: unknown service key "${key}" — supported: name, image, environment, unhardened, user`
+    );
 }
 
 function applyField(item: BellowsItem, chunk: string): void {
@@ -500,6 +527,7 @@ export function parseBellows(text: string): ServiceSpec[] {
                 image: '',
                 environment: [],
                 unhardened: false,
+                user: null,
                 inEnvironment: false,
                 keys: new Set(),
                 envKeys: new Set(),
@@ -702,6 +730,7 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec): string[] {
         // whose entrypoint chowns its data directory as root needs CHOWN/DAC_OVERRIDE/FOWNER
         // back, and needs nothing else — so `no-new-privileges` is on either way.
         ...(spec.unhardened ? UNHARDENED_ARGS : HARDENING_ARGS),
+        ...(spec.user ? ['--user', `${spec.user.uid}:${spec.user.gid}`] : []),
         '--name',
         serviceContainerName(job, spec.name),
         '--label',

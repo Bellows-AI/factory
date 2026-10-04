@@ -48,8 +48,10 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   A stock postgres chowns its data directory as root at first boot and crash-loops with no
   capabilities; `unhardened: true` on that service restores the image's default capability set and
   nothing else — `CAP_NET_RAW` included, on the network the attempt's containers share. No gate
-  image has the opt-out. `driver/src/services.ts`, `driver/test/services.test.ts`,
-  [security.md](security.md).
+  image has the opt-out. `user: "999:999"` is the hardened fix instead: the image starts as its own
+  uid, skips the chown and user switch, and keeps every capability dropped (`runAsUser` on
+  kubernetes, `--user` on docker). `driver/src/services.ts`, `driver/src/k8s-auxspec.ts`,
+  `driver/test/services.test.ts`, [security.md](security.md).
 - **A declared service found dead before the declared gates skips them and fails the verdict
   `services`, never `gate`** — a gate against a dead service fails on an environment the agent
   cannot fix, and `gate-failed` would spend a gate-fix round on it. The verdict quotes the
