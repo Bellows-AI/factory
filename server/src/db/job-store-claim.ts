@@ -23,6 +23,7 @@ import type {
     JobStore,
     CreateJobStoreDeps,
     Claim,
+    ClaimGatesSource,
     ClaimHelperPlan,
     JobStorePrs,
 } from './job-store-types.js';
@@ -422,6 +423,7 @@ export async function resolveClaimExecutor(
 export interface ResolvedClaimGates {
     claimGates: BellowsConfig | null;
     gateError: string | null;
+    gatesSource: ClaimGatesSource | null;
     claimPath: string | null;
 }
 
@@ -438,16 +440,21 @@ export async function resolveClaimGates(
     row: { created_by: string | null; repo: string | null }
 ): Promise<ResolvedClaimGates> {
     const claimPath = workspacePathFor(ctx.orgId, ctx.hasWorkspaces, row.created_by);
-    if (!gatesReader || !row.repo || !claimPath) return { claimGates: null, gateError: null, claimPath };
+    if (!gatesReader || !row.repo || !claimPath) {
+        return { claimGates: null, gateError: null, gatesSource: null, claimPath };
+    }
     const read = await gatesReader.readFor(claimPath, row.repo, ctx.rootJobId);
-    return { claimGates: read.error ? null : read.config, gateError: read.error, claimPath };
+    return { claimGates: read.error ? null : read.config, gateError: read.error, gatesSource: read.source, claimPath };
 }
 
 export interface ResolvedClaimPublish {
     publish: boolean | undefined;
     claimGates: BellowsConfig | null;
     gateError: string | null;
+    gatesSource: ClaimGatesSource | null;
 }
+
+type ClaimGatesRead = Pick<ResolvedClaimGates, 'claimGates' | 'gateError' | 'gatesSource'>;
 
 /**
  * claim()'s ONE read of the root row's frozen workflow snapshot — the graph every per-node
@@ -478,7 +485,7 @@ async function readWorkflowSnapshot(
 export function resolveClaimPublish(
     snapshot: WorkflowDefinition | null,
     workflowNode: string | null,
-    gates: { claimGates: BellowsConfig | null; gateError: string | null }
+    gates: ClaimGatesRead
 ): ResolvedClaimPublish {
     if (workflowNode === null) return { publish: undefined, ...gates };
     if (snapshot === null) {
@@ -489,7 +496,7 @@ export function resolveClaimPublish(
     }
     const publish = isPublishNode(snapshot, workflowNode);
     if (nodeOf(snapshot, workflowNode)?.gates === false) {
-        return { publish, claimGates: null, gateError: null };
+        return { publish, claimGates: null, gateError: null, gatesSource: null };
     }
     return { publish, ...gates };
 }
@@ -540,7 +547,7 @@ async function resolveClaimWorkflow(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
     row: { workflow_node: string | null; workflow_name: string | null },
-    gates: { claimGates: BellowsConfig | null; gateError: string | null }
+    gates: ClaimGatesRead
 ): Promise<ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined; masterPrompt: string | null }> {
     const { orgId, rootJobId, prs } = ctx;
     const snapshot =
@@ -571,7 +578,17 @@ export function buildClaimResult(
         ResolvedClaimGates &
         ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined; masterPrompt: string | null }
 ): Claim {
-    const { claimEnv, executorType, claimPath, claimGates, gateError, publish, helperPlans, masterPrompt } = resolved;
+    const {
+        claimEnv,
+        executorType,
+        claimPath,
+        claimGates,
+        gateError,
+        gatesSource,
+        publish,
+        helperPlans,
+        masterPrompt,
+    } = resolved;
     return {
         id: row.id,
         command: row.command,
@@ -593,6 +610,7 @@ export function buildClaimResult(
         ...(claimEnv ? { env: claimEnv } : {}),
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(claimGates || gateError ? { gates: claimGates, gateError } : {}),
+        ...(gatesSource ? { gatesSource } : {}),
         ...(publish !== undefined ? { publish } : {}),
         ...(helperPlans !== undefined ? { helperPlans } : {}),
     };

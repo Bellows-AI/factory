@@ -535,12 +535,26 @@ describe('the bellows readout arguments', () => {
         expect(script).toContain('"$BELLOWS_ROOT"/*/.bellows.yaml');
         expect(script).toContain('###__bellows:');
         expect(script).toContain('basename');
-        expect(script).toContain('[ -f "$f" ] || continue');
+        expect(script).toContain('[ -f "$2" ] || return 0');
         // The readout's output crosses execFile's maxBuffer, so the script bounds each file and
         // refuses an oversize one in place — an author refusal, not a failed read.
         expect(script).toContain('wc -c');
         expect(script).toContain('$BELLOWS_MAX_BYTES');
         expect(script).toContain('$BELLOWS_ERROR_PREFIX');
+        // A job with no repo has no task worktree: every checkout is read from its base clone.
+        expect(line.slice(0, -1).join(' ')).not.toContain('BELLOWS_TASK_');
+    });
+
+    // Issue #444: the task's own checkout is read from its worktree, the tree the gates read.
+    it('names the task checkout and its worktree when the job has a repo', () => {
+        const root = '33333333-3333-4333-8333-333333333333';
+        const line = readBellowsArgs(loadDriverConfig({}), { ...job, repo: 'acme/app', rootJobId: root });
+        expect(line).toEqual(
+            expect.arrayContaining([
+                'BELLOWS_TASK_REPO=app',
+                `BELLOWS_TASK_TREE=/workspaces/bellows/${USER}/.worktrees/${root}`,
+            ])
+        );
     });
 
     it('refuses a workspace path that is not <org>/<uuid>', () => {

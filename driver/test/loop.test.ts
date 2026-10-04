@@ -987,6 +987,15 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
+    it('keeps the claim’s gates when the re-read is refused and the claim read the worktree', async () => {
+        const board = stubBoard([{ ...job(1), gatesSource: 'worktree' }], { rereadGates: null });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
     // The terminal reclaim (issue #47, revised): after the thread is DONE — every member terminal
     // AND the user's done on one of them, the board says so in the same breath as the verdict —
     // the per-thread task worktree is removed. A thread that merely finished keeps its tree: the
@@ -2095,6 +2104,23 @@ describe('the poll loop', () => {
         // Released BEFORE the verdict — a replacement claimant may start the moment the job is failed.
         expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+    });
+
+    // Issue #444: a claim's gates read from the BASE CLONE — every first claim's, the worktree not
+    // existing yet — is only as current as the clone's checked-out files. With the re-read refused
+    // nothing replaces it, so the attempt fails rather than gate against a stale declaration.
+    it('fails the attempt when the re-read is refused and the claim read the base clone', async () => {
+        const board = stubBoard([{ ...job(1), gatesSource: 'clone' }], { rereadGates: null });
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+        const { events } = releaseEvents(board.board, runner);
+
+        await drive({ ...board, runner });
+
+        expect(events).toEqual([`release:${job(1).id}`, `complete:${job(1).id}`]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(board.board.completed[0]?.output).toContain('read from the base clone');
     });
 
     it('releases the checkout fence before failing a job that declares gates this driver cannot run', async () => {

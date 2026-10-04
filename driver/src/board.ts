@@ -105,6 +105,12 @@ export interface BoardJob {
      */
     gateError?: string | null;
     /**
+     * Which tree the claim's gates answer was read from (issue #444): the task worktree, or the
+     * base clone — every first claim's, whose checked-out files may lag. The loop refuses to gate
+     * on a 'clone' answer its post-sync re-read could not replace. Absent reads as "no refusal".
+     */
+    gatesSource?: 'worktree' | 'clone';
+    /**
      * The ad-hoc gate credentials the LOOP mints for this attempt (`BELLOWS_GATE_URL` /
      * `BELLOWS_GATE_TOKEN`) — set just before spawn, never by the board, which is why it sits
      * beside `env` rather than inside it: the reserved-name filter that keeps a member's claim
@@ -491,6 +497,10 @@ export function createBoard({
         return response;
     };
 
+    /** The claim's `gatesSource` when it is one of the two known trees, else absent. */
+    const knownGatesSource = (value: unknown): Pick<BoardJob, 'gatesSource'> =>
+        value === 'worktree' || value === 'clone' ? { gatesSource: value } : {};
+
     return {
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
@@ -499,11 +509,12 @@ export function createBoard({
             // must not survive under exactOptionalPropertyTypes, which refuses assigning
             // `undefined` to this optional property directly — the conditional spread below is
             // the only way to represent "absent".
-            const { helperPlans, ...rest } = (await response.json()) as Partial<BoardJob>;
+            const { helperPlans, gatesSource, ...rest } = (await response.json()) as Partial<BoardJob>;
             const claimed = rest;
             return {
                 ...(claimed as BoardJob),
                 ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
+                ...knownGatesSource(gatesSource),
                 masterPrompt: typeof claimed.masterPrompt === 'string' ? claimed.masterPrompt : null,
                 resumeSessionId: claimed.resumeSessionId ?? null,
                 followUp: claimed.followUp ?? false,

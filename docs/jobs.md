@@ -20,7 +20,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Task summary read model (`GET /api/tasks`) | `server/src/db/task-summary.ts`, `server/src/routes/tasks.ts` | `server/test/task-summary.test.ts`, `server/test/routes.tasks.test.ts`, `server/test-db/job-store.tasks.*.test.ts` |
 | Attribution, wall clock, agent turns, publication | `server/src/db/job-store-reads.ts`, `job-store-rows.ts` | `server/test-db/job-store.attribution.test.ts`, `job-store.wall-clock.test.ts`, `job-store.publication.test.ts` |
 | `.bellows.yaml` parser (gates and services) | `server/src/workspace/bellows.ts` | `server/test/bellows.test.ts` |
-| Gates, board side | `server/src/db/job-store-worker.ts`, `server/migrations/018_job_gates.sql` | `server/test-db/job-store.gates.test.ts`, `job-store.gates.rereads.test.ts` |
+| Gates, board side; the claim's `gatesSource` | `server/src/db/job-store-worker.ts`, `job-store-claim.ts`, `server/migrations/018_job_gates.sql` | `server/test-db/job-store.gates.test.ts`, `job-store.gates.rereads.test.ts`, `server/test/claim-gates-source.test.ts` |
 | Master prompt, rendered | `server/src/db/master-prompt.ts` | `server/test/master-prompt.test.ts` |
 | Master prompt, delivered (argv, OpenCode `factory` agent) | `driver/src/master-prompt.ts`, `runner-plan.ts`, `claim.ts` | `driver/test/master-prompt.test.ts` |
 | Claim loop, verdicts, reclaim | `driver/src/loop*.ts`, `board.ts`, `claim.ts` | `driver/test/loop.test.ts`, `board.test.ts` |
@@ -31,8 +31,8 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
 | Tree fingerprint: sync before, probe after a failed gate, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
-| Auxiliary services, the dead-service probe | `driver/src/services.ts`, `k8s-services.ts`, `docker-runner.ts` | `driver/test/services.test.ts`, `docker.test.ts`, `k8s.test.ts` |
-| Worktree sync, publish, PR identity | `driver/src/publish.ts`, `scripts/git-worktree*.cjs`, `pr-summary.cjs` | `driver/test/worktree.test.ts`, `worktree-restore.test.ts`, `pr-summary.test.ts` |
+| Auxiliary services, the dead-service probe | `driver/src/services.ts`, `scripts/bellows-read.sh`, `k8s-services.ts`, `docker-runner.ts` | `driver/test/services.test.ts`, `scripts-bellows-read.test.ts`, `docker.test.ts`, `k8s.test.ts` |
+| Worktree sync, base-clone fast-forward, publish, PR identity | `driver/src/publish.ts`, `scripts/git-worktree*.cjs`, `pr-summary.cjs` | `driver/test/worktree.test.ts`, `worktree-restore.test.ts`, `worktree-clone-ff.test.ts`, `pr-summary.test.ts` |
 | GitHub review collect and reply | `driver/src/review.ts`, `review-helpers.ts`, `scripts/review-*.cjs` | `driver/test/review.test.ts`, `review-collect-script.test.ts`, `review-reply-script.test.ts` |
 | Session id, close-time turn count and summary | `driver/src/close-read.ts`, `docker-close-read.ts`, `scripts/claude-turns.cjs` | `driver/test/scripts-claude-turns.test.ts`, `scripts-opencode-readout.test.ts` |
 | Run artifacts (full log, transcript) | `driver/src/artifacts.ts`, `server/migrations/046_job_artifacts.sql` | `driver/test/artifacts.test.ts` |
