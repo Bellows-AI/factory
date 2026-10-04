@@ -33,7 +33,7 @@ import {
     parseTranscriptRead,
     readsAgentTurns,
 } from '../src/close-read.js';
-import { ARTIFACT_LIMIT } from '../src/runner.js';
+import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import { networkName, readBellowsArgs, serviceContainerName, serviceRunArgs } from '../src/services.js';
@@ -1936,6 +1936,89 @@ describe('the docker runner', () => {
             memPercent: 7.02,
         });
         expect(commands).toEqual(['stats']);
+    });
+
+    /**
+     * The dead half of the fleet (issue #423): an exited or dead service, with the daemon's exit
+     * code and reason and the container's last log lines — stdout and stderr both, because an
+     * entrypoint's `chown` refusal lands on stderr. Read over the sample's own label scoping; a
+     * running service is never inspected.
+     */
+    it('reads each dead service with its exit, reason and log tail', async () => {
+        const calls: string[][] = [];
+        const mongo = `factory-job-${job.id}-${job.leaseToken}-svc-mongo`;
+        const exec = vitest.fn((args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'ps') {
+                return Promise.resolve({
+                    stdout:
+                        psLine({ name: 'mongo', image: 'mongo:8', state: 'exited' }) +
+                        psLine({ name: 'cache', image: 'redis:7', state: 'dead' }) +
+                        psLine({ name: 'db', image: 'postgres:16', state: 'running' }),
+                });
+            }
+            if (args[0] === 'inspect') {
+                return Promise.resolve({
+                    stdout:
+                        args.at(-1) === mongo
+                            ? '{"ExitCode":1,"OOMKilled":false,"Error":""}\n'
+                            : '{"ExitCode":137,"OOMKilled":true,"Error":""}\n',
+                });
+            }
+            expect(args.slice(0, 3)).toEqual(['logs', '--tail', String(SERVICE_LOG_TAIL_LINES)]);
+            return Promise.resolve(
+                args.at(-1) === mongo
+                    ? { stdout: 'starting\n', stderr: 'chown: Operation not permitted\n' }
+                    : { stdout: '' }
+            );
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), exec);
+
+        await expect(runner.deadServices(job)).resolves.toEqual([
+            { name: 'cache', image: 'redis:7', state: 'dead', exitCode: 137, reason: 'OOMKilled', logTail: '' },
+            {
+                name: 'mongo',
+                image: 'mongo:8',
+                state: 'exited',
+                exitCode: 1,
+                reason: null,
+                logTail: 'starting\nchown: Operation not permitted\n',
+            },
+        ]);
+        const ps = calls.find((args) => args[0] === 'ps')!;
+        expect(ps).toContain('-a');
+        expect(ps).toContain(`label=factory.job=${job.id}`);
+        expect(ps).toContain(`label=factory.lease=${job.leaseToken}`);
+        expect(ps).toContain('label=factory.service');
+        expect(calls.some((args) => args.at(-1)?.endsWith('-svc-db'))).toBe(false);
+    });
+
+    it('keeps a dead service whose inspect fails, and throws on an unreadable fleet', async () => {
+        const fleet = vitest.fn((args: string[]) =>
+            args[0] === 'ps'
+                ? Promise.resolve({ stdout: psLine({ name: 'mongo', image: 'mongo:8', state: 'exited' }) })
+                : Promise.reject(new Error('No such container'))
+        ) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        await expect(
+            createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), fleet).deadServices(job)
+        ).resolves.toEqual([
+            { name: 'mongo', image: 'mongo:8', state: 'exited', exitCode: null, reason: null, logTail: '' },
+        ]);
+
+        const refused = vitest.fn(() => Promise.reject(new Error('daemon refused'))) as unknown as (
+            args: string[]
+        ) => Promise<{ stdout: string }>;
+        await expect(
+            createDockerRunner(loadDriverConfig({}), child('done\n', '', 0), refused).deadServices(job)
+        ).rejects.toThrow('daemon refused');
+    });
+
+    it('answers no dead services without asking the daemon when services are off', async () => {
+        const exec = vitest.fn(() => Promise.resolve({ stdout: '' }));
+        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('done\n', '', 0), exec);
+
+        await expect(runner.deadServices(job)).resolves.toEqual([]);
+        expect(exec).not.toHaveBeenCalled();
     });
 
     it('answers null when the vitals sample cannot be taken', async () => {

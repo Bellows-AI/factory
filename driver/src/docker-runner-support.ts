@@ -38,7 +38,10 @@ export type Spawn = typeof spawn;
  * is killed and the promise rejects — which is what keeps a close-time read from holding a
  * runner's verdict open forever when the daemon stalls.
  */
-export type ExecDocker = (args: string[], options?: { timeout?: number }) => Promise<{ stdout: string }>;
+export type ExecDocker = (
+    args: string[],
+    options?: { timeout?: number }
+) => Promise<{ stdout: string; stderr?: string }>;
 
 /** How much of a failed aux container's own error detail rides in a sync/reclaim/publish reason. */
 export const ERROR_DETAIL_MAX_CHARS = 300;

@@ -2581,6 +2581,20 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(store.completed[0]).toMatchObject({ failureKind: 'timeout' });
     });
 
+    // A dead `.bellows.yaml` service (issue #423): its own kind, so the workflow's gate-failed
+    // edge never reads it as a gate the agent could fix.
+    it('records the services failure kind', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            status: 'failed',
+            failureKind: 'services',
+        });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ failureKind: 'services' });
+    });
+
     it('stores null when the report carries no failure kind', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
