@@ -270,7 +270,7 @@ const fastForwardClone = (def) => {
         return console.error('base clone is on ' + (on || 'a detached HEAD') + ', not ' + def + '; left as is');
     if (git('status', '--porcelain')) return console.error('base clone has uncommitted changes; left as is');
     try {
-        git('merge', '--ff-only', '--quiet', 'origin/' + def);
+        git('merge', '--ff-only', '--no-overwrite-ignore', '--quiet', 'origin/' + def);
     } catch (e) {
         console.error(
             'base clone could not be fast-forwarded to origin/' +

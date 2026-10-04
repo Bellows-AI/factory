@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
@@ -31,6 +31,18 @@ describe.skipIf(!hasGit())('the worktree sync fast-forwards the base clone', () 
 
         expect(git(fx.clone(), 'rev-parse', 'HEAD')).toBe(before);
         expect(git(fx.clone(), 'status', '--porcelain')).toBe('M README.md');
+    });
+
+    it('leaves a clone whose ignored local file the fast-forward would overwrite alone', () => {
+        writeFileSync(join(fx.clone(), '.git', 'info', 'exclude'), 'NEWS.md\n');
+        writeFileSync(join(fx.clone(), 'NEWS.md'), 'a member note\n');
+        const before = git(fx.clone(), 'rev-parse', 'HEAD');
+        fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
+
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+
+        expect(git(fx.clone(), 'rev-parse', 'HEAD')).toBe(before);
+        expect(readFileSync(join(fx.clone(), 'NEWS.md'), 'utf8')).toBe('a member note\n');
     });
 
     it('leaves a clone on another branch alone', () => {
