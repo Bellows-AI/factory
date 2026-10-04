@@ -65,6 +65,9 @@ export interface CompletedRun {
  *                       cannot act on (`job-store-worker.ts`'s `runWorkflowTransition`).
  * - `blocked`           the agent reported it cannot proceed for a reason outside the repository
  *                       (`FACTORY_BLOCKED:`) — a human must act; no edge, custom `failed` included.
+ * - `services`          the run failed on a dead declared service: another round over the same
+ *                       service can only fail the same way (the `blocked` precedent).
+ * - `publish`           the run's publish step failed: resting it spends no round.
  * - `no_progress`       the matched rule is `gate-failed` and the run left the tree unchanged:
  *                       a gate-fix round over the same tree can only fail the same way.
  * - `thread_busy`       an off-graph follow-up completed while a graph row of the thread is still
@@ -78,8 +81,17 @@ export type RestReason =
     | 'command_too_large'
     | 'no_publication'
     | 'blocked'
+    | 'services'
+    | 'publish'
     | 'no_progress'
     | 'thread_busy';
+
+/** Failure kinds that rest the thread before any edge is evaluated — a custom `failed` edge included. */
+const REST_BY_KIND: Partial<Record<FailureKind, RestReason>> = {
+    blocked: 'blocked',
+    services: 'services',
+    publish: 'publish',
+};
 
 export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }
@@ -139,7 +151,8 @@ export function nextTransition(input: {
     }
     const halted = input.completed.node ?? haltedNode(input.rows, input.completed.id);
     if (halted === null) return { action: 'rest', reason: 'off_graph' };
-    if (input.completed.failureKind === 'blocked') return { action: 'rest', reason: 'blocked' };
+    const restReason = input.completed.failureKind ? REST_BY_KIND[input.completed.failureKind] : undefined;
+    if (restReason !== undefined) return { action: 'rest', reason: restReason };
 
     const failed = firstFailedGate(input.completed.gates);
     for (const edge of input.snapshot.edges) {
@@ -211,6 +224,8 @@ function haltedNode(rows: EngineRow[], completedId: string): string | null {
 function ruleMatches(rule: EdgeRule, completed: CompletedRun): boolean {
     if (rule === 'succeeded') return completed.status === 'succeeded';
     if (rule === 'failed') return completed.status === 'failed';
-    if (rule === 'gate-failed') return firstFailedGate(completed.gates) !== null;
-    return tailMatches(completed.output, rule.marker);
+    // The stored gate report can be a previous attempt's: only a verdict that failed ON a gate makes
+    // it this run's evidence. A marker only counts on a run that succeeded.
+    if (rule === 'gate-failed') return completed.failureKind === 'gate' && firstFailedGate(completed.gates) !== null;
+    return completed.status === 'succeeded' && tailMatches(completed.output, rule.marker);
 }

@@ -49,7 +49,7 @@ describe('nextTransition: marker and gate matching', () => {
             command: '',
             snapshot,
             rows: [row({ id: 'r1', node: 'implement' })],
-            completed: done({ id: 'r1', status: 'failed', gates }),
+            completed: done({ id: 'r1', status: 'failed', gates, failureKind: 'gate' }),
         });
         expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' } });
         if (t.action !== 'insert') return;
