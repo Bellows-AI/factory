@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
@@ -9,6 +9,8 @@ import type { Claim, Job } from '../src/db/job-store-types.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
+import type { OrgRegistry } from '../src/orgs.js';
+import { jobRoutes } from '../src/routes/jobs.js';
 import type { MemoryAuthStore } from './helpers.js';
 import {
     githubAuth,
@@ -66,6 +68,9 @@ const jobStub = (): JobStore =>
         async complete() {
             return 'ok';
         },
+        async artifact() {
+            return 'ok';
+        },
         async get() {
             return null as Job | null;
         },
@@ -109,111 +114,142 @@ async function build(
     return app;
 }
 
+/*
+ * Driven off requirementFor rather than restated, so this cannot drift from the hook. The point of
+ * the table is that each answer is a decision, and three of them are load-bearing: health must stay
+ * open or the compose healthcheck restarts a container that was about to succeed; the SPA's document
+ * must stay open or there is nothing to render a sign-in button in; and the worker routes must NOT
+ * accept a session, or any member could steal another worker's lease.
+ */
+const ROUTE_TABLE: readonly (readonly [string, string])[] = [
+    ['/api/health', 'open'],
+    // The kubelet's startup probe carries no credential.
+    ['/api/ready', 'open'],
+    ['/api/auth/github', 'open'],
+    // The installation webhook answers to the HMAC signature over its body — a credential the
+    // route verifies itself — so the session hook must not demand a cookie of it.
+    ['/api/github/webhook', 'open'],
+    ['/api/auth/github/callback', 'open'],
+    // The onboarding screen's read and write (#125): the pending cookie IS the credential
+    // here — these run before any session exists, which is the whole point of the step.
+    ['/api/auth/github/pending', 'open'],
+    ['/api/auth/github/pending/installations/123/repos', 'open'],
+    ['/api/auth/github/complete', 'open'],
+    ['/api/auth/me', 'open'],
+    ['/', 'open'],
+    ['/index.html', 'open'],
+    ['/assets/app-1234.js', 'open'],
+    // A client-side route, and the reason it is here is that it fails ONLY in production: Vite
+    // has its own history fallback in dev, so a wall on this path would be invisible until the
+    // baked image served it. The not-found handler in app.ts sends index.html for it, and the
+    // wall is on /api/* rather than on the document — see docs/auth.md.
+    ['/settings/workspace', 'open'],
+    ['/api/stats', 'user'],
+    ['/api/jobs', 'user'],
+    // The task read model (#157): a person's inbox view over the same board. It falls through
+    // to `user` by the safe default rather than being listed anywhere — pinned here because a
+    // worker token reading every task summary of the board would be the thread-read hole
+    // again, one level up.
+    ['/api/tasks', 'user'],
+    [`/api/jobs/${JOB_ID}`, 'user'],
+    // All three are person's actions on a finished task — a follow-up asks for adjustments,
+    // retry re-runs the thread head's command fresh, done declares the task finished by
+    // hand — and all fall through to `user`.
+    [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
+    [`/api/jobs/${JOB_ID}/retry`, 'user'],
+    [`/api/jobs/${JOB_ID}/done`, 'user'],
+    // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
+    // token un-closing tasks it never held would move audit rows for no run it owns.
+    [`/api/jobs/${JOB_ID}/reopen`, 'user'],
+    // Stop and remove are person's actions too. The driver is told to stop through the
+    // heartbeat it already holds, never through a stop route of its own; and a worker token
+    // removing the audit rows of jobs it never held would be the thread-read hole (#47) again.
+    [`/api/jobs/${JOB_ID}/stop`, 'user'],
+    [`/api/jobs/${JOB_ID}/remove`, 'user'],
+    // Both control a thread parked on a durable PR wait (issue #328) — person's actions on
+    // the wait a worker holds no lease on, so they fall through to `user` like the above.
+    [`/api/jobs/${JOB_ID}/wait/cancel`, 'user'],
+    [`/api/jobs/${JOB_ID}/wait/poke`, 'user'],
+    ['/api/jobs/claim', 'worker'],
+    // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, and
+    // read-only — a worker token answers facts, it never moves rows.
+    ['/api/jobs/leases', 'worker'],
+    // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
+    // reclaim, so both ends are as worker-only as claim and complete.
+    ['/api/reclaims/claim', 'worker'],
+    [`/api/reclaims/${JOB_ID}/ack`, 'worker'],
+    [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
+    [`/api/jobs/${JOB_ID}/session`, 'worker'],
+    [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
+    [`/api/jobs/${JOB_ID}/complete`, 'worker'],
+    [`/api/jobs/${JOB_ID}/output`, 'worker'],
+    // Both are the driver's gate machinery — the state reports after each gate runs and the
+    // post-sync re-read of `.bellows.yaml`. Missing from this table is what left the last run's
+    // gate state unstored: under AUTH_MODE=github both fell through to `user` and answered the
+    // worker token 401, while the gates themselves ran and passed unseen.
+    [`/api/jobs/${JOB_ID}/gates`, 'worker'],
+    [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
+    // The publish credential ask is the driver's too — the loop calls it right before the
+    // push. Missing from this table is what made it answer the worker token 401 in
+    // production while the fix looked deployed (jobs 9bf1002a, 4bcfe8be and b0ac2284,
+    // 2026-09-14): the silent null sent every long run to the push with its expired
+    // claim-time token, and only runs under an hour published.
+    [`/api/jobs/${JOB_ID}/publish-token`, 'worker'],
+    // The run-artifact upload (issue #325) is the driver's close-time POST of the full log and
+    // the transcript, lease-guarded like complete. Missing from this table is what made it answer
+    // the worker token 401 on every production job (#446): the upload is best-effort, so the
+    // runs completed and nothing was ever stored for the read routes below to serve.
+    [`/api/jobs/${JOB_ID}/artifact`, 'worker'],
+    // The thread read is a person's again: it carries commands, output and session ids of the
+    // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
+    // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
+    // lease-guarded complete response as `threadDone` instead.
+    [`/api/jobs/${JOB_ID}/thread`, 'user'],
+    // The person-side reads of a run: its activity and the two artifacts the driver uploads. A
+    // worker token reading them would be the thread-read hole again, one route over.
+    [`/api/jobs/${JOB_ID}/activity`, 'user'],
+    [`/api/jobs/${JOB_ID}/log`, 'user'],
+    [`/api/jobs/${JOB_ID}/transcript`, 'user'],
+    ['/api/otlp/v1/logs', 'ingest'],
+    // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
+    // repo must never choose the org it lands in, so the credential does. Its own requirement,
+    // between worker and ingest — the pair is the attempt's, the bearer a member's.
+    ['/api/sessions/branch', 'branch'],
+    // Both fall through to `user` rather than being listed anywhere, which is the point: the
+    // default is the safe one, so a new route is walled unless somebody deliberately opens it.
+    ['/api/repos', 'user'],
+    ['/api/workspace', 'user'],
+    ['/api/workspace/repos', 'user'],
+    // Access-token management: a person's settings act, so session cookie or personal bearer —
+    // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
+    ['/api/tokens', 'user'],
+    ['/api/tokens/org', 'user'],
+    [`/api/tokens/${JOB_ID}/revoke`, 'user'],
+];
+
 describe('the route table', () => {
-    /*
-     * Driven off requirementFor rather than restated, so this cannot drift from the hook. The
-     * point of the table is that each answer is a decision, and three of them are load-bearing:
-     * health must stay open or the compose healthcheck restarts a container that was about to
-     * succeed; the SPA's document must stay open or there is nothing to render a sign-in button in;
-     * and the worker routes must NOT accept a session, or any member could steal another worker's
-     * lease.
-     */
-    it.each([
-        ['/api/health', 'open'],
-        // The kubelet's startup probe carries no credential.
-        ['/api/ready', 'open'],
-        ['/api/auth/github', 'open'],
-        // The installation webhook answers to the HMAC signature over its body — a credential the
-        // route verifies itself — so the session hook must not demand a cookie of it.
-        ['/api/github/webhook', 'open'],
-        ['/api/auth/github/callback', 'open'],
-        // The onboarding screen's read and write (#125): the pending cookie IS the credential
-        // here — these run before any session exists, which is the whole point of the step.
-        ['/api/auth/github/pending', 'open'],
-        ['/api/auth/github/pending/installations/123/repos', 'open'],
-        ['/api/auth/github/complete', 'open'],
-        ['/api/auth/me', 'open'],
-        ['/', 'open'],
-        ['/index.html', 'open'],
-        ['/assets/app-1234.js', 'open'],
-        // A client-side route, and the reason it is here is that it fails ONLY in production: Vite
-        // has its own history fallback in dev, so a wall on this path would be invisible until the
-        // baked image served it. The not-found handler in app.ts sends index.html for it, and the
-        // wall is on /api/* rather than on the document — see docs/auth.md.
-        ['/settings/workspace', 'open'],
-        ['/api/stats', 'user'],
-        ['/api/jobs', 'user'],
-        // The task read model (#157): a person's inbox view over the same board. It falls through
-        // to `user` by the safe default rather than being listed anywhere — pinned here because a
-        // worker token reading every task summary of the board would be the thread-read hole
-        // again, one level up.
-        ['/api/tasks', 'user'],
-        [`/api/jobs/${JOB_ID}`, 'user'],
-        // All three are person's actions on a finished task — a follow-up asks for adjustments,
-        // retry re-runs the thread head's command fresh, done declares the task finished by
-        // hand — and all fall through to `user`.
-        [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
-        [`/api/jobs/${JOB_ID}/retry`, 'user'],
-        [`/api/jobs/${JOB_ID}/done`, 'user'],
-        // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
-        // token un-closing tasks it never held would move audit rows for no run it owns.
-        [`/api/jobs/${JOB_ID}/reopen`, 'user'],
-        // Stop and remove are person's actions too. The driver is told to stop through the
-        // heartbeat it already holds, never through a stop route of its own; and a worker token
-        // removing the audit rows of jobs it never held would be the thread-read hole (#47) again.
-        [`/api/jobs/${JOB_ID}/stop`, 'user'],
-        [`/api/jobs/${JOB_ID}/remove`, 'user'],
-        // Both control a thread parked on a durable PR wait (issue #328) — person's actions on
-        // the wait a worker holds no lease on, so they fall through to `user` like the above.
-        [`/api/jobs/${JOB_ID}/wait/cancel`, 'user'],
-        [`/api/jobs/${JOB_ID}/wait/poke`, 'user'],
-        ['/api/jobs/claim', 'worker'],
-        // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, and
-        // read-only — a worker token answers facts, it never moves rows.
-        ['/api/jobs/leases', 'worker'],
-        // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
-        // reclaim, so both ends are as worker-only as claim and complete.
-        ['/api/reclaims/claim', 'worker'],
-        [`/api/reclaims/${JOB_ID}/ack`, 'worker'],
-        [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
-        [`/api/jobs/${JOB_ID}/session`, 'worker'],
-        [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
-        [`/api/jobs/${JOB_ID}/complete`, 'worker'],
-        [`/api/jobs/${JOB_ID}/output`, 'worker'],
-        // Both are the driver's gate machinery — the state reports after each gate runs and the
-        // post-sync re-read of `.bellows.yaml`. Missing from this table is what left the last run's
-        // gate state unstored: under AUTH_MODE=github both fell through to `user` and answered the
-        // worker token 401, while the gates themselves ran and passed unseen.
-        [`/api/jobs/${JOB_ID}/gates`, 'worker'],
-        [`/api/jobs/${JOB_ID}/gates-reread`, 'worker'],
-        // The publish credential ask is the driver's too — the loop calls it right before the
-        // push. Missing from this table is what made it answer the worker token 401 in
-        // production while the fix looked deployed (jobs 9bf1002a, 4bcfe8be and b0ac2284,
-        // 2026-09-14): the silent null sent every long run to the push with its expired
-        // claim-time token, and only runs under an hour published.
-        [`/api/jobs/${JOB_ID}/publish-token`, 'worker'],
-        // The thread read is a person's again: it carries commands, output and session ids of the
-        // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
-        // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
-        // lease-guarded complete response as `threadDone` instead.
-        [`/api/jobs/${JOB_ID}/thread`, 'user'],
-        ['/api/otlp/v1/logs', 'ingest'],
-        // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
-        // repo must never choose the org it lands in, so the credential does. Its own requirement,
-        // between worker and ingest — the pair is the attempt's, the bearer a member's.
-        ['/api/sessions/branch', 'branch'],
-        // Both fall through to `user` rather than being listed anywhere, which is the point: the
-        // default is the safe one, so a new route is walled unless somebody deliberately opens it.
-        ['/api/repos', 'user'],
-        ['/api/workspace', 'user'],
-        ['/api/workspace/repos', 'user'],
-        // Access-token management: a person's settings act, so session cookie or personal bearer —
-        // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
-        ['/api/tokens', 'user'],
-        ['/api/tokens/org', 'user'],
-        [`/api/tokens/${JOB_ID}/revoke`, 'user'],
-    ])('classifies %s as %s', (path, expected) => {
+    it.each(ROUTE_TABLE)('classifies %s as %s', (path, expected) => {
         expect(requirementFor(path)).toBe(expected);
+    });
+
+    // The table is hand-written beside the regex, which is how gates, gates-reread, publish-token
+    // and artifact each slipped through: a worker-shaped handler, absent from both, failing quietly
+    // because its caller treats the answer as best-effort. Every route the job board registers
+    // must be a decision recorded above.
+    it('has a row for every route the job board registers', async () => {
+        const board = Fastify();
+        const urls = new Set<string>();
+        board.addHook('onRoute', (route) => {
+            urls.add(route.url);
+        });
+        await board.register(jobRoutes({ orgs: {} as OrgRegistry }));
+        await board.ready();
+        await board.close();
+
+        const tabled = new Set(ROUTE_TABLE.map(([path]) => path));
+        const missing = [...urls].map((url) => url.replace(/:[^/]+/g, JOB_ID)).filter((path) => !tabled.has(path));
+        expect(urls.size).toBeGreaterThan(0);
+        expect(missing).toEqual([]);
     });
 });
 
@@ -320,6 +356,36 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
         // No org binding and no token row: the secret IS the driver credential, and the claim is
         // offered every org's queue.
         expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it('accepts the shared board secret on the artifact upload', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/artifact`,
+            payload: { leaseToken: LEASE, kind: 'log', attempt: 1, content: 'hello', truncated: false },
+            headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+        });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it('refuses a session cookie on the artifact upload', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        const cookie = await signedIn(store, caller);
+
+        const response = await server.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/artifact`,
+            payload: { leaseToken: LEASE, kind: 'log', attempt: 1, content: 'hello', truncated: false },
+            headers: { cookie },
+        });
+
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 
     it('resolves a job-scoped worker call from the row its URL names', async () => {
