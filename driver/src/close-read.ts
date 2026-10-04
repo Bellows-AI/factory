@@ -25,6 +25,8 @@ export interface OpencodeRunOutcome {
     agentTurns: number | null;
     /** The run's last assistant text, or null when the read answered none — unmeasured, never empty. */
     summary: string | null;
+    /** `RunOutcome.blockedLine`: the final text's last line's blocked reason, or null. */
+    blocked: string | null;
     /**
      * What the readout says went wrong, when it says anything. The script prints one on every
      * failure it can name; a readout that answers nothing at all parses with this null.
@@ -57,6 +59,7 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
         costUsd: null,
         agentTurns: null,
         summary: null,
+        blocked: null,
         error: null,
     };
     try {
@@ -67,6 +70,7 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
             cost?: unknown;
             turns?: unknown;
             summary?: unknown;
+            blocked?: unknown;
             error?: unknown;
         };
         const sessionId = typeof parsed.id === 'string' && /^ses_[A-Za-z0-9._-]+$/.test(parsed.id) ? parsed.id : null;
@@ -76,8 +80,9 @@ export function parseOpencodeRunOutcome(stdout: string): OpencodeRunOutcome {
         const costUsd = finiteNonNegativeNumber(parsed.cost);
         const agentTurns = nonNegativeInteger(parsed.turns);
         const summary = nonEmptyString(parsed.summary);
+        const blocked = typeof parsed.blocked === 'string' ? parsed.blocked : null;
         const error = nonEmptyString(parsed.error);
-        return { sessionId, finishReason, contextTokens, costUsd, agentTurns, summary, error };
+        return { sessionId, finishReason, contextTokens, costUsd, agentTurns, summary, blocked, error };
     } catch {
         return nothing;
     }
@@ -92,6 +97,7 @@ export function opencodeReadFailed(error: string | null): OpencodeRunOutcome {
         costUsd: null,
         agentTurns: null,
         summary: null,
+        blocked: null,
         error,
     };
 }
@@ -144,24 +150,42 @@ export function mergeOpencodeOutcome(outcome: RunOutcome, scraped: OpencodeRunOu
     // session, already scoped by the parent_id-is-null selection the script makes.
     if (scraped.agentTurns !== null) outcome.agentTurns = scraped.agentTurns;
     if (scraped.summary) outcome.summary = scraped.summary;
+    if (scraped.blocked !== null) outcome.blockedLine = scraped.blocked;
     if (scraped.error) outcome.providerError = scraped.error;
 }
 
-/** What the claude close-time read answered: the turn count and the run's last words, or nulls. */
-export function parseClaudeCloseRead(stdout: string): { turns: number | null; summary: string | null } {
+/** What the claude close-time read answered: the turn count, the run's last words and its blocked line. */
+export interface ClaudeCloseRead {
+    turns: number | null;
+    summary: string | null;
+    blocked: string | null;
+}
+
+/** The claude close-time read that answered nothing — every field unmeasured. */
+export const CLAUDE_READ_NONE: ClaudeCloseRead = { turns: null, summary: null, blocked: null };
+
+export function parseClaudeCloseRead(stdout: string): ClaudeCloseRead {
     const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
     try {
-        const parsed = JSON.parse(line) as { turns?: unknown; summary?: unknown };
+        const parsed = JSON.parse(line) as { turns?: unknown; summary?: unknown; blocked?: unknown };
         return {
             turns:
                 typeof parsed.turns === 'number' && Number.isInteger(parsed.turns) && parsed.turns >= 0
                     ? parsed.turns
                     : null,
             summary: typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : null,
+            blocked: typeof parsed.blocked === 'string' ? parsed.blocked : null,
         };
     } catch {
-        return { turns: null, summary: null };
+        return CLAUDE_READ_NONE;
     }
+}
+
+/** Lays one claude close-time read onto the outcome — both executors' twin of `mergeOpencodeOutcome`. */
+export function mergeClaudeCloseRead(outcome: RunOutcome, read: ClaudeCloseRead): void {
+    outcome.agentTurns = read.turns;
+    if (read.summary) outcome.summary = read.summary;
+    if (read.blocked !== null) outcome.blockedLine = read.blocked;
 }
 
 /**

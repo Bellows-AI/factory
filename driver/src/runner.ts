@@ -99,6 +99,11 @@ export interface RunOutcome {
      */
     summary?: string | null;
     /**
+     * The agent's blocked report, read with `summary` but BEFORE its collapse: the text after
+     * `FACTORY_BLOCKED:` when the final message's last line starts with it. Absent otherwise.
+     */
+    blockedLine?: string;
+    /**
      * The run's full output, tail-kept at ARTIFACT_LIMIT bytes (issue #325) — the artifact the
      * loop uploads to the board at close, where the rolling tail the verdict carries is only the
      * end of the run. Absent when the runner captured none (a refused start, a kubernetes pod
@@ -167,9 +172,10 @@ export interface Runner {
     /**
      * The task tree's fingerprint now (`probeTreeFingerprint`): the probe step over the same
      * transport `publishGit` uses, read only after a declared gate failed. Null is unknown.
-     * Optional, like `publishGit`: a runner without it reports no tree change at all.
+     * Optional, like `publishGit`: a runner without it reports no tree change at all. `signal`
+     * is the attempt's stand-down: an aborted probe tears its container or aux Job down.
      */
-    probeTree?(job: BoardJob): Promise<string | null>;
+    probeTree?(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
     /**
      * Prepares the job's task worktree before the run. A STARTING claim syncs it with the
      * remote default: fetch, create the worktree branched off `origin/<default>` (first attempt

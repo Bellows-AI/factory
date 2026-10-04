@@ -36,9 +36,12 @@ export type Spawn = typeof spawn;
  *
  * One `docker` invocation off the hot paths. `timeout` (ms) bounds the whole exec — the process
  * is killed and the promise rejects — which is what keeps a close-time read from holding a
- * runner's verdict open forever when the daemon stalls.
+ * runner's verdict open forever when the daemon stalls. An aborted `signal` kills it the same way.
  */
-export type ExecDocker = (args: string[], options?: { timeout?: number }) => Promise<{ stdout: string }>;
+export type ExecDocker = (
+    args: string[],
+    options?: { timeout?: number; signal?: AbortSignal }
+) => Promise<{ stdout: string }>;
 
 /** How much of a failed aux container's own error detail rides in a sync/reclaim/publish reason. */
 export const ERROR_DETAIL_MAX_CHARS = 300;

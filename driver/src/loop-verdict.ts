@@ -32,13 +32,13 @@ const BLOCKED_REASON_MAX_CHARS = 300;
 const blockedText = (rest: string): string => rest.trim().slice(0, BLOCKED_REASON_MAX_CHARS) || 'no reason given';
 
 /**
- * The reason the agent reported it is blocked, or null. The close-time summary is the run's
- * final message collapsed to one line, so the marker counts anywhere in it; it is head-capped,
- * so a marker the cap cut off is still found as a line of the output tail's last lines.
+ * The reason the agent reported it is blocked, or null. A close-time read that found the final
+ * message settles it (`blockedLine`, its last line — never a mention inside the collapsed
+ * summary); only a run with no such read falls back to a marker line among the output tail's last.
  */
 export function blockedReason(outcome: RunOutcome): string | null {
-    const at = outcome.summary?.lastIndexOf(BLOCKED_MARKER) ?? -1;
-    if (outcome.summary && at >= 0) return blockedText(outcome.summary.slice(at + BLOCKED_MARKER.length));
+    if (outcome.blockedLine !== undefined) return blockedText(outcome.blockedLine);
+    if (outcome.summary) return null;
     const lines = outcome.output
         .split('\n')
         .map((line) => line.trim())

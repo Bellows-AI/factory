@@ -27,6 +27,21 @@ const { DatabaseSync } = require('node:sqlite');
 
 const RUN_STARTED_MS = Number(process.env.RUN_STARTED_MS);
 const SUMMARY_MAX_CHARS = 400;
+const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
+
+// The agent's blocked report: the final text's LAST non-empty line, when it starts with the
+// marker — read before the summary collapses the lines, so a mention mid-message never counts.
+const blockedOf = (text) => {
+    const last =
+        text
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .pop() ?? '';
+    return last.startsWith(BLOCKED_MARKER)
+        ? last.slice(BLOCKED_MARKER.length).trim().slice(0, SUMMARY_MAX_CHARS)
+        : null;
+};
 
 try {
     const dbPath = process.env.OPENCODE_DB;
@@ -75,24 +90,27 @@ try {
             if (typeof message === 'string' && message) error = message;
         }
         let summary = null;
+        let blocked = null;
         try {
             const texts = new Map();
             for (const p of db.prepare('select message_id, data from part where session_id=? order by id').all(s.id)) {
                 const d = JSON.parse(p.data);
                 if (d.type !== 'text' || typeof d.text !== 'string' || !d.text.trim()) continue;
                 const held = texts.get(String(p.message_id));
-                texts.set(String(p.message_id), held ? `${held} ${d.text}` : d.text);
+                texts.set(String(p.message_id), held ? `${held}\n${d.text}` : d.text);
             }
             for (let i = assistantIds.length - 1; i >= 0; i -= 1) {
                 const text = texts.get(assistantIds[i]);
                 if (!text) continue;
                 summary = text.replace(/\s+/g, ' ').trim().slice(0, SUMMARY_MAX_CHARS);
+                blocked = blockedOf(text);
                 break;
             }
         } catch {
             summary = null;
+            blocked = null;
         }
-        console.log(JSON.stringify({ id: s.id, finish, tokens, cost, turns, summary, error }));
+        console.log(JSON.stringify({ id: s.id, finish, tokens, cost, turns, summary, blocked, error }));
     } else {
         console.log(JSON.stringify({ error: `no session ran in ${dir}` }));
     }

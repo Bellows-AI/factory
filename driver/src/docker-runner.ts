@@ -373,7 +373,7 @@ async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: 
     }
     const envFile = file;
     try {
-        return await publishCheckout(config, job, (publish) => dockerPublishStep(deps, job, publish, envFile));
+        return await publishCheckout(config, job, (publish) => dockerPublishStep(deps, job, publish, { envFile }));
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
     }
@@ -384,7 +384,7 @@ async function dockerPublishStep(
     deps: RunnerDeps,
     job: BoardJob,
     publish: PublishStep,
-    envFile: string | null
+    { envFile, signal }: { envFile: string | null; signal?: AbortSignal | undefined }
 ): Promise<{ stdout: string }> {
     const { config, execDocker } = deps;
     const repo = worktreeDir(config, job);
@@ -398,7 +398,7 @@ async function dockerPublishStep(
     if (publish.env && envFile) args.push('--env-file', envFile);
     args.push('--entrypoint', publish.entrypoint, executorImage(config, job.executorType), ...publish.args);
     try {
-        return await execDocker(args);
+        return await execDocker(args, signal ? { signal } : undefined);
     } catch (e) {
         // The tool's own output, never the echoed command (dockerErrorDetail):
         // the execFile message is "Command failed: <the whole docker run argv>",
@@ -734,8 +734,10 @@ export function createDockerRunner(
         syncCheckout: (job) => dockerSyncCheckout(deps, job),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),
-        // The probe needs no claim env: no env file is written for it.
-        probeTree: (job) => probeTreeFingerprint(config, job, (step) => dockerPublishStep(deps, job, step, null)),
+        // The probe needs no claim env: no env file is written for it. A stand-down kills the
+        // client; the read-only `--rm` probe container exits and is removed on its own.
+        probeTree: (job, signal) =>
+            probeTreeFingerprint(config, job, (step) => dockerPublishStep(deps, job, step, { envFile: null, signal })),
         runHelper: (job, plan, token) => dockerRunHelper(deps, job, plan, token),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),

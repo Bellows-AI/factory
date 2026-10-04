@@ -372,6 +372,10 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
         }
     }
     const treeChanged = failure ? await treeChangedSinceSync(ctx) : null;
+    if (down(state)) {
+        await settleDownAfterGates(ctx);
+        return { done: true };
+    }
 
     return { done: false, outcome, failure, endedAt, blocked, gatesSkipped, treeChanged };
 }
@@ -401,9 +405,16 @@ async function settleDownAfterGates(ctx: AttemptCtx): Promise<void> {
  * Null whenever either half is unknown: no before-fingerprint, no probe, or a probe that failed.
  */
 async function treeChangedSinceSync(ctx: AttemptCtx): Promise<boolean | null> {
-    const { rt, job, treeBefore } = ctx;
+    const { rt, job, treeBefore, state } = ctx;
     if (treeBefore === null || !rt.runner.probeTree) return null;
-    const after = await rt.runner.probeTree(job).catch(() => null);
+    // A stand-down cancels the probe's transport and stops waiting on it; the caller rechecks.
+    const cancel = new AbortController();
+    void state.abort.then(() => cancel.abort());
+    const raced = await raceStep(
+        state,
+        rt.runner.probeTree(job, cancel.signal).catch(() => null)
+    );
+    const after = raced?.value ?? null;
     return after === null ? null : after !== treeBefore;
 }
 

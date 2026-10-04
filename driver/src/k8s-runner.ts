@@ -6,6 +6,9 @@ import {
     mergeOpencodeOutcome,
     opencodeReadFailed,
     parseClaudeCloseRead,
+    mergeClaudeCloseRead,
+    CLAUDE_READ_NONE,
+    type ClaudeCloseRead,
     parseOpencodeRunOutcome,
     parseTranscriptRead,
     readOpencodeWithRetries,
@@ -155,21 +158,21 @@ async function scrapeClaudeCloseRead(
     job: BoardJob,
     sessionId: string,
     startedAt: string
-): Promise<{ turns: number | null; summary: string | null }> {
+): Promise<ClaudeCloseRead> {
     let spec: ReturnType<typeof claudeTurnsJobSpec>;
     try {
         spec = claudeTurnsJobSpec(deps.config, job, sessionId, startedAt);
     } catch {
-        return { turns: null, summary: null };
+        return CLAUDE_READ_NONE;
     }
     const jobName = spec.metadata.name;
     try {
         const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        if (created.status >= HTTP_ERROR_STATUS) return { turns: null, summary: null };
+        if (created.status >= HTTP_ERROR_STATUS) return CLAUDE_READ_NONE;
         const verdict = await auxVerdict(deps, jobName);
         return parseClaudeCloseRead(verdict.output);
     } catch {
-        return { turns: null, summary: null };
+        return CLAUDE_READ_NONE;
     } finally {
         void deleteJob(deps, jobName);
     }
@@ -305,8 +308,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 
     if (job.executorType === CLAUDE_CODE && session) {
         const read = await scrapeClaudeCloseRead(deps, job, session.id, startedAt);
-        outcome.agentTurns = read.turns;
-        if (read.summary) outcome.summary = read.summary;
+        mergeClaudeCloseRead(outcome, read);
         // The transcript artifact (issue #325), from the same file the count came from.
         const transcript = await scrapeTranscriptArtifact(deps, () =>
             claudeTranscriptJobSpec(deps.config, job, session.id, startedAt)
@@ -375,7 +377,8 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
 async function runPublishStepJob(
     deps: K8sDeps,
     job: BoardJob,
-    input: Parameters<typeof publishStepJobSpec>[2]
+    input: Parameters<typeof publishStepJobSpec>[2],
+    signal?: AbortSignal
 ): Promise<{ stdout: string }> {
     const jobName = publishStepJobName(job, input.step);
     try {
@@ -385,7 +388,7 @@ async function runPublishStepJob(
             publishStepJobSpec(deps.config, job, input)
         );
         expectOk(created, 'creating the publish job');
-        const verdict = await auxVerdict(deps, jobName);
+        const verdict = await auxVerdict(deps, jobName, signal);
         if (verdict.exitCode !== 0) {
             throw new Error(
                 verdict.output.trim() || `the step exited ${verdict.exitCode ?? 'without a readable code'}`
@@ -403,12 +406,13 @@ const TREE_PROBE_STEP = 0;
 /**
  * The post-gate tree probe: the publish's probe step as one aux Job, no Secret — the probe reads
  * no claim env. Step 0 is its name: publish steps count from 1, so the two never share a Job name.
+ * An aborted `signal` ends the poll and deletes the Job (`runPublishStepJob`'s finally).
  */
-async function probeTree(deps: K8sDeps, job: BoardJob): Promise<string | null> {
+async function probeTree(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<string | null> {
     const repo = worktreeDir(deps.config, job);
     if (!repo) return null;
     return probeTreeFingerprint(deps.config, job, (publish) =>
-        runPublishStepJob(deps, job, { step: TREE_PROBE_STEP, publish, envSecret: null, repo })
+        runPublishStepJob(deps, job, { step: TREE_PROBE_STEP, publish, envSecret: null, repo }, signal)
     );
 }
 
@@ -573,7 +577,7 @@ export function createKubernetesRunner(
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),
-        probeTree: (job: BoardJob) => probeTree(deps, job),
+        probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
         runHelper: (job: BoardJob, plan: HelperPlan, token?: string) => runHelper(deps, job, plan, token),
         syncCheckout: (job: BoardJob) => syncCheckout(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),

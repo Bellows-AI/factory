@@ -234,6 +234,31 @@ describe.skipIf(!hasNodeSqlite())('the opencode session readout: run summary', (
         expect(answer.summary).toBe('done — tests pass.');
     });
 
+    // The blocked marker counts only as the final message's last line — read before the collapse.
+    it.each([
+        [
+            'the last line is the marker',
+            'tried twice.\nFACTORY_BLOCKED: no access to staging  ',
+            'no access to staging',
+        ],
+        ['the marker is only mentioned', 'Added FACTORY_BLOCKED: handling and verified all tests pass.', null],
+        ['the marker line is not the last', 'FACTORY_BLOCKED: early worry\nresolved it, all green.', null],
+    ])('lifts the blocked marker only when %s', (_label, text, blocked) => {
+        const db = new DatabaseSync(fx.dbPath());
+        db.exec('create table part (id integer primary key, message_id text, session_id text, data text)');
+        const m = db
+            .prepare('insert into message (session_id, data) values (?, ?)')
+            .run('ses_mine', JSON.stringify({ role: 'assistant', finish: 'stop' }));
+        db.prepare('insert into part (message_id, session_id, data) values (?, ?, ?)').run(
+            String(m.lastInsertRowid),
+            'ses_mine',
+            JSON.stringify({ type: 'text', text })
+        );
+        db.close();
+
+        expect(fx.run(fx.dbPath(), MINE).answer.blocked).toBe(blocked);
+    });
+
     it('answers a null summary when the schema predates the part table — the summary degrades alone', () => {
         // An older opencode keeps no `part` rows: the summary read throws inside its own guard
         // and costs the summary, never the turns or the finish reason beside it.

@@ -3620,7 +3620,7 @@ describe('gates over a run that did not finish cleanly', () => {
 });
 
 describe('the agent reporting it is blocked', () => {
-    it('reads the marker from the summary: no gates, no publish, failed blocked', async () => {
+    it('reads the close-time blocked line: no gates, no publish, failed blocked', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
         const runner = stubRunner(
@@ -3628,6 +3628,7 @@ describe('the agent reporting it is blocked', () => {
                 ok({
                     output: 'I could not start.',
                     summary: 'acli answered 401 on every call. FACTORY_BLOCKED: acli is not authenticated',
+                    blockedLine: 'acli is not authenticated',
                 }),
             {
                 publish: {
@@ -3653,11 +3654,11 @@ describe('the agent reporting it is blocked', () => {
         expect(complete.output).toContain('[driver] gates skipped — the agent reported it is blocked');
     });
 
-    // The summary is head-capped: a long final message loses its last line there, never in the tail.
-    it('reads the marker from the output tail when the summary does not carry it', async () => {
+    // No close-time read answered (no summary, no blocked line): the output tail is all there is.
+    it('falls back to the output tail when no close-time read answered', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () =>
-            ok({ output: 'tried twice\nFACTORY_BLOCKED: no access to the staging cluster\n', summary: 'tried twice' })
+            ok({ output: 'tried twice\nFACTORY_BLOCKED: no access to the staging cluster\n' })
         );
 
         await drive({ ...board, runner });
@@ -3666,6 +3667,18 @@ describe('the agent reporting it is blocked', () => {
         expect(board.board.completed[0]?.output).toContain(
             'the agent reported it is blocked: no access to the staging cluster'
         );
+    });
+
+    // The summary is collapsed to one line: a marker mentioned inside it is not the agent's last line.
+    it('does not read a marker the successful final message merely mentions', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({ output: 'done', summary: 'Added FACTORY_BLOCKED: handling and verified all tests pass.' })
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 
     it('ignores a marker line far above the final message, and one that does not start a line', async () => {
@@ -3815,5 +3828,29 @@ describe('a stop cancels the gates', () => {
         await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
 
         expect(stack.stack.cancelled).toEqual([]);
+    });
+
+    // The tree probe runs after the gates' own stand-down check: a Stop landing while it is
+    // pending must still park the turn, never complete a failed gate a `gate-failed` edge reads.
+    it('parks the turn stopped when the stop lands during the post-gate tree probe', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const runner = stubRunner(async () => ok(), {
+            sync: { ok: true, reason: null, fingerprint: 'head:aaaa' },
+        });
+        let probeSignal: AbortSignal | undefined;
+        runner.probeTree = async (_job, signal) => {
+            probeSignal = signal;
+            options.cancelRequested = true;
+            while (runner.killed.length === 0) await new Promise((resolve) => setTimeout(resolve, 2));
+            return 'head:bbbb';
+        };
+
+        await drive({ ...board, runner, gates: stubGateStack({ test: 1 }).gates });
+
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+        // The transport is cancelled too, so a pending aux Job never holds the Stop.
+        expect(probeSignal?.aborted).toBe(true);
     });
 });

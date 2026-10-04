@@ -2460,6 +2460,23 @@ describe('publishing the produced work', () => {
         expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
     });
 
+    // A Stop while the probe Job is still pending must not wait for the Job to finish on its own.
+    it('stops polling and deletes a pending probe Job once the stand-down signal aborts', async () => {
+        const base = fakeRequest({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
+        const cancel = new AbortController();
+        const probeJob = `${jobsPath(namespace)}/${publishStepJobName(ISSUE_JOB, 0)}`;
+        let polls = 0;
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && path === probeJob && ++polls === 3) cancel.abort();
+            return base.request(method, path, body);
+        };
+
+        expect(await runner(request).probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
+
+        expect(polls).toBe(3);
+        expect(base.calls.some((call) => call.method === 'DELETE' && call.path.startsWith(probeJob))).toBe(true);
+    });
+
     it.each([
         ['a probe that answers no fingerprint', { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) }],
         ['a probe that failed', { exit: 1, log: 'boom' }],

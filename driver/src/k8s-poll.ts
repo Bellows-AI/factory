@@ -272,7 +272,12 @@ export async function readJobPodVerdict(
  * succeeded-with-no-pod convention the runner's own verdict read applies. Used by the publish
  * steps and the claude-turns close read, whose every container is exactly this shape.
  */
-export async function auxVerdict(deps: K8sDeps, jobName: string): Promise<{ exitCode: number | null; output: string }> {
+export async function auxVerdict(
+    deps: K8sDeps,
+    jobName: string,
+    signal?: AbortSignal
+): Promise<{ exitCode: number | null; output: string }> {
+    if (signal?.aborted) throw new Error(`the job ${jobName} was cancelled`);
     const result = await readJobStatus(deps, jobName, `reading the job ${jobName}`);
     if (result.kind === 'notFound') {
         throw new Error(`the job ${jobName} no longer exists`);
@@ -280,7 +285,7 @@ export async function auxVerdict(deps: K8sDeps, jobName: string): Promise<{ exit
     if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
     if (result.kind === 'pending') {
         await deps.sleep(POLL_MS);
-        return auxVerdict(deps, jobName);
+        return auxVerdict(deps, jobName, signal);
     }
     return readJobPodVerdict(deps, jobName, result.outcome === 'succeeded', `listing the pods of ${jobName}`);
 }
