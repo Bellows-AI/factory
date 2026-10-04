@@ -35,12 +35,17 @@ const account = async (githubUserId: number, login: string): Promise<string> => 
 };
 
 /** A store whose gates reader answers from memory: the SQL is under test here, not the file read. */
-const gatedStore = (answer: { config: unknown; error: string | null }): JobStore =>
+const gatedStore = (answer: {
+    config: unknown;
+    error: string | null;
+    source?: 'worktree' | 'clone' | null;
+}): JobStore =>
     createJobStore({
         sql,
         orgId: ORG,
         gates: {
-            readFor: async () => answer as { config: null; error: string | null },
+            readFor: async () =>
+                ({ source: 'clone', ...answer }) as { config: null; error: string | null; source: null },
         },
     });
 
@@ -73,6 +78,27 @@ describe.runIf(enabled)('gates on the job store', () => {
         expect(claim?.gateError).toBe('.bellows.yaml line 3: unknown key "timeout"');
     });
 
+    // Issue #444: the claim names the tree its gates answer came from, so the driver can refuse
+    // to gate on a base-clone answer its post-sync re-read could not replace. It rides even when
+    // the answer is "no gates" — that answer is as stale as the tree it was read from.
+    it('carries the tree the gates answer was read from, gated or not', async () => {
+        const SOURCE_CAT_GITHUB_ID = 6010;
+        const userId = await account(SOURCE_CAT_GITHUB_ID, 'source-cat');
+        const fromClone = gatedStore({ config: null, error: null, source: 'clone' });
+        await fromClone.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        const cloneClaim = await fromClone.claim('driver-1', LEASE_SECONDS);
+        expect(cloneClaim?.gates).toBeUndefined();
+        expect(cloneClaim?.gatesSource).toBe('clone');
+
+        const fromWorktree = gatedStore({
+            config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+            error: null,
+            source: 'worktree',
+        });
+        await fromWorktree.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        expect((await fromWorktree.claim('driver-1', LEASE_SECONDS))?.gatesSource).toBe('worktree');
+    });
+
     it('carries no gates at all for a repository that declares none', async () => {
         const PLAIN_CAT_GITHUB_ID = 6003;
         const userId = await account(PLAIN_CAT_GITHUB_ID, 'plain-cat');
@@ -84,6 +110,7 @@ describe.runIf(enabled)('gates on the job store', () => {
         // predates the feature — reads as "no gates", not as an error.
         expect(claim?.gates).toBeUndefined();
         expect(claim?.gateError).toBeUndefined();
+        expect(claim?.gatesSource).toBeUndefined();
     });
 
     it('replaces the gate state on every report, and answers the last one on read', async () => {

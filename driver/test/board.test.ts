@@ -285,6 +285,19 @@ describe('the claimed job', () => {
         expect((await oldBoard.claim('driver-1'))?.helperPlans).toBeUndefined();
     });
 
+    // Issue #444: which tree the claim's gates were read from. Only the two known values pass;
+    // anything else reads as absent, which the loop treats as "no stale-source refusal".
+    it('carries the gates source, dropping an unknown value', async () => {
+        for (const gatesSource of ['worktree', 'clone'] as const) {
+            const { fetch } = recorder(() => claimed({ gatesSource }));
+            const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+            expect((await board.claim('driver-1'))?.gatesSource).toBe(gatesSource);
+        }
+        const { fetch } = recorder(() => claimed({ gatesSource: 'elsewhere' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.gatesSource).toBeUndefined();
+    });
+
     it('drops a malformed (non-array) helperPlans value rather than passing it through', async () => {
         const { fetch } = recorder(() => claimed({ helperPlans: 'not-an-array' }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });

@@ -49,8 +49,12 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
         const userId = await account(GATE_BAT_GITHUB_ID, 'gate-bat');
         // First answer: the stale tree the claim saw. Second: what the synced tree holds.
         const answers = [
-            { config: null, error: null },
-            { config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, error: null },
+            { config: null, error: null, source: 'clone' as const },
+            {
+                config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
+                error: null,
+                source: 'worktree' as const,
+            },
         ];
         let call = 0;
         const reader = createJobStore({
@@ -97,7 +101,7 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
             gates: {
                 readFor: async (workspacePath, repo, worktreeId) => {
                     seen.push({ workspacePath, repo, worktreeId: worktreeId ?? null });
-                    return { config: null, error: null };
+                    return { config: null, error: null, source: null };
                 },
             },
         });

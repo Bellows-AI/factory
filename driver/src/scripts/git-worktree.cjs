@@ -49,8 +49,13 @@
 // existing branch when the thread already has one (a lost directory must not cost its
 // commits), else -b at origin/<default>. A path that holds a git tree this sync did not
 // create is REFUSED, never deleted: whatever uncommitted work sits there belongs to an agent
-// session, and destroying it is the one outcome worse than a burned attempt. The clone's own
-// working tree is never touched — the worktree model is what makes that literally true.
+// session, and destroying it is the one outcome worse than a burned attempt.
+//
+// The clone's own working tree is touched in exactly one way: after a STARTING sync's fetch, its
+// default branch is fast-forwarded to origin/<default> when it is checked out, clean and behind —
+// agents read sibling checkouts' files, which would otherwise stay at whatever commit was first
+// cloned. Another branch, a dirty tree or a diverged history is left as it is and logged to
+// stderr (stdout is the verdict channel), never forced. RESTORE syncs never reach it.
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -258,6 +263,24 @@ const fetchOriginWithRetries = () => {
     }
 };
 
+/** Fast-forwards the clone's checked-out default branch when that is safe; see the header. */
+const fastForwardClone = (def) => {
+    const on = git('branch', '--show-current');
+    if (on !== def)
+        return console.error('base clone is on ' + (on || 'a detached HEAD') + ', not ' + def + '; left as is');
+    if (git('status', '--porcelain')) return console.error('base clone has uncommitted changes; left as is');
+    try {
+        git('merge', '--ff-only', '--quiet', 'origin/' + def);
+    } catch (e) {
+        console.error(
+            'base clone could not be fast-forwarded to origin/' +
+                def +
+                '; left as is: ' +
+                String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH)
+        );
+    }
+};
+
 /**
  * Git-ignores the `.factory/` state namespace (helper verdicts, review digests) for every worktree
  * of this clone: `info/exclude` lives in the COMMON dir, which a worktree's `.git` FILE only
@@ -364,6 +387,7 @@ try {
     try {
         def = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
     } catch {}
+    fastForwardClone(def);
     let existing = false;
     try {
         inw('rev-parse', '--is-inside-work-tree');

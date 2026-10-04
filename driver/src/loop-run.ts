@@ -159,6 +159,21 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | nul
     if (fresh) {
         job.gates = fresh.gates ?? null;
         job.gateError = fresh.gateError ?? null;
+    } else if (job.gatesSource === 'clone') {
+        // Issue #444: the claim read the base clone, whose checked-out files may lag the tree this
+        // run edits, and nothing replaced that answer — never gate against a stale declaration.
+        await runner.releaseFence?.(job);
+        await settle();
+        log(`job ${job.id}: gates re-read refused and the claim's gates came from the base clone, failing`);
+        await report(rt, job, {
+            status: 'failed',
+            exitCode: null,
+            output:
+                "The board refused the post-sync .bellows.yaml re-read, and this claim's gates were read from " +
+                'the base clone, not the task worktree — the run will not be gated against a stale declaration.',
+            failureKind: 'runner_error',
+        }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+        return STOOD_DOWN;
     } else {
         log(`job ${job.id}: gates re-read refused, keeping the claim's decision`);
     }

@@ -17,6 +17,7 @@ import {
     parseDockerStats,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
+import { argvEnv, bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
 import { currentActivity, reportTail, stripAnsi, tailBytes } from '../src/runner.js';
 import {
     claudeTurnsArgs,
@@ -2435,6 +2436,68 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 { servicesNetwork: networkName(job), envFile: envFilePath(job) }
             )
         );
+    });
+
+    /*
+     * Issue #444: the task's own repo is read from its worktree — the tree the gates read — so a
+     * service or a `user:` its base clone has not checked out yet still reaches the container.
+     * The readout here is the shipped script, run on a real member tree with the argv's own env.
+     */
+    describe('reading the task worktree (issue #444)', () => {
+        const ROOT = '55555555-5555-4555-8555-555555555555';
+        const repoJob: BoardJob = { ...job, repo: 'acme/app', rootJobId: ROOT };
+        const treeDaemon = (tree: ReturnType<typeof bellowsTree>) =>
+            vitest.fn(async (args: string[]) => {
+                if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: tree.read(argvEnv(args)) };
+                if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+                return { stdout: '' };
+            });
+        const run = async (tree: ReturnType<typeof bellowsTree>) => {
+            const exec = treeDaemon(tree);
+            const runner = createDockerRunner(
+                loadDriverConfig({ RUNNER_SERVICES: '1', WORKSPACE_MOUNT: tree.mount }),
+                spawnRecording('ran\n', 0).fn,
+                exec as unknown as (args: string[]) => Promise<{ stdout: string }>
+            );
+            const outcome = await runner.run(repoJob, { id: SESSION, resume: false });
+            const services = exec.mock.calls
+                .map((c) => c[0])
+                .filter((a) => a[0] === 'run' && a.includes('--network-alias'));
+            return { outcome, services };
+        };
+
+        it("starts the worktree's services, with a user only the worktree declares, beside another checkout's", async () => {
+            const tree = bellowsTree(repoJob.workspacePath!);
+            tree.write('app/.bellows.yaml', bellowsService('postgres'));
+            tree.write(`.worktrees/${ROOT}/.bellows.yaml`, bellowsService('postgres', '\n    user: "999:999"'));
+            tree.write('api/.bellows.yaml', bellowsService('redis'));
+            const { outcome, services } = await run(tree);
+
+            expect(outcome).toMatchObject({ exitCode: 0, started: true });
+            expect(services).toEqual(
+                expect.arrayContaining([
+                    serviceRunArgs(repoJob, {
+                        name: 'postgres',
+                        image: 'postgres:1',
+                        environment: [],
+                        user: { uid: 999, gid: 999 },
+                    }),
+                    serviceRunArgs(repoJob, { name: 'redis', image: 'redis:1', environment: [] }),
+                ])
+            );
+            expect(services).toHaveLength(2);
+        });
+
+        it('refuses a name the worktree and another checkout both declare, naming both', async () => {
+            const tree = bellowsTree(repoJob.workspacePath!);
+            tree.write(`.worktrees/${ROOT}/.bellows.yaml`, bellowsService('postgres'));
+            tree.write('api/.bellows.yaml', bellowsService('postgres'));
+            const { outcome, services } = await run(tree);
+
+            expect(outcome.exitCode).toBeNull();
+            expect(outcome.output).toMatch(/"postgres" is defined in both (app\/ and api\/|api\/ and app\/)/);
+            expect(services).toHaveLength(0);
+        });
     });
 
     it('starts nothing and changes no argv when the flag is on but no file declares services', async () => {

@@ -14,7 +14,7 @@ import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { containerScript } from './container-scripts.js';
-import { WORKSPACE_PATH } from './publish.js';
+import { WORKSPACE_PATH, worktreeDir } from './publish.js';
 
 /**
  * The readout's shell script: a real file (scripts/bellows-read.sh) read at load time and
@@ -677,8 +677,13 @@ export function assertedWorkspacePath(job: BoardJob): string {
  */
 export function bellowsReadEnv(config: DriverConfig, job: BoardJob): Record<string, string> {
     const path = assertedWorkspacePath(job);
+    // The task's own checkout is read from its worktree — the tree the gates read — not from the
+    // base clone, whose checked-out files lag whatever the base clone was last moved to.
+    const tree = worktreeDir(config, job);
+    const repo = job.repo?.split('/')[1];
     return {
         BELLOWS_ROOT: `${config.workspaceMount}/${path}`,
+        ...(tree && repo ? { BELLOWS_TASK_REPO: repo, BELLOWS_TASK_TREE: tree } : {}),
         BELLOWS_MAX_BYTES: String(MAX_BELLOWS_BYTES),
         // Passed from this constant rather than hardcoded in the script, so the marker the
         // splitter detects (sectionOf) and the marker the script prints cannot drift.

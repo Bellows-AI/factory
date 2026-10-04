@@ -299,6 +299,9 @@ export interface ClaimHelperPlan {
     input: unknown;
 }
 
+/** The tree a gates answer was read from — `GatesRead.source`, declared inline like `gates`. */
+export type ClaimGatesSource = 'worktree' | 'clone';
+
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */
 export interface Claim {
     id: string;
@@ -402,6 +405,13 @@ export interface Claim {
      * the claim route or pass silently as "no gates".
      */
     gateError?: string | null;
+    /**
+     * Which tree the claim's gates answer was read from (issue #444): the task worktree, or the
+     * base clone — whose checked-out files may lag, and which every first claim reads, the
+     * worktree not existing yet. Rides with `gates`; the driver refuses to gate on a 'clone'
+     * answer its post-sync re-read could not replace.
+     */
+    gatesSource?: ClaimGatesSource;
     /**
      * Whether the driver may publish after this run's succeeded gated run. ABSENT on a
      * workflow-less claim — the driver reads its absence as "publish", the exact behavior before
@@ -1148,7 +1158,7 @@ export interface CreateJobStoreDeps {
             workspacePath: string,
             repo: string,
             worktreeId: string | null
-        ): Promise<{ config: BellowsConfig | null; error: string | null }>;
+        ): Promise<{ config: BellowsConfig | null; error: string | null; source: ClaimGatesSource | null }>;
     };
     /**
      * The member executor store's claim-time reader. Declared inline like `env`, because `db/`

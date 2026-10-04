@@ -267,6 +267,7 @@ describe('readGatesFile: repo tree resolution', () => {
         expect(result).toEqual({
             config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
             error: null,
+            source: 'clone',
         });
     });
 
@@ -278,7 +279,7 @@ describe('readGatesFile: repo tree resolution', () => {
             repo: 'o/r',
             readFile: seam(error),
         });
-        expect(result).toEqual({ config: null, error: null });
+        expect(result).toEqual({ config: null, error: null, source: 'clone' });
     });
 
     it('answers a named error for any other read failure', async () => {
@@ -313,10 +314,12 @@ describe('readGatesFile: repo tree resolution', () => {
         expect(await readGatesFile({ root: null, workspacePath: `o/${USER}`, repo: 'o/r', readFile })).toEqual({
             config: null,
             error: null,
+            source: null,
         });
         expect(await readGatesFile({ root: '/w', workspacePath: `o/${USER}`, repo: null, readFile })).toEqual({
             config: null,
             error: null,
+            source: null,
         });
         expect(seen).toEqual([]);
     });
@@ -361,9 +364,12 @@ describe('readGatesFile: worktree precedence', () => {
             `/workspaces/o/${USER}/.worktrees/${ROOT}/.bellows.yaml`,
             `/workspaces/o/${USER}/r/.bellows.yaml`,
         ]);
+        // Issue #444: the claim's answer names the tree it came from — the clone here, which the
+        // driver must not gate against if its post-sync re-read is refused.
         expect(result).toEqual({
             config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
             error: null,
+            source: 'clone',
         });
     });
 
@@ -385,6 +391,26 @@ describe('readGatesFile: worktree precedence', () => {
         expect(seen).toEqual([`/workspaces/o/${USER}/.worktrees/${ROOT}/.bellows.yaml`]);
         expect(result.config?.image).toBe('node:20');
         expect(result.error).toBeNull();
+        expect(result.source).toBe('worktree');
+    });
+
+    it('names the worktree as the source of a worktree read failure, and the clone when neither has a file', async () => {
+        const failing = await readGatesFile({
+            root: '/workspaces',
+            workspacePath: `o/${USER}`,
+            repo: 'o/r',
+            worktreeId: ROOT,
+            readFile: () => Promise.reject(Object.assign(new Error('permission denied'), { code: 'EACCES' })),
+        });
+        expect(failing).toEqual({ config: null, error: 'permission denied', source: 'worktree' });
+        const missing = await readGatesFile({
+            root: '/workspaces',
+            workspacePath: `o/${USER}`,
+            repo: 'o/r',
+            worktreeId: ROOT,
+            readFile: () => Promise.reject(Object.assign(new Error('nope'), { code: 'ENOENT' })),
+        });
+        expect(missing).toEqual({ config: null, error: null, source: 'clone' });
     });
 
     it('refuses a worktree id that is not a uuid, before it joins a path', async () => {
@@ -476,6 +502,7 @@ describe('readGatesFile against a real checkout', () => {
         expect(result).toEqual({
             config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
             error: null,
+            source: 'clone',
         });
     });
 });

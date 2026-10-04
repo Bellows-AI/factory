@@ -61,6 +61,7 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
 ## Stated limits
 
 - Unset `ORG_WORKSPACE_ROOT` clones nothing and `GET /api/workspace` answers `{root: null}`.
-- Nothing fetches, so clones drift; a task works from a worktree cut off `origin/<default>` at its
-  starting claim ([jobs.md](jobs.md)).
+- The reconcile never fetches; a starting sync fast-forwards a clone's default branch only when it
+  is checked out and clean (`driver/src/scripts/git-worktree.cjs`), and a task works from a
+  worktree cut off `origin/<default>` at its starting claim ([jobs.md](jobs.md)).
 - Caps: 20 repositories and 10 executor profiles per member; two clones at a time.

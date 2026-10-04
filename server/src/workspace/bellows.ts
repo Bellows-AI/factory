@@ -302,7 +302,15 @@ export function parseBellows(text: string): BellowsConfig | null {
 export interface GatesRead {
     readonly config: BellowsConfig | null;
     readonly error: string | null;
+    /**
+     * The tree the answer came from (issue #444): 'worktree' when the task worktree's file
+     * answered, 'clone' when the base clone's did or neither had one, null when nothing was read.
+     * A claim's 'clone' answer is only as current as the clone's checked-out files.
+     */
+    readonly source: GatesSource | null;
 }
+
+export type GatesSource = 'worktree' | 'clone';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -362,16 +370,16 @@ function resolveGatesPaths(input: GatesPathInput): { ok: true; paths: string[] }
 async function readFirstExisting(
     paths: string[],
     readFile: (path: string) => Promise<string>
-): Promise<{ text: string | null } | { error: string }> {
-    for (const path of paths) {
+): Promise<({ text: string | null } | { error: string }) & { at: number }> {
+    for (const [at, path] of paths.entries()) {
         try {
-            return { text: await readFile(path) };
+            return { text: await readFile(path), at };
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
-            return { error: (e as Error).message };
+            return { error: (e as Error).message, at };
         }
     }
-    return { text: null };
+    return { text: null, at: paths.length - 1 };
 }
 
 export async function readGatesFile(options: {
@@ -387,20 +395,22 @@ export async function readGatesFile(options: {
     readFile?: (path: string) => Promise<string>;
 }): Promise<GatesRead> {
     const { root, workspacePath, repo, worktreeId = null, readFile = defaultRead } = options;
-    if (!root || !repo) return { config: null, error: null };
+    if (!root || !repo) return { config: null, error: null, source: null };
 
     const resolved = resolveGatesPaths({ root, workspacePath, repo, worktreeId });
-    if (!resolved.ok) return { config: null, error: resolved.error };
+    if (!resolved.ok) return { config: null, error: resolved.error, source: null };
 
     const read = await readFirstExisting(resolved.paths, readFile);
-    if ('error' in read) return { config: null, error: read.error };
+    // The clone is always the last candidate; the worktree, when asked for, the first.
+    const source: GatesSource = read.at === resolved.paths.length - 1 ? 'clone' : 'worktree';
+    if ('error' in read) return { config: null, error: read.error, source };
     // A worktree file that exists but cannot be read is the run's answer — the same named-error
     // channel a clone file's failure takes. Only a missing file falls through to no config.
-    if (read.text === null) return { config: null, error: null };
+    if (read.text === null) return { config: null, error: null, source };
     try {
-        return { config: parseBellows(read.text), error: null };
+        return { config: parseBellows(read.text), error: null, source };
     } catch (e) {
-        return { config: null, error: (e as Error).message };
+        return { config: null, error: (e as Error).message, source };
     }
 }
 
