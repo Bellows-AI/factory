@@ -3559,6 +3559,48 @@ describe('a dead declared service (issue #423)', () => {
     });
 });
 
+describe('a service that dies during the gates (issue #437)', () => {
+    const mongo: DeadService = {
+        name: 'test-mongo',
+        image: 'mongo:8.0.11',
+        state: 'failed',
+        exitCode: 137,
+        reason: 'OOMKilled',
+        logTail: 'killed',
+    };
+
+    it('re-probes after a failed gate and blames the service, not the code', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 });
+        let probes = 0;
+        const runner = stubRunner(async () => ok(), { deadServices: async () => (probes++ === 0 ? [] : [mongo]) });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'services' });
+    });
+
+    it('does not re-probe when the gates pass', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(runner.deadServiceProbes).toBe(1);
+    });
+
+    it('keeps a failed gate a gate failure when every service is still alive', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 });
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
+    });
+});
+
 describe('the verdict failure kind (issue #339)', () => {
     /**
      * Every terminal path names its kind on the verdict, so "how many timeouts this week" and
