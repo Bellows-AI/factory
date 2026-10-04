@@ -65,7 +65,14 @@ import {
     wait,
 } from './k8s-transport.js';
 import type { K8sClaim, K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
-import { publishCheckout, publishFailed, repoPath, withPublishToken, worktreeDir } from './publish.js';
+import {
+    probeTreeFingerprint,
+    publishCheckout,
+    publishFailed,
+    repoPath,
+    withPublishToken,
+    worktreeDir,
+} from './publish.js';
 import type { PublishResult, ReclaimResult, SyncResult } from './publish.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 
@@ -351,34 +358,58 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
     }
     let stepNumber = 0;
     try {
-        return await publishCheckout(deps.config, job, async (publish) => {
+        return await publishCheckout(deps.config, job, (publish) => {
             stepNumber += 1;
-            const jobName = publishStepJobName(job, stepNumber);
             // Unreachable: the workflow answers a null-repo job with publishNothing before any
             // step runs. The assertion keeps the transport honest if the workflow's contract
             // ever changes under it.
             if (!repo) throw new Error('the publish workflow ran a step for a job with no checkout');
-            try {
-                const created = await deps.request(
-                    'POST',
-                    jobsPath(deps.config.k8sNamespace),
-                    publishStepJobSpec(deps.config, job, { step: stepNumber, publish, envSecret: secret, repo })
-                );
-                expectOk(created, 'creating the publish job');
-                const verdict = await auxVerdict(deps, jobName);
-                if (verdict.exitCode !== 0) {
-                    throw new Error(
-                        verdict.output.trim() || `the step exited ${verdict.exitCode ?? 'without a readable code'}`
-                    );
-                }
-                return { stdout: verdict.output };
-            } finally {
-                void deleteJob(deps, jobName);
-            }
+            return runPublishStepJob(deps, job, { step: stepNumber, publish, envSecret: secret, repo });
         });
     } finally {
         if (secret) void deleteSecret(deps, secret);
     }
+}
+
+/** One publish-shaped step as an aux Job: create, poll to its verdict, reap on every path. */
+async function runPublishStepJob(
+    deps: K8sDeps,
+    job: BoardJob,
+    input: Parameters<typeof publishStepJobSpec>[2]
+): Promise<{ stdout: string }> {
+    const jobName = publishStepJobName(job, input.step);
+    try {
+        const created = await deps.request(
+            'POST',
+            jobsPath(deps.config.k8sNamespace),
+            publishStepJobSpec(deps.config, job, input)
+        );
+        expectOk(created, 'creating the publish job');
+        const verdict = await auxVerdict(deps, jobName);
+        if (verdict.exitCode !== 0) {
+            throw new Error(
+                verdict.output.trim() || `the step exited ${verdict.exitCode ?? 'without a readable code'}`
+            );
+        }
+        return { stdout: verdict.output };
+    } finally {
+        void deleteJob(deps, jobName);
+    }
+}
+
+/** The post-gate tree probe's step number — below every publish step's. */
+const TREE_PROBE_STEP = 0;
+
+/**
+ * The post-gate tree probe: the publish's probe step as one aux Job, no Secret — the probe reads
+ * no claim env. Step 0 is its name: publish steps count from 1, so the two never share a Job name.
+ */
+async function probeTree(deps: K8sDeps, job: BoardJob): Promise<string | null> {
+    const repo = worktreeDir(deps.config, job);
+    if (!repo) return null;
+    return probeTreeFingerprint(deps.config, job, (publish) =>
+        runPublishStepJob(deps, job, { step: TREE_PROBE_STEP, publish, envSecret: null, repo })
+    );
 }
 
 /**
@@ -542,6 +573,7 @@ export function createKubernetesRunner(
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),
+        probeTree: (job: BoardJob) => probeTree(deps, job),
         runHelper: (job: BoardJob, plan: HelperPlan, token?: string) => runHelper(deps, job, plan, token),
         syncCheckout: (job: BoardJob) => syncCheckout(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),

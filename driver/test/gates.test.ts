@@ -716,3 +716,103 @@ describe('the gate server: body size and bind resilience', () => {
         await server.close();
     });
 });
+
+/** A Stop or Remove ends a gate where it stands: the docker exec's process dies with its environment. */
+describe('cancelling a gate', () => {
+    it('tears the environment down when the signal aborts mid-exec, and records no cooldown on it', async () => {
+        logs.length = 0;
+        let finishExec: (error: ExecError) => void = () => {};
+        const execDocker = exec((args) => {
+            logs.push(args);
+            if (args[0] === 'exec') {
+                return new Promise<ExecResult>((_resolve, reject) => {
+                    finishExec = reject;
+                });
+            }
+            if (args[0] === 'rm') finishExec(Object.assign(new Error('exit 137'), { code: 137 }));
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({ config, cooldownMs: 1000, execDocker });
+        await manager.acquire(KEY, 'node:24', '');
+        const cancel = new AbortController();
+
+        const gate = manager.runGate(KEY, 'test', 'npm test', cancel.signal);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        cancel.abort();
+        await gate;
+
+        // The fence at acquire, then the cancel's teardown — the exec'd process dies with it.
+        expect(logs.filter((args) => args[0] === 'rm' && args[2] === NAME)).toHaveLength(2);
+        // The next acquire recreates the environment instead of reusing a dead entry.
+        await manager.acquire(KEY, 'node:24', '');
+        expect(logs.filter((args) => args[0] === 'run')).toHaveLength(2);
+        await manager.stop();
+    });
+
+    it('runs nothing for a signal already aborted', async () => {
+        logs.length = 0;
+        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
+        await manager.acquire(KEY, 'node:24', '');
+
+        await manager.runGate(KEY, 'test', 'npm test', AbortSignal.abort());
+
+        expect(logs.filter((args) => args[0] === 'exec')).toEqual([]);
+        await manager.stop();
+    });
+
+    it('leaves the environment alone on an ordinary finish', async () => {
+        logs.length = 0;
+        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: recording });
+        await manager.acquire(KEY, 'node:24', '');
+
+        await manager.runGate(KEY, 'test', 'npm test', new AbortController().signal);
+
+        expect(logs.filter((args) => args[0] === 'rm')).toHaveLength(1); // the acquire's fence only
+        await manager.stop();
+    });
+
+    // The agent's own ad-hoc runs: the runner kill never reaches them, the token's cancel does.
+    it('cancels an in-flight ad-hoc run on the server, answers 409 and refuses the token after', async () => {
+        let aborted = false;
+        let started: () => void = () => {};
+        const running = new Promise<void>((resolve) => {
+            started = resolve;
+        });
+        const manager = {
+            acquire: async () => {},
+            runGate: (_key: string, _name: string, _command: string, signal?: AbortSignal) =>
+                new Promise<{ exitCode: number; output: string }>((resolve) => {
+                    started();
+                    signal?.addEventListener('abort', () => {
+                        aborted = true;
+                        resolve({ exitCode: 137, output: 'killed' });
+                    });
+                }),
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-cancel', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 't' }],
+        });
+        const port = await server.listen();
+        const post = () =>
+            fetch(`http://127.0.0.1:${port}/run`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-cancel' },
+                body: JSON.stringify({ gate: 'test' }),
+            });
+
+        const inFlight = post();
+        await running;
+        server.cancel('tok-cancel');
+
+        expect((await inFlight).status).toBe(CONFLICT_STATUS);
+        expect(aborted).toBe(true);
+        // A cancelled run is no verdict: nothing for the timeout note to quote.
+        expect(server.lastRuns('tok-cancel')).toEqual([]);
+        expect((await post()).status).toBe(UNAUTHORIZED_STATUS);
+        await server.close();
+    });
+});

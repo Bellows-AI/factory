@@ -27,6 +27,9 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Docker runner, env, argv | `driver/src/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker.test.ts`, `config.test.ts` |
 | Kubernetes runner | `driver/src/k8s-*.ts` | `driver/test/k8s.test.ts`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |
 | Gates, execution | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts` |
+| Gates skipped over an unclean run; the agent's `FACTORY_BLOCKED:` report | `driver/src/loop-verdict.ts`, `loop-run.ts` | `driver/test/loop.test.ts` |
+| Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
+| Tree fingerprint: sync before, probe after a failed gate, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
 | Auxiliary services | `driver/src/services.ts`, `k8s-services.ts` | `driver/test/services.test.ts` |
 | Worktree sync, publish, PR identity | `driver/src/publish.ts`, `scripts/git-worktree*.cjs`, `pr-summary.cjs` | `driver/test/worktree.test.ts`, `worktree-restore.test.ts`, `pr-summary.test.ts` |
@@ -35,7 +38,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Run artifacts (full log, transcript) | `driver/src/artifacts.ts`, `server/migrations/046_job_artifacts.sql` | `driver/test/artifacts.test.ts` |
 | Container scripts | `driver/src/container-scripts.ts`, `driver/src/scripts/` | `driver/test/scripts.test.ts`, `driver/test/scripts-*.test.ts` |
 | Orphan reaper | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
-| Failure kind, timeout note, branch attribution | `driver/src/exec-codes.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/timeout-note.test.ts`, `driver/test/branch-reporter.test.ts` |
+| Failure kind, timeout note, branch attribution | `driver/src/exec-codes.ts`, `loop-verdict.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/timeout-note.test.ts`, `driver/test/branch-reporter.test.ts`, `loop.test.ts` |
 | CLI (`factory job …`) | `cli/src/index.ts`, `run.ts`, `board.ts`, `config.ts`, `render.ts` | `cli/test/commands.test.ts`, `board-client.test.ts`, `config.test.ts` |
 | Board + driver end to end | `scripts/test-jobs.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/compose.test.ts` |
 
@@ -52,6 +55,8 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   quantity, defined in [docs/metrics.md](metrics.md). Null is the contract for unmeasured: a
   missing read is never rendered as zero. `driver/test/scripts-claude-turns.test.ts`,
   `core/test/docs.terminology.test.ts`.
+- **`blocked` is a failure kind 044's comment predates**; `FAILURE_KINDS` in
+  `server/src/routes/job-field-validation.ts` is the set — `server/test/routes.jobs.test.ts`.
 - **A `409` from heartbeat means the container must be killed.** The board can refuse a worker, it
   cannot stop one, so double execution is prevented by the driver acting on the refusal —
   `driver/src/loop*.ts`, guarded by `driver/test/loop.test.ts`.

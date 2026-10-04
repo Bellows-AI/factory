@@ -77,7 +77,8 @@ Rules for this turn
 - Factory runs every capability listed above; do not emulate any of them.
 - Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
 - You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
-- If the current task defines an exact output line or marker, end with exactly that line, then stop.`
+- If the current task defines an exact output line or marker, end with exactly that line, then stop.
+- If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop.`
         );
     });
 

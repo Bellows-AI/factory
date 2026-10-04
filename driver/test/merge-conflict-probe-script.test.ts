@@ -61,7 +61,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     };
 
     it('answers up-to-date when the branch already contains its base — no rebase attempted', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         const before = git(fx.worktree(), 'rev-parse', 'HEAD');
 
         const result = probe({ publication: publication() });
@@ -72,7 +72,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('rebases cleanly onto a moved base and reports rebased', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
@@ -117,7 +117,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     const FALLBACK_IDENTITY = 'factory-ai <factory-ai@users.noreply.github.com>';
 
     it('rebases with a fallback committer identity when the runner has none configured', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
@@ -128,7 +128,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('leaves the fallback identity behind so the repair agent’s bare `git rebase --continue` commits', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
 
@@ -153,7 +153,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('never writes the fallback over an identity the runner already has', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
@@ -164,7 +164,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('leaves a known conflicted rebase state and lists the bounded conflicting paths', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
 
@@ -178,7 +178,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('writes the same verdict to the state file the repair agent reads', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         probe({ publication: publication() });
 
@@ -190,7 +190,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('fails as a precondition, naming it, when the thread recorded no publication', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         const result = probe({ publication: null });
 
@@ -199,7 +199,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('fails, naming it, when the worktree stands on a different branch than the recorded head', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         const result = probe({ publication: publication({ headBranch: 'factory/not-this-thread' }) });
 
@@ -208,7 +208,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('aborts a stale mid-rebase state a previous attempt left, and re-probes cleanly', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
         // First probe leaves a real conflicted rebase mid-flight, exactly as a crashed repair
@@ -228,7 +228,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         // even though the reapplied STASH conflicts with the newly rebased tree. No rebase is
         // left in progress, so this must never be reported as "conflicted" — the repair agent's
         // prompt assumes a real mid-rebase state for `git rebase --continue`.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         writeFileSync(join(fx.worktree(), 'README.md'), 'an agent was here\n');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
@@ -247,7 +247,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         // A pre-rebase hook failure: the rebase never even starts, so no file is ever conflicted
         // — this must surface as a genuine helper failure (bounding the block's `repair -> repair`
         // retry edge), not route a fabricated "conflicted" state to the agent.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         const hooksDir = join(git(fx.worktree(), 'rev-parse', '--git-common-dir'), 'hooks');
         mkdirSync(hooksDir, { recursive: true });
         const hookPath = join(hooksDir, 'pre-rebase');
@@ -270,7 +270,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('refuses a credentialed fetch against a non-https origin, naming it auth_failed', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         const result = probe({ publication: publication() }, { GITHUB_TOKEN: 'a-test-token' });
 

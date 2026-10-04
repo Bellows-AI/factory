@@ -72,6 +72,7 @@ interface StoreStub extends JobStore {
         agentTurns: number | null;
         summary: string | null;
         failureKind: string | null;
+        treeChanged: boolean | null;
     }[];
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
@@ -290,7 +291,7 @@ function stubStore(
         async complete(
             id: string,
             _token: string,
-            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind }
+            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged }
         ) {
             boom();
             stub.completed.push({
@@ -301,6 +302,7 @@ function stubStore(
                 agentTurns: agentTurns ?? null,
                 summary: summary ?? null,
                 failureKind: failureKind ?? null,
+                treeChanged: treeChanged ?? null,
             });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
@@ -2462,6 +2464,7 @@ describe('POST /api/jobs/:id/complete', () => {
                 agentTurns: null,
                 summary: null,
                 failureKind: null,
+                treeChanged: null,
             },
         ]);
     });
@@ -2587,6 +2590,44 @@ describe('POST /api/jobs/:id/complete', () => {
         const response = await post(instance, `/api/jobs/${ID}/complete`, done);
         expect(response.statusCode).toBe(200);
         expect(store.completed[0]).toMatchObject({ failureKind: null });
+    });
+
+    it('records a blocked failure kind beside the verdict', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            status: 'failed',
+            failureKind: 'blocked',
+        });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ failureKind: 'blocked' });
+    });
+
+    // The driver's post-gate tree read: handed to the store's transition, null when absent.
+    it.each([
+        [true, true],
+        [false, false],
+        [null, null],
+        [undefined, null],
+    ])('hands the store treeChanged %s as %s', async (treeChanged, stored) => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, treeChanged });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ treeChanged: stored });
+    });
+
+    it.each([
+        ['a string', 'yes'],
+        ['a number', 0],
+    ])('refuses treeChanged as %s with BAD_TREE_CHANGED', async (_label, treeChanged) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, treeChanged });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_TREE_CHANGED');
+        expect(store.completed).toEqual([]);
     });
 
     it.each([

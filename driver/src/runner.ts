@@ -165,6 +165,12 @@ export interface Runner {
      */
     publishGit?(job: BoardJob, publishToken?: string): Promise<PublishResult>;
     /**
+     * The task tree's fingerprint now (`probeTreeFingerprint`): the probe step over the same
+     * transport `publishGit` uses, read only after a declared gate failed. Null is unknown.
+     * Optional, like `publishGit`: a runner without it reports no tree change at all.
+     */
+    probeTree?(job: BoardJob): Promise<string | null>;
+    /**
      * Prepares the job's task worktree before the run. A STARTING claim syncs it with the
      * remote default: fetch, create the worktree branched off `origin/<default>` (first attempt
      * of the thread) or rebase it onto the new default, keeping its commits. A claim that

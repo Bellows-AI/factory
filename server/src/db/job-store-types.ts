@@ -18,13 +18,14 @@ export type JobOutcome = 'succeeded' | 'failed';
 
 /**
  * The structured terminal reason of a run (issue #339), stored as `job.failure_kind` and served on
- * every job read: why a failed run failed — the timeout kill, a prompt-cache loss, a failed gate,
- * an unlanded publish, a failed block-helper, or the runner erroring. Null is "not a failure": a
+ * every job read: why a failed run failed — the timeout kill, a prompt-cache loss, an agent
+ * reporting itself blocked, a failed gate, an unlanded publish, a failed block-helper, or the
+ * runner erroring. Null is "not a failure": a
  * success, or a row older than the column (044). Copied here rather than imported because the
  * driver depends on nothing; the spellings are a wire contract kept in step by the route's
  * validation.
  */
-export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'runner_error';
+export type FailureKind = 'timeout' | 'cache_lost' | 'blocked' | 'gate' | 'publish' | 'helper' | 'runner_error';
 
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
 export interface GateReport {
@@ -119,8 +120,8 @@ export interface Job {
     summary: string | null;
     /**
      * The structured terminal reason (issue #339) — why a FAILED run failed: the timeout kill, a
-     * prompt-cache loss, a failed gate, an unlanded publish, a failed block-helper, or the runner
-     * erroring. Null on every success, and on every row that predates the column (044) — "not a
+     * prompt-cache loss, an agent reporting itself blocked, a failed gate, an unlanded publish, a
+     * failed block-helper, or the runner erroring. Null on every success, and on every row that predates the column (044) — "not a
      * failure", never "unknown failure".
      */
     failureKind: FailureKind | null;
@@ -928,10 +929,17 @@ export interface JobStore {
             summary?: string | null;
             /**
              * The structured terminal reason (issue #339), validated at the route against the
-             * six known kinds. Null (or absent) is "not a failure" — the column keeps null, so
+             * seven known kinds. Null (or absent) is "not a failure" — the column keeps null, so
              * a success and a pre-column row read the same.
              */
             failureKind?: FailureKind | null;
+            /**
+             * Whether the task tree changed since the attempt's startup sync, measured by the
+             * driver only after a declared gate failed. Not stored: the workflow transition in
+             * this same transaction reads it (a gate-fix round that changed nothing rests).
+             * Null or absent is unmeasured.
+             */
+            treeChanged?: boolean | null;
             /**
              * The publication the run reports — the PR identity a successful publish landed.
              * Omitted (or null) when the run published nothing, so no `job_pr` row is invented.

@@ -202,6 +202,8 @@ function stubRunner(
         reclaimSequence?: ReclaimResult[];
         /** The kubernetes orphan-claim reap; recorded in `reapAttempts` (issue #344). */
         reapOrphanedClaim?: (job: BoardJob) => Promise<boolean>;
+        /** The post-gate tree probe's answer; absent leaves the runner without `probeTree`. */
+        probeTree?: string | null;
     } = {}
 ): Runner & {
     killed: string[];
@@ -212,12 +214,14 @@ function stubRunner(
     reclaimed: BoardJob[];
     servicesReleased: string[];
     reapAttempts: BoardJob[];
+    probed: BoardJob[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
     const runner = {
         servicesReleased: [] as string[],
         reapAttempts: [] as BoardJob[],
+        probed: [] as BoardJob[],
         async releaseServices(releasedJob: BoardJob) {
             runner.servicesReleased.push(releasedJob.id);
         },
@@ -262,6 +266,14 @@ function stubRunner(
             if (next) return next;
             return reclaim ?? { ok: true, removed: true, reason: null };
         },
+        ...(options.probeTree !== undefined
+            ? {
+                  probeTree: async (probedJob: BoardJob) => {
+                      runner.probed.push(probedJob);
+                      return options.probeTree ?? null;
+                  },
+              }
+            : {}),
         ...(options.reapOrphanedClaim
             ? {
                   reapOrphanedClaim: async (orphanJob: BoardJob) => {
@@ -326,6 +338,7 @@ function stubGateStack(outcomes: Record<string, number> = {}) {
         released: [] as string[],
         registered: 0,
         unregistered: 0,
+        cancelled: [] as string[],
         advertised: '',
         ran: { key: '', names: [] as string[] },
         manager: {
@@ -348,6 +361,9 @@ function stubGateStack(outcomes: Record<string, number> = {}) {
             },
             unregister: () => {
                 stack.unregistered += 1;
+            },
+            cancel: (token: string) => {
+                stack.cancelled.push(token);
             },
             // No ad-hoc gate ran through this stub, so the timeout note's verdict history is empty.
             lastRuns: () => [],
@@ -2730,9 +2746,10 @@ describe('verification gates', () => {
 
         // The heartbeat did mark the lease lost while the re-acquire was pending…
         expect(runner.killed).toEqual([gatedJob(1).id]);
-        // …and the gate never ran against the checkout the next attempt now owns.
+        // …and the gate never ran against the checkout the next attempt now owns — nor does a
+        // verdict land: a lost lease settles the attempt the way a lost run does, unreported.
         expect(ran).toEqual([]);
-        expect(board.board.completed).toHaveLength(1);
+        expect(board.board.completed).toHaveLength(0);
     });
 
     // The report must fit the board's body however many gates declared and however verbose they
@@ -3533,5 +3550,270 @@ describe('the verdict failure kind (issue #339)', () => {
             expect(board.board.completed[0]?.output, refusal.fragment).toContain(refusal.fragment);
             expect(board.board.completed[0]?.failureKind, refusal.fragment).toBe('runner_error');
         }
+    });
+});
+
+/**
+ * Gates judge work: a run that did not finish cleanly left none, and a failed gate over it would
+ * fire the workflow's `gate-failed` edge on work that never happened (task d0a4146f).
+ */
+describe('gates over a run that did not finish cleanly', () => {
+    it.each([
+        ['a non-zero exit', ok({ exitCode: 2, output: 'boom' }), "the agent's run exited 2", 'runner_error'],
+        [
+            'a null exit',
+            ok({ exitCode: null, output: 'boom' }),
+            "the agent's run exited without an exit code",
+            'runner_error',
+        ],
+        [
+            'a cache kill',
+            ok({ exitCode: 1, output: 'cut', cacheLost: '3 consecutive turns with no prompt-cache reads' }),
+            'the run was killed for prompt-cache loss',
+            'cache_lost',
+        ],
+        [
+            'a premature finish',
+            ok({ output: 'reads only', finishReason: 'length' }),
+            "the agent's run ended before it finished",
+            'runner_error',
+        ],
+    ])('skips the declared gates after %s, naming why, keeping the kind', async (_label, outcome, why, kind) => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 });
+        const runner = stubRunner(async () => outcome);
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.gatesReported).toEqual([]);
+        const complete = board.board.completed[0]!;
+        expect(complete).toMatchObject({ status: 'failed', failureKind: kind });
+        expect(complete.output).toContain(`[driver] gates skipped — ${why}`);
+        // Teardown still runs on the skip path.
+        expect(stack.stack.unregistered).toBe(1);
+        expect(stack.stack.released).toEqual([`bellows/${USER}/.worktrees/${gatedJob(1).id}`]);
+        expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    // 044 names "timeouts where the gates passed" as a query: a timed-out run keeps its gates.
+    it('still runs the gates over a timed-out run', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok({ exitCode: 137, output: 'partial', timedOut: true }));
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'timeout' });
+        expect(board.board.completed[0]?.output).not.toContain('gates skipped');
+    });
+
+    it('says nothing about gates for a job that declares none', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ exitCode: 2, output: 'boom' }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]?.output).toBe('boom');
+    });
+});
+
+describe('the agent reporting it is blocked', () => {
+    it('reads the marker from the summary: no gates, no publish, failed blocked', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(
+            async () =>
+                ok({
+                    output: 'I could not start.',
+                    summary: 'acli answered 401 on every call. FACTORY_BLOCKED: acli is not authenticated',
+                }),
+            {
+                publish: {
+                    ok: true,
+                    published: true,
+                    branch: 'b',
+                    prUrl: null,
+                    reason: null,
+                    repository: null,
+                    baseBranch: null,
+                    prNumber: null,
+                },
+            }
+        );
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(runner.published).toEqual([]);
+        const complete = board.board.completed[0]!;
+        expect(complete).toMatchObject({ status: 'failed', exitCode: 0, failureKind: 'blocked' });
+        expect(complete.output).toContain('[driver] the agent reported it is blocked: acli is not authenticated');
+        expect(complete.output).toContain('[driver] gates skipped — the agent reported it is blocked');
+    });
+
+    // The summary is head-capped: a long final message loses its last line there, never in the tail.
+    it('reads the marker from the output tail when the summary does not carry it', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () =>
+            ok({ output: 'tried twice\nFACTORY_BLOCKED: no access to the staging cluster\n', summary: 'tried twice' })
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'blocked' });
+        expect(board.board.completed[0]?.output).toContain(
+            'the agent reported it is blocked: no access to the staging cluster'
+        );
+    });
+
+    it('ignores a marker line far above the final message, and one that does not start a line', async () => {
+        const board = stubBoard([job(1), job(2)]);
+        let ran = 0;
+        const far = ['FACTORY_BLOCKED: early worry', ...Array.from({ length: 30 }, (_, i) => `line ${i}`)].join('\n');
+        const runner = stubRunner(async () =>
+            ran++ === 0 ? ok({ output: far }) : ok({ output: 'the docs mention FACTORY_BLOCKED: as a marker' })
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded', 'succeeded']);
+    });
+
+    it('ranks blocked after timeout and before gate', async () => {
+        const { verdictFailureKind } = await import('../src/loop-verdict.js');
+        const failure = { name: 'test', exitCode: 1, output: '' };
+        const base = { outcome: ok(), failure, helperFailure: null, blocked: 'x' };
+        expect(verdictFailureKind({ ...base, outcome: ok({ timedOut: true }) }, false, 'failed')).toBe('timeout');
+        expect(verdictFailureKind({ ...base, outcome: ok({ cacheLost: 'c' }) }, false, 'failed')).toBe('cache_lost');
+        expect(verdictFailureKind(base, false, 'failed')).toBe('blocked');
+        expect(verdictFailureKind({ ...base, blocked: null }, false, 'failed')).toBe('gate');
+    });
+});
+
+/**
+ * A gate-fix round that changed nothing can only fail the same gate again: the driver reports
+ * whether the tree moved since the startup sync, and the board rests the `gate-failed` edge on false.
+ */
+describe('the tree change behind a failed gate', () => {
+    const synced = { ok: true, reason: null, fingerprint: 'head:aaaa' };
+
+    it.each([
+        ['unchanged', 'head:aaaa', false],
+        ['changed', 'head:bbbb', true],
+    ])('reports a %s tree after a failed gate', async (_label, after, changed) => {
+        const board = stubBoard([gatedJob(1)]);
+        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: after });
+
+        await drive({ ...board, runner, gates: stubGateStack({ test: 1 }).gates });
+
+        expect(runner.probed).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ failureKind: 'gate', treeChanged: changed });
+    });
+
+    it.each([
+        ['the probe answers nothing', synced, null],
+        ['the sync printed no fingerprint', { ok: true, reason: null }, 'head:aaaa'],
+    ])('reports nothing when %s', async (_label, sync, probe) => {
+        const board = stubBoard([gatedJob(1)]);
+        const runner = stubRunner(async () => ok(), { sync, probeTree: probe });
+
+        await drive({ ...board, runner, gates: stubGateStack({ test: 1 }).gates });
+
+        expect(board.board.completed[0]).toMatchObject({ failureKind: 'gate' });
+        expect(board.board.completed[0]).not.toHaveProperty('treeChanged');
+    });
+
+    it('never probes when the gates pass', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: 'head:aaaa' });
+
+        await drive({ ...board, runner, gates: stubGateStack().gates });
+
+        expect(runner.probed).toEqual([]);
+        expect(board.board.completed[0]).not.toHaveProperty('treeChanged');
+    });
+});
+
+/** A Stop or Remove ends every gate of the attempt where it stands — never a failed gate verdict. */
+describe('a stop cancels the gates', () => {
+    it('aborts the declared gate in flight, runs no later gate, and parks the turn stopped', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const stack = stubGateStack();
+        const ran: string[] = [];
+        let aborted = false;
+        stack.gates.manager.runGate = (_key, name, _command, signal) => {
+            ran.push(name);
+            options.cancelRequested = true;
+            return new Promise((resolve) => {
+                signal?.addEventListener('abort', () => {
+                    aborted = true;
+                    resolve({ exitCode: 137, output: 'killed' });
+                });
+            });
+        };
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(aborted).toBe(true);
+        expect(ran).toEqual(['test']);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+        // The cancelled gate is never reported failed — `gate-failed` cannot read it.
+        expect(board.board.gatesReported.flatMap((r) => r.results).some((g) => g.status === 'failed')).toBe(false);
+        expect(stack.stack.unregistered).toBe(1);
+        expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    it('settles a removed thread without a verdict when the remove lands during the gates', async () => {
+        const options: { removedOnBeat?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const stack = stubGateStack();
+        stack.gates.manager.runGate = (_key, _name, _command, signal) => {
+            options.removedOnBeat = true;
+            return new Promise((resolve) => {
+                signal?.addEventListener('abort', () => resolve({ exitCode: 137, output: 'killed' }));
+            });
+        };
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+    });
+
+    // The agent's ad-hoc gate runs go through the gate server, which the runner kill never reaches.
+    it('cancels the ad-hoc gate token when the stop lands during the run', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const stack = stubGateStack();
+        let token = '';
+        stack.gates.server.register = (minted: string) => {
+            token = minted;
+        };
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(token).not.toBe('');
+        expect(stack.stack.cancelled).toEqual([token]);
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+    });
+
+    it('cancels nothing on an ordinary finish', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+        expect(stack.stack.cancelled).toEqual([]);
     });
 });

@@ -139,8 +139,8 @@ describe.skipIf(!hasGit())('the worktree sync lock', () => {
         ]);
 
         // Both claims start from the code the remote actually has — neither loses the fetch.
-        expect(first).toEqual({ ok: true, reason: null });
-        expect(second).toEqual({ ok: true, reason: null });
+        expect(first).toMatchObject({ ok: true, reason: null });
+        expect(second).toMatchObject({ ok: true, reason: null });
         expect(git(fx.worktree(), 'branch', '--show-current')).toBe(fx.branch());
         expect(git(join(fx.dir(), 'bellows', USER, '.worktrees', OTHER_ROOT), 'branch', '--show-current')).toBe(
             `factory/${OTHER_ROOT}`
@@ -184,7 +184,7 @@ describe.skipIf(!hasGit())('the worktree sync lock', () => {
 
         const result = await runScriptAsync({ ...fx.syncEnv(), SYNC_LOCK_STALE_MS: '60000' });
 
-        expect(result).toEqual({ ok: true, reason: null });
+        expect(result).toMatchObject({ ok: true, reason: null });
         expect(git(fx.worktree(), 'branch', '--show-current')).toBe(fx.branch());
         // Our own hold was released on the way out — the next sync does not wait for a ghost.
         expect(existsSync(lockPath())).toBe(false);
@@ -210,7 +210,7 @@ describe.skipIf(!hasGit())('the worktree sync lock', () => {
         });
 
         // The retry is cheap and correct — after the winner, the refs are already current.
-        expect(result).toEqual({ ok: true, reason: null });
+        expect(result).toMatchObject({ ok: true, reason: null });
         expect(git(fx.worktree(), 'rev-parse', 'HEAD')).toBe(git(fx.clone(), 'rev-parse', 'origin/main'));
         const fetches = readFetchEvents(shim.log).filter((e) => e.phase === 'start');
         expect(fetches).toHaveLength(2);

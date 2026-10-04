@@ -45,6 +45,8 @@ export interface AttemptCtx {
     state: JobState;
     settle: () => Promise<void>;
     standDown: () => Promise<void>;
+    /** The task tree's fingerprint the startup sync answered; null when unknown. */
+    treeBefore: string | null;
 }
 
 /**

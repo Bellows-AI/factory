@@ -19,13 +19,13 @@ describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
         // the remote belong to the task's beginning and end, never mid-flight. The tree must be
         // byte-for-byte what the previous run left — no rebase onto a moved main, no fetch
         // dragging upstream commits in, no autostash dance over the session's edits.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         writeFileSync(join(fx.worktree(), 'TASK.md'), 'task work, mid-edit\n');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
         const before = git(fx.worktree(), 'rev-parse', 'HEAD');
 
-        expect(fx.restore()).toEqual({ ok: true, reason: null });
+        expect(fx.restore()).toMatchObject({ ok: true, reason: null });
 
         expect(git(fx.worktree(), 'rev-parse', 'HEAD')).toBe(before);
         expect(existsSync(join(fx.worktree(), 'NEWS.md'))).toBe(false);
@@ -37,12 +37,12 @@ describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
         // The thread went terminal and its tree was reclaimed; the follow-up then restores the
         // tree from the surviving factory/<root> branch — its own work, not a fresh start off a
         // freshly fetched main.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'KEPT.md', 'kept work\n', 'kept committed work');
         rmSync(fx.worktree(), { recursive: true });
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
-        expect(fx.restore()).toEqual({ ok: true, reason: null });
+        expect(fx.restore()).toMatchObject({ ok: true, reason: null });
 
         expect(git(fx.worktree(), 'branch', '--show-current')).toBe(fx.branch());
         expect(git(fx.worktree(), 'log', '--format=%s')).toContain('kept committed work');
@@ -53,7 +53,7 @@ describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
         // A follow-up with no thread branch has nothing to continue: creating the tree at
         // origin/<default> would look like a continuation while carrying none of the work over.
         // The attempt fails with the branch named, the way every sync refusal names its reason.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         // The reclaim's own sequence: the tree removed AND its registration pruned, leaving the
         // branch in the clone — which is then deleted, as a thread whose session was lost would be.
         git(fx.clone(), 'worktree', 'remove', '--force', fx.worktree());
@@ -82,12 +82,12 @@ describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
         // Restore recreates a reclaimed tree from the branch, and the path it needs may hold a
         // bare leftover — the same driver-owned namespace the sync arm clears, so the same
         // replacement applies: never a failed-forever attempt over a directory nobody owns.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         rmSync(fx.worktree(), { recursive: true });
         mkdirSync(fx.worktree(), { recursive: true });
         writeFileSync(join(fx.worktree(), 'leftover.txt'), 'not a worktree');
 
-        expect(fx.restore()).toEqual({ ok: true, reason: null });
+        expect(fx.restore()).toMatchObject({ ok: true, reason: null });
         expect(git(fx.worktree(), 'rev-parse', '--is-inside-work-tree')).toBe('true');
         expect(existsSync(join(fx.worktree(), 'leftover.txt'))).toBe(false);
     });
@@ -110,7 +110,7 @@ describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
         // The tree is ours, but the checkout moved off the task branch: a follow-up must not
         // run there, and must not reset or recreate it either — the refusal names the branch
         // it found against the branch it expected, and the tree stays as it stands.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         git(fx.worktree(), 'switch', '-c', 'rogue');
 
         const result = fx.restore();
@@ -123,7 +123,7 @@ describe.skipIf(!hasGit())('the worktree sync script (restore)', () => {
     it('refuses a restore whose worktree is on a detached HEAD', () => {
         // A detached checkout is no thread to continue either: no branch survives under it,
         // so the refusal names the detached state instead of answering success.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         git(fx.worktree(), 'checkout', '--detach');
 
         const result = fx.restore();

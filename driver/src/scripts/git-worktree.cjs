@@ -1,7 +1,7 @@
 // The startup sync: make a per-task worktree reflect the remote default, so every run starts
 // from the code — and the declared gates — that main actually has. One execFileSync per git
-// call: no value can become a command. One JSON verdict on stdout: {ok:true,reason:null} or
-// {ok:false,reason}.
+// call: no value can become a command. One JSON verdict on stdout: {ok:true,reason:null,fingerprint}
+// or {ok:false,reason}.
 //
 // Environment (set by the driver; paths, a branch name, and — when the claim carries a token —
 // the credential-helper CODE; never a credential value):
@@ -109,6 +109,34 @@ const TRANSIENT_REF_LOCK = /cannot lock ref|unable to update local ref|index\.lo
 
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
 const inw = (...a) => execFileSync('git', a, { cwd: wt, encoding: 'utf8' }).trim();
+// The tree fingerprint (spelled identically in git-probe.cjs, which the driver re-runs after a
+// failed gate): HEAD plus a hash of the uncommitted state — the porcelain status, the tracked
+// diff and the untracked files' contents, `.factory/` excluded. Equal fingerprints mean the round
+// between them changed nothing. Null when any read fails: an unknown is never a guess.
+const FINGERPRINT_PATHSPEC = ['--', ':/', ':(top,exclude).factory'];
+const FINGERPRINT_MAX_BUFFER = 268_435_456; // 256 MiB: a large diff must not read as unknown
+const fingerprintOf = (cwd) => {
+    try {
+        const read = (args, input) =>
+            execFileSync('git', args, { cwd, input, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER });
+        const hash = require('node:crypto').createHash('sha256');
+        hash.update(read(['status', '--porcelain', ...FINGERPRINT_PATHSPEC]));
+        hash.update(read(['diff', 'HEAD', '--binary', ...FINGERPRINT_PATHSPEC]));
+        const untracked = read([
+            '-c',
+            'core.quotePath=false',
+            'ls-files',
+            '--others',
+            '--exclude-standard',
+            ...FINGERPRINT_PATHSPEC,
+        ]);
+        if (untracked.length) hash.update(read(['hash-object', '--stdin-paths'], untracked));
+        return read(['rev-parse', 'HEAD']).toString().trim() + ':' + hash.digest('hex');
+    } catch {
+        return null;
+    }
+};
+const synced = () => console.log(JSON.stringify({ ok: true, reason: null, fingerprint: fingerprintOf(wt) }));
 const fail = (r) => {
     if (!restore) {
         try {
@@ -290,7 +318,7 @@ try {
                 );
                 process.exit(0);
             }
-            console.log(JSON.stringify({ ok: true, reason: null }));
+            synced();
             process.exit(0);
         }
         if (fs.existsSync(wt + '/.git')) {
@@ -315,7 +343,7 @@ try {
             );
             process.exit(0);
         }
-        console.log(JSON.stringify({ ok: true, reason: null }));
+        synced();
         process.exit(0);
     }
     if (process.env.CRED_HELPER) {
@@ -379,7 +407,7 @@ try {
             git('worktree', 'add', '-b', branch, wt, 'origin/' + def);
         }
     }
-    console.log(JSON.stringify({ ok: true, reason: null }));
+    synced();
 } catch (e) {
     fail('worktree sync failed: ' + String((e && e.stderr) || (e && e.message) || e).slice(0, SYNC_ERROR_MAX_LENGTH));
 }

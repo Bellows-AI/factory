@@ -4033,6 +4033,25 @@ describe('publishing the produced work', () => {
             return 'other';
         });
 
+    // The post-gate tree read: the probe container alone, over the worktree, with no env file.
+    it('probes the tree fingerprint with one env-less container', async () => {
+        const { calls, envBodies, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
+
+        expect(await runner.probeTree?.(ISSUE_JOB)).toBe('h:1');
+
+        expect(shapesOf(calls)).toEqual(['probe']);
+        expect(calls[0]).not.toContain('--env-file');
+        expect(envBodies).toEqual([]);
+    });
+
+    it.each([
+        ['answers no fingerprint', {}, undefined],
+        ['fails', {}, () => true],
+    ])('answers null when the probe %s', async (_label, extra, fail) => {
+        const { runner } = publishRunner({ ...DIRTY_ON_MAIN, ...extra }, { fail });
+        expect(await runner.probeTree?.(ISSUE_JOB)).toBeNull();
+    });
+
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
         // branch), and `-c` creates it — both calls are part of the expected shape.

@@ -182,7 +182,7 @@ export type HeartbeatVerdict = { result: 'held'; cancelRequested: boolean } | 'l
  * the wire — means "not a failure": a success, or a row older than the column. Copied here rather
  * than imported because this package depends on nothing.
  */
-export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'runner_error';
+export type FailureKind = 'timeout' | 'cache_lost' | 'blocked' | 'gate' | 'publish' | 'helper' | 'runner_error';
 
 /**
  * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
@@ -327,11 +327,16 @@ export interface Board {
             summary?: string | null;
             /**
              * The structured terminal reason (issue #339): why a failed run failed — the timeout
-             * kill, a cache loss, a failed gate, an unlanded publish, a failed helper, or the
-             * runner erroring. Absent when the run succeeded, so the board stores null and the
+             * kill, a cache loss, a blocked agent, a failed gate, an unlanded publish, a failed
+             * helper, or the runner erroring. Absent when the run succeeded, so the board stores null and the
              * row stays queryable as "not a failure".
              */
             failureKind?: FailureKind;
+            /**
+             * Whether the task tree differs from the one the startup sync left, read only after
+             * a declared gate failed. Absent is unknown; the board rests a gate-fix edge on false.
+             */
+            treeChanged?: boolean;
             /**
              * What the publish landed, when a publish did: the board's only trusted record of a
              * thread's repository — review traffic and the thread's wait key on it. Omitted when
@@ -406,6 +411,7 @@ function completeBody({
     agentTurns,
     summary,
     failureKind,
+    treeChanged,
     publication,
 }: Parameters<Board['complete']>[1]): Record<string, unknown> {
     return {
@@ -420,6 +426,8 @@ function completeBody({
         ...(summary ? { summary } : {}),
         // The structured failure reason, when there is one (issue #339); absent stays null.
         ...(failureKind ? { failureKind } : {}),
+        // Measured only after a failed gate; unknown stays off the wire.
+        ...(typeof treeChanged === 'boolean' ? { treeChanged } : {}),
         // The identity of what was published, when anything was — the board keys review
         // traffic and the thread's wait on it.
         ...(publication ? { publication } : {}),
