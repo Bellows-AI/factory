@@ -74,7 +74,7 @@ anything you could not do.
 ## Tooling
 
 - Reach for `gh` for GitHub (pull requests, reviews, checks) rather than raw API calls.
-- Reach for `acli` for Jira work items rather than improvising HTTP against Atlassian.
+- Reach for `curl` on `$JIRA_API` for Jira work items, as the `jira` skill spells it; not `acli`.
 - Both start unauthenticated; they read credentials from the environment or config the caller
   provides. If a credential is missing, say so instead of working around it.
 

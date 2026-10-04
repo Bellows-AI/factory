@@ -31,14 +31,14 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
 | Tree fingerprint: sync before, probe after a failed gate, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
-| Auxiliary services | `driver/src/services.ts`, `k8s-services.ts` | `driver/test/services.test.ts` |
+| Auxiliary services, the dead-service probe | `driver/src/services.ts`, `k8s-services.ts`, `docker-runner.ts` | `driver/test/services.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Worktree sync, publish, PR identity | `driver/src/publish.ts`, `scripts/git-worktree*.cjs`, `pr-summary.cjs` | `driver/test/worktree.test.ts`, `worktree-restore.test.ts`, `pr-summary.test.ts` |
 | GitHub review collect and reply | `driver/src/review.ts`, `review-helpers.ts`, `scripts/review-*.cjs` | `driver/test/review.test.ts`, `review-collect-script.test.ts`, `review-reply-script.test.ts` |
 | Session id, close-time turn count and summary | `driver/src/close-read.ts`, `docker-close-read.ts`, `scripts/claude-turns.cjs` | `driver/test/scripts-claude-turns.test.ts`, `scripts-opencode-readout.test.ts` |
 | Run artifacts (full log, transcript) | `driver/src/artifacts.ts`, `server/migrations/046_job_artifacts.sql` | `driver/test/artifacts.test.ts` |
 | Container scripts | `driver/src/container-scripts.ts`, `driver/src/scripts/` | `driver/test/scripts.test.ts`, `driver/test/scripts-*.test.ts` |
 | Orphan reaper | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
-| Failure kind, timeout note, branch attribution | `driver/src/exec-codes.ts`, `loop-verdict.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/timeout-note.test.ts`, `driver/test/branch-reporter.test.ts`, `loop.test.ts` |
+| Failure kind, timeout note, branch attribution | `driver/src/loop-verdict.ts`, `exec-codes.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/loop.test.ts`, `timeout-note.test.ts`, `branch-reporter.test.ts` |
 | CLI (`factory job …`) | `cli/src/index.ts`, `run.ts`, `board.ts`, `config.ts`, `render.ts` | `cli/test/commands.test.ts`, `board-client.test.ts`, `config.test.ts` |
 | Board + driver end to end | `scripts/test-jobs.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/compose.test.ts` |
 
@@ -50,6 +50,11 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   nothing else — `CAP_NET_RAW` included, on the network the attempt's containers share. No gate
   image has the opt-out. `driver/src/services.ts`, `driver/test/services.test.ts`,
   [security.md](security.md).
+- **A declared service found dead before the declared gates skips them and fails the verdict
+  `services`, never `gate`** — a gate against a dead service fails on an environment the agent
+  cannot fix, and `gate-failed` would spend a gate-fix round on it. The verdict quotes the
+  service's exit and last log lines. A job with no declared gates is never probed.
+  `driver/src/loop-run.ts`, `loop-verdict.ts`, `driver/test/loop.test.ts`.
 - **A run reports agent turns, never a bare "turns"** — the close-time agent-turn read
   (`driver/src/close-read.ts`) counts the executor's own transcript, and a job turn is a different
   quantity, defined in [docs/metrics.md](metrics.md). Null is the contract for unmeasured: a
@@ -115,5 +120,6 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 - No per-job authorization. Any member may queue, follow up on their own tasks, and close any
   task; the one per-user bound is the repo label on create ([docs/repos.md](repos.md)). Under
   `AUTH_MODE=none` the worker routes are open too ([docs/security.md](security.md)).
-- No service volumes, health checks, `depends_on` ordering or restart policies in `.bellows.yaml`.
+- No service volumes, health checks, `depends_on` ordering or restart policies in `.bellows.yaml`;
+  the one liveness read is the dead-service probe before the gates.
 - No artifact TTL sweeper: retention is the job row's lifetime, by `on delete cascade`.

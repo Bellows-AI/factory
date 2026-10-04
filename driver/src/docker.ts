@@ -158,6 +158,23 @@ export function parseDockerServicePs(stdout: string): ServiceStatus[] {
 }
 
 /**
+ * How a service container ended, off `docker inspect --format '{{json .State}}'` (issue #423):
+ * the exit code, and the reason — `OOMKilled` when the kernel killed it, else the daemon's own
+ * error, else null. Pure and exported for the pinning; garbage answers both null.
+ */
+export function parseDockerServiceExit(stdout: string): { exitCode: number | null; reason: string | null } {
+    let state: { ExitCode?: unknown; OOMKilled?: unknown; Error?: unknown };
+    try {
+        state = JSON.parse(stdout) as typeof state;
+    } catch {
+        return { exitCode: null, reason: null };
+    }
+    const exitCode = typeof state.ExitCode === 'number' ? state.ExitCode : null;
+    if (state.OOMKilled === true) return { exitCode, reason: 'OOMKilled' };
+    return { exitCode, reason: typeof state.Error === 'string' && state.Error ? state.Error : null };
+}
+
+/**
  * The runner container's name — one per ATTEMPT. The naming contract every per-attempt
  * operation in this file relies on: the lease token is minted fresh on every claim and never
  * repeats, so a name can only ever resolve to the container the attempt that computed it

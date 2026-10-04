@@ -227,6 +227,7 @@ export const FAILURE_KINDS: readonly FailureKind[] = [
     'gate',
     'publish',
     'helper',
+    'services',
     'runner_error',
 ];
 

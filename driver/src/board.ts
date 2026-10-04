@@ -182,7 +182,15 @@ export type HeartbeatVerdict = { result: 'held'; cancelRequested: boolean } | 'l
  * the wire — means "not a failure": a success, or a row older than the column. Copied here rather
  * than imported because this package depends on nothing.
  */
-export type FailureKind = 'timeout' | 'cache_lost' | 'blocked' | 'gate' | 'publish' | 'helper' | 'runner_error';
+export type FailureKind =
+    | 'timeout'
+    | 'cache_lost'
+    | 'blocked'
+    | 'gate'
+    | 'publish'
+    | 'helper'
+    | 'services'
+    | 'runner_error';
 
 /**
  * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left

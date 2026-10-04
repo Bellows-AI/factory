@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript, claudeTranscriptScript, opencodeTranscriptScript } from '../src/container-scripts.js';
-import { ARTIFACT_LIMIT } from '../src/runner.js';
+import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
-import { POLL_MAX_CONSECUTIVE_FAILURES, parseServicePods, parsePodMetrics } from '../src/k8s-transport.js';
+import {
+    POLL_MAX_CONSECUTIVE_FAILURES,
+    parseDeadServicePods,
+    parseServicePods,
+    parsePodMetrics,
+} from '../src/k8s-transport.js';
 import { readVerdict } from '../src/k8s-poll.js';
 import {
     bellowsJobSpec,
@@ -2753,6 +2758,113 @@ describe('the runner vitals', () => {
             );
             expect(parseServicePods('not json')).toEqual([]);
             expect(parseServicePods('{"items":[]}')).toEqual([]);
+        });
+    });
+
+    /**
+     * The dead half of the fleet (issue #423): a service pod runs under `restartPolicy: Never`, so
+     * `Failed` and `Succeeded` are both a service that is no longer there for the gates. The
+     * verdict quotes the kubelet's termination and the pod's last log lines — the only place the
+     * cause survives, because the teardown deletes the pod right after.
+     */
+    describe('dead services', () => {
+        const pod = (name: string, phase: string, terminated?: { exitCode: number; reason?: string }): unknown => ({
+            metadata: { name: `svc-${name}`, labels: { 'factory.service': name } },
+            spec: { containers: [{ image: `${name}:1` }] },
+            status: { phase, containerStatuses: terminated ? [{ state: { terminated } }] : [] },
+        });
+
+        it('parses failed and succeeded pods with their termination, skipping live ones and garbage', () => {
+            const body = JSON.stringify({
+                items: [
+                    pod('mongo', 'Failed', { exitCode: 1, reason: 'Error' }),
+                    pod('cache', 'Succeeded', { exitCode: 0, reason: 'Completed' }),
+                    pod('db', 'Running'),
+                    pod('queue', 'Pending'),
+                    pod('blank', 'Failed'),
+                ],
+            });
+            expect(parseDeadServicePods(body)).toEqual([
+                { pod: 'svc-blank', name: 'blank', image: 'blank:1', state: 'failed', exitCode: null, reason: null },
+                {
+                    pod: 'svc-cache',
+                    name: 'cache',
+                    image: 'cache:1',
+                    state: 'succeeded',
+                    exitCode: 0,
+                    reason: 'Completed',
+                },
+                { pod: 'svc-mongo', name: 'mongo', image: 'mongo:1', state: 'failed', exitCode: 1, reason: 'Error' },
+            ]);
+            expect(parseDeadServicePods('not json')).toEqual([]);
+            // An eviction records no container termination: the pod's own reason stands in.
+            const evicted = {
+                metadata: { name: 'svc-mongo', labels: { 'factory.service': 'mongo' } },
+                spec: { containers: [{ image: 'mongo:1' }] },
+                status: { phase: 'Failed', reason: 'Evicted', message: 'low on memory' },
+            };
+            expect(parseDeadServicePods(JSON.stringify({ items: [evicted] }))).toEqual([
+                {
+                    pod: 'svc-mongo',
+                    name: 'mongo',
+                    image: 'mongo:1',
+                    state: 'failed',
+                    exitCode: null,
+                    reason: 'Evicted: low on memory',
+                },
+            ]);
+        });
+
+        it('reads the lease-scoped fleet, then the log tail of each dead pod only', async () => {
+            const base = fakeRequest();
+            const fleet = JSON.stringify({
+                items: [pod('mongo', 'Failed', { exitCode: 1, reason: 'Error' }), pod('db', 'Running')],
+            });
+            const request: K8sRequest = (method, path, body) => {
+                if (
+                    path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+                    decodeURIComponent(path).includes(`factory.lease=${job.leaseToken}`)
+                )
+                    return Promise.resolve({ status: 200, body: fleet });
+                if (path === `/api/v1/namespaces/${namespace}/pods/svc-mongo/log?tailLines=${SERVICE_LOG_TAIL_LINES}`)
+                    return Promise.resolve({ status: 200, body: 'chown: Operation not permitted\n' });
+                return base.request(method, path, body);
+            };
+
+            expect(await runner(request, { RUNNER_SERVICES: '1' }).deadServices(job)).toEqual([
+                {
+                    name: 'mongo',
+                    image: 'mongo:1',
+                    state: 'failed',
+                    exitCode: 1,
+                    reason: 'Error',
+                    logTail: 'chown: Operation not permitted\n',
+                },
+            ]);
+            expect(base.calls.some((call) => call.path.includes('svc-db'))).toBe(false);
+        });
+
+        it('keeps a dead service whose log is gone, and throws on an unreadable fleet', async () => {
+            const fleet = JSON.stringify({ items: [pod('mongo', 'Failed', { exitCode: 1 })] });
+            const request =
+                (fleetStatus: number): K8sRequest =>
+                (_method, path) =>
+                    Promise.resolve(
+                        path.includes('/log')
+                            ? { status: 404, body: 'gone' }
+                            : { status: fleetStatus, body: fleetStatus === 200 ? fleet : 'forbidden' }
+                    );
+
+            expect(await runner(request(200), { RUNNER_SERVICES: '1' }).deadServices(job)).toEqual([
+                { name: 'mongo', image: 'mongo:1', state: 'failed', exitCode: 1, reason: null, logTail: '' },
+            ]);
+            await expect(runner(request(403), { RUNNER_SERVICES: '1' }).deadServices(job)).rejects.toThrow(/403/);
+        });
+
+        it('answers empty without a request when services are off', async () => {
+            const off = fakeRequest();
+            expect(await runner(off.request).deadServices(job)).toEqual([]);
+            expect(off.calls).toEqual([]);
         });
     });
 });

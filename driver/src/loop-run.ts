@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
-import type { RunOutcome, RunSession } from './runner.js';
+import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
-import { beginGates, releaseGateSession, runDeclaredGates } from './loop-gates.js';
+import { beginGates, probeDeadServices, releaseGateSession, runDeclaredGates } from './loop-gates.js';
 import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
@@ -247,6 +247,8 @@ type RunPhaseResult = {
     done: false;
     outcome: RunOutcome;
     failure: GateFailure | null;
+    /** The declared services found dead before the gates — which were skipped for them. */
+    deadServices: DeadService[];
     /**
      * When `runner.run` resolved — the moment the run ended, and the timestamp the timeout
      * note's active/idle verdict is measured at. The verdict builds later: the declared gates,
@@ -357,27 +359,45 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      */
     const blocked = blockedReason(outcome);
-    let failure: GateFailure | null = null;
-    let gatesSkipped: string | null = null;
-    if (gateSession && !outcome.refused) {
-        gatesSkipped = gateSkipReason(outcome, blocked);
-        if (gatesSkipped === null) {
-            failure = await runDeclaredGates(rt, job, gateSession, state);
-            if (down(state)) {
-                await settleDownAfterGates(ctx);
-                return { done: true };
-            }
-        } else {
-            log(`job ${job.id}: gates skipped — ${gatesSkipped}`);
-        }
-    }
-    const treeChanged = failure ? await treeChangedSinceSync(ctx) : null;
+    const gated =
+        gateSession && !outcome.refused && !state.lost
+            ? await runGatesPhase(ctx, gateSession, outcome, blocked)
+            : { failure: null, deadServices: [], gatesSkipped: null };
+    // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
+    const treeChanged = gated.failure ? await treeChangedSinceSync(ctx) : null;
     if (down(state)) {
         await settleDownAfterGates(ctx);
         return { done: true };
     }
 
-    return { done: false, outcome, failure, endedAt, blocked, gatesSkipped, treeChanged };
+    return { done: false, outcome, ...gated, endedAt, blocked, treeChanged };
+}
+
+/** What the gates phase of one attempt found: the failed gate, the dead services, or why it skipped. */
+interface GatesPhase {
+    failure: GateFailure | null;
+    deadServices: DeadService[];
+    gatesSkipped: string | null;
+}
+
+/** The declared gates, unless the run did not finish cleanly or a declared service is dead. */
+async function runGatesPhase(
+    ctx: AttemptCtx,
+    gateSession: GateSession,
+    outcome: RunOutcome,
+    blocked: string | null
+): Promise<GatesPhase> {
+    const { rt, job, state } = ctx;
+    const gatesSkipped = gateSkipReason(outcome, blocked);
+    if (gatesSkipped !== null) {
+        rt.log(`job ${job.id}: gates skipped — ${gatesSkipped}`);
+        return { failure: null, deadServices: [], gatesSkipped };
+    }
+    // A gate against a dead service fails on an environment the agent cannot fix, and a
+    // failed gate is what the workflow's gate-fix edge spends a round on (issue #423).
+    const deadServices = await probeDeadServices(rt, job);
+    const failure = deadServices.length === 0 ? await runDeclaredGates(rt, job, gateSession, state) : null;
+    return { failure, deadServices, gatesSkipped: null };
 }
 
 /**
@@ -527,6 +547,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             const published = await publishIfDue(rt, job, {
                 outcome: outcome.outcome,
                 failure: outcome.failure,
+                deadServices: outcome.deadServices,
                 helperFailure,
                 blocked: outcome.blocked,
             });
@@ -537,6 +558,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 job,
                 outcome: outcome.outcome,
                 failure: outcome.failure,
+                deadServices: outcome.deadServices,
                 helperFailure,
                 published,
                 endedAt: outcome.endedAt,

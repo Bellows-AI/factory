@@ -140,6 +140,7 @@ export const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
     gate: 'gate failed',
     publish: 'publish failed',
     helper: 'helper failed',
+    services: 'service failed',
     runner_error: 'runner error',
 };
 

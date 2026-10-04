@@ -136,6 +136,17 @@ export interface RunSession {
     resume: boolean;
 }
 
+/** One declared service found dead: its status, how it ended, and what it last printed. */
+export interface DeadService extends ServiceStatus {
+    exitCode: number | null;
+    /** The platform's word for the ending — the kubelet's `reason`, docker's `OOMKilled` or error. */
+    reason: string | null;
+    logTail: string;
+}
+
+/** How many of a dead service's last log lines the verdict quotes. */
+export const SERVICE_LOG_TAIL_LINES = 20;
+
 export interface Runner {
     /**
      * Runs the job. `onOutput` is the live-output hook: the runner calls it with its newest output
@@ -149,6 +160,14 @@ export interface Runner {
      * gone between the ask and the read), so null is "no fresh sample", never an error.
      */
     sampleRuntime(job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null>;
+    /**
+     * The attempt's declared services that are no longer running — exited, whatever the code —
+     * each with its exit, the platform's reason and its last log lines. The loop asks right
+     * before the declared gates: a gate against a dead service fails on an environment the
+     * agent cannot fix (issue #423). Empty when services are off or every one is alive; a read
+     * that fails throws, and the loop runs the gates as if it had answered empty.
+     */
+    deadServices(job: BoardJob): Promise<DeadService[]>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
     /**

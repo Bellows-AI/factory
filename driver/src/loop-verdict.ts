@@ -11,7 +11,7 @@ import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { PublishResult } from './publish.js';
-import type { RunOutcome } from './runner.js';
+import type { DeadService, RunOutcome } from './runner.js';
 import type { GateRunNote, TimeoutActivity } from './timeout-note.js';
 import { timeoutNote } from './timeout-note.js';
 
@@ -67,6 +67,7 @@ export function gateSkipReason(outcome: RunOutcome, blocked: string | null): str
 interface PublishGate {
     outcome: RunOutcome;
     failure: GateFailure | null;
+    deadServices: readonly DeadService[];
     helperFailure: HelperFailureReport | null;
     /** The agent's own blocked report — no work to publish. */
     blocked: string | null;
@@ -77,7 +78,7 @@ interface PublishGate {
  * when the run does not qualify (a failure, a timeout, a premature stop, or publish disabled).
  */
 export async function publishIfDue(rt: LoopRuntime, job: BoardJob, gate: PublishGate): Promise<PublishResult | null> {
-    const { outcome, failure, helperFailure, blocked } = gate;
+    const { outcome, failure, deadServices, helperFailure, blocked } = gate;
     const { board, runner, log } = rt;
     if (
         blocked !== null ||
@@ -85,6 +86,7 @@ export async function publishIfDue(rt: LoopRuntime, job: BoardJob, gate: Publish
         outcome.timedOut ||
         isPrematureFinish(outcome) ||
         failure ||
+        deadServices.length > 0 ||
         helperFailure ||
         job.publish === false ||
         !runner.publishGit
@@ -129,6 +131,8 @@ export interface FinishCtx {
     job: BoardJob;
     outcome: RunOutcome;
     failure: GateFailure | null;
+    /** The declared services found dead before the gates, which skipped them (issue #423). */
+    deadServices: readonly DeadService[];
     helperFailure: HelperFailureReport | null;
     published: PublishResult | null;
     /** When the run ended — the stamp the timeout note's ages are measured from. */
@@ -147,19 +151,27 @@ export interface FinishCtx {
 
 /** The structured failure kind a verdict's terminal conditions name, in precedence order. */
 export function verdictFailureKind(
-    finish: Pick<FinishCtx, 'outcome' | 'failure' | 'helperFailure' | 'blocked'>,
+    finish: Pick<FinishCtx, 'outcome' | 'failure' | 'deadServices' | 'helperFailure' | 'blocked'>,
     publishUnlanded: boolean,
     status: 'succeeded' | 'failed'
 ): FailureKind | null {
     if (finish.outcome.timedOut) return 'timeout';
     if (finish.outcome.cacheLost) return 'cache_lost';
     if (finish.blocked !== null) return 'blocked';
+    if (finish.deadServices.length > 0) return 'services';
     if (finish.failure) return 'gate';
     if (finish.helperFailure) return 'helper';
     if (publishUnlanded) return 'publish';
     // Everything else that lands failed — a non-zero exit, a premature finish, a refused
     // `.bellows.yaml` — is the runner erroring. A success carries no kind at all.
     return status === 'failed' ? 'runner_error' : null;
+}
+
+/** One dead service in the verdict output: how it ended, then what it last printed. */
+function deadServiceNote(dead: DeadService): string {
+    const how = `exit ${dead.exitCode ?? 'unknown'}${dead.reason ? ` (${dead.reason})` : ''}`;
+    const tail = dead.logTail.trim() ? `\n${dead.logTail.trimEnd()}` : '';
+    return `\n[driver] service "${dead.name}" (${dead.image}) ${dead.state} — ${how}; declared gates skipped${tail}`;
 }
 
 /** The verdict output text, annotated with every terminal condition worth telling the author about. */
@@ -201,6 +213,7 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, publishUnlanded: boolea
     if (finish.gatesSkipped !== null) {
         output = `${output}\n[driver] gates skipped — ${finish.gatesSkipped}`;
     }
+    output += finish.deadServices.map(deadServiceNote).join('');
     if (failure) {
         output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
     }
@@ -221,7 +234,9 @@ function verdictStatus(finish: FinishCtx, publishUnlanded: boolean): 'succeeded'
         !outcome.cacheLost &&
         !isPrematureFinish(outcome) &&
         finish.blocked === null;
-    return clean && !finish.failure && !finish.helperFailure && !publishUnlanded ? 'succeeded' : 'failed';
+    return clean && !finish.failure && finish.deadServices.length === 0 && !finish.helperFailure && !publishUnlanded
+        ? 'succeeded'
+        : 'failed';
 }
 
 /** Reports the run's final verdict to the board, after settle() and any publish attempt. */

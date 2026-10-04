@@ -9,7 +9,7 @@ import type {
     RuntimeReport,
 } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
-import type { RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
+import type { DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateServer } from '../src/gates.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
@@ -204,6 +204,8 @@ function stubRunner(
         reapOrphanedClaim?: (job: BoardJob) => Promise<boolean>;
         /** The post-gate tree probe's answer; absent leaves the runner without `probeTree`. */
         probeTree?: string | null;
+        /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
+        deadServices?: () => Promise<DeadService[]>;
     } = {}
 ): Runner & {
     killed: string[];
@@ -215,6 +217,7 @@ function stubRunner(
     servicesReleased: string[];
     reapAttempts: BoardJob[];
     probed: BoardJob[];
+    deadServiceProbes: number;
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -222,6 +225,11 @@ function stubRunner(
         servicesReleased: [] as string[],
         reapAttempts: [] as BoardJob[],
         probed: [] as BoardJob[],
+        deadServiceProbes: 0,
+        async deadServices() {
+            runner.deadServiceProbes += 1;
+            return options.deadServices ? options.deadServices() : [];
+        },
         async releaseServices(releasedJob: BoardJob) {
             runner.servicesReleased.push(releasedJob.id);
         },
@@ -3411,6 +3419,120 @@ describe('the output pump snapshot', () => {
     });
 });
 
+describe('a dead declared service (issue #423)', () => {
+    /**
+     * A service that died before the gates run makes every gate fail on an environment the agent
+     * cannot fix. The gates are skipped, the verdict names the service — its exit and its last
+     * log lines — and lands as `services`, never `gate`, so the workflow's gate-fix edge cannot
+     * spend a round on it.
+     */
+    const mongo: DeadService = {
+        name: 'test-mongo',
+        image: 'mongo:8.0.11',
+        state: 'failed',
+        exitCode: 1,
+        reason: 'Error',
+        logTail: 'chown: changing ownership of /data/db: Operation not permitted',
+    };
+
+    it('skips the declared gates and fails the verdict as services, naming the service', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }), {
+            deadServices: async () => [mongo],
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.gatesReported).toEqual([]);
+        const complete = board.board.completed[0]!;
+        expect(complete).toMatchObject({ status: 'failed', failureKind: 'services', exitCode: 0 });
+        expect(complete.output).toContain('agent did the work');
+        expect(complete.output).toContain(
+            '[driver] service "test-mongo" (mongo:8.0.11) failed — exit 1 (Error); declared gates skipped'
+        );
+        expect(complete.output).toContain('chown: changing ownership of /data/db: Operation not permitted');
+        // Nothing an unverified run produced is published, and the fleet still goes.
+        expect(runner.published).toEqual([]);
+        expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    it('runs the gates when every service is alive, probing once', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(runner.deadServiceProbes).toBe(1);
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('runs the gates when the probe itself fails, and logs why', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const logs: string[] = [];
+        const runner = stubRunner(async () => ok(), {
+            deadServices: async () => {
+                throw new Error('the API server is away');
+            },
+        });
+
+        await drive({ ...board, runner, gates: stack.gates, log: (m) => logs.push(m) });
+
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(logs.some((m) => m.includes('the API server is away'))).toBe(true);
+    });
+
+    it('never probes a refused run or an ungated job', async () => {
+        const board = stubBoard([gatedJob(1), job(2)]);
+        const stack = stubGateStack();
+        let ran = 0;
+        const runner = stubRunner(
+            async () => (ran++ === 0 ? ok({ exitCode: 1, output: 'refused', refused: true }) : ok()),
+            { deadServices: async () => [mongo] }
+        );
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(runner.deadServiceProbes).toBe(0);
+        expect(board.board.completed.map((c) => c.failureKind ?? null)).toEqual(['runner_error', null]);
+    });
+
+    it('never probes a run whose gates are skipped — an unclean exit or a blocked agent', async () => {
+        const board = stubBoard([gatedJob(1), gatedJob(2)]);
+        const stack = stubGateStack();
+        let ran = 0;
+        const runner = stubRunner(
+            async () =>
+                ran++ === 0 ? ok({ exitCode: 1 }) : ok({ output: 'FACTORY_BLOCKED: acli is not authenticated' }),
+            { deadServices: async () => [mongo] }
+        );
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(runner.deadServiceProbes).toBe(0);
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.completed.map((c) => c.failureKind ?? null)).toEqual(['runner_error', 'blocked']);
+    });
+
+    it('ranks a timeout above the dead service', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok({ exitCode: 124, timedOut: true }), {
+            deadServices: async () => [mongo],
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'timeout' });
+    });
+});
+
 describe('the verdict failure kind (issue #339)', () => {
     /**
      * Every terminal path names its kind on the verdict, so "how many timeouts this week" and
@@ -3694,14 +3816,16 @@ describe('the agent reporting it is blocked', () => {
         expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded', 'succeeded']);
     });
 
-    it('ranks blocked after timeout and before gate', async () => {
+    it('ranks blocked after timeout and before services and gate', async () => {
         const { verdictFailureKind } = await import('../src/loop-verdict.js');
         const failure = { name: 'test', exitCode: 1, output: '' };
-        const base = { outcome: ok(), failure, helperFailure: null, blocked: 'x' };
+        const dead = { name: 'db', image: 'mongo', state: 'failed', exitCode: 1, reason: null, logTail: '' };
+        const base = { outcome: ok(), failure, deadServices: [dead], helperFailure: null, blocked: 'x' };
         expect(verdictFailureKind({ ...base, outcome: ok({ timedOut: true }) }, false, 'failed')).toBe('timeout');
         expect(verdictFailureKind({ ...base, outcome: ok({ cacheLost: 'c' }) }, false, 'failed')).toBe('cache_lost');
         expect(verdictFailureKind(base, false, 'failed')).toBe('blocked');
-        expect(verdictFailureKind({ ...base, blocked: null }, false, 'failed')).toBe('gate');
+        expect(verdictFailureKind({ ...base, blocked: null }, false, 'failed')).toBe('services');
+        expect(verdictFailureKind({ ...base, blocked: null, deadServices: [] }, false, 'failed')).toBe('gate');
     });
 });
 

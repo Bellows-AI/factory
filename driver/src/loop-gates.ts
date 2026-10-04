@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { envFileBody } from './claim.js';
-import { tailBytes } from './runner.js';
+import { tailBytes, type DeadService } from './runner.js';
 import type { GateRun } from './gates.js';
 import { down } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
@@ -199,6 +199,20 @@ export async function runDeclaredGates(
         }
     }
     return null;
+}
+
+/**
+ * The attempt's dead services, asked right before the declared gates (issue #423). Best-effort:
+ * a probe that cannot read the fleet costs the short-circuit, never the gates — they run, and a
+ * service that really died still fails them.
+ */
+export async function probeDeadServices(rt: LoopRuntime, job: BoardJob): Promise<DeadService[]> {
+    try {
+        return await rt.runner.deadServices(job);
+    } catch (e) {
+        rt.log(`job ${job.id}: could not read the service fleet, running the gates: ${(e as Error).message}`);
+        return [];
+    }
 }
 
 /** One gate session's teardown: the environment goes back to its cooldown, the token dies. */

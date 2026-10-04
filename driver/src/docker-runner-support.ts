@@ -41,7 +41,7 @@ export type Spawn = typeof spawn;
 export type ExecDocker = (
     args: string[],
     options?: { timeout?: number; signal?: AbortSignal }
-) => Promise<{ stdout: string }>;
+) => Promise<{ stdout: string; stderr?: string }>;
 
 /** How much of a failed aux container's own error detail rides in a sync/reclaim/publish reason. */
 export const ERROR_DETAIL_MAX_CHARS = 300;

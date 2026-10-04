@@ -54,7 +54,7 @@ import {
     runReclaimJob,
     runSyncJob,
 } from './k8s-poll.js';
-import { startServiceFleet, teardownServices } from './k8s-services.js';
+import { deadServices, startServiceFleet, teardownServices } from './k8s-services.js';
 import {
     answerPreview,
     expectOk,
@@ -574,6 +574,7 @@ export function createKubernetesRunner(
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
+        deadServices: (job: BoardJob) => deadServices(deps, job),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),
