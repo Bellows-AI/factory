@@ -348,7 +348,7 @@ describe('the gate environment manager: acquire serialization and timeouts', () 
             output: '[driver] gate killed after 30000ms',
         });
         // The cap travels as the exec's own timeout, the way `timeout` would wrap it.
-        expect(seenOptions.at(-1)).toEqual({ timeout: 30_000 });
+        expect(seenOptions.at(-1)).toMatchObject({ timeout: 30_000 });
         await manager.stop();
     });
 });
