@@ -3346,6 +3346,24 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         ).toBe(true);
         expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }, { envFile: envFilePath(job) }));
     });
+
+    // U3 (gremlin, unproven): dockerDeadServices only reads `exited`/`dead` rows of `docker ps`,
+    // never the declared list — a declared service removed by hand is simply absent, not dead.
+    it('U3 reports a declared service that vanished from docker ps as dead', async () => {
+        const base = daemon(READOUT);
+        let removedByHand = false;
+        const exec = vitest.fn(async (args: string[]) =>
+            removedByHand && args[0] === 'ps' ? { stdout: '' } : base(args)
+        ) as unknown as ReturnType<typeof daemon>;
+        const { fn } = spawnRecording('', 0);
+        const runner = servicesRunner(exec, fn);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        removedByHand = true; // `docker rm -f` of the stub service, between the run and the gates
+        const dead = await runner.deadServices(job);
+        expect(dead.map((d) => d.name)).toEqual(['stub']);
+    });
 });
 
 describe('publishing the produced work', () => {

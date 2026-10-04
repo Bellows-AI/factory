@@ -3978,3 +3978,202 @@ describe('a stop cancels the gates', () => {
         expect(probeSignal?.aborted).toBe(true);
     });
 });
+
+describe('gremlin: lifecycle', () => {
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const ticks = async (n = 30) => {
+        for (let i = 0; i < n; i++) await tick();
+    };
+    const landed: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'fix/1',
+        prUrl: 'https://github.com/o/r/pull/1',
+        reason: null,
+        repository: 'o/r',
+        baseBranch: 'main',
+        prNumber: 1,
+    };
+    type Verdict = 'stop' | 'lost' | 'removed';
+    /** Arms the board's heartbeat to answer `kind` once `fire()` is called. */
+    function armHeartbeat(board: BoardStub, kind: Verdict): () => void {
+        let fired = false;
+        board.heartbeat = async () => {
+            board.beats += 1;
+            if (!fired) return { result: 'held', cancelRequested: false };
+            return kind === 'stop' ? { result: 'held', cancelRequested: true } : kind;
+        };
+        return () => {
+            fired = true;
+        };
+    }
+    const postPlan: HelperPlan = { helperId: 'noop', phase: 'post', input: null, githubWriting: false };
+
+    it.each(['stop', 'lost', 'removed'] as const)(
+        'G1 %s landing during a post-helper publishes nothing and reports no verdict',
+        async (kind) => {
+            const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory', helperPlans: [postPlan] }]);
+            const fire = armHeartbeat(board.board, kind);
+            const runner = stubRunner(async () => ok(), { publish: landed });
+            runner.runHelper = async () => {
+                fire();
+                await ticks();
+                return { ok: true, output: null };
+            };
+
+            await drive({ ...board, runner });
+
+            expect(runner.killed).toEqual([job(1).id]); // the heartbeat DID observe it
+            expect(runner.published).toEqual([]);
+            expect(board.board.completed).toEqual([]);
+            if (kind === 'stop') expect(board.board.suspended).toEqual([job(1).id]);
+        }
+    );
+
+    it('G2 a stop landing during the publish-token ask publishes nothing and parks the run', async () => {
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const fire = armHeartbeat(board.board, 'stop');
+        board.board.publishToken = async () => {
+            fire();
+            await ticks();
+            return null;
+        };
+        const runner = stubRunner(async () => ok(), { publish: landed });
+
+        await drive({ ...board, runner });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(runner.published).toEqual([]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('G3 releases the checkout fence when the gate environment fails to start', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        stack.gates.server.listen = async () => {
+            throw new Error('EADDRNOTAVAIL');
+        };
+        const runner = stubRunner(async () => ok());
+        const released: string[] = [];
+        runner.releaseFence = async (j) => {
+            released.push(j.id);
+        };
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(released).toEqual([gatedJob(1).id]);
+    });
+
+    it('G4 reclaims the tree after a gate-environment failure once the thread is done, like every other refusal', async () => {
+        const board = stubBoard([gatedJob(1)], { threadDone: true });
+        const stack = stubGateStack();
+        stack.gates.server.listen = async () => {
+            throw new Error('EADDRNOTAVAIL');
+        };
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+        await ticks();
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(runner.reclaimed.map((j) => j.id)).toEqual([gatedJob(1).id]);
+    });
+
+    it('G5 parks a stopped run even when the killed run() rejects', async () => {
+        const board = stubBoard([job(1)]);
+        const fire = armHeartbeat(board.board, 'stop');
+        const runner = stubRunner(async () => {
+            fire();
+            while (!runner.killed.length) await tick();
+            throw new Error('the container vanished under the CLI');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    it('G6 a verdict the board answers 5xx after the work published is dropped, not retried', async () => {
+        const logs: string[] = [];
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        let completes = 0;
+        board.board.complete = async () => {
+            completes += 1;
+            throw new Error('/api/jobs/x/complete answered 503: busy');
+        };
+        const runner = stubRunner(async () => ok(), { publish: landed });
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(runner.published).toHaveLength(1);
+        // Expected: the landed verdict (with its publication) is retried until the board answers.
+        expect(completes).toBeGreaterThan(1);
+        expect(logs.some((l) => l.includes('could not run, leaving it to the lease'))).toBe(false);
+    });
+
+    it('G7 a non-zero exit with a failed post-helper is named after the agent, not the helper', async () => {
+        const { verdictFailureKind } = await import('../src/loop-verdict.js');
+        const helperFailure = {
+            helperId: 'noop',
+            result: { ok: false as const, reason: 'runner_error' as const, message: 'x' },
+        };
+        const finish = { outcome: ok({ exitCode: 1 }), failure: null, deadServices: [], helperFailure, blocked: null };
+        expect(verdictFailureKind(finish, false, 'failed')).toBe('runner_error');
+    });
+});
+
+describe('gremlin/gates: a service that dies after the probe', () => {
+    const mongo: DeadService = {
+        name: 'test-mongo',
+        image: 'mongo:8.0.11',
+        state: 'failed',
+        exitCode: 137,
+        reason: 'OOMKilled',
+        logTail: 'killed',
+    };
+
+    it('blames the dead service, not the code, when it died during the gates', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 }); // the suite fails because mongo is gone
+        let probes = 0;
+        const runner = stubRunner(async () => ok(), {
+            // Alive at the pre-gate probe, OOM-killed by the suite's load while `test` ran.
+            deadServices: async () => (probes++ === 0 ? [] : [mongo]),
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        // Observed: probed once, failureKind 'gate' — the gate-fix edge spends a round on an
+        // environment the agent cannot fix (exactly what issue #423 set out to stop).
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'services' });
+    });
+});
+
+describe('gremlin: unproven lifecycle claims', () => {
+    // U1 — a policy question: runPostHelperPhase runs post-helpers unconditionally
+    // (loop-helpers.ts:94-98), so a github-writing helper still writes after a run that already
+    // failed. This test documents the current behaviour by asserting the stricter policy.
+    const writingPost: HelperPlan = { helperId: 'noop', phase: 'post', input: null, githubWriting: true };
+
+    it.each([
+        ['a blocked run', ok({ output: 'FACTORY_BLOCKED: acli is not authenticated' })],
+        ['a non-zero exit', ok({ exitCode: 1 })],
+        ['a timed-out run', ok({ exitCode: null, timedOut: true })],
+    ] as const)('U1 %s does not run a github-writing post-helper', async (_label, outcome) => {
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory', helperPlans: [writingPost] }]);
+        const runner = stubRunner(async () => outcome);
+        const helperCalls: HelperPlan[] = [];
+        runner.runHelper = async (_helperJob, plan) => {
+            helperCalls.push(plan);
+            return { ok: true, output: null };
+        };
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(helperCalls).toEqual([]);
+    });
+});
