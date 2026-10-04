@@ -29,7 +29,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Gates, execution | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts`, `gates-limits.test.ts` |
 | Gates skipped over an unclean run; the agent's `FACTORY_BLOCKED:` report | `driver/src/loop-verdict.ts`, `loop-run.ts` | `driver/test/loop.test.ts` |
 | Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
-| Tree fingerprint: sync before, probe after a failed gate, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
+| Tree fingerprint: sync before, probe after the run and before the gates, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
 | Auxiliary services, the dead-service probe | `driver/src/services.ts`, `scripts/bellows-read.sh`, `k8s-services.ts`, `docker-runner.ts` | `driver/test/services.test.ts`, `scripts-bellows-read.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Worktree sync, base-clone fast-forward, publish, PR identity | `driver/src/publish.ts`, `scripts/git-worktree*.cjs`, `pr-summary.cjs` | `driver/test/worktree.test.ts`, `worktree-restore.test.ts`, `worktree-clone-ff.test.ts`, `pr-summary.test.ts` |

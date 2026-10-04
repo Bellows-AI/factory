@@ -3888,14 +3888,30 @@ describe('the tree change behind a failed gate', () => {
         expect(board.board.completed[0]).not.toHaveProperty('treeChanged');
     });
 
-    it('never probes when the gates pass', async () => {
+    it('reports nothing when the gates pass', async () => {
         const board = stubBoard([gatedJob(1)]);
-        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: 'head:aaaa' });
+        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: 'head:bbbb' });
 
         await drive({ ...board, runner, gates: stubGateStack().gates });
 
-        expect(runner.probed).toEqual([]);
         expect(board.board.completed[0]).not.toHaveProperty('treeChanged');
+    });
+
+    // A failing gate that writes a non-ignored artifact must not read as the agent's progress.
+    it('reads the tree before the gates run', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 });
+        const runner = stubRunner(async () => ok(), { sync: synced });
+        let gatesRunAtProbe = -1;
+        runner.probeTree = async () => {
+            gatesRunAtProbe = stack.stack.ran.names.length;
+            return 'head:aaaa';
+        };
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(gatesRunAtProbe).toBe(0);
+        expect(board.board.completed[0]).toMatchObject({ failureKind: 'gate', treeChanged: false });
     });
 });
 
@@ -3980,9 +3996,9 @@ describe('a stop cancels the gates', () => {
         expect(stack.stack.cancelled).toEqual([]);
     });
 
-    // The tree probe runs after the gates' own stand-down check: a Stop landing while it is
-    // pending must still park the turn, never complete a failed gate a `gate-failed` edge reads.
-    it('parks the turn stopped when the stop lands during the post-gate tree probe', async () => {
+    // A Stop landing while the tree probe is pending must park the turn without running the
+    // gates, never complete a failed gate a `gate-failed` edge reads.
+    it('parks the turn stopped when the stop lands during the pre-gate tree probe', async () => {
         const options: { cancelRequested?: boolean } = {};
         const board = stubBoard([gatedJob(1)], options);
         const runner = stubRunner(async () => ok(), {
