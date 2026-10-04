@@ -63,18 +63,23 @@ CLAUDE_JSON="$CLAUDE_CONFIG_DIR/.claude.json" node -e "
     fs.writeFileSync(f, JSON.stringify(c, null, 2));
 " "$WORKDIR" "$TRUST_MAIN" || echo "claude-executor: could not record workspace trust in .claude.json" >&2
 
-# Jira sign-in (docs/env.md): acli keeps credentials in ~/.config/acli, which a fresh container
-# does not have, so when the claim env carries all three ATLASSIAN_* names — configured on the
-# Environment page like any other secret — log in before the CLI starts. The token goes in on
-# stdin, never argv, and acli's stdout is discarded because this container's stdout is the run's.
-# A failed sign-in does not fail the run: most tasks never touch Jira, and the jira skill tells
-# the agent to stop and report an auth failure when one does.
+# Jira (docs/env.md): when the claim env carries all three ATLASSIAN_* names, export JIRA_API —
+# the site's REST base on the api.atlassian.com gateway, the only host a scoped (service-account)
+# token authenticates against; acli only takes unscoped tokens. The cloud id comes from the site's
+# public tenant_info. A failed lookup does not fail the run: most tasks never touch Jira, and the
+# jira skill tells the agent to stop and report when JIRA_API is missing.
 if [ -n "${ATLASSIAN_SITE:-}" ] && [ -n "${ATLASSIAN_EMAIL:-}" ] && [ -n "${ATLASSIAN_API_TOKEN:-}" ]; then
-    printf '%s' "$ATLASSIAN_API_TOKEN" \
-        | acli jira auth login --site "$ATLASSIAN_SITE" --email "$ATLASSIAN_EMAIL" --token >/dev/null \
-        || echo "claude-executor: acli could not sign in to $ATLASSIAN_SITE; Jira is unavailable this run" >&2
+    jira_host=${ATLASSIAN_SITE#*://}
+    jira_host=${jira_host%%/*}
+    jira_cloud_id=$(curl -fsS --proto '=https' -m 10 "https://$jira_host/_edge/tenant_info" 2>/dev/null \
+        | sed -n 's/.*"cloudId":"\([^"]*\)".*/\1/p')
+    if [ -n "$jira_cloud_id" ]; then
+        export JIRA_API="https://api.atlassian.com/ex/jira/$jira_cloud_id/rest/api/3"
+    else
+        echo "claude-executor: could not resolve the Jira cloud id of $jira_host; Jira is unavailable this run" >&2
+    fi
 elif [ -n "${ATLASSIAN_SITE:-}${ATLASSIAN_EMAIL:-}${ATLASSIAN_API_TOKEN:-}" ]; then
-    echo "claude-executor: acli sign-in needs ATLASSIAN_SITE, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN; skipped" >&2
+    echo "claude-executor: Jira needs ATLASSIAN_SITE, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN; skipped" >&2
 fi
 
 # The member's own executor config — model, env vars, permission allowlist — synthesized by the

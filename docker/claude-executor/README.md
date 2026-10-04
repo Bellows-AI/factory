@@ -6,7 +6,7 @@ this repo's application.
 | Concern | Code | Test |
 | --- | --- | --- |
 | The image — Node 24, `@anthropic-ai/claude-code`, `gh`, `acli`, the `context-mode` plugin | `Dockerfile` | `test.sh` |
-| `ENTRYPOINT` (`/usr/local/bin/claude-executor`): `$WORKDIR`, `safe.directory`, acli sign-in, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| `ENTRYPOINT` (`/usr/local/bin/claude-executor`): `$WORKDIR`, `safe.directory`, `JIRA_API` export, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Git/gh guard, wired as the `PreToolUse` hook | `git-guard.cjs`, `claude-home/settings.json` | `driver/test/executor-images.test.ts`, `git-guard.cjs --selftest` |
 | Sidecars: branch reporting (`session → repo, branch`) to `/api/sessions/branch`; progress over the CLI's `stream-json` | `branch-reporter.cjs`, `claude-progress.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Baked global instructions and config dir (`CLAUDE_CONFIG_DIR`) | `claude-home/` | `driver/test/executor-images.test.ts` |

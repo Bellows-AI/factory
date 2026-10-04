@@ -1,33 +1,44 @@
 ---
 name: jira
-description: Read, search, create and comment on Jira work items with the Atlassian CLI (acli), which is installed in this image. Use whenever a Jira issue key (ABC-1234), a *.atlassian.net/browse/ URL, or a request to look up, update or comment on a ticket appears. Also covers acli authentication failures. Do not use an Atlassian MCP server — acli is the supported path here.
+description: Read, search, create and comment on Jira work items through Jira's REST API with curl, against the $JIRA_API base the entrypoint exports. Use whenever a Jira issue key (ABC-1234), a *.atlassian.net/browse/ URL, or a request to look up, update or comment on a ticket appears. Also covers Jira authentication failures. Do not use an Atlassian MCP server or acli — curl on $JIRA_API is the supported path here.
 ---
 
-# Jira through acli
+# Jira through the REST API
 
-`acli` is at `/usr/local/bin/acli` and is the only supported way to reach Jira from this
-container; the Atlassian MCP server is deliberately not configured.
+Reach Jira with `curl` against `$JIRA_API`, authenticated as `$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN`.
+The Atlassian MCP server is deliberately not configured, and `acli` cannot use the scoped
+(service-account) token this container carries — do not use either.
 
-Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it with
-`acli` rather than fetching the page.
+Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it through
+`$JIRA_API` rather than fetching the page. Never put the token in a URL or echo it.
 
 ## Commands
 
+Every call is one self-contained command; shell state does not carry between them.
+
 ```bash
-# What am I working on
-acli jira workitem search \
-    --jql "assignee = currentUser() AND status = 'In Progress' ORDER BY updated DESC" \
-    --fields "key,summary,status,issuetype,parent,fixVersions,components,labels" \
-    --json
-
 # Full detail, including the comment thread
-acli jira workitem view <KEY> \
-    --fields "key,summary,description,status,issuetype,parent,fixVersions,components,labels,comment" \
-    --json
+curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Accept: application/json' \
+    "$JIRA_API/issue/<KEY>?fields=summary,description,status,issuetype,parent,fixVersions,components,labels,comment"
 
-acli jira workitem create
-acli jira workitem comment <KEY> --body "..."
+# Search by JQL
+curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Accept: application/json' -G \
+    --data-urlencode "jql=project = ABC AND status = 'In Progress' ORDER BY updated DESC" \
+    --data-urlencode "fields=summary,status,issuetype,parent,fixVersions,components,labels" \
+    "$JIRA_API/search/jql"
+
+# Comment — the body is Atlassian Document Format, not plain text
+curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Content-Type: application/json' \
+    -X POST "$JIRA_API/issue/<KEY>/comment" \
+    -d '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"..."}]}]}}'
+
+# Create
+curl -sS --fail-with-body -u "$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN" -H 'Content-Type: application/json' \
+    -X POST "$JIRA_API/issue" \
+    -d '{"fields":{"project":{"key":"ABC"},"issuetype":{"name":"Task"},"summary":"..."}}'
 ```
+
+`assignee = currentUser()` matches the token's own account — a service account — not a person.
 
 ## Reading a ticket properly
 
@@ -35,12 +46,13 @@ acli jira workitem comment <KEY> --body "..."
   description.
 - **A subtask is not self-contained.** If `issuetype.subtask` is true or `parent` is non-null,
   fetch the parent too; the actual requirement usually lives there.
-- Prefer `--json` and name the fields you need.
+- Name the fields you need. `description` and comment bodies come back as ADF JSON: read the
+  `text` nodes.
 
 ## Authentication
 
-`acli` reads credentials from `~/.config/acli`, which is not baked into the image. When the run's
-environment carries `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_TOKEN`, the entrypoint
-has already logged in before you started; otherwise the container is unauthenticated. On any auth
-failure, **stop and report it** — name the three variables as the fix — do not retry, and do not
-work around it by guessing ticket contents.
+When the run's environment carries `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_TOKEN`,
+the entrypoint resolved the site's cloud id and exported `JIRA_API` before you started. If
+`JIRA_API` is empty, or a call answers 401/403, **stop and report it** — name the three variables
+(and, on 403, the token's Jira scopes) as the fix — do not retry, and do not work around it by
+guessing ticket contents.
