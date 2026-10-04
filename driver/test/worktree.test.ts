@@ -26,7 +26,7 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
     const fx = setupWorktreeFixture();
 
     it('creates the worktree branched off the remote default, leaving the clone pristine', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         // The worktree exists, is on the task branch, and sits at the remote default's commit.
         expect(git(fx.worktree(), 'rev-parse', '--is-inside-work-tree')).toBe('true');
@@ -42,11 +42,11 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
     });
 
     it('is idempotent: a second sync of an existing worktree rebases it onto the new default', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         // The branch kept its own commit AND gained the remote's, with the remote's as the base.
         expect(git(fx.worktree(), 'log', '--format=%s')).toContain('the task commit');
@@ -58,7 +58,7 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
     });
 
     it('answers a conflicted rebase with a reason and never leaves the worktree mid-rebase', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
 
@@ -78,7 +78,7 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         mkdirSync(fx.worktree(), { recursive: true });
         writeFileSync(join(fx.worktree(), 'leftover.txt'), 'not a worktree');
 
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         expect(git(fx.worktree(), 'rev-parse', '--is-inside-work-tree')).toBe('true');
         expect(existsSync(join(fx.worktree(), 'leftover.txt'))).toBe(false);
     });
@@ -86,11 +86,11 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
     it('gives two tasks two independent worktrees — neither sees the other’s uncommitted edits', () => {
         // The issue's acceptance test: the second task's workspace is branched off main, not
         // dropped into the tree the first task is mid-edit in.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         writeFileSync(join(fx.worktree(), 'WIP.md'), 'first task, still working\n');
 
         const second = join(fx.dir(), 'bellows', USER, '.worktrees', OTHER_ROOT);
-        expect(fx.sync(OTHER_ROOT)).toEqual({ ok: true, reason: null });
+        expect(fx.sync(OTHER_ROOT)).toMatchObject({ ok: true, reason: null });
 
         expect(existsSync(join(second, 'WIP.md'))).toBe(false);
         expect(readFileSync(join(second, 'README.md'), 'utf8')).toBe('# factory\n');
@@ -99,11 +99,11 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
     });
 
     it('reattaches a branch whose worktree directory was lost, keeping its commits', () => {
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'FOUND.md', 'committed work\n', 'work worth keeping');
         rmSync(fx.worktree(), { recursive: true });
 
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         // The same branch, at its own tip — NOT reset to the remote default, which would throw
         // the thread's committed work away.
@@ -115,11 +115,11 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         // A follow-up lands in the SAME tree as the run before it (the session is only coherent
         // there), and runs routinely end with uncommitted leftovers — the rebase must carry the
         // edits across, not dead-end the thread on them.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
         writeFileSync(join(fx.worktree(), 'README.md'), 'an agent was here\n');
 
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         // The base moved AND the edit survived.
         expect(git(fx.worktree(), 'merge-base', 'HEAD', 'origin/main')).toBe(
@@ -133,7 +133,7 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         // The rebase itself succeeds and git exits 0 even though the reapplied STASH conflicts —
         // the script must catch the unmerged entries and refuse, leaving the tree (and the
         // stash git kept) for recovery instead of running on conflict markers.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         writeFileSync(join(fx.worktree(), 'README.md'), 'an agent was here\n');
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
@@ -164,8 +164,8 @@ describe.skipIf(!hasGit())('the worktree sync script', () => {
         // Helpers write their verdicts under .factory/ in the task worktree; untracked there, the
         // publisher's `git add -A` committed merge-conflict-probe.json into task PRs. A worktree's
         // `.git` is a FILE, so the exclude must land in the clone's common dir to apply at all.
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
-        expect(fx.sync()).toEqual({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
 
         const exclude = readFileSync(join(fx.clone(), '.git', 'info', 'exclude'), 'utf8');
         expect(exclude.split('\n').filter((line) => line === '/.factory/')).toHaveLength(1);
@@ -251,6 +251,7 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
             dirty: false,
             unpushed: 0,
             hasIdentity: false,
+            fingerprint: null,
         });
         // The constant is the file — asserting the executed path is the artifact (parity with
         // the loader is pinned in scripts.test.ts).
@@ -273,5 +274,59 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
         expect(probe().dirty).toBe(true);
         git(repo, ...GIT_ADD_ARGS);
         expect(git(repo, 'diff', '--cached', '--name-only')).toBe('WORK.md');
+    });
+});
+
+/**
+ * The tree fingerprint the sync prints and the probe re-reads after a failed gate: equal means the
+ * round between them changed nothing. Both scripts spell it identically; this pins that they agree.
+ */
+describe.skipIf(!hasGit())('the tree fingerprint', () => {
+    const fx = setupWorktreeFixture();
+
+    const probed = (): string | null => {
+        const out = execFileSync('node', ['-e', gitProbeScript], {
+            env: { ...process.env, REPO: fx.worktree() },
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        return (JSON.parse(out.trim().split('\n').filter(Boolean).pop()!) as { fingerprint: string | null })
+            .fingerprint;
+    };
+    const synced = (): string | null => (fx.sync() as { fingerprint?: string | null }).fingerprint ?? null;
+
+    it('agrees between the sync and the probe over an untouched tree', () => {
+        const before = synced();
+        expect(before).toMatch(/^[0-9a-f]{40}:[0-9a-f]{64}$/);
+        expect(probed()).toBe(before);
+        // The restore a follow-up gets prints the same one.
+        expect((fx.restore() as { fingerprint?: string | null }).fingerprint).toBe(before);
+    });
+
+    it('moves on a commit, an edit, a further edit of an already-dirty file, and a new file', () => {
+        const seen = new Set([synced()]);
+        const step = (): void => {
+            const now = probed();
+            expect(seen.has(now)).toBe(false);
+            seen.add(now);
+        };
+        fx.commitIn(fx.worktree(), 'TASK.md', 'one\n', 'a commit');
+        step();
+        writeFileSync(join(fx.worktree(), 'README.md'), 'edited\n');
+        step();
+        // The porcelain line is the same ` M README.md`; the content is not.
+        writeFileSync(join(fx.worktree(), 'README.md'), 'edited again\n');
+        step();
+        writeFileSync(join(fx.worktree(), 'NEW.md'), 'new\n');
+        step();
+        writeFileSync(join(fx.worktree(), 'NEW.md'), 'new, changed\n');
+        step();
+    });
+
+    it('ignores the .factory/ state namespace', () => {
+        const before = synced();
+        mkdirSync(join(fx.worktree(), '.factory'), { recursive: true });
+        writeFileSync(join(fx.worktree(), '.factory', 'state.json'), '{}');
+        expect(probed()).toBe(before);
     });
 });

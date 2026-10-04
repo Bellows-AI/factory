@@ -9,7 +9,7 @@ import type { GateRunNote } from './timeout-note.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import { TRANSIENT_SYNC_REASON, type SyncResult } from './publish.js';
-import { publishIfDue, report, reportFinish } from './loop-verdict.js';
+import { blockedReason, gateSkipReason, publishIfDue, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
@@ -137,6 +137,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | nu
         }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
         return STOOD_DOWN;
     }
+    ctx.treeBefore = synced.fingerprint ?? null;
     return null;
 }
 
@@ -255,6 +256,12 @@ type RunPhaseResult = {
      * last output from VERDICT time would report a run that was streaming when it died as idle.
      */
     endedAt: number;
+    /** The agent's blocked report, or null. */
+    blocked: string | null;
+    /** Why the declared gates were skipped, or null. */
+    gatesSkipped: string | null;
+    /** Whether the failed gate's tree differs from the synced one; null when unmeasured. */
+    treeChanged: boolean | null;
 };
 
 /** Handles the run-ended verdicts that are not an ordinary finish: lost, removed, stopped. */
@@ -348,18 +355,87 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     /*
      * The gates run HERE: after the agent has finished talking and before the verdict, with the
      * heartbeat still beating — settle() has deliberately NOT been called yet, because a test
-     * suite can take minutes and it must not outrun the lease it runs under.
+     * suite can take minutes and it must not outrun the lease it runs under. A run that did not
+     * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      */
-    let failure: GateFailure | null = null;
-    let deadServices: DeadService[] = [];
-    if (gateSession && !outcome.refused && !state.lost) {
-        // A gate against a dead service fails on an environment the agent cannot fix, and a
-        // failed gate is what the workflow's gate-fix edge spends a round on (issue #423).
-        deadServices = await probeDeadServices(rt, job);
-        if (deadServices.length === 0) failure = await runDeclaredGates(rt, job, gateSession, state);
+    const blocked = blockedReason(outcome);
+    const gated =
+        gateSession && !outcome.refused && !state.lost
+            ? await runGatesPhase(ctx, gateSession, outcome, blocked)
+            : { failure: null, deadServices: [], gatesSkipped: null };
+    // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
+    const treeChanged = gated.failure ? await treeChangedSinceSync(ctx) : null;
+    if (down(state)) {
+        await settleDownAfterGates(ctx);
+        return { done: true };
     }
 
-    return { done: false, outcome, failure, deadServices, endedAt };
+    return { done: false, outcome, ...gated, endedAt, blocked, treeChanged };
+}
+
+/** What the gates phase of one attempt found: the failed gate, the dead services, or why it skipped. */
+interface GatesPhase {
+    failure: GateFailure | null;
+    deadServices: DeadService[];
+    gatesSkipped: string | null;
+}
+
+/** The declared gates, unless the run did not finish cleanly or a declared service is dead. */
+async function runGatesPhase(
+    ctx: AttemptCtx,
+    gateSession: GateSession,
+    outcome: RunOutcome,
+    blocked: string | null
+): Promise<GatesPhase> {
+    const { rt, job, state } = ctx;
+    const gatesSkipped = gateSkipReason(outcome, blocked);
+    if (gatesSkipped !== null) {
+        rt.log(`job ${job.id}: gates skipped — ${gatesSkipped}`);
+        return { failure: null, deadServices: [], gatesSkipped };
+    }
+    // A gate against a dead service fails on an environment the agent cannot fix, and a
+    // failed gate is what the workflow's gate-fix edge spends a round on (issue #423).
+    const deadServices = await probeDeadServices(rt, job);
+    const failure = deadServices.length === 0 ? await runDeclaredGates(rt, job, gateSession, state) : null;
+    return { failure, deadServices, gatesSkipped: null };
+}
+
+/**
+ * A stop, lost lease or Remove observed while the declared gates ran: the running gate was
+ * cancelled (`runDeclaredGates`), and the attempt settles exactly as a stop of the run itself
+ * does — parked `stopped`, never a verdict a `gate-failed` edge could read.
+ */
+async function settleDownAfterGates(ctx: AttemptCtx): Promise<void> {
+    const { rt, job, state, settle } = ctx;
+    await settle();
+    if (state.stopped) {
+        const verdict = await rt.board.suspend(job);
+        rt.log(
+            verdict === 'lost'
+                ? `job ${job.id}: stopped during its gates, but the board had already reclaimed it`
+                : `job ${job.id}: stopped during its gates — the gates were cancelled, the board has settled the turn`
+        );
+    } else if (state.removed) {
+        rt.log(`job ${job.id}: removed during its gates; the queue owns the tree`);
+    }
+}
+
+/**
+ * Whether the task tree moved since the startup sync — the probe re-read after a failed gate.
+ * Null whenever either half is unknown: no before-fingerprint, no probe, or a probe that failed.
+ */
+async function treeChangedSinceSync(ctx: AttemptCtx): Promise<boolean | null> {
+    const { rt, job, treeBefore, state } = ctx;
+    if (treeBefore === null || !rt.runner.probeTree) return null;
+    // A stand-down cancels the probe's transport and stops waiting on it; the caller rechecks.
+    const cancel = new AbortController();
+    void state.abort.then(() => cancel.abort());
+    const raced = await raceStep(
+        state,
+        rt.runner.probeTree(job, cancel.signal).catch(() => null)
+    );
+    const after = raced?.value ?? null;
+    return after === null ? null : after !== treeBefore;
 }
 
 /** The ad-hoc gate history one attempt's timeout note quotes, read before the session's teardown. */
@@ -457,9 +533,12 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             }
         }
 
-        const ctx: AttemptCtx = { rt, job, state, settle, standDown };
+        const ctx: AttemptCtx = { rt, job, state, settle, standDown, treeBefore: null };
         const gateSession = await runSetup(ctx);
         if (gateSession === STOOD_DOWN) return;
+        // A stand-down kills the runner, but not a gate its agent asked for: the token dies and
+        // every ad-hoc run of it in flight is cancelled the moment the verdict lands.
+        if (gateSession) void state.abort.then(() => rt.gates?.server.cancel(gateSession.token));
 
         try {
             const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput });
@@ -470,6 +549,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 failure: outcome.failure,
                 deadServices: outcome.deadServices,
                 helperFailure,
+                blocked: outcome.blocked,
             });
             await settle();
             // The liveness read and the gate verdicts are read BEFORE the finally below
@@ -484,6 +564,9 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 endedAt: outcome.endedAt,
                 activity: outputPump.snapshot(),
                 gateRuns: gateHistory(rt, gateSession),
+                blocked: outcome.blocked,
+                gatesSkipped: outcome.gatesSkipped,
+                treeChanged: outcome.treeChanged,
             });
         } finally {
             if (gateSession) releaseGateSession(rt, gateSession);

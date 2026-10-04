@@ -15,6 +15,7 @@ import type {
     JobStorePrs,
     GateReport,
     ArtifactUpload,
+    FailureKind,
 } from './job-store-types.js';
 import { type CompletedRun, nextTransition, primarySessionId } from './workflow-engine.js';
 import { enterRuntimeBoundary } from './workflow-blocks/runtime.js';
@@ -231,6 +232,7 @@ export async function completeJob(
     const { sql, orgId, wallTick, prs } = ctx;
     const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, publication } =
         result;
+    const treeChanged = result.treeChanged ?? null;
     // The context stats ride the verdict and merge into the runtime vitals — the row keeps
     // its last CPU sample AND gains the context the run reached. The stats are stored
     // under the keys the task view reads (`contextTokens`, `costUsd`; the wire field is
@@ -317,6 +319,8 @@ export async function completeJob(
                 completedId,
                 status: status as JobOutcome,
                 output,
+                failureKind: failureKindPatch,
+                treeChanged,
                 prs,
             });
         }
@@ -425,6 +429,10 @@ export interface WorkflowTransitionInput {
     completedId: string;
     status: JobOutcome;
     output: string | null;
+    /** The verdict's failure kind — a `blocked` run rests the thread before any edge. */
+    failureKind: FailureKind | null;
+    /** The driver's tree-change read, unstored — a gate-fix edge over an unchanged tree rests. */
+    treeChanged: boolean | null;
     prs: JobStorePrs | undefined;
 }
 
@@ -448,10 +456,9 @@ function transitionContextOf(
         executor: string | null;
         executor_scope: string | null;
     }[],
-    completedId: string,
-    status: JobOutcome,
-    output: string | null
+    verdict: Pick<WorkflowTransitionInput, 'completedId' | 'status' | 'output' | 'failureKind' | 'treeChanged'>
 ): { completed: (typeof threadRows)[number] | undefined; completedRun: CompletedRun; halted: string | null } {
+    const { completedId, status, output, failureKind, treeChanged } = verdict;
     const completed = threadRows.find((row) => row.id === completedId);
     const completedRun: CompletedRun = {
         id: completedId,
@@ -459,6 +466,8 @@ function transitionContextOf(
         status,
         output,
         gates: completed?.gates ?? null,
+        failureKind,
+        treeChanged,
     };
     const halted =
         completedRun.node ??
@@ -471,7 +480,7 @@ function transitionContextOf(
 }
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
-    const { orgId, rootJobId, root, completedId, status, output, prs } = input;
+    const { orgId, rootJobId, root, completedId, prs } = input;
     if (!root.workflow_snapshot) return;
     // The same per-root advisory lock the claim takes: a transition insert must not interleave
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up
@@ -519,7 +528,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         gates: row.gates,
         sessionId: row.session_id,
     }));
-    const { completed, completedRun, halted } = transitionContextOf(threadRows, completedId, status, output);
+    const { completed, completedRun, halted } = transitionContextOf(threadRows, input);
 
     let transition = nextTransition({
         snapshot: root.workflow_snapshot,

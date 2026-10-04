@@ -28,6 +28,21 @@ const path = require('node:path');
 
 const RUN_STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
 const SUMMARY_MAX_CHARS = 400;
+const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
+
+// The agent's blocked report: the final text's LAST non-empty line, when it starts with the
+// marker — read before the summary collapses the lines, so a mention mid-message never counts.
+const blockedOf = (text) => {
+    const last =
+        text
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .pop() ?? '';
+    return last.startsWith(BLOCKED_MARKER)
+        ? last.slice(BLOCKED_MARKER.length).trim().slice(0, SUMMARY_MAX_CHARS)
+        : null;
+};
 
 try {
     const dir = process.env.CLAUDE_TRANSCRIPT_DIR;
@@ -46,6 +61,7 @@ try {
 
     let turns = 0;
     let summary = null;
+    let blocked = null;
     for (const line of fs.readFileSync(found, 'utf8').split('\n')) {
         if (!line.trim()) continue;
         const entry = JSON.parse(line);
@@ -72,11 +88,16 @@ try {
                   ? content
                         .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
                         .map((block) => block.text)
-                        .join(' ')
+                        .join('\n')
                   : '';
-        if (text && text.trim()) summary = text.replace(/\s+/g, ' ').trim().slice(0, SUMMARY_MAX_CHARS);
+        if (text && text.trim()) {
+            summary = text.replace(/\s+/g, ' ').trim().slice(0, SUMMARY_MAX_CHARS);
+            blocked = blockedOf(text);
+        }
     }
-    console.log(JSON.stringify({ turns, summary }));
+    console.log(JSON.stringify({ turns, summary, blocked }));
 } catch (e) {
-    console.log(JSON.stringify({ turns: null, summary: null, error: e instanceof Error ? e.message : String(e) }));
+    console.log(
+        JSON.stringify({ turns: null, summary: null, blocked: null, error: e instanceof Error ? e.message : String(e) })
+    );
 }

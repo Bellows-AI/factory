@@ -126,6 +126,11 @@ export const prNumberFromUrl = (url: string): number | null => {
 export interface SyncResult {
     ok: boolean;
     reason: string | null;
+    /**
+     * The task tree's fingerprint after the sync (scripts/git-worktree.cjs), compared with the
+     * post-gate probe's to tell a round that changed nothing. Absent or null is unknown.
+     */
+    fingerprint?: string | null;
 }
 
 /**
@@ -409,20 +414,40 @@ const PUBLISH_FAILURE_MAX_CHARS = 400;
  */
 export const GIT_ADD_ARGS = ['add', '-A', '--', ':/', ':(top,exclude).factory'];
 
+/** The read-only probe step over one checkout — the publish's first step, and the post-gate tree read. */
+const probeStep = (repo: string): PublishStep => ({
+    label: 'probe',
+    entrypoint: 'node',
+    args: ['-e', gitProbeScript],
+    env: false,
+    envLiterals: { REPO: repo },
+    inRepo: false,
+});
+
 /**
  * Probes the checkout. A probe that cannot run reads as no state at all — the caller's
  * no-op-with-reason path, never a crash.
  */
 async function probeCheckout(runStep: RunPublishStep, repo: string): Promise<GitState> {
-    const probe = await runStep({
-        label: 'probe',
-        entrypoint: 'node',
-        args: ['-e', gitProbeScript],
-        env: false,
-        envLiterals: { REPO: repo },
-        inRepo: false,
-    }).catch(() => null);
+    const probe = await runStep(probeStep(repo)).catch(() => null);
     return parseGitState(probe?.stdout ?? '');
+}
+
+/**
+ * The task tree's fingerprint now, over either executor's transport — the after-half of the
+ * no-progress read whose before-half is the sync's `SyncResult.fingerprint`. Null when the job has
+ * no worktree, or the probe failed or answered none: unknown, never a guess.
+ */
+export async function probeTreeFingerprint(
+    config: DriverConfig,
+    job: BoardJob,
+    runStep: RunPublishStep
+): Promise<string | null> {
+    const repo = worktreeDir(config, job);
+    if (!repo) return null;
+    const probe = await runStep(probeStep(repo)).catch(() => null);
+    const fingerprint = parseLastJsonLine<{ fingerprint?: unknown }>(probe?.stdout ?? '', () => ({})).fingerprint;
+    return typeof fingerprint === 'string' && fingerprint ? fingerprint : null;
 }
 
 /**

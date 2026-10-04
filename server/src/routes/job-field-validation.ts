@@ -212,6 +212,7 @@ export interface CompleteFields {
     agentTurns: number | null;
     summary: string | null;
     failureKind: FailureKind | null;
+    treeChanged: boolean | null;
 }
 
 /**
@@ -222,6 +223,7 @@ export interface CompleteFields {
 export const FAILURE_KINDS: readonly FailureKind[] = [
     'timeout',
     'cache_lost',
+    'blocked',
     'gate',
     'publish',
     'helper',
@@ -279,7 +281,7 @@ function badSummaryField(summary: unknown): boolean {
     return summary !== undefined && summary !== null && typeof summary !== 'string';
 }
 
-/** The last two scalar checks of a complete body — the close-time summary and the failure kind. */
+/** The last scalar checks of a complete body — the close-time summary, the failure kind, the tree change. */
 function closingFieldRefusal(fields: Record<string, unknown>): { code: string; message: string } | null {
     if (badSummaryField(fields.summary)) {
         return { code: ERROR_CODES.BAD_SUMMARY, message: 'summary must be a string or null' };
@@ -289,6 +291,9 @@ function closingFieldRefusal(fields: Record<string, unknown>): { code: string; m
             code: ERROR_CODES.BAD_FAILURE_KIND,
             message: `failureKind must be one of ${FAILURE_KINDS.join(', ')} or null`,
         };
+    }
+    if (fields.treeChanged !== undefined && fields.treeChanged !== null && typeof fields.treeChanged !== 'boolean') {
+        return { code: ERROR_CODES.BAD_TREE_CHANGED, message: 'treeChanged must be a boolean or null' };
     }
     return null;
 }
@@ -334,7 +339,8 @@ const summaryValue = (summary: unknown): string | null =>
 export function validateCompleteFields(
     fields: Record<string, unknown>
 ): { ok: true; value: CompleteFields } | { ok: false; code: string; message: string } {
-    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind } = fields;
+    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged } =
+        fields;
     const refusal = measuredFieldRefusal(fields) ?? closingFieldRefusal(fields);
     if (refusal !== null) return { ok: false, ...refusal };
     return {
@@ -348,6 +354,7 @@ export function validateCompleteFields(
             agentTurns: (agentTurns as number | undefined) ?? null,
             summary: summaryValue(summary),
             failureKind: (failureKind as FailureKind | undefined) ?? null,
+            treeChanged: typeof treeChanged === 'boolean' ? treeChanged : null,
         },
     };
 }

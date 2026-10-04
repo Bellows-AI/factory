@@ -92,6 +92,72 @@ describe('nextTransition: marker and gate matching', () => {
     });
 });
 
+describe('nextTransition: blocked and no-progress rests', () => {
+    const failedGates = [gate('lint', 'failed', 1, 'eslint output')];
+
+    // A blocked agent needs a human: no edge fires, an author's own `failed` edge included.
+    it('rests a blocked completion before any edge, a custom failed edge included', () => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'fix', when: 'failed' }] },
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({ id: 'r1', status: 'failed', failureKind: 'blocked' }),
+        });
+        expect(t).toEqual({ action: 'rest', reason: 'blocked' });
+    });
+
+    it('rests a gate-failed edge over a tree the run left unchanged', () => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot,
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({
+                id: 'r1',
+                status: 'failed',
+                failureKind: 'gate',
+                gates: failedGates,
+                treeChanged: false,
+            }),
+        });
+        expect(t).toEqual({ action: 'rest', reason: 'no_progress' });
+    });
+
+    it.each([
+        ['changed', true],
+        ['unmeasured (null)', null],
+        ['unmeasured (absent)', undefined],
+    ])('follows the gate-failed edge when the tree is %s', (_label, treeChanged) => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot,
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({ id: 'r1', status: 'failed', failureKind: 'gate', gates: failedGates, treeChanged }),
+        });
+        expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' } });
+    });
+
+    // Only the gate-failed rule reads the tree: an author's `failed` edge still fires.
+    it('leaves a plain failed edge alone over an unchanged tree', () => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'fix', when: 'failed' }] },
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({
+                id: 'r1',
+                status: 'failed',
+                failureKind: 'gate',
+                gates: failedGates,
+                treeChanged: false,
+            }),
+        });
+        expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' } });
+    });
+});
+
 describe('nextTransition: loop bounds', () => {
     it('refuses the fourth round of a loop bounded at three, resting the thread', () => {
         const rows = [

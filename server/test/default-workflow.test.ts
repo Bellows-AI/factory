@@ -286,6 +286,31 @@ describe('default workflow — pure orchestration walk (real nextTransition)', (
         expect(transition).toEqual({ action: 'rest', reason: 'no_edge' });
     });
 
+    // The incident shape (d0a4146f): rounds that change nothing burn every gate-fix round.
+    it.each([
+        [DEFAULT_ENTRY_NODE, 'task'],
+        [DEFAULT_GATE_FIX_NODE, 'gate-fix'],
+    ])('%s gate-failed over an unchanged tree rests no_progress instead of queuing gate-fix', (node) => {
+        const definition = compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 3);
+        const rows: EngineRow[] = [{ id: 'a', node, status: 'failed', output: null, gates: null, sessionId: 's' }];
+        const transition = nextTransition({
+            snapshot: definition,
+            params: {},
+            command: 'do the thing',
+            rows,
+            completed: {
+                id: 'a',
+                node,
+                status: 'failed',
+                output: null,
+                gates: failedGate('1 test failed'),
+                failureKind: 'gate',
+                treeChanged: false,
+            },
+        });
+        expect(transition).toEqual({ action: 'rest', reason: 'no_progress' });
+    });
+
     it('task gate-failed inserts a gate-fix repair round whose command names the gate and its output', () => {
         const definition = compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 3);
         const rows: EngineRow[] = [

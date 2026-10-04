@@ -22,6 +22,7 @@ describe('FAILURE_KIND_LABEL (issue #339)', () => {
     it('names all seven kinds', () => {
         expect(FAILURE_KIND_LABEL.timeout).toBe('timed out');
         expect(FAILURE_KIND_LABEL.cache_lost).toBe('cache lost');
+        expect(FAILURE_KIND_LABEL.blocked).toBe('blocked');
         expect(FAILURE_KIND_LABEL.gate).toBe('gate failed');
         expect(FAILURE_KIND_LABEL.publish).toBe('publish failed');
         expect(FAILURE_KIND_LABEL.helper).toBe('helper failed');

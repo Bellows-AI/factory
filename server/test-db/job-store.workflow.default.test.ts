@@ -296,6 +296,69 @@ describe.skipIf(!enabled)('the code-owned default workflow, against a real datab
         expect(await store.claim(WORKER, 60)).toBeNull();
     });
 
+    // The driver's side of a stop during the gates: the gate in flight was cancelled and left
+    // `running`, the turn parks through suspend — no verdict, so `gate-failed` cannot fire.
+    it('a repair round stopped while its gate runs parks with no further round', async () => {
+        const id = await queueDefaultJob(NEITHER, 3);
+        await runOneToGateFailure(); // round 1 queued
+        const repair = (await store.claim(WORKER, 60)) as Claim;
+        await store.gates(repair.id, repair.leaseToken, [
+            { name: 'test', status: 'running', exitCode: null, output: null },
+        ]);
+        await store.stop(repair.id, null);
+        await store.suspend(repair.id, repair.leaseToken);
+
+        expect(await nodesOf(id)).toEqual([DEFAULT_ENTRY_NODE, DEFAULT_GATE_FIX_NODE]);
+        expect(await store.claim(WORKER, 60)).toBeNull();
+    });
+
+    // The incident (task d0a4146f): gate-fix rounds that change nothing — the driver says so.
+    it('a gate failure over an unchanged tree rests instead of queuing a repair round', async () => {
+        const id = await queueDefaultJob(NEITHER, 3);
+        const claim = (await store.claim(WORKER, 60)) as Claim;
+        await store.gates(claim.id, claim.leaseToken, failedGate('3 tests failed'));
+        await store.complete(claim.id, claim.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: null,
+            failureKind: 'gate',
+            treeChanged: false,
+        });
+
+        expect(await nodesOf(id)).toEqual([DEFAULT_ENTRY_NODE]);
+        expect(await store.claim(WORKER, 60)).toBeNull();
+    });
+
+    it('a gate failure over a changed tree still queues the repair round', async () => {
+        const id = await queueDefaultJob(NEITHER, 3);
+        const claim = (await store.claim(WORKER, 60)) as Claim;
+        await store.gates(claim.id, claim.leaseToken, failedGate('3 tests failed'));
+        await store.complete(claim.id, claim.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: null,
+            failureKind: 'gate',
+            treeChanged: true,
+        });
+
+        expect(await nodesOf(id)).toEqual([DEFAULT_ENTRY_NODE, DEFAULT_GATE_FIX_NODE]);
+    });
+
+    it('a blocked task rests, its failure kind stored', async () => {
+        const id = await queueDefaultJob(NEITHER, 3);
+        const claim = (await store.claim(WORKER, 60)) as Claim;
+        await store.complete(claim.id, claim.leaseToken, {
+            status: 'failed',
+            exitCode: 0,
+            output: 'FACTORY_BLOCKED: acli is not authenticated',
+            failureKind: 'blocked',
+        });
+
+        expect(await nodesOf(id)).toEqual([DEFAULT_ENTRY_NODE]);
+        expect((await thread(id))[0]!.failureKind).toBe('blocked');
+        expect(await store.claim(WORKER, 60)).toBeNull();
+    });
+
     it('succeeded with a recorded publication enters the selected block (review-reconciliation)', async () => {
         const id = await queueDefaultJob({ reviewReconciliation: true, mergeConflictAutofix: false }, 3, REPO);
         const claim = (await store.claim(WORKER, 60)) as Claim;

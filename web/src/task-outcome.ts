@@ -136,6 +136,7 @@ export const GATE_PILL: Record<GateCheck['status'], string> = {
 export const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
     timeout: 'timed out',
     cache_lost: 'cache lost',
+    blocked: 'blocked',
     gate: 'gate failed',
     publish: 'publish failed',
     helper: 'helper failed',

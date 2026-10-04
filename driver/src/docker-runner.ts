@@ -9,6 +9,7 @@ import type { HelperPlan, HelperResult } from './helpers.js';
 import {
     gitWorktreeRemoveScript,
     parseLastJsonLine,
+    probeTreeFingerprint,
     publishCheckout,
     publishFailed,
     reclaimUnreadable,
@@ -17,6 +18,7 @@ import {
     withPublishToken,
     worktreeDir,
     type PublishResult,
+    type PublishStep,
     type ReclaimResult,
     type SyncResult,
 } from './publish.js';
@@ -364,7 +366,7 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
  * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
  */
 async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: string): Promise<PublishResult> {
-    const { config, execDocker, files } = deps;
+    const { config, files } = deps;
     let file: string | null = null;
     try {
         file = envFilePath(job);
@@ -373,36 +375,40 @@ async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: 
         return publishFailed(`could not write the publish env file: ${(e as Error).message}`);
     }
     const envFile = file;
-    const repo = worktreeDir(config, job);
     try {
-        return await publishCheckout(config, job, async (publish) => {
-            const args = [
-                'run',
-                '--rm',
-                ...containerHardeningArgs(),
-                ...workspacesMountArgs(config, workspacePath(job)),
-            ];
-            if (publish.inRepo && repo) args.push('-w', repo);
-            // Literal env values are paths and code (the probe's REPO) — the same class
-            // as the sync's three path literals, never a credential.
-            for (const [name, value] of Object.entries(publish.envLiterals ?? {})) {
-                args.push('-e', `${name}=${value}`);
-            }
-            if (publish.env) args.push('--env-file', envFile);
-            args.push('--entrypoint', publish.entrypoint, executorImage(config, job.executorType), ...publish.args);
-            try {
-                return await execDocker(args);
-            } catch (e) {
-                // The tool's own output, never the echoed command (dockerErrorDetail):
-                // the execFile message is "Command failed: <the whole docker run argv>",
-                // which is exactly how a credential problem once shipped as an unreadable
-                // verdict. The step's name is added by the workflow; this is the detail
-                // under it.
-                throw new Error(dockerErrorDetail(e));
-            }
-        });
+        return await publishCheckout(config, job, (publish) => dockerPublishStep(deps, job, publish, { envFile }));
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
+    }
+}
+
+/** One publish-shaped step as a `docker run --rm` over the task worktree; `envFile` only when it needs the claim env. */
+async function dockerPublishStep(
+    deps: RunnerDeps,
+    job: BoardJob,
+    publish: PublishStep,
+    { envFile, signal }: { envFile: string | null; signal?: AbortSignal | undefined }
+): Promise<{ stdout: string }> {
+    const { config, execDocker } = deps;
+    const repo = worktreeDir(config, job);
+    const args = ['run', '--rm', ...containerHardeningArgs(), ...workspacesMountArgs(config, workspacePath(job))];
+    if (publish.inRepo && repo) args.push('-w', repo);
+    // Literal env values are paths and code (the probe's REPO) — the same class
+    // as the sync's three path literals, never a credential.
+    for (const [name, value] of Object.entries(publish.envLiterals ?? {})) {
+        args.push('-e', `${name}=${value}`);
+    }
+    if (publish.env && envFile) args.push('--env-file', envFile);
+    args.push('--entrypoint', publish.entrypoint, executorImage(config, job.executorType), ...publish.args);
+    try {
+        return await execDocker(args, signal ? { signal } : undefined);
+    } catch (e) {
+        // The tool's own output, never the echoed command (dockerErrorDetail):
+        // the execFile message is "Command failed: <the whole docker run argv>",
+        // which is exactly how a credential problem once shipped as an unreadable
+        // verdict. The step's name is added by the workflow; this is the detail
+        // under it.
+        throw new Error(dockerErrorDetail(e));
     }
 }
 
@@ -759,6 +765,10 @@ export function createDockerRunner(
         syncCheckout: (job) => dockerSyncCheckout(deps, job),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),
+        // The probe needs no claim env: no env file is written for it. A stand-down kills the
+        // client; the read-only `--rm` probe container exits and is removed on its own.
+        probeTree: (job, signal) =>
+            probeTreeFingerprint(config, job, (step) => dockerPublishStep(deps, job, step, { envFile: null, signal })),
         runHelper: (job, plan, token) => dockerRunHelper(deps, job, plan, token),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),

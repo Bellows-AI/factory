@@ -22,6 +22,8 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_CONFLICT = 409;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
+/** What a gate cancelled before it started answers — discarded by the loop that cancelled it. */
+const CANCELLED_EXIT_CODE = 130;
 
 /**
  * The gate environment: one long-lived container per task worktree, a `docker exec` per
@@ -80,8 +82,12 @@ export interface GateManager {
      * and uses the job only to join the attempt's services network before a gate runs.
      */
     acquire(key: string, image: string, envBody?: string, job?: BoardJob): Promise<void>;
-    /** Runs one declared gate inside the checkout's environment container. */
-    runGate(key: string, name: string, command: string): Promise<GateRun>;
+    /**
+     * Runs one declared gate inside the checkout's environment container. An abort of `signal`
+     * cancels the gate where it stands — its process killed, its kubernetes Job deleted — and
+     * the run answers whatever the cancellation left; the caller discards it.
+     */
+    runGate(key: string, name: string, command: string, signal?: AbortSignal): Promise<GateRun>;
     /** Arms the cooldown teardown. Safe to call repeatedly; acquire cancels it. */
     release(key: string): void;
     /** Tears every environment down now — the driver drain. */
@@ -238,7 +244,7 @@ export function createGateManager({
         // one warm container per checkout, every gate exec'd into it — so the gate's own name
         // never reaches the transport here. The kubernetes manager does use it: a gate run is a
         // Job there, and the name becomes part of the Job's.
-        runGate(key, _name, command) {
+        runGate(key, _name, command, signal) {
             const entry = entries.get(key);
             if (!entry) {
                 return Promise.reject(
@@ -252,7 +258,16 @@ export function createGateManager({
                 clearTimeout(entry.teardown);
                 entry.teardown = null;
             }
+            // A cancelled gate: killing the `docker exec` client leaves its process running in
+            // the container, so the environment itself goes — the next acquire recreates it.
+            const cancel = (): void => {
+                if (entries.get(key) !== entry) return;
+                if (entry.teardown) clearTimeout(entry.teardown);
+                teardown(key, entry);
+            };
             return serialize(key, async () => {
+                if (signal?.aborted) return { exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' };
+                signal?.addEventListener('abort', cancel, { once: true });
                 try {
                     await joinServices(entry);
                     const read = await execDocker(gateExecArgs(entry.name, command), { timeout: gateTimeoutMs });
@@ -260,6 +275,7 @@ export function createGateManager({
                 } catch (e) {
                     return gateRunFromExecError(e as DockerExecError, gateTimeoutMs);
                 } finally {
+                    signal?.removeEventListener('abort', cancel);
                     armCooldown(key, entry);
                 }
             });
@@ -316,6 +332,12 @@ export interface GateServer {
     register(token: string, claim: GateClaim): void;
     unregister(token: string): void;
     /**
+     * A stop, lost lease or Remove: unregisters the token — no new ad-hoc run — and cancels
+     * every ad-hoc run of it still in flight (the manager kills its process or deletes its Job).
+     * Killing the runner does not stop a gate the agent asked for.
+     */
+    cancel(token: string): void;
+    /**
      * The latest ad-hoc run per declared gate name, as the server recorded it completing (issue
      * #339) — what a timed-out run's kill note quotes as "the last gate verdicts". A harness
      * failure (409/500) is not a verdict and records nothing; unregister clears.
@@ -369,7 +391,8 @@ const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> 
 const runRegisteredGate = async (
     manager: Pick<GateManager, 'acquire' | 'runGate'>,
     claim: GateClaim,
-    gate: { name: string; command: string }
+    gate: { name: string; command: string },
+    signal: AbortSignal
 ): Promise<{ status: number; body: unknown }> => {
     try {
         await manager.acquire(claim.key, claim.image, claim.envBody ?? '', claim.job);
@@ -380,9 +403,12 @@ const runRegisteredGate = async (
         };
     }
     try {
-        const outcome = await manager.runGate(claim.key, gate.name, gate.command);
+        const outcome = await manager.runGate(claim.key, gate.name, gate.command, signal);
+        // A cancelled run's answer is whatever the kill left — never a verdict to record.
+        if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
         return { status: HTTP_OK, body: outcome };
     } catch (e) {
+        if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
         if ((e as { code?: number }).code === CONTAINER_GONE) {
             return { status: HTTP_CONFLICT, body: { error: 'gate environment is gone' } };
         }
@@ -398,6 +424,8 @@ export function createGateServer({
     manager: Pick<GateManager, 'acquire' | 'runGate'>;
 }): GateServer {
     const claims = new Map<string, GateClaim>();
+    /** Per token, the controller every ad-hoc run of it listens on — `cancel` aborts it. */
+    const cancels = new Map<string, AbortController>();
     /** Per token, the latest completed run per gate name — the timeout note's raw material. */
     const history = new Map<string, Map<string, GateRunNote>>();
     let server: Server | null = null;
@@ -426,7 +454,8 @@ export function createGateServer({
         const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
         if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
 
-        const result = await runRegisteredGate(manager, claim, gate);
+        const cancelled = cancels.get(auth)?.signal ?? AbortSignal.abort();
+        const result = await runRegisteredGate(manager, claim, gate, cancelled);
         if (result.status === HTTP_OK) {
             const verdict = result.body as { exitCode: number | null };
             const runs = history.get(auth) ?? new Map<string, GateRunNote>();
@@ -440,10 +469,17 @@ export function createGateServer({
         register(token, claim) {
             claims.set(token, { ...claim, envBody: claim.envBody ?? '' });
             history.set(token, new Map());
+            cancels.set(token, new AbortController());
         },
         unregister(token) {
             claims.delete(token);
             history.delete(token);
+            cancels.delete(token);
+        },
+        cancel(token) {
+            const controller = cancels.get(token);
+            this.unregister(token);
+            controller?.abort();
         },
         lastRuns(token) {
             return [...(history.get(token)?.values() ?? [])];

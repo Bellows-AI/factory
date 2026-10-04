@@ -2450,6 +2450,46 @@ describe('publishing the produced work', () => {
         expect(JSON.stringify(secretPost?.body)).not.toContain('t0k-3n');
     });
 
+    // The post-gate tree read: the publish's probe step alone, as Job step 0, with no Secret.
+    it('probes the tree fingerprint as one env-less Job, below every publish step name', async () => {
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' }) },
+        ]);
+
+        expect(await runner(request).probeTree?.(ISSUE_JOB)).toBe('h:1');
+
+        const posted = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(posted).toHaveLength(1);
+        expect(posted[0]?.body).toMatchObject({ metadata: { name: publishStepJobName(ISSUE_JOB, 0) } });
+        expect(JSON.stringify(posted[0]?.body)).toContain(gitProbeScript.slice(0, 40));
+        expect(calls.some((call) => call.path?.includes('/secrets'))).toBe(false);
+    });
+
+    // A Stop while the probe Job is still pending must not wait for the Job to finish on its own.
+    it('stops polling and deletes a pending probe Job once the stand-down signal aborts', async () => {
+        const base = fakeRequest({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
+        const cancel = new AbortController();
+        const probeJob = `${jobsPath(namespace)}/${publishStepJobName(ISSUE_JOB, 0)}`;
+        let polls = 0;
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && path === probeJob && ++polls === 3) cancel.abort();
+            return base.request(method, path, body);
+        };
+
+        expect(await runner(request).probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
+
+        expect(polls).toBe(3);
+        expect(base.calls.some((call) => call.method === 'DELETE' && call.path.startsWith(probeJob))).toBe(true);
+    });
+
+    it.each([
+        ['a probe that answers no fingerprint', { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) }],
+        ['a probe that failed', { exit: 1, log: 'boom' }],
+    ])('answers null for %s', async (_label, step) => {
+        const { request } = scripted([step]);
+        expect(await runner(request).probeTree?.(ISSUE_JOB)).toBeNull();
+    });
+
     it('creates no Secret for an env-less claim', async () => {
         const { request, calls } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
         const result = await runner(request).publishGit({ ...ISSUE_JOB, env: undefined });
@@ -5927,6 +5967,7 @@ describe('the gate env body', () => {
 describe('the kubernetes gate manager', () => {
     const KEY = `bellows/${USER}/.worktrees/55555555-5555-4555-8555-555555555555`;
     const GATE_JOB = /^factory-gate-test-[0-9a-f]{16}$/;
+    const GATE_JOB_PATH = /\/jobs\/factory-gate-test-[0-9a-f]{16}\?/;
 
     /** A fake that routes the objects one gate run touches: env Secret, Job, its pod, its log. */
     const gateFake = (
@@ -6063,6 +6104,38 @@ describe('the kubernetes gate manager', () => {
         const outcome = await m.runGate(KEY, 'test', 'npm test');
         expect(outcome.exitCode).toBe(124);
         expect(outcome.output).toMatch(/gate killed after \d+ms/);
+    });
+
+    // A Stop or Remove ends the gate where it stands: its Job goes Foreground, its pod with it.
+    it('deletes the running gate Job when the signal aborts, and stops polling', async () => {
+        const { request, calls } = gateFake({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
+        const cancel = new AbortController();
+        const watching: K8sRequest = (method, path, body) => {
+            if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}/`)) cancel.abort();
+            return request(method, path, body);
+        };
+        const m = createKubernetesGateManager({
+            config: gatedConfig,
+            request: watching,
+            sleep: () => new Promise((resolve) => setTimeout(resolve, 1)),
+        });
+        await m.acquire(KEY, 'node:24', '', job);
+
+        await expect(m.runGate(KEY, 'test', 'npm test', cancel.signal)).rejects.toMatchObject({ code: 125 });
+
+        const deletes = calls.filter((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`));
+        expect(deletes.some((c) => c.path?.includes('propagationPolicy=Foreground'))).toBe(true);
+        expect(deletes[0]?.path).toMatch(GATE_JOB_PATH);
+    });
+
+    it('creates no Job for a signal already aborted', async () => {
+        const { request, calls } = gateFake();
+        const m = manager(request);
+        await m.acquire(KEY, 'node:24', '', job);
+
+        await expect(m.runGate(KEY, 'test', 'npm test', AbortSignal.abort())).rejects.toMatchObject({ code: 125 });
+
+        expect(calls.some((c) => c.method === 'POST' && c.path === jobsPath(namespace))).toBe(false);
     });
 
     it('rejects with the harness code when the cluster refuses the run', async () => {

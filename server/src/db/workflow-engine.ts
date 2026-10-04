@@ -10,7 +10,7 @@
  * included (attempts are retries, rounds are rows). No instance-state table exists to drift.
  */
 import { COMMAND_LIMIT } from '@factory-ai/core';
-import type { GateReport } from './job-store-types.js';
+import type { FailureKind, GateReport } from './job-store-types.js';
 import {
     type EdgeRule,
     type ParamValues,
@@ -39,6 +39,13 @@ export interface CompletedRun {
     status: 'succeeded' | 'failed';
     output: string | null;
     gates: GateReport[] | null;
+    /** The verdict's failure kind; `blocked` rests the thread before any edge is evaluated. */
+    failureKind?: FailureKind | null;
+    /**
+     * Whether the run changed the task tree, as the driver measured it after a failed gate;
+     * absent or null is unmeasured. False rests a `gate-failed` edge: there is nothing to repair.
+     */
+    treeChanged?: boolean | null;
 }
 
 /**
@@ -54,8 +61,19 @@ export interface CompletedRun {
  *                       its scope with no recorded publication to hand the helper (issue #209) —
  *                       never a runnable claim with a null publication, which the helper itself
  *                       cannot act on (`job-store-worker.ts`'s `runWorkflowTransition`).
+ * - `blocked`           the agent reported it cannot proceed for a reason outside the repository
+ *                       (`FACTORY_BLOCKED:`) — a human must act; no edge, custom `failed` included.
+ * - `no_progress`       the matched rule is `gate-failed` and the run left the tree unchanged:
+ *                       a gate-fix round over the same tree can only fail the same way.
  */
-export type RestReason = 'off_graph' | 'no_edge' | 'loop_bound' | 'command_too_large' | 'no_publication';
+export type RestReason =
+    | 'off_graph'
+    | 'no_edge'
+    | 'loop_bound'
+    | 'command_too_large'
+    | 'no_publication'
+    | 'blocked'
+    | 'no_progress';
 
 export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }
@@ -112,11 +130,15 @@ export function nextTransition(input: {
     // (design.md Decision 8): the human's extra work sits at the node, then the graph continues.
     const halted = input.completed.node ?? haltedNode(input.rows, input.completed.id);
     if (halted === null) return { action: 'rest', reason: 'off_graph' };
+    if (input.completed.failureKind === 'blocked') return { action: 'rest', reason: 'blocked' };
 
     const failed = firstFailedGate(input.completed.gates);
     for (const edge of input.snapshot.edges) {
         if (edge.from !== halted) continue;
         if (!ruleMatches(edge.when, input.completed)) continue;
+        if (edge.when === 'gate-failed' && input.completed.treeChanged === false) {
+            return { action: 'rest', reason: 'no_progress' };
+        }
         return followEdge(edge, input, failed);
     }
     return { action: 'rest', reason: 'no_edge' };

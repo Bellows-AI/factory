@@ -146,6 +146,26 @@ describe.skipIf(!hasNodeSqlite())('the claude-code turn count: summary and error
         expect(answer.summary).toBe('all green. pushed.');
     });
 
+    // The blocked marker counts only as the final message's last line — read before the collapse.
+    it.each([
+        [
+            'the last line is the marker',
+            'acli answered 401.\nFACTORY_BLOCKED: acli is not authenticated\n',
+            'acli is not authenticated',
+        ],
+        ['the marker is only mentioned', 'Added FACTORY_BLOCKED: handling and verified all tests pass.', null],
+        ['the marker line is not the last', 'FACTORY_BLOCKED: early worry\nresolved it, all green.', null],
+    ])('lifts the blocked marker only when %s', (_label, text, blocked) => {
+        const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(
+            join(project, `${SESSION_ID}.jsonl`),
+            JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
+        );
+
+        expect(fx.run(fx.dir()).answer.blocked).toBe(blocked);
+    });
+
     it('answers a null summary when no assistant entry carries text', () => {
         const project = join(fx.dir(), 'projects', '-workspaces-org-member-.worktrees-mine');
         mkdirSync(project, { recursive: true });

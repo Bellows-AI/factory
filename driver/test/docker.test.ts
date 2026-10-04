@@ -650,18 +650,34 @@ describe('the close-time claude-code turn count', () => {
         expect(parseClaudeCloseRead('{"turns":11,"summary":"Fixed the failing gates"}\n')).toEqual({
             turns: 11,
             summary: 'Fixed the failing gates',
+            blocked: null,
         });
         // A genuine zero is a measurement — a conversation with no assistant response.
-        expect(parseClaudeCloseRead('{"turns":0,"summary":null}')).toEqual({ turns: 0, summary: null });
+        expect(parseClaudeCloseRead('{"turns":0,"summary":null}')).toEqual({ turns: 0, summary: null, blocked: null });
         expect(parseClaudeCloseRead('{"turns":null,"summary":null,"error":"no transcript for session x"}')).toEqual({
             turns: null,
             summary: null,
+            blocked: null,
         });
         // Fractional, negative, or garbage: unmeasured, never a wrong number.
-        expect(parseClaudeCloseRead('{"turns":2.5,"summary":42}')).toEqual({ turns: null, summary: null });
-        expect(parseClaudeCloseRead('{"turns":-3,"summary":"x"}')).toEqual({ turns: null, summary: 'x' });
-        expect(parseClaudeCloseRead('')).toEqual({ turns: null, summary: null });
-        expect(parseClaudeCloseRead('node: nothing to run')).toEqual({ turns: null, summary: null });
+        expect(parseClaudeCloseRead('{"turns":2.5,"summary":42}')).toEqual({
+            turns: null,
+            summary: null,
+            blocked: null,
+        });
+        expect(parseClaudeCloseRead('{"turns":-3,"summary":"x"}')).toEqual({
+            turns: null,
+            summary: 'x',
+            blocked: null,
+        });
+        expect(parseClaudeCloseRead('')).toEqual({ turns: null, summary: null, blocked: null });
+        expect(parseClaudeCloseRead('node: nothing to run')).toEqual({ turns: null, summary: null, blocked: null });
+        // The final message's blocked line rides beside the summary, read before its collapse.
+        expect(parseClaudeCloseRead('{"turns":1,"summary":"a FACTORY_BLOCKED: b","blocked":"b"}')).toEqual({
+            turns: 1,
+            summary: 'a FACTORY_BLOCKED: b',
+            blocked: 'b',
+        });
     });
 });
 
@@ -1125,6 +1141,7 @@ describe('scraping the session opencode used', () => {
             costUsd: 0.31,
             agentTurns: null,
             summary: null,
+            blocked: null,
             error: null,
         });
         // A healthy run's closing word, and a free-tier cost of zero.
@@ -1135,6 +1152,7 @@ describe('scraping the session opencode used', () => {
             costUsd: 0,
             agentTurns: 7,
             summary: null,
+            blocked: null,
             error: null,
         });
         // A message that never reported a finish or tokens reads as none, not as a reason.
@@ -1146,6 +1164,7 @@ describe('scraping the session opencode used', () => {
             costUsd: null,
             agentTurns: null,
             summary: null,
+            blocked: null,
             error: null,
         });
         // The readout's own failure line: carried through as the reason, with no stats.
@@ -1156,6 +1175,7 @@ describe('scraping the session opencode used', () => {
             costUsd: null,
             agentTurns: null,
             summary: null,
+            blocked: null,
             error: 'no such column: role',
         });
         expect(parseOpencodeRunOutcome('')).toEqual({
@@ -1165,6 +1185,7 @@ describe('scraping the session opencode used', () => {
             costUsd: null,
             agentTurns: null,
             summary: null,
+            blocked: null,
             error: null,
         });
         // Not a session id: a path, an error line, or a uuid that would read as claude's.
@@ -1182,6 +1203,7 @@ describe('scraping the session opencode used', () => {
             costUsd: null,
             agentTurns: null,
             summary: null,
+            blocked: null,
             error: null,
         });
         // A session line that also carries the last provider error: both ride — the session makes
@@ -1197,8 +1219,13 @@ describe('scraping the session opencode used', () => {
             costUsd: 0,
             agentTurns: null,
             summary: null,
+            blocked: null,
             error: 'Error from provider (Console): Rate limit exceeded. Please try again later.',
         });
+        // The final message's blocked line rides beside the summary, read before its collapse.
+        expect(parseOpencodeRunOutcome('{"id":"ses_x1","summary":"a","blocked":"no access"}').blocked).toBe(
+            'no access'
+        );
     });
 });
 
@@ -4115,6 +4142,41 @@ describe('publishing the produced work', () => {
             if (a.includes('create')) return 'pr-create';
             return 'other';
         });
+
+    // The post-gate tree read: the probe container alone, over the worktree, with no env file.
+    it('probes the tree fingerprint with one env-less container', async () => {
+        const { calls, envBodies, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
+
+        expect(await runner.probeTree?.(ISSUE_JOB)).toBe('h:1');
+
+        expect(shapesOf(calls)).toEqual(['probe']);
+        expect(calls[0]).not.toContain('--env-file');
+        expect(envBodies).toEqual([]);
+    });
+
+    // A Stop while the probe container runs kills its docker client rather than waiting it out.
+    it('hands the stand-down signal to the probe container and answers null once it aborts', async () => {
+        const cancel = new AbortController();
+        const seen: (AbortSignal | undefined)[] = [];
+        const exec = (async (_args: string[], options?: { signal?: AbortSignal }) => {
+            seen.push(options?.signal);
+            cancel.abort();
+            throw new Error('The operation was aborted');
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(loadDriverConfig({}), (() => fakeChild('')) as unknown as typeof spawn, exec);
+
+        expect(await runner.probeTree?.(ISSUE_JOB, cancel.signal)).toBeNull();
+
+        expect(seen).toEqual([cancel.signal]);
+    });
+
+    it.each([
+        ['answers no fingerprint', {}, undefined],
+        ['fails', {}, () => true],
+    ])('answers null when the probe %s', async (_label, extra, fail) => {
+        const { runner } = publishRunner({ ...DIRTY_ON_MAIN, ...extra }, { fail });
+        expect(await runner.probeTree?.(ISSUE_JOB)).toBeNull();
+    });
 
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such

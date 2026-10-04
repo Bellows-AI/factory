@@ -45,6 +45,11 @@ async function createGateEnvSecret(deps: K8sDeps, job: BoardJob, secretName: str
     if (refused) throw gateHarness(refused);
 }
 
+/** A cancelled gate's Job is already being deleted; there is no verdict left to wait for. */
+function throwIfCancelled(signal: AbortSignal | undefined, jobName: string): void {
+    if (signal?.aborted) throw gateHarness(`the gate job ${jobName} was cancelled`);
+}
+
 /**
  * Poll the gate Job to a terminal status. The kubelet's activeDeadlineSeconds guarantees the Job
  * reaches one; the read of it gets the same bounded patience every verdict-carrying read shares
@@ -58,10 +63,12 @@ async function createGateEnvSecret(deps: K8sDeps, job: BoardJob, secretName: str
 async function pollGateJobToTerminal(
     deps: K8sDeps,
     jobName: string,
-    image: string
+    image: string,
+    signal: AbortSignal | undefined
 ): Promise<{ succeeded: boolean; timedOut: boolean }> {
     let imageCleared = false;
     for (;;) {
+        throwIfCancelled(signal, jobName);
         let result: JobStatusResult;
         try {
             result = await readJobStatus(deps, jobName, 'reading the gate job');
@@ -168,7 +175,7 @@ export function createKubernetesGateManager({
             entries.set(key, { job, image, envBody, secretName, run });
         },
 
-        runGate(key, name, command) {
+        runGate(key, name, command, signal) {
             const entry = entries.get(key);
             if (!entry) {
                 return Promise.reject(gateHarness(`no gate environment for ${key}`));
@@ -180,7 +187,14 @@ export function createKubernetesGateManager({
             const run = entry.run;
             const { job, image, secretName } = entry;
             const jobName = gateJobName(job, name, run);
+            // A cancelled gate: its Job goes now, Foreground, so the pod dies with it rather than
+            // running its suite to the deadline; the poll stops at its next turn.
+            const cancel = (): void => {
+                void deleteJob(deps, jobName, 'Foreground');
+            };
             return (async (): Promise<GateRun> => {
+                if (signal?.aborted) throw gateHarness(`the gate ${name} was cancelled before it started`);
+                signal?.addEventListener('abort', cancel, { once: true });
                 try {
                     const created = await request(
                         'POST',
@@ -198,7 +212,7 @@ export function createKubernetesGateManager({
                     const refused = refusal(created, 'creating the gate job');
                     if (refused) throw gateHarness(refused);
 
-                    const { succeeded, timedOut } = await pollGateJobToTerminal(deps, jobName, image);
+                    const { succeeded, timedOut } = await pollGateJobToTerminal(deps, jobName, image, signal);
                     const { exitCode, output } = await readGateJobResult(deps, jobName, succeeded);
 
                     // The docker manager's timeout shape: exit 124, and a named reason when the
@@ -208,6 +222,7 @@ export function createKubernetesGateManager({
                         output: timedOut && !output ? `[driver] gate killed after ${gateTimeoutMs}ms` : output,
                     };
                 } finally {
+                    signal?.removeEventListener('abort', cancel);
                     reap(jobName);
                 }
             })();

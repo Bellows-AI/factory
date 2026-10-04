@@ -103,22 +103,24 @@ interface GatesRunCtx {
     job: BoardJob;
     gateSession: GateSession;
     state: JobState;
+    /** Aborted by a stop, lost lease or Remove: the manager cancels the gate it is running. */
+    signal: AbortSignal;
 }
 
 /** One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate. */
 async function runOneGate(ctx: GatesRunCtx, gate: { name: string; command: string }): Promise<GateRun | null> {
-    const { rt, job, gateSession, state } = ctx;
+    const { rt, job, gateSession, state, signal } = ctx;
     const { gates } = rt;
     if (!gates) return null;
     return gates.manager
         .acquire(gateSession.key, gateSession.image, gateSession.envBody, job)
         .then(() => {
-            // The heartbeat can mark the lease lost while acquire is pending — a slow
-            // revival or cluster request outlives the beat that said so. Starting the gate
-            // then would run it on a checkout another attempt owns: the same dead work the
-            // check before the acquire refuses.
-            if (state.lost) return null;
-            return gates.manager.runGate(gateSession.key, gate.name, gate.command);
+            // The heartbeat can mark the lease lost — or the task stopped or removed — while
+            // acquire is pending: a slow revival or cluster request outlives the beat that said
+            // so. Starting the gate then would be dead work, on a checkout another attempt may
+            // own: the same refusal the check before the acquire makes.
+            if (down(state)) return null;
+            return gates.manager.runGate(gateSession.key, gate.name, gate.command, signal);
         })
         .catch((e: Error) => ({ exitCode: REFUSED_TO_RUN_EXIT_CODE, output: e.message }));
 }
@@ -147,7 +149,10 @@ export async function runDeclaredGates(
 ): Promise<GateFailure | null> {
     const { gates, log } = rt;
     if (!gates) return null;
-    const runCtx: GatesRunCtx = { rt, job, gateSession, state };
+    // A stand-down cancels the gate in flight, not only the ones after it.
+    const cancel = new AbortController();
+    void state.abort.then(() => cancel.abort());
+    const runCtx: GatesRunCtx = { rt, job, gateSession, state, signal: cancel.signal };
     const results: GateReport[] = [];
     const report = async (): Promise<void> => {
         try {
@@ -168,16 +173,17 @@ export async function runDeclaredGates(
         Math.floor(GATES_REPORT_BUDGET_BYTES / gateSession.declared.length)
     );
     for (const gate of gateSession.declared) {
-        // The lease can be reclaimed mid-gates. Everything after that is dead work on a
-        // checkout another attempt owns, and the verdict will be refused anyway.
-        if (state.lost) return null;
+        // The lease can be reclaimed — or the task stopped or removed — mid-gates. Everything
+        // after that is dead work, and the attempt settles without a gate verdict.
+        if (down(state)) return null;
         results.push({ name: gate.name, status: 'running', exitCode: null, output: null });
         await report();
         // Re-acquire, then run, under one catch: an environment that cannot be revived is a
         // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
         const outcome = await runOneGate(runCtx, gate);
-        // `runOneGate` never answers null, so a null here is the lost-lease abandonment above.
-        if (!outcome) return null;
+        // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
+        // and a cancelled gate is never reported failed — `gate-failed` must not read it.
+        if (!outcome || down(state)) return null;
         const failed = outcome.exitCode !== 0;
         // Replace the gate's own entry — one entry per declared gate, always, so the list the
         // board stores IS the declared list at its current state.

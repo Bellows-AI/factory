@@ -18,11 +18,20 @@ export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' |
 
 /**
  * The structured terminal reason of a failed run (issue 339), copied from the board's
- * `failure_kind` column: why it failed — the timeout kill, a prompt-cache loss, a failed gate,
- * an unlanded publish, a failed block-helper, a dead declared service, or the runner erroring.
- * Null on a success and on every row that predates the column — "not a failure", never "unknown".
+ * `failure_kind` column: why it failed — the timeout kill, a prompt-cache loss, an agent
+ * reporting itself blocked, a failed gate, an unlanded publish, a failed block-helper, a dead
+ * declared service, or the runner erroring. Null on a success and on every row that predates the
+ * column — "not a failure", never "unknown".
  */
-export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'services' | 'runner_error';
+export type FailureKind =
+    | 'timeout'
+    | 'cache_lost'
+    | 'blocked'
+    | 'gate'
+    | 'publish'
+    | 'helper'
+    | 'services'
+    | 'runner_error';
 
 /** Where one declared verification gate stands. The board stores current/last only — no history. */
 export interface GateCheck {

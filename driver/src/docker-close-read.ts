@@ -13,6 +13,8 @@ import {
     readOpencodeWithRetries,
     readsAgentTurns,
     parseClaudeCloseRead,
+    mergeClaudeCloseRead,
+    CLAUDE_READ_NONE,
     parseTranscriptRead,
     parseOpencodeCacheProbe,
     cacheCollapse,
@@ -238,10 +240,9 @@ async function applyClaudeCloseRead(
         })
         .then(
             (out) => parseClaudeCloseRead(out.stdout),
-            (): { turns: number | null; summary: string | null } => ({ turns: null, summary: null })
+            () => CLAUDE_READ_NONE
         );
-    outcome.agentTurns = read.turns;
-    if (read.summary) outcome.summary = read.summary;
+    mergeClaudeCloseRead(outcome, read);
     // The transcript artifact (issue #325), from the same file the count came from.
     await readTranscriptArtifact(outcome, ctx, () =>
         claudeTranscriptArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt)
