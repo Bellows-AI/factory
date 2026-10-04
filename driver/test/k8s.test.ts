@@ -7598,3 +7598,72 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
         expect(servicePodSpec(plain, job, service).metadata).not.toHaveProperty('annotations');
     });
 });
+
+describe('a Stop on kubernetes (issue #427)', () => {
+    it('a Stop mid-run resolves run() as a killed outcome, as docker does', async () => {
+        const base = fakeRequest({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
+        let deleted = false;
+        let r: ReturnType<typeof runner> | null = null;
+        const request: K8sRequest = (method, path, body) => {
+            if (path.startsWith(jobPath(namespace, runnerJobName(job)))) {
+                if (method === 'DELETE') {
+                    deleted = true;
+                    return Promise.resolve({ status: 200, body: '{}' });
+                }
+                if (method === 'GET') {
+                    // The heartbeat's Stop lands while the run is polling: the loop calls kill().
+                    if (!deleted) void r?.kill(job);
+                    if (deleted) return Promise.resolve({ status: 404, body: '{"kind":"Status"}' });
+                }
+            }
+            return base.request(method, path, body);
+        };
+        r = runner(request);
+        // Expected for parity with docker (whose killed container resolves exit 137): an outcome
+        // the loop's stopped path can park. Observed: a rejection, which the loop treats as
+        // "could not run, leaving it to the lease" — no session report, no artifacts, no suspend.
+        await expect(r.run(job, { id: SESSION, resume: false })).resolves.toMatchObject({ started: true });
+    });
+
+    // U2: on Stop the loop's raceStep abandons a pre-helper and the heartbeat calls kill(job),
+    // which deletes the runner Job and the services only. The helper's aux Job is deleted in
+    // runHelper's finally, i.e. only once helperVerdict returns — the Job runs to completion.
+    it('a Stop (kill) during a pre-helper deletes its aux Job promptly', async () => {
+        const base = fakeRequest();
+        const helperJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+        let helperName: string | null = null;
+        let helperDeleted = false;
+        let finished = false;
+        const request: K8sRequest = (method, path, body) => {
+            if (method === 'POST' && path === jobsPath(namespace) && helperName === null) {
+                helperName = (body as { metadata: { name: string } }).metadata.name;
+                return Promise.resolve({ status: 201, body: '{}' });
+            }
+            if (helperName !== null && path.startsWith(jobPath(namespace, helperName))) {
+                if (method === 'DELETE') {
+                    helperDeleted = true;
+                    return Promise.resolve({ status: 200, body: '{}' });
+                }
+                // The helper is still running: pending on every poll, answered as a macrotask.
+                const answer = finished
+                    ? { status: 404, body: '{"kind":"Status"}' }
+                    : { status: 200, body: JSON.stringify({ status: { active: 1 } }) };
+                return new Promise((resolve) => setTimeout(() => resolve(answer), 1));
+            }
+            return base.request(method, path, body);
+        };
+        const r = runner(request);
+        const helperPlan: HelperPlan = { helperId: 'noop', phase: 'pre', input: null, githubWriting: true };
+        const running = r.runHelper!(helperJob, helperPlan, 'ghs_fresh');
+        try {
+            while (helperName === null) await new Promise((resolve) => setTimeout(resolve, 1));
+            await r.kill(helperJob); // the heartbeat's Stop
+            await new Promise((resolve) => setTimeout(resolve, 50));
+
+            expect(helperDeleted).toBe(true);
+        } finally {
+            finished = true;
+            await running;
+        }
+    });
+});

@@ -17,6 +17,7 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import type { HelperPlan } from './helpers.js';
 import { runHelper } from './k8s-helper-runner.js';
+import { clearKilled, helperJobsOf, KILLED_EXIT_CODE, markKilled, RunnerKilled } from './k8s-kill.js';
 import {
     claimName,
     claimPath,
@@ -259,6 +260,9 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
 // ordinary end of a finished run, and one that fails is the kubelet's deadline doing this
 // function's work. No Secret delete here: run()'s finally owns the Secret's whole lifetime.
 async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
+    markKilled(runnerName(job));
+    // A helper's aux Job is no pod of the runner's: a pre-helper still writing to GitHub stops now.
+    await Promise.all(helperJobsOf(job.id).map((name) => deleteJob(deps, name)));
     await deleteJob(deps, runnerName(job));
     await teardownServices(deps, job);
 }
@@ -278,6 +282,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     if (!session && job.executorType !== OPENCODE) {
         throw new Error(`refusing to run job ${job.id}: the kubernetes runner runs every job as a session`);
     }
+    clearKilled(runnerName(job));
     await prepare(deps, job, cleanup);
 
     // Services sit between the fence and the runner's own launch: after the fence, so a
@@ -289,7 +294,16 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     const startedAt = new Date().toISOString();
     await launch(deps, job, runnerJobSpec(deps.config, job, session), cleanup);
 
-    const { timedOut, jobSucceeded } = await pollRunnerJobUntilTerminal(deps, job, onOutput);
+    let polled: { timedOut: boolean; jobSucceeded: boolean };
+    try {
+        polled = await pollRunnerJobUntilTerminal(deps, job, onOutput);
+    } catch (e) {
+        if (!(e instanceof RunnerKilled)) throw e;
+        // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
+        // resolves exit 137), where a rejection would be left to the lease.
+        return { exitCode: KILLED_EXIT_CODE, output: '', timedOut: false, started: true };
+    }
+    const { timedOut, jobSucceeded } = polled;
     const { exitCode, output, fullLog, logTruncated } = await readRunnerVerdict(deps, job, jobSucceeded);
 
     const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };

@@ -263,7 +263,7 @@ export async function completeJob(
     // VERDICT lands: the walk below runs on the same connection, where the just-updated
     // row's new status is visible and no follow-up inserted after the commit can be.
     return sql.begin(async (tx) => {
-        const rows = await tx<{ id: string; root_job_id: string; repo: string | null }[]>`
+        const rows = await tx<{ id: string; root_job_id: string; repo: string | null; stop_pending: boolean }[]>`
             update job set
                 status      = ${status},
                 exit_code   = ${exitCode},
@@ -289,7 +289,9 @@ export async function completeJob(
                 runtime     = ${runtimeUpdate}
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}
-            returning id, root_job_id, repo
+            -- The subselect reads the row as the statement began: the stamp this UPDATE cleared.
+            returning id, root_job_id, repo,
+                (select cancel_requested_at is not null from job where org_id = ${orgId} and id = ${id}) as stop_pending
         `;
         if (!rows[0]) {
             // A report from a worker whose lease was reclaimed is refused, not merged: the
@@ -299,6 +301,7 @@ export async function completeJob(
         const completedId = rows[0]!.id;
         const rootJobId = rows[0]!.root_job_id;
         const jobRepo = rows[0]!.repo;
+        const stopPending = rows[0]!.stop_pending;
 
         await maybeRecordPublicationAndClose(tx, ctx, { rootJobId, jobRepo, publication: publication ?? null });
 
@@ -311,7 +314,8 @@ export async function completeJob(
             from job
             where org_id = ${orgId} and id = ${rootJobId}
         `;
-        if (root) {
+        // A Stop the verdict outran is honored: the thread stays where the Stop left it.
+        if (root && !stopPending) {
             await runWorkflowTransition(tx, {
                 orgId,
                 rootJobId,

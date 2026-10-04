@@ -96,8 +96,8 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN 
  * unconditionally once the run itself reached this point (a gate failure or a non-zero exit
  * already dooms the verdict; deciding otherwise would be block-specific policy this generic
  * transport must not encode — see the issue's "no review- or merge-specific branching" boundary).
- * Only `state.lost` is checked, exactly as `runOneGate` checks it: the lease can be reclaimed
- * mid-helper, and everything after that is dead work the board will refuse anyway. `conclude`
+ * Any stand-down (`down(state)`) ends it: a stopped, lost or removed attempt has no verdict to
+ * contribute, and the caller stands the attempt down rather than publishing. `conclude`
  * (issue #230) is valid only for a PRE helper — a post-helper naming it fails the verdict with a
  * NAMED reason, exactly like any other post-helper failure, rather than being silently ignored.
  */
@@ -111,9 +111,9 @@ export async function runPostHelperPhase(
     if (!plans.length || !runner.runHelper) return null;
 
     const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
-        if (state.lost) return null;
+        if (down(state)) return null;
         const token = childPlan.githubWriting ? ((await board.publishToken(job)) ?? undefined) : undefined;
-        if (state.lost) return null;
+        if (down(state)) return null;
         return runner.runHelper!(job, childPlan, token);
     };
 
