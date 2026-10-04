@@ -109,8 +109,8 @@ expectation — ask first.**
 ## Tooling
 
 GitHub and Jira are covered by the `github` and `jira` skills, which load on demand. Reach for
-them rather than improvising: `gh` for pull requests, reviews and checks; `acli` for work items.
-Do not use an Atlassian MCP server.
+them rather than improvising: `gh` for pull requests, reviews and checks; `curl` on `$JIRA_API`
+for work items. Do not use an Atlassian MCP server or `acli`.
 
 ## Infrastructure access
 
