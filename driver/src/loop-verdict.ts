@@ -10,7 +10,7 @@ import type { Board, BoardJob, FailureKind, LeaseState } from './board.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import type { LoopRuntime } from './loop-types.js';
-import type { PublishResult } from './publish.js';
+import { type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
 import type { GateRunNote, TimeoutActivity } from './timeout-note.js';
 import { timeoutNote } from './timeout-note.js';
@@ -100,7 +100,9 @@ export async function publishIfDue(rt: LoopRuntime, job: BoardJob, gate: Publish
     if (!publishToken) {
         log(`job ${job.id}: publish-token ask answered nothing fresh — publishing with the claim env`);
     }
-    return runner.publishGit(job, publishToken ?? undefined);
+    return runner
+        .publishGit(job, publishToken ?? undefined)
+        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`));
 }
 
 /** The publication identity to ride the verdict, only when the publish really happened and landed. */

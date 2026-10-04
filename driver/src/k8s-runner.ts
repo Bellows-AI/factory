@@ -350,13 +350,17 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
     const env = envBodyToData(envFileBody(withPublishToken(job, publishToken)));
     const secret = Object.keys(env).length ? publishEnvSecretName(job) : null;
     if (secret) {
-        const response = await deps.request(
-            'POST',
-            secretsPath(deps.config.k8sNamespace),
-            secretBody(job, secret, env)
-        );
-        const refused = refusal(response, 'creating the publish secret');
-        if (refused) return publishFailed(refused);
+        try {
+            const response = await deps.request(
+                'POST',
+                secretsPath(deps.config.k8sNamespace),
+                secretBody(job, secret, env)
+            );
+            const refused = refusal(response, 'creating the publish secret');
+            if (refused) return publishFailed(refused);
+        } catch (e) {
+            return publishFailed(`creating the publish secret: ${(e as Error).message}`);
+        }
     }
     let stepNumber = 0;
     try {
