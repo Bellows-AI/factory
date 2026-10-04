@@ -3,7 +3,7 @@ import type { BoardJob } from './board.js';
 import { envFileBody } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import type { GateRun } from './gates.js';
-import { down } from './loop-attempt.js';
+import { down, raceStep } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import { worktreeRelDir } from './publish.js';
@@ -180,7 +180,10 @@ export async function runDeclaredGates(
         await report();
         // Re-acquire, then run, under one catch: an environment that cannot be revived is a
         // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
-        const outcome = await runOneGate(runCtx, gate);
+        // Raced against the stand-down: the re-acquire (an image pull, a cluster request) has no
+        // timeout of its own, and the heartbeat keeps the lease while a Stop waits on it.
+        const raced = await raceStep(state, runOneGate(runCtx, gate));
+        const outcome = raced?.value;
         // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
         // and a cancelled gate is never reported failed — `gate-failed` must not read it.
         if (!outcome || down(state)) return null;

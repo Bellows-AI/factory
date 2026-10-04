@@ -24,6 +24,12 @@ const HTTP_CONFLICT = 409;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 /** What a gate cancelled before it started answers — discarded by the loop that cancelled it. */
 const CANCELLED_EXIT_CODE = 130;
+/** execFile's own code when a child's output outgrew `maxBuffer` — the child is killed. */
+const STDIO_MAXBUFFER_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+/** A passing suite can be verbose; execFile's 1 MiB default is far below what one prints. */
+const GATE_OUTPUT_MAX_BUFFER_BYTES = 268_435_456;
+/** What a gate whose output outgrew the buffer reports: a verdict, not a missing container. */
+const OUTPUT_OVERFLOW_EXIT_CODE = 1;
 
 /**
  * The gate environment: one long-lived container per task worktree, a `docker exec` per
@@ -46,7 +52,10 @@ export interface GateRun {
     output: string;
 }
 
-type ExecDocker = (args: string[], options?: { timeout?: number }) => Promise<{ stdout: string; stderr: string }>;
+type ExecDocker = (
+    args: string[],
+    options?: { timeout?: number; maxBuffer?: number }
+) => Promise<{ stdout: string; stderr: string }>;
 
 const defaultExec: ExecDocker = (args, options) =>
     run('docker', args, options) as Promise<{ stdout: string; stderr: string }>;
@@ -113,6 +122,14 @@ function gateRunFromExecError(error: DockerExecError, gateTimeoutMs: number): Ga
     // `timeout` itself uses — with the reason in the tail.
     if (error.killed) {
         return { exitCode: 124, output: output || `[driver] gate killed after ${gateTimeoutMs}ms` };
+    }
+    // The output outgrew the buffer and execFile killed the client: the gate's own verdict,
+    // never "the container is gone".
+    if (error.code === STDIO_MAXBUFFER_CODE) {
+        return {
+            exitCode: OUTPUT_OVERFLOW_EXIT_CODE,
+            output: output || `[driver] gate output exceeded ${GATE_OUTPUT_MAX_BUFFER_BYTES} bytes`,
+        };
     }
     // Docker itself failed — the container is not there. A harness state, not a verdict: it
     // REJECTS with the code, which is what the ad-hoc endpoint's 409 and the loop's failed-gate
@@ -265,20 +282,40 @@ export function createGateManager({
                 if (entry.teardown) clearTimeout(entry.teardown);
                 teardown(key, entry);
             };
-            return serialize(key, async () => {
-                if (signal?.aborted) return { exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' };
+            const cancelled: GateRun = { exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' };
+            if (signal?.aborted) return Promise.resolve(cancelled);
+            const queued = serialize(key, async (): Promise<GateRun> => {
+                if (signal?.aborted) return cancelled;
                 signal?.addEventListener('abort', cancel, { once: true });
                 try {
                     await joinServices(entry);
-                    const read = await execDocker(gateExecArgs(entry.name, command), { timeout: gateTimeoutMs });
+                    const read = await execDocker(gateExecArgs(entry.name, command), {
+                        timeout: gateTimeoutMs,
+                        maxBuffer: GATE_OUTPUT_MAX_BUFFER_BYTES,
+                    });
                     return { exitCode: 0, output: reportTail(read.stdout.trim()) };
                 } catch (e) {
-                    return gateRunFromExecError(e as DockerExecError, gateTimeoutMs);
+                    const error = e as DockerExecError;
+                    // The kill took the `docker exec` client only: the gate's process lives on in
+                    // the warm container, so the environment goes, as it does for a cancel.
+                    if (error.killed || error.code === STDIO_MAXBUFFER_CODE) cancel();
+                    return gateRunFromExecError(error, gateTimeoutMs);
                 } finally {
                     signal?.removeEventListener('abort', cancel);
                     armCooldown(key, entry);
                 }
             });
+            if (!signal) return queued;
+            // A Stop while the gate still waits its turn answers at once — the run ahead can hold
+            // the queue for the whole gate timeout; the queued work itself bails when it starts.
+            let onAbort = (): void => {};
+            const stoppedWhileQueued = new Promise<GateRun>((resolve) => {
+                onAbort = () => resolve(cancelled);
+                signal.addEventListener('abort', onAbort, { once: true });
+            });
+            return Promise.race([queued, stoppedWhileQueued]).finally(() =>
+                signal.removeEventListener('abort', onAbort)
+            );
         },
 
         release(key) {
