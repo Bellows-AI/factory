@@ -1,5 +1,6 @@
 import type { BoardJob } from './board.js';
-import type { RunOutcome } from './runner.js';
+import { SERVICE_LOG_TAIL_LINES } from './runner.js';
+import type { DeadService, RunOutcome } from './runner.js';
 import {
     deleteJob,
     jobPodsPath,
@@ -13,7 +14,7 @@ import {
 } from './k8s-auxspec.js';
 import { bellowsJobSpec, jobsPath } from './k8s-podspec.js';
 import { pollJobToTerminal, readVerdict } from './k8s-poll.js';
-import { answerPreview, expectOk, HTTP_ERROR_STATUS, livePod, parse } from './k8s-transport.js';
+import { answerPreview, expectOk, HTTP_ERROR_STATUS, livePod, parse, parseDeadServicePods } from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import { collectServices, splitBellowsSections } from './services.js';
 import type { ServiceSpec } from './services.js';
@@ -99,6 +100,26 @@ export async function teardownServices(deps: K8sDeps, job: BoardJob): Promise<vo
     ] as const) {
         await sweepFleetKind(deps, listPath, basePath);
     }
+}
+
+/**
+ * The attempt's dead services (issue #423), each with its last log lines — read before the
+ * teardown deletes the pods, the only place the cause survives. The fleet list is the sample's
+ * own lease selector; one that cannot be read throws. A log that cannot be read costs its tail,
+ * never the finding.
+ */
+export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadService[]> {
+    if (!deps.config.servicesEnabled) return [];
+    const found = await deps.request('GET', podsByLeasePath(deps.config.k8sNamespace, job));
+    expectOk(found, 'listing the service pods');
+    const out: DeadService[] = [];
+    for (const { pod, ...dead } of parseDeadServicePods(found.body)) {
+        const log = await deps
+            .request('GET', podLogPath(deps.config.k8sNamespace, pod, SERVICE_LOG_TAIL_LINES))
+            .catch(() => null);
+        out.push({ ...dead, logTail: log && log.status < HTTP_ERROR_STATUS ? log.body : '' });
+    }
+    return out;
 }
 
 /**

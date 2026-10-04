@@ -306,6 +306,9 @@ export interface K8sPod {
     metadata?: { name?: string; deletionTimestamp?: string };
     status?: {
         phase?: string;
+        /** The pod-level ending — `Evicted` and its message — when no container recorded one. */
+        reason?: string;
+        message?: string;
         containerStatuses?: {
             state?: {
                 terminated?: { exitCode?: number; reason?: string; message?: string };
@@ -455,24 +458,64 @@ export function parsePodMetrics(body: string): Omit<RuntimeSample, 'sampledAt'> 
  * and garbage answers empty.
  */
 export function parseServicePods(body: string): ServiceStatus[] {
+    return servicePodRows(body).map(({ status }) => status);
+}
+
+/** One service pod of the lease-scoped list, read once for both the panel and the dead probe. */
+interface ServicePodRow {
+    status: ServiceStatus;
+    pod: K8sPod;
+}
+
+function servicePodRows(body: string): ServicePodRow[] {
     let list: {
-        items?: {
+        items?: (K8sPod & {
             metadata?: { labels?: Record<string, string> };
             spec?: { containers?: { image?: string }[] };
-            status?: { phase?: string };
-        }[];
+        })[];
     };
     try {
         list = JSON.parse(body) as typeof list;
     } catch {
         return [];
     }
-    const out: ServiceStatus[] = [];
+    const out: ServicePodRow[] = [];
     for (const item of list.items ?? []) {
         const name = item.metadata?.labels?.[SERVICE_LABEL];
         const image = item.spec?.containers?.[0]?.image;
         if (!name || !image) continue;
-        out.push({ name, image, state: (item.status?.phase ?? 'unknown').toLowerCase() });
+        out.push({ status: { name, image, state: (item.status?.phase ?? 'unknown').toLowerCase() }, pod: item });
     }
-    return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return out.sort((a, b) => (a.status.name < b.status.name ? -1 : a.status.name > b.status.name ? 1 : 0));
+}
+
+/** A dead service pod: its status, the pod to read the log of, and the kubelet's termination. */
+export interface DeadServicePod extends ServiceStatus {
+    pod: string;
+    exitCode: number | null;
+    reason: string | null;
+}
+
+/**
+ * The service pods that are no longer running (issue #423). A service pod runs under
+ * `restartPolicy: Never`, so `failed` and `succeeded` are both a service gone for good; the exit
+ * and reason come off the first container's `terminated` state — the pod's own reason when
+ * it has none, as an eviction leaves it — null when nothing recorded one. Pure and exported for the pinning, like `parseServicePods`.
+ */
+export function parseDeadServicePods(body: string): DeadServicePod[] {
+    const out: DeadServicePod[] = [];
+    for (const { status, pod } of servicePodRows(body)) {
+        const name = pod.metadata?.name;
+        if (!name || (status.state !== 'failed' && status.state !== 'succeeded')) continue;
+        const terminated = pod.status?.containerStatuses?.[0]?.state?.terminated;
+        const reason = terminated?.reason ?? pod.status?.reason ?? null;
+        const message = terminated?.message ?? pod.status?.message ?? null;
+        out.push({
+            pod: name,
+            ...status,
+            exitCode: terminated?.exitCode ?? null,
+            reason: reason && message ? `${reason}: ${message}` : (reason ?? message),
+        });
+    }
+    return out;
 }

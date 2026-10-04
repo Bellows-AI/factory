@@ -19,12 +19,12 @@ export type JobOutcome = 'succeeded' | 'failed';
 /**
  * The structured terminal reason of a run (issue #339), stored as `job.failure_kind` and served on
  * every job read: why a failed run failed — the timeout kill, a prompt-cache loss, a failed gate,
- * an unlanded publish, a failed block-helper, or the runner erroring. Null is "not a failure": a
- * success, or a row older than the column (044). Copied here rather than imported because the
- * driver depends on nothing; the spellings are a wire contract kept in step by the route's
- * validation.
+ * an unlanded publish, a failed block-helper, a dead declared service, or the runner erroring.
+ * Null is "not a failure": a success, or a row older than the column (044). Copied here rather
+ * than imported because the driver depends on nothing; the spellings are a wire contract kept in
+ * step by the route's validation.
  */
-export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'runner_error';
+export type FailureKind = 'timeout' | 'cache_lost' | 'gate' | 'publish' | 'helper' | 'services' | 'runner_error';
 
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
 export interface GateReport {
@@ -928,7 +928,7 @@ export interface JobStore {
             summary?: string | null;
             /**
              * The structured terminal reason (issue #339), validated at the route against the
-             * six known kinds. Null (or absent) is "not a failure" — the column keeps null, so
+             * seven known kinds. Null (or absent) is "not a failure" — the column keeps null, so
              * a success and a pre-column row read the same.
              */
             failureKind?: FailureKind | null;

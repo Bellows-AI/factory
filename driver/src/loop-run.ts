@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
-import type { RunOutcome, RunSession } from './runner.js';
+import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
-import { beginGates, releaseGateSession, runDeclaredGates } from './loop-gates.js';
+import { beginGates, probeDeadServices, releaseGateSession, runDeclaredGates } from './loop-gates.js';
 import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
 import type { AttemptCtx, LoopRuntime } from './loop-types.js';
@@ -246,6 +246,8 @@ type RunPhaseResult = {
     done: false;
     outcome: RunOutcome;
     failure: GateFailure | null;
+    /** The declared services found dead before the gates — which were skipped for them. */
+    deadServices: DeadService[];
     /**
      * When `runner.run` resolved — the moment the run ended, and the timestamp the timeout
      * note's active/idle verdict is measured at. The verdict builds later: the declared gates,
@@ -349,9 +351,15 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * suite can take minutes and it must not outrun the lease it runs under.
      */
     let failure: GateFailure | null = null;
-    if (gateSession && !outcome.refused) failure = await runDeclaredGates(rt, job, gateSession, state);
+    let deadServices: DeadService[] = [];
+    if (gateSession && !outcome.refused && !state.lost) {
+        // A gate against a dead service fails on an environment the agent cannot fix, and a
+        // failed gate is what the workflow's gate-fix edge spends a round on (issue #423).
+        deadServices = await probeDeadServices(rt, job);
+        if (deadServices.length === 0) failure = await runDeclaredGates(rt, job, gateSession, state);
+    }
 
-    return { done: false, outcome, failure, endedAt };
+    return { done: false, outcome, failure, deadServices, endedAt };
 }
 
 /** The ad-hoc gate history one attempt's timeout note quotes, read before the session's teardown. */
@@ -460,6 +468,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             const published = await publishIfDue(rt, job, {
                 outcome: outcome.outcome,
                 failure: outcome.failure,
+                deadServices: outcome.deadServices,
                 helperFailure,
             });
             await settle();
@@ -469,6 +478,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 job,
                 outcome: outcome.outcome,
                 failure: outcome.failure,
+                deadServices: outcome.deadServices,
                 helperFailure,
                 published,
                 endedAt: outcome.endedAt,

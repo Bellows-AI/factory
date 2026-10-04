@@ -20,12 +20,13 @@ import {
     type ReclaimResult,
     type SyncResult,
 } from './publish.js';
-import { networkName } from './services.js';
+import { networkName, serviceContainerName } from './services.js';
 import {
     containerHardeningArgs,
     containerName,
     dockerArgs,
     envFilePath,
+    parseDockerServiceExit,
     parseDockerServicePs,
     parseDockerStats,
     workspacesMountArgs,
@@ -34,8 +35,10 @@ import { claimContinuesSession, envFileBody, workspacePath } from './claim.js';
 import {
     composeRuntimeSample,
     reportTail,
+    SERVICE_LOG_TAIL_LINES,
     tailKept,
     ARTIFACT_LIMIT,
+    type DeadService,
     type RunOutcome,
     type Runner,
     type RunSession,
@@ -498,22 +501,50 @@ async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omi
     );
     const vitals = read ? parseDockerStats(read.stdout) : null;
     const services = config.servicesEnabled
-        ? await execDocker([
-              'ps',
-              '-a',
-              '--filter',
-              `label=${JOB_LABEL}=${job.id}`,
-              '--filter',
-              `label=${LEASE_LABEL}=${job.leaseToken}`,
-              '--filter',
-              `label=${SERVICE_LABEL}`,
-              '--format',
-              '{{json .}}',
-          ])
+        ? await execDocker(servicePsArgs(job))
               .then((found) => parseDockerServicePs(found.stdout))
               .catch(() => null)
         : undefined;
     return composeRuntimeSample(vitals, services);
+}
+
+/** The attempt's service fleet, exited ones included: the job and lease label pair, service key required. */
+const servicePsArgs = (job: BoardJob): string[] => [
+    'ps',
+    '-a',
+    '--filter',
+    `label=${JOB_LABEL}=${job.id}`,
+    '--filter',
+    `label=${LEASE_LABEL}=${job.leaseToken}`,
+    '--filter',
+    `label=${SERVICE_LABEL}`,
+    '--format',
+    '{{json .}}',
+];
+
+/**
+ * The attempt's dead services (issue #423) — `exited` or `dead` in the sample's own fleet read,
+ * each inspected for how it ended and tailed for what it last printed, stderr included: an
+ * entrypoint's refusal lands there. An unreadable fleet throws; an unreadable inspect or log
+ * costs its detail, never the finding.
+ */
+async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<DeadService[]> {
+    const { config, execDocker } = deps;
+    if (!config.servicesEnabled) return [];
+    const found = await execDocker(servicePsArgs(job));
+    const out: DeadService[] = [];
+    for (const service of parseDockerServicePs(found.stdout)) {
+        if (service.state !== 'exited' && service.state !== 'dead') continue;
+        const name = serviceContainerName(job, service.name);
+        const exit = await execDocker(['inspect', '--format', '{{json .State}}', name])
+            .then((read) => parseDockerServiceExit(read.stdout))
+            .catch(() => ({ exitCode: null, reason: null }));
+        const logTail = await execDocker(['logs', '--tail', String(SERVICE_LOG_TAIL_LINES), name])
+            .then((read) => `${read.stdout}${read.stderr ?? ''}`)
+            .catch(() => '');
+        out.push({ ...service, ...exit, logTail });
+    }
+    return out;
 }
 
 async function dockerRun(
@@ -730,6 +761,7 @@ export function createDockerRunner(
         publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),
         runHelper: (job, plan, token) => dockerRunHelper(deps, job, plan, token),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
+        deadServices: (job) => dockerDeadServices(deps, job),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
     };
 }
