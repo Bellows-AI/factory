@@ -746,6 +746,32 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
         expect(pod.spec.automountServiceAccountToken).toBe(false);
     });
 
+    // The hardened alternative, same reach as `--user` on docker: the declared uid:gid on the
+    // container, every capability still dropped, and no opt-out label for admission to read.
+    it('runs a declared service as its declared uid:gid, still hardened', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        const pod = servicePodSpec(
+            config,
+            job,
+            { name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } },
+            'svc-uid'
+        );
+        expect(pod.spec.containers[0]!.securityContext).toEqual({
+            allowPrivilegeEscalation: false,
+            capabilities: { drop: ['ALL'] },
+            runAsNonRoot: true,
+            runAsUser: 999,
+            runAsGroup: 999,
+        });
+        expect(pod.metadata.labels['factory.unhardened']).toBeUndefined();
+    });
+
+    it('sets no uid on a service that declared none', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        const pod = servicePodSpec(config, job, { name: 'db', image: 'postgres:17', environment: [] }, 'svc-uid');
+        expect(pod.spec.containers[0]!.securityContext?.runAsUser).toBeUndefined();
+    });
+
     // The merge, not the replace. The gate writes the shared worktree as a fixed uid:gid, and that
     // pod-level securityContext is the same field the seccomp profile lands in — a builder that
     // assigns instead of spreading silently drops one of the two, and only one of the two has a

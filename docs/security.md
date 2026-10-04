@@ -57,7 +57,9 @@ a pod missing one is rejected, so a driver that forgets cannot drop the control.
 The `unhardened: true` opt-out reaches the capability set and nothing else — the
 **escalation bit stays off**, seccomp stays on, the uid is unchanged. It is declared per service in
 `.bellows.yaml`, and there is **no opt-out for a GATE image**. `driver/src/services.ts`,
-`driver/test/services.test.ts`.
+`driver/test/services.test.ts`. A service's `user: "uid:gid"` (numeric, uid never 0) tightens
+instead: `runAsNonRoot` + `runAsUser`/`runAsGroup` on kubernetes, `--user` on docker, capabilities
+still dropped. `driver/src/k8s-auxspec.ts`, `driver/test/k8s.test.ts`, `driver/test/docker.test.ts`.
 
 ## What the hardening is not
 
