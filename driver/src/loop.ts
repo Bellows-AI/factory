@@ -23,6 +23,9 @@ export interface LoopDeps {
     sleep?: (ms: number) => Promise<void>;
 }
 
+const COMPLETE_ATTEMPTS = 5;
+const COMPLETE_BACKOFF_MS = 1_000;
+
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -128,7 +131,7 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * `reclaims`), instead of syncing against a tree mid-deletion.
      */
     async function report(job: BoardJob, result: Parameters<Board['complete']>[1]): Promise<LeaseState> {
-        const verdict = await board.complete(job, result);
+        const verdict = await completeWithRetry(job, result);
         if (verdict.state !== 'held' || !verdict.threadDone) return verdict.state;
         const root = job.rootJobId ?? job.id;
         // Registered before the removal starts — the set and the start are one synchronous block,
@@ -150,6 +153,22 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
         })();
         reclaims.set(root, reclaim);
         return verdict.state;
+    }
+
+    // A non-409 failure (a board 5xx, a dropped connection) leaves the finished run without a
+    // verdict, and the lease expiry would run it again after its work already published. 409 is
+    // already an answer (`lost`), so only a throw is retried; the last one propagates.
+    async function completeWithRetry(job: BoardJob, result: Parameters<Board['complete']>[1]) {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                return await board.complete(job, result);
+            } catch (e) {
+                if (attempt >= COMPLETE_ATTEMPTS) throw e;
+                const delayMs = COMPLETE_BACKOFF_MS * 2 ** (attempt - 1);
+                log(`job ${job.id}: the verdict was not accepted, retrying in ${delayMs}ms: ${(e as Error).message}`);
+                await sleep(delayMs);
+            }
+        }
     }
 
     function track(job: BoardJob): void {

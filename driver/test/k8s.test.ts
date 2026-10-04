@@ -2458,6 +2458,21 @@ describe('publishing the produced work', () => {
         ).toBe(true);
     });
 
+    // Docker turns its env-file failure into publishFailed; a transport rejection on the Secret
+    // POST must too, or the loop drops a finished run and the lease repeats the whole agent run.
+    it('answers publishFailed when the Secret POST is refused by the transport', async () => {
+        const { request: base } = scripted([{ exit: 0, log: JSON.stringify({ cloned: false }) }]);
+        const request: K8sRequest = (method, path, body) =>
+            method === 'POST' && path === secretsPath
+                ? Promise.reject(new Error('connect ECONNREFUSED 10.0.0.1:443'))
+                : base(method, path, body);
+
+        const result = await runner(request).publishGit(ISSUE_JOB, 'ghs_fresh');
+
+        expect(result).toMatchObject({ ok: false, published: false });
+        expect(result.reason).toContain('ECONNREFUSED');
+    });
+
     // The claim's GITHUB_TOKEN was minted at claim time and a long run can outlive its hour —
     // job 43379d3a pushed with a token 34 minutes past expiry and the publish failed on 401 with
     // the work done. The loop asks the board for a fresh one; the Secret the steps ride must

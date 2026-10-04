@@ -4004,3 +4004,65 @@ describe('a stop cancels the gates', () => {
         expect(probeSignal?.aborted).toBe(true);
     });
 });
+
+describe('a verdict the board refuses with a 5xx', () => {
+    const landed: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'fix/1',
+        prUrl: 'https://github.com/o/r/pull/1',
+        reason: null,
+        repository: 'o/r',
+        baseBranch: 'main',
+        prNumber: 1,
+    };
+
+    it('is retried, so the landed work keeps its verdict', async () => {
+        const logs: string[] = [];
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const complete = board.board.complete.bind(board.board);
+        let completes = 0;
+        board.board.complete = async (j, result) => {
+            completes += 1;
+            if (completes < 3) throw new Error('/api/jobs/x/complete answered 503: busy');
+            return complete(j, result);
+        };
+        const runner = stubRunner(async () => ok(), { publish: landed });
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(runner.published).toHaveLength(1);
+        expect(completes).toBe(3);
+        expect(board.board.completed).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(logs.some((l) => l.includes('could not run, leaving it to the lease'))).toBe(false);
+    });
+
+    it('gives up after a bounded number of attempts and leaves the run to the lease', async () => {
+        const logs: string[] = [];
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        let completes = 0;
+        board.board.complete = async () => {
+            completes += 1;
+            throw new Error('/api/jobs/x/complete answered 503: busy');
+        };
+        const runner = stubRunner(async () => ok(), { publish: landed });
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(completes).toBe(5);
+        expect(logs.some((l) => l.includes('could not run, leaving it to the lease'))).toBe(true);
+    });
+
+    it('answers publishFailed when the runner throws mid-publish', async () => {
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const runner = stubRunner(async () => ok(), { publish: landed });
+        runner.publishGit = async () => {
+            throw new Error('apiserver blip');
+        };
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'publish' });
+    });
+});
