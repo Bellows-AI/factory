@@ -212,6 +212,22 @@ describe('one abort signal per attempt (issue #472)', () => {
         expect(await raceStep(state.signal, new Promise<string>(() => {}))).toBeNull();
     });
 
+    it('never lets an abandoned step reject into the void', async () => {
+        const state = newJobState();
+        state.abortNow();
+        const failures: unknown[] = [];
+        const onRejection = (why: unknown) => failures.push(why);
+        process.on('unhandledRejection', onRejection);
+        try {
+            // A step already in flight when the stand-down lands, rejecting after it was abandoned.
+            expect(await raceStep(state.signal, Promise.reject(new Error('the step threw late')))).toBeNull();
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(failures).toEqual([]);
+        } finally {
+            process.off('unhandledRejection', onRejection);
+        }
+    });
+
     it('answers null when the stand-down lands mid-step', async () => {
         const state = newJobState();
         const running = raceStep(state.signal, new Promise<string>(() => {}));

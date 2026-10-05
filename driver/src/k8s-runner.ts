@@ -600,9 +600,10 @@ export function createKubernetesRunner(
         runHelper: (job: BoardJob, plan: HelperPlan, token?: string) => runHelper(deps, job, plan, token),
         syncCheckout: (job: BoardJob) => syncCheckout(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
-        // The loop's terminal pre-run refusals complete the job failed WITHOUT runner.run, so
-        // run()'s finally never executes, and the claim the sync took would sit on the checkout
-        // indefinitely. This hands it back the same ownership-checked way releaseClaim always does.
+        // The loop's one hand-back of the checkout claim (`loop-fence.ts`): a terminal setup
+        // refusal, a stand-down and a throw all finish without runner.run, whose finally never
+        // executes, and the claim the sync took would sit on the checkout indefinitely. The same
+        // ownership-checked way releaseClaim always does.
         releaseFence: (job: BoardJob) => releaseClaim(deps, job),
         // The orphaned-claim reap (issue #344): uid-preconditioned, by the claim's derivable
         // name — the fence's own GET/DELETE grants, nothing new.

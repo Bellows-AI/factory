@@ -91,12 +91,14 @@ const RACE_LOST = Symbol('raceStep: the stand-down won');
  * same instant — the caller's own flag check decides.
  */
 export async function raceStep<T>(signal: AbortSignal, step: Promise<T>): Promise<{ value: T } | null> {
+    // A side-band subscriber, so the loser of the race can never become an unhandled rejection:
+    // subscribing neither consumes the step from the race nor changes its result. First, because
+    // the check below abandons the step with nobody left to read it — and an abandoned step that
+    // rejects must not take the driver with it.
+    step.catch(() => {});
     // Already stood down: never even wait for the step, which is still running with nobody left
     // to read it.
     if (signal.aborted) return null;
-    // A side-band subscriber, so the loser of the race can never become an unhandled rejection:
-    // subscribing neither consumes the step from the race nor changes its result.
-    step.catch(() => {});
     let onAbort: () => void = () => {};
     const lost = new Promise<typeof RACE_LOST>((resolve) => {
         onAbort = () => resolve(RACE_LOST);
