@@ -327,6 +327,7 @@ describe('default workflow — pure orchestration walk (real nextTransition)', (
                 status: 'failed',
                 output: null,
                 gates: failedGate('3 tests failed'),
+                failureKind: 'gate',
             },
         });
         expect(transition).toMatchObject({
@@ -394,6 +395,7 @@ describe('default workflow — pure orchestration walk (real nextTransition)', (
                 status: 'failed',
                 output: null,
                 gates: failedGate('still red'),
+                failureKind: 'gate',
             },
         });
         expect(transition).toMatchObject({ action: 'insert', node: { name: DEFAULT_GATE_FIX_NODE } });
@@ -439,6 +441,7 @@ describe('default workflow — pure orchestration walk (real nextTransition)', (
                 status: 'failed',
                 output: null,
                 gates: failedGate('red 3'),
+                failureKind: 'gate',
             },
         });
         expect(transition).toEqual({ action: 'rest', reason: 'loop_bound' });
@@ -468,6 +471,7 @@ describe('default workflow — pure orchestration walk (real nextTransition)', (
                 status: 'failed',
                 output: null,
                 gates: failedGate('red 1'),
+                failureKind: 'gate',
             },
         });
         expect(transition).toEqual({ action: 'rest', reason: 'loop_bound' });
@@ -506,6 +510,7 @@ describe('default workflow — pure orchestration walk (real nextTransition)', (
                 status: 'failed',
                 output: null,
                 gates: failedGate('red 3'),
+                failureKind: 'gate',
             },
         });
         expect(transition).toEqual({ action: 'rest', reason: 'loop_bound' });

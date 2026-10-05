@@ -184,6 +184,9 @@ async function claimNextCandidate(
                     -- The previous attempt's vitals are not this attempt's, and a new container
                     -- starts unsampled: the started_at reset, one row down.
                     runtime          = null,
+                    -- Likewise the gate report: an attempt that never reports gates must not leave
+                    -- the previous attempt's red report for the workflow engine to read.
+                    gates            = null,
                     lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
                 where org_id = ${orgId} and id = ${candidate.id}
                   and status in ('queued','running')

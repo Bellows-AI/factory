@@ -99,6 +99,7 @@ describe('the base workflow walkthrough', () => {
                 node: 'implement',
                 status: 'failed',
                 gates: [gate('test', 'failed', 1, '3 tests failed')],
+                failureKind: 'gate',
             }),
         });
         expect(t).toMatchObject({ action: 'insert', node: { name: 'gate-fix' } });
