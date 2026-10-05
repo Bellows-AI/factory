@@ -3112,6 +3112,18 @@ describe('block-helper steps (issue #207)', () => {
         expect(runner.published).toEqual([]);
     });
 
+    it('a non-zero exit with a failed post-helper is named after the agent, not the helper', async () => {
+        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'post' })] }]);
+        const { runner } = runnerWithHelper(
+            async () => ok({ exitCode: 1 }),
+            [{ ok: false, reason: 'runner_error', message: 'the helper blew up' }]
+        );
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+    });
+
     it('a succeeding post-helper does not disturb an otherwise-succeeded verdict', async () => {
         const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'post' })] }]);
         const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: { fine: true } }]);
