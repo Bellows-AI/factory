@@ -212,7 +212,7 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | nul
 /** Starts the job's gate environment, or answers null for a job that declares none. */
 async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null | typeof STOOD_DOWN> {
     const { rt, job, state, settle, standDown } = ctx;
-    const { board, runner, log } = rt;
+    const { runner, log } = rt;
     try {
         const gateOut = await raceStep(state, beginGates(rt, job, state));
         let gateSession = gateOut === null ? null : gateOut.value;
@@ -227,16 +227,15 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         }
         return gateSession;
     } catch (e) {
+        await runner.releaseFence?.(job);
         await settle();
         log(`job ${job.id}: gate environment failed, failing with a reason: ${(e as Error).message}`);
-        await board
-            .complete(job, {
-                status: 'failed',
-                exitCode: null,
-                output: `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
-                failureKind: 'runner_error',
-            })
-            .catch((err: Error) => log(`job ${job.id}: could not report the failure: ${err.message}`));
+        await report(rt, job, {
+            status: 'failed',
+            exitCode: null,
+            output: `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
+            failureKind: 'runner_error',
+        }).catch((err: Error) => log(`job ${job.id}: could not report the failure: ${err.message}`));
         return STOOD_DOWN;
     }
 }

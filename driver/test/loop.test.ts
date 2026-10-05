@@ -2619,6 +2619,39 @@ describe('verification gates', () => {
         expect(board.board.beats).toBeGreaterThan(beatsWhenRunnerResolved);
     });
 
+    it('releases the checkout fence when the gate environment fails to start', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        stack.gates.server.listen = async () => {
+            throw new Error('EADDRNOTAVAIL');
+        };
+        const runner = stubRunner(async () => ok());
+        const released: string[] = [];
+        runner.releaseFence = async (j) => {
+            released.push(j.id);
+        };
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+        expect(released).toEqual([gatedJob(1).id]);
+    });
+
+    it('reclaims the tree after a gate-environment failure once the thread is done, like every other refusal', async () => {
+        const board = stubBoard([gatedJob(1)], { threadDone: true });
+        const stack = stubGateStack();
+        stack.gates.server.listen = async () => {
+            throw new Error('EADDRNOTAVAIL');
+        };
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates: stack.gates });
+        for (let i = 0; i < 30; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(runner.reclaimed.map((j) => j.id)).toEqual([gatedJob(1).id]);
+    });
+
     it('releases the environment when registration fails after the container came up', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
