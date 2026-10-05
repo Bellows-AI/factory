@@ -227,6 +227,57 @@ describe('the branch reporter: wire shape and redirects', () => {
     });
 });
 
+/*
+ * Both budget knobs are read from the environment, so both can be handed a value Node cannot
+ * arm. A non-finite, non-positive or over-32-bit `setTimeout` delay becomes a 1 ms timer AND
+ * prints a Timeout*Warning to stderr — the reporter would both abort its own report and break
+ * the "nothing reaches stderr" contract; `execFileSync` throws ERR_OUT_OF_RANGE on the same
+ * values, which the silent catch turns into "no report at all". Neither failure depends on the
+ * clock: the warning is printed when the timer is armed and the throw is synchronous.
+ */
+describe('the branch reporter: timeout overrides', () => {
+    for (const value of ['Infinity', '-1', '2147483648', 'soon']) {
+        it(`falls back to the default request budget for ${value}`, async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            try {
+                const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+                    FACTORY_STATS_URL: url,
+                    BELLOWS_SESSION_ID: SESSION,
+                    WORKDIR: dir,
+                    BRANCH_REPORTER_REQUEST_TIMEOUT_MS: value,
+                });
+                expect(status).toBe(0);
+                expect(stdout).toBe('');
+                expect(stderr).toBe('');
+                expect(requests).toHaveLength(1);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it(`falls back to the default git budget for ${value}`, async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            try {
+                const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+                    FACTORY_STATS_URL: url,
+                    BELLOWS_SESSION_ID: SESSION,
+                    WORKDIR: dir,
+                    BRANCH_REPORTER_GIT_TIMEOUT_MS: value,
+                });
+                expect(status).toBe(0);
+                expect(stdout).toBe('');
+                expect(stderr).toBe('');
+                expect(requests).toHaveLength(1);
+                expect(requests[0].body).toMatchObject({ repo: 'acme/widgets', branch: 'main' });
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        });
+    }
+});
+
 describe('the branch reporter: endpoint and git state', () => {
     it('is inert without an endpoint: silent, successful, and asks nothing', async () => {
         const { requests } = await board();

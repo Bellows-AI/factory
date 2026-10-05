@@ -39,10 +39,21 @@ const { join } = require('node:path');
 // derives it from the OTLP metric names — a branch span under any other name joins to nothing.
 const AGENT = 'claude-code';
 
-const REQUEST_TIMEOUT_MS = Number(process.env.BRANCH_REPORTER_REQUEST_TIMEOUT_MS) || 2_000;
+/**
+ * A budget from the environment, or the documented default. Only a finite, positive value Node
+ * can express as a timer survives: anything else makes `setTimeout` arm a 1ms timer — aborting
+ * the report it was meant to bound — and print a Timeout*Warning to stderr, while `execFileSync`
+ * rejects it outright, which the silent catch turns into no report at all.
+ */
+function budget(name, fallback) {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) && value > 0 && value <= 2_147_483_647 ? value : fallback;
+}
+
+const REQUEST_TIMEOUT_MS = budget('BRANCH_REPORTER_REQUEST_TIMEOUT_MS', 2_000);
 const SAMPLE_INTERVAL_MS = 20_000;
 const DISCOVER_INTERVAL_MS = 2_000;
-const GIT_TIMEOUT_MS = Number(process.env.BRANCH_REPORTER_GIT_TIMEOUT_MS) || 1_000;
+const GIT_TIMEOUT_MS = budget('BRANCH_REPORTER_GIT_TIMEOUT_MS', 1_000);
 
 const ENDPOINT = (process.env.FACTORY_STATS_URL ?? '').trim();
 const CWD = process.env.WORKDIR ?? process.cwd();
