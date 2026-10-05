@@ -118,6 +118,76 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
     });
 });
 
+describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 440)', () => {
+    const suspend = async (scope: 'user' | 'org', name: string, suspended: boolean) => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        if (scope === 'org') {
+            const row = (await executors.listOrg()).find((r) => r.name === name)!;
+            await executors.setOrgSuspended(row.id, suspended);
+        } else {
+            const row = (await executors.list(ALICE)).find((r) => r.name === name)!;
+            await executors.setPersonalSuspended(ALICE, row.id, suspended);
+        }
+    };
+
+    it('hands out no runner and no config for a suspended profile, and says why', async () => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { model: 'secret' } }]);
+        const { id } = await mustCreate(
+            store.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' })
+        );
+        await suspend('user', 'main', true);
+
+        const claim = await store.claim('w1', LEASE_SECONDS);
+
+        expect(claim?.id).toBe(id);
+        expect(claim?.executorType).toBeNull();
+        expect(claim?.executorRefusal).toContain('"main"');
+        expect(claim?.executorRefusal).toContain('suspended');
+        expect(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT).toBeUndefined();
+    });
+
+    it('is scoped: a suspended personal profile does not refuse the same-named org selection', async () => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
+        await executors.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
+        await suspend('user', 'main', true);
+        await mustCreate(store.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'org' }));
+
+        const claim = await store.claim('w2', LEASE_SECONDS);
+
+        expect(claim?.executorType).toBe('claude-code');
+        expect(claim?.executorRefusal).toBeNull();
+    });
+
+    it('applies to a follow-up and a retry the same way, and launches again once resumed', async () => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG });
+        await executors.createOrg({ name: 'team', type: 'claude-code', config: {}, createdBy: ALICE });
+        const parent = await mustCreate(
+            store.create('drive me', ALICE, { repo: null, executor: 'team', executorScope: 'org' })
+        );
+        const first = await store.claim('w3', LEASE_SECONDS);
+        await store.session(parent.id, first!.leaseToken, '44444444-4444-4444-8444-444444444444');
+        await store.complete(parent.id, first!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        await suspend('org', 'team', true);
+
+        const followUp = await store.createFollowUp(parent.id, 'adjust', ALICE);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+        const refused = await store.claim('w4', LEASE_SECONDS);
+        expect(refused?.id).toBe(followUp.id);
+        expect(refused?.executorType).toBeNull();
+        expect(refused?.executorRefusal).toContain('suspended');
+
+        await suspend('org', 'team', false);
+        const retry = await store.createRetry(parent.id, ALICE);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+        const allowed = await store.claim('w5', LEASE_SECONDS);
+        expect(allowed?.id).toBe(retry.id);
+        expect(allowed?.executorType).toBe('claude-code');
+        expect(allowed?.executorRefusal).toBeNull();
+    });
+});
+
 describe.skipIf(!enabled)('the scope rides the thread (issue 391)', () => {
     /** Takes a job the whole way to a finished run with a session, the follow-up's starting state. */
     const finishWithSession = async (target: { executor: string; executorScope: 'user' | 'org' }) => {

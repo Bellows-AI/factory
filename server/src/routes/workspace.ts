@@ -5,7 +5,11 @@ import { callerOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
 import { handleDeleteRepo, orphansAndTotal, runtimeOf } from './workspace-purge.js';
 import { executorFieldRefusal, MAX_EXECUTORS_PER_USER, parseExecutorFields } from './executor-fields.js';
-import { ExecutorDefaultNotFoundError, type ExecutorProfile } from '../db/user-executor-store.js';
+import {
+    ExecutorDefaultNotFoundError,
+    ExecutorSuspendedError,
+    type ExecutorProfile,
+} from '../db/user-executor-store.js';
 import type { PurgeConflictError } from '../db/user-repo-store.js';
 import type { AppConfig, Repo } from '../config.js';
 import type { UserRepo } from '../db/user-repo-store.js';
@@ -97,7 +101,13 @@ function parseExecutorEntry(entry: unknown): ExecutorEntry | string {
     if (item?.isDefault !== undefined) {
         return 'isDefault is set through PUT /api/workspace/executors/default, not on the row';
     }
-    return parseExecutorFields(entry);
+    const fields = parseExecutorFields(entry);
+    if (typeof fields === 'string') return fields;
+    // Optional (issue 440): the edit dialog carries a row's suspension through a rename; an entry
+    // that omits it keeps whatever its same-named predecessor carried.
+    const { suspended } = entry as { suspended?: unknown };
+    if (suspended !== undefined && typeof suspended !== 'boolean') return 'suspended must be a boolean';
+    return suspended === undefined ? fields : { ...fields, suspended };
 }
 
 /**
@@ -127,7 +137,20 @@ type ExecutorEntry = {
     type: string;
     config: Record<string, unknown>;
     gateFixRounds: number;
+    suspended?: boolean;
 };
+
+/** A personal row as the poll and the PUT answer it — never `config`, which may hold credentials. */
+function personalRow(row: ExecutorProfile) {
+    return {
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        createdAt: row.createdAt,
+        gateFixRounds: row.gateFixRounds,
+        suspended: row.suspended,
+    };
+}
 
 interface WorkspaceDeps {
     root: string | null;
@@ -292,16 +315,12 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
         // pasted, and this payload is fetched by a poll that can run every two seconds. The org
         // rows are selection metadata for the same reason — their configuration answers to the
         // admin list, never to the poll every member's browser runs.
-        executors: executorRows.map((row: ExecutorProfile) => ({
-            name: row.name,
-            type: row.type,
-            createdAt: row.createdAt,
-            gateFixRounds: row.gateFixRounds,
-        })),
+        executors: executorRows.map(personalRow),
         orgExecutors: orgExecutorRows.map((row: ExecutorProfile) => ({
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
+            suspended: row.suspended,
         })),
         // The member's resolved default: their stored preference while it still resolves, else the
         // deterministic fallback the store computes — what a new task draft autoselects.
@@ -407,13 +426,7 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     if (!loaded.ok) return reply;
 
     return reply.code(HTTP_OK).send({
-        executors: loaded.value.map((row) => ({
-            name: row.name,
-            type: row.type,
-            createdAt: row.createdAt,
-            gateFixRounds: row.gateFixRounds,
-            config: row.config,
-        })),
+        executors: loaded.value.map((row) => ({ ...personalRow(row), config: row.config })),
     });
 }
 
@@ -452,14 +465,68 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
 
     // 200, not 202: unlike the repos route nothing runs in the background — the rows are written
     // by the time this returns.
-    return reply.code(HTTP_OK).send({
-        executors: saved.value.map((row) => ({
-            name: row.name,
-            type: row.type,
-            createdAt: row.createdAt,
-            gateFixRounds: row.gateFixRounds,
-        })),
-    });
+    return reply.code(HTTP_OK).send({ executors: saved.value.map(personalRow) });
+}
+
+/** Resolves the caller, the workspace root and the executor store the personal by-id routes share. */
+async function personalExecutorContext(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
+    const caller = callerOf(request);
+    if (!caller) {
+        bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+        return null;
+    }
+    if (!deps.root) {
+        bad(reply, ERROR_CODES.WORKSPACE_DISABLED, 'This deployment has no workspace root configured', HTTP_CONFLICT);
+        return null;
+    }
+    const rt = await runtimeOf(deps.orgs, request);
+    if ('error' in rt) {
+        bad(reply, rt.code, rt.error, rt.status);
+        return null;
+    }
+    if (!rt.userExecutors) {
+        reply.code(HTTP_UNAVAILABLE).send(NO_EXECUTOR_STORE);
+        return null;
+    }
+    return { userId: caller.user.id, executors: rt.userExecutors };
+}
+
+/**
+ * Removes ONE of the caller's own personal profiles by id (issue 440). Unlike the whole-list PUT it
+ * cannot clobber a row the caller's page never saw; another member's id, an org id and an unknown id
+ * all answer the same 404.
+ */
+async function handleDeleteExecutor(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await personalExecutorContext(deps, request, reply);
+    if (!ctx) return reply;
+    const { id } = request.params as { id?: string };
+    if (typeof id !== 'string' || !id) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+    const removed = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.executors.removePersonal(ctx.userId, id)
+    );
+    if (!removed.ok) return reply;
+    if (!removed.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such executor' });
+    return reply.code(HTTP_OK).send({ id, removed: true });
+}
+
+/** Suspends or resumes one of the caller's own personal profiles by id (issue 440). */
+async function handleSuspendExecutor(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await personalExecutorContext(deps, request, reply);
+    if (!ctx) return reply;
+    const { id } = request.params as { id?: string };
+    if (typeof id !== 'string' || !id) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+    const { suspended } = jsonBody(request.body);
+    if (typeof suspended !== 'boolean') return bad(reply, ERROR_CODES.BAD_BODY, 'suspended must be a boolean');
+    const updated = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.executors.setPersonalSuspended(ctx.userId, id, suspended)
+    );
+    if (!updated.ok) return reply;
+    if (!updated.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such executor' });
+    return reply.code(HTTP_OK).send(personalRow(updated.value));
 }
 
 /**
@@ -498,6 +565,14 @@ async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyReq
     try {
         await executors.setDefault(caller.user.id, { scope: scope as ExecutorScope, name });
     } catch (error) {
+        if (error instanceof ExecutorSuspendedError) {
+            return bad(
+                reply,
+                ERROR_CODES.EXECUTOR_SUSPENDED,
+                `the ${scope} executor "${name}" is suspended; resume it before making it the default`,
+                HTTP_CONFLICT
+            );
+        }
         if (!(error instanceof ExecutorDefaultNotFoundError)) throw error;
         return bad(
             reply,
@@ -531,5 +606,9 @@ export const workspaceRoutes =
         );
         app.put('/api/workspace/executors/default', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handlePutDefaultExecutor(deps, request, reply)
+        );
+        app.delete('/api/workspace/executors/:id', (request, reply) => handleDeleteExecutor(deps, request, reply));
+        app.post('/api/workspace/executors/:id/suspension', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+            handleSuspendExecutor(deps, request, reply)
         );
     };

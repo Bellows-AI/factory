@@ -908,6 +908,25 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.output).toContain('selected executor no longer exists');
     });
 
+    // Issue 440: the loop is shared by the docker and kubernetes executors, so one refusal here is
+    // both executors' — the board's sentence reaches the task, and no runner is ever reached.
+    it('fails a task whose executor profile is suspended with the board’s reason, before anything runs', async () => {
+        const reason = 'The personal executor "main" is suspended. Resume it or choose another executor.';
+        const board = stubBoard([{ ...job(1), executorType: null, executorRefusal: reason }]);
+        const runner = stubRunner(async () => {
+            throw new Error('the runner must never be reached');
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runner.synced).toHaveLength(0);
+        expect(board.board.completed[0]).toMatchObject({
+            status: 'failed',
+            failureKind: 'runner_error',
+            output: reason,
+        });
+    });
+
     // Issue #244: the board always renders a master prompt for every agent claim, so a missing
     // one is a contract violation the driver refuses explicitly, before any setup — never a run
     // with no Factory execution context.
@@ -1674,6 +1693,7 @@ describe('the poll loop', () => {
                 rootCommand: '',
                 repo: 'Bellows-AI/factory',
                 executorType: 'claude-code',
+                executorRefusal: null,
                 masterPrompt: null,
             },
         ]);

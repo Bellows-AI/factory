@@ -602,4 +602,45 @@ describe('composerExecutorOptions — the composer lists both scopes (issue 391)
         ]);
         expect(composerExecutorOptions([], [])).toEqual([]);
     });
+
+    it('leaves a suspended profile out of either scope, keeping a same-named active one in the other (issue 440)', () => {
+        const personal = [
+            { name: 'same', type: 'opencode', suspended: true },
+            { name: 'live', type: 'opencode', suspended: false },
+        ];
+        const org = [
+            { name: 'same', type: 'claude-code', suspended: false },
+            { name: 'paused', type: 'claude-code', suspended: true },
+        ];
+        expect(composerExecutorOptions(personal, org)).toEqual([
+            { scope: 'user', name: 'live', type: 'opencode' },
+            { scope: 'org', name: 'same', type: 'claude-code' },
+        ]);
+    });
+
+    it('offers nothing once the last active profile is suspended — the empty state', () => {
+        expect(composerExecutorOptions([{ name: 'only', type: 'opencode', suspended: true }], [])).toEqual([]);
+    });
+});
+
+describe('mergeExecutors — suspension (issue 440)', () => {
+    const suspendedRow: ExecutorRow = {
+        name: 'main',
+        type: 'claude-code',
+        config: {},
+        gateFixRounds: 3,
+        suspended: true,
+    };
+    const edited: ValidExecutor = { name: 'renamed', type: 'claude-code', config: { model: 'x' }, gateFixRounds: 3 };
+
+    it('keeps a suspended row suspended through an edit and a rename', () => {
+        const result = mergeExecutors([suspendedRow], 'main', edited);
+        expect(result).toEqual({ ok: true, value: [{ ...edited, suspended: true }] });
+    });
+
+    it('does not add a suspension to a row that had none', () => {
+        const active: ExecutorRow = { name: 'main', type: 'claude-code', config: {}, gateFixRounds: 3 };
+        const result = mergeExecutors([active], 'main', edited);
+        expect(result.ok && result.value[0]).not.toHaveProperty('suspended');
+    });
 });

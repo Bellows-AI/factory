@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExecutorScope } from '@factory-ai/core';
 import { JSON_HEADERS } from '@factory-ai/core';
+import { usePersonalExecutorWrites } from './usePersonalExecutorWrites.js';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
@@ -33,7 +34,11 @@ export interface OrphanedRepo {
 }
 
 export interface WorkspaceExecutor {
+    /** The row's id: the by-id remove and suspend routes address it (issue 440). */
+    id: string;
     name: string;
+    /** Suspended (issue 440): listed and configured, but not selectable and cannot launch a run. */
+    suspended: boolean;
     type: string;
     createdAt: string;
     /** The default workflow's gate-repair round limit tasks on this executor launch with (#49). */
@@ -51,6 +56,7 @@ export interface OrgExecutor {
     name: string;
     type: string;
     createdAt: string;
+    suspended: boolean;
 }
 
 /** The member's default-executor preference as the poll resolves it (issue 391). */
@@ -96,8 +102,12 @@ export interface UseWorkspace {
     saving: boolean;
     save: (repos: { owner: string; name: string }[]) => Promise<string | null>;
     saveExecutors: (
-        executors: { name: string; type: string; config: object; gateFixRounds: number }[]
+        executors: { name: string; type: string; config: object; gateFixRounds: number; suspended?: boolean }[]
     ) => Promise<string | null>;
+    /** Removes ONE personal profile by id (issue 440); the by-id route cannot clobber other rows. */
+    removeExecutor: (id: string) => Promise<string | null>;
+    /** Suspends or resumes ONE personal profile by id (issue 440). */
+    suspendExecutor: (id: string, suspended: boolean) => Promise<string | null>;
     /**
      * Stores the member's default-executor preference (issue 391): names a profile by scope and
      * name, either scope, without touching the shared profile or anyone else's default.
@@ -388,7 +398,7 @@ export function useWorkspace(): UseWorkspace {
      */
     const saveExecutors = useCallback(
         async (
-            executors: { name: string; type: string; config: object; gateFixRounds: number }[]
+            executors: { name: string; type: string; config: object; gateFixRounds: number; suspended?: boolean }[]
         ): Promise<string | null> => {
             setSaving(true);
             try {
@@ -402,6 +412,8 @@ export function useWorkspace(): UseWorkspace {
         },
         [start]
     );
+
+    const { removeExecutor, suspendExecutor } = usePersonalExecutorWrites(start);
 
     /** The preference write, with the poll re-arm the other writes share. */
     const setDefaultExecutor = useCallback(
@@ -441,6 +453,8 @@ export function useWorkspace(): UseWorkspace {
         saving,
         save,
         saveExecutors,
+        removeExecutor,
+        suspendExecutor,
         setDefaultExecutor,
         purge,
         listExecutorConfigs,

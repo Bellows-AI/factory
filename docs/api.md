@@ -15,7 +15,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Task read model (`/api/tasks`) | `server/src/routes/tasks.ts` | `server/test/routes.tasks.test.ts` |
 | Repo picker (`/api/repos`) | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Runner env in three scopes | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
-| Workspace, checkouts, personal executors | `server/src/routes/workspace.ts`, `workspace-purge.ts` | `server/test/routes.workspace.test.ts` |
+| Workspace, checkouts, personal executors (incl. `DELETE /executors/:id`, `POST /executors/:id/suspension`) | `server/src/routes/workspace.ts`, `workspace-purge.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
 | Organization executor profiles | `server/src/routes/org-executors.ts` | `server/test/routes.org-executors.test.ts` |
 | Member roster and roles | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Workflow definitions and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |

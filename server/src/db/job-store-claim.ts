@@ -7,6 +7,7 @@
 import {
     CLAUDE_CODE,
     EXECUTOR_TYPES,
+    executorSuspendedMessage,
     USER_SCOPE,
     type ExecutorScope,
     type ExecutorType,
@@ -247,14 +248,10 @@ async function claimNextCandidate(
             // other claim env value, a claude-code row's config does not reach a Remote
             // Control runner, which gets only the baked settings.json and the mounted auth
             // volume.
-            const { claimEnv, executorType } = await resolveClaimExecutor(
-                tx,
-                { env, githubToken, executorConfig },
-                row
-            );
+            const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
             const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
-            return buildClaimResult(row, rootJobId, { claimEnv, executorType, ...gates, ...workflow });
+            return buildClaimResult(row, rootJobId, { ...executor, ...gates, ...workflow });
         }
     });
 }
@@ -341,6 +338,7 @@ export async function claimJob(
 export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
     executorType: ExecutorType | null;
+    executorRefusal: string | null;
 }
 
 /**
@@ -408,19 +406,23 @@ export async function resolveClaimExecutor(
     // one either — a selection names its scope, and the other scope's same-named row is simply not
     // this selection's answer.
     let executorType: ExecutorType | null = null;
+    let executorRefusal: string | null = null;
     if (executorConfig && row.executor !== null && row.created_by !== null) {
-        const configured = await executorConfig.configFor(
-            row.created_by,
-            row.executor,
-            (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
-            tx
-        );
-        if (configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType)) {
-            executorType = configured.type as ExecutorType;
+        const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
+        const configured = await executorConfig.configFor(row.created_by, row.executor, scope, tx);
+        if (configured?.suspended) {
+            // A suspended profile (issue 440) launches nothing and its config never reaches the
+            // claim: the driver fails the task with this sentence before any runner starts, for a
+            // fresh task, a retry and a follow-up alike — they all claim through here.
+            executorRefusal = executorSuspendedMessage(scope, row.executor);
+        } else {
+            if (configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType)) {
+                executorType = configured.type as ExecutorType;
+            }
+            claimEnv = mergeExecutorConfigEnv(claimEnv, configured);
         }
-        claimEnv = mergeExecutorConfigEnv(claimEnv, configured);
     }
-    return { claimEnv, executorType };
+    return { claimEnv, executorType, executorRefusal };
 }
 
 export interface ResolvedClaimGates {
@@ -584,6 +586,7 @@ export function buildClaimResult(
     const {
         claimEnv,
         executorType,
+        executorRefusal,
         claimPath,
         claimGates,
         gateError,
@@ -599,6 +602,7 @@ export function buildClaimResult(
         leaseToken: row.lease_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
+        executorRefusal,
         userId: row.created_by,
         masterPrompt,
         // Built here rather than in the route, because this is where the org is bound. Null for

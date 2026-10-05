@@ -5,6 +5,7 @@ import {
     createOrgExecutor,
     deleteOrgExecutor,
     listOrgExecutorConfigs,
+    suspendOrgExecutor,
     updateOrgExecutor,
     type OrgExecutorFull,
 } from '../api/orgExecutors.js';
@@ -146,6 +147,11 @@ export function OrgExecutorsSection({
                 onEdit={isAdmin ? (name) => void openDialog(name) : undefined}
                 onDelete={isAdmin ? (name) => setConfirm({ action: 'delete', name }) : undefined}
                 onDemote={isAdmin ? (name) => setConfirm({ action: 'demote', name }) : undefined}
+                onSuspend={
+                    isAdmin
+                        ? (name, suspended) => void withRow(name, (row) => suspendOrgExecutor(row.id, suspended))
+                        : undefined
+                }
                 onMakeDefault={(name) => void onMakeDefault('org', name).then((message) => message && onError(message))}
             />
             <OrgExecutorConfirmDialog

@@ -69,7 +69,8 @@ export const listOrgExecutorConfigs = async (): Promise<
     }
 };
 
-async function orgExecutorWrite(
+/** One executor write, shared by the org CRUD and the personal by-id routes (issue 440). */
+export async function executorWrite(
     url: string,
     method: string,
     body: unknown,
@@ -96,14 +97,23 @@ async function orgExecutorWrite(
 }
 
 export const createOrgExecutor = (input: OrgExecutorInput): Promise<string | null> =>
-    orgExecutorWrite('/api/org/executors', 'POST', input, 'Could not save the executor');
+    executorWrite('/api/org/executors', 'POST', input, 'Could not save the executor');
 
 export const updateOrgExecutor = (id: string, input: OrgExecutorInput): Promise<string | null> =>
-    orgExecutorWrite(`/api/org/executors/${id}`, 'PUT', input, 'Could not save the executor');
+    executorWrite(`/api/org/executors/${id}`, 'PUT', input, 'Could not save the executor');
 
 export const deleteOrgExecutor = (id: string): Promise<string | null> =>
-    orgExecutorWrite(`/api/org/executors/${id}`, 'DELETE', undefined, 'Could not delete the executor');
+    executorWrite(`/api/org/executors/${id}`, 'DELETE', undefined, 'Could not delete the executor');
+
+/** Suspends or resumes an org profile for every member (issue 440). */
+export const suspendOrgExecutor = (id: string, suspended: boolean): Promise<string | null> =>
+    executorWrite(
+        `/api/org/executors/${id}/suspension`,
+        'POST',
+        { suspended },
+        suspended ? 'Could not suspend the executor' : 'Could not resume the executor'
+    );
 
 /** The one route a profile's scope moves through: promote the admin's own row, or demote to it. */
 export const changeOrgExecutorScope = (id: string, scope: ExecutorScope): Promise<string | null> =>
-    orgExecutorWrite(`/api/org/executors/${id}/scope`, 'POST', { scope }, 'Could not move the executor');
+    executorWrite(`/api/org/executors/${id}/scope`, 'POST', { scope }, 'Could not move the executor');

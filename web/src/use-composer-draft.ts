@@ -12,6 +12,7 @@ import {
     firstRepo,
     freshWorkflowDraft,
     initialComposerState,
+    executorUnavailableNotice,
     paramsComplete,
     queueBody,
     resolveWorkflowChoice,
@@ -75,7 +76,8 @@ export interface ComposerDraft {
 function useListClamps(
     state: ComposerDraftInput,
     update: Update,
-    lists: { repos: Repos; executors: Executors; defaultExecutor: ExecutorChoice | null; workflows: Workflows }
+    lists: { repos: Repos; executors: Executors; defaultExecutor: ExecutorChoice | null; workflows: Workflows },
+    onExecutorClamped: (notice: string) => void
 ) {
     const { repos, executors, defaultExecutor, workflows } = lists;
     const { repo, repoTouched, executor, executorScope, workflow, workflowRepo } = state;
@@ -113,13 +115,16 @@ function useListClamps(
             executor !== '' &&
             !selectionExists(executors, { name: executor, scope: executorScope })
         ) {
+            // Said in words, never a silent switch (issue 440): a suspension that lands while the
+            // draft is open takes the choice away exactly like a restored draft's does.
+            onExecutorClamped(executorUnavailableNotice(executor, defaultExecutor));
             update(
                 defaultExecutor === null
                     ? { executor: '', executorScope: 'user' as const }
                     : { executor: defaultExecutor.name, executorScope: defaultExecutor.scope }
             );
         }
-    }, [repos, executors, defaultExecutor, executor, executorScope, update]);
+    }, [repos, executors, defaultExecutor, executor, executorScope, update, onExecutorClamped]);
 
     // Same for the repository: a deselection must not survive invisibly in the draft and stamp a
     // task with a repository the member no longer works in. Clamp to what exists — the first
@@ -279,9 +284,20 @@ export function useComposerDraft(input: {
     const workflowPending = state.workflow !== '' && workflows === null;
     const effectiveSteps = effectiveDefaultSteps(defaultWorkflowSettings, state.defaultStepOverrides);
 
-    useListClamps(state, update, { repos, executors, defaultExecutor, workflows });
+    const [clampNotices, setClampNotices] = useState<string[]>([]);
+    const announceClamp = useCallback(
+        (notice: string) => setClampNotices((held) => (held.includes(notice) ? held : [...held, notice])),
+        []
+    );
+    useListClamps(state, update, { repos, executors, defaultExecutor, workflows }, announceClamp);
     useRepoReport(state.repo, onRepoChange);
-    const { notices, dismiss } = useRestoredNotices(restored, { repos, executors, workflows, defaultExecutor });
+    const restoredNotices = useRestoredNotices(restored, { repos, executors, workflows, defaultExecutor });
+    // A restored draft's clamp is said twice by construction (the same sentence); the set keeps one.
+    const notices = [...new Set([...restoredNotices.notices, ...clampNotices])];
+    const dismiss = () => {
+        restoredNotices.dismiss();
+        setClampNotices([]);
+    };
 
     // The store follows the draft, so a trip to Settings and back finds it as it was left. A
     // composer holding nothing a fresh one would not holds no draft at all — which is also what

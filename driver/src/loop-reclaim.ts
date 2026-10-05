@@ -38,6 +38,7 @@ function reclaimJob(reclaim: Reclaim): BoardJob {
         rootCommand: '',
         repo: reclaim.repo,
         executorType: CLAUDE_CODE,
+        executorRefusal: null,
         masterPrompt: null,
     };
 }

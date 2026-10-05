@@ -322,6 +322,12 @@ export interface Claim {
      */
     executorType: ExecutorType | null;
     /**
+     * Why the stamped profile may not launch (issue 440) — set when it is suspended, with
+     * `executorType` null and its config withheld. The driver fails the task with this sentence
+     * before any runner starts; a removed profile stays the plain null `executorType`.
+     */
+    executorRefusal: string | null;
+    /**
      * Who queued the job, so a worker can run it as them. Null for an unattributed job.
      *
      * It was shipped ahead of any consumer so that the per-user work would be a change to the
@@ -1180,7 +1186,7 @@ export interface CreateJobStoreDeps {
             name: string,
             scope: ExecutorScope,
             exec: Sql | TransactionSql
-        ): Promise<{ type: string; config: Record<string, unknown> } | null>;
+        ): Promise<{ type: string; config: Record<string, unknown>; suspended: boolean } | null>;
     };
     /**
      * The PR lifecycle store, when the deployment records publications and PR waits (036).

@@ -2,6 +2,7 @@ import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
 import { EXECUTOR_GUIDANCE, executorTypeLabel } from '../workspace/executors.js';
 import type { OrgExecutor } from '../api/useWorkspace.js';
+import { RESUME_LABEL, SUSPEND_LABEL, SUSPENDED_LABEL } from './WorkspaceExecutorsPanel.js';
 
 /** The org row the member's resolved default names — the composer autoselects it (issue 391). */
 export const ORG_DEFAULT_CAPTION = 'Default — selected on new tasks';
@@ -17,6 +18,31 @@ export const ORG_DEFAULT_CAPTION = 'Default — selected on new tasks';
 /** The demote action: the shared profile becomes the calling admin's own personal row. */
 export const DEMOTE_LABEL = 'Make personal';
 
+/** An admin's overflow entries in menu order; the destructive Delete sorts last in `RowActions` itself. */
+function adminOverflow(
+    executor: OrgExecutor,
+    makeDefault: RowAction | null,
+    handlers: {
+        onDelete: ((name: string) => void) | undefined;
+        onDemote: ((name: string) => void) | undefined;
+        onSuspend: ((name: string, suspended: boolean) => void) | undefined;
+    }
+): RowAction[] {
+    const { onDelete, onDemote, onSuspend } = handlers;
+    const entries: (RowAction | null)[] = [
+        makeDefault,
+        onSuspend
+            ? {
+                  label: executor.suspended ? RESUME_LABEL : SUSPEND_LABEL,
+                  onSelect: () => onSuspend(executor.name, !executor.suspended),
+              }
+            : null,
+        onDemote ? { label: DEMOTE_LABEL, onSelect: () => onDemote(executor.name) } : null,
+        onDelete ? { label: 'Delete', onSelect: () => onDelete(executor.name), danger: true } : null,
+    ];
+    return entries.filter((entry): entry is RowAction => entry !== null);
+}
+
 /** The row's action cell: Make default for every member, the management actions for admins only. */
 function OrgExecutorActions({
     executor,
@@ -26,6 +52,7 @@ function OrgExecutorActions({
     onEdit,
     onDelete,
     onDemote,
+    onSuspend,
     onMakeDefault,
 }: {
     executor: OrgExecutor;
@@ -36,20 +63,21 @@ function OrgExecutorActions({
     onEdit: ((name: string) => void) | undefined;
     onDelete: ((name: string) => void) | undefined;
     onDemote: ((name: string) => void) | undefined;
+    onSuspend: ((name: string, suspended: boolean) => void) | undefined;
     onMakeDefault: (name: string) => void;
 }) {
     // The row's common action is the one the viewer does most: an admin edits, a member picks a
     // default. Everything else collapses into the overflow, and the destructive Delete sorts last.
-    const makeDefault = isDefault ? null : { label: 'Make default', onSelect: () => onMakeDefault(executor.name) };
+    // A suspended profile cannot be a default (issue 440), so it offers no Make default.
+    const makeDefault =
+        isDefault || executor.suspended
+            ? null
+            : { label: 'Make default', onSelect: () => onMakeDefault(executor.name) };
     const edit = isAdmin && onEdit ? { label: 'Edit', onSelect: () => onEdit(executor.name) } : null;
     // A member's overflow is empty, so the member sees one button and no trigger — never an empty
     // menu. Make default joins the admin's overflow only when Edit took the inline slot from it.
     const overflow: RowAction[] = isAdmin
-        ? [
-              ...(edit && makeDefault ? [makeDefault] : []),
-              ...(onDemote ? [{ label: DEMOTE_LABEL, onSelect: () => onDemote(executor.name) }] : []),
-              ...(onDelete ? [{ label: 'Delete', onSelect: () => onDelete(executor.name), danger: true }] : []),
-          ]
+        ? adminOverflow(executor, edit && makeDefault ? makeDefault : null, { onDelete, onDemote, onSuspend })
         : [];
     // No label on an empty cell: a member on the default row has no action, and the card reflow's
     // `data-label` caption would otherwise write "Actions" over nothing at all.
@@ -70,6 +98,7 @@ export function OrgExecutorsPanel({
     onEdit,
     onDelete,
     onDemote,
+    onSuspend,
     onMakeDefault,
 }: {
     executors: readonly OrgExecutor[];
@@ -81,6 +110,8 @@ export function OrgExecutorsPanel({
     onEdit: ((name: string) => void) | undefined;
     onDelete: ((name: string) => void) | undefined;
     onDemote: ((name: string) => void) | undefined;
+    /** Admin-only: suspends (true) or resumes (false) the profile for every member. */
+    onSuspend: ((name: string, suspended: boolean) => void) | undefined;
     onMakeDefault: (name: string) => void;
 }) {
     return (
@@ -126,6 +157,7 @@ export function OrgExecutorsPanel({
                                 <tr key={executor.name}>
                                     <td data-label="Name">
                                         {executor.name}
+                                        {executor.suspended ? <span className="pill">{SUSPENDED_LABEL}</span> : null}
                                         {defaultName === executor.name ? (
                                             <p className="muted">{ORG_DEFAULT_CAPTION}</p>
                                         ) : null}
@@ -142,6 +174,7 @@ export function OrgExecutorsPanel({
                                         onEdit={onEdit}
                                         onDelete={onDelete}
                                         onDemote={onDemote}
+                                        onSuspend={onSuspend}
                                         onMakeDefault={onMakeDefault}
                                     />
                                 </tr>
