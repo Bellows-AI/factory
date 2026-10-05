@@ -26,6 +26,9 @@ import type { K8sDeps, K8sRequest } from './k8s-transport.js';
  * board, no database, no docker — per the package's zero-dependency rule.
  */
 
+/** The gate name the setup Job files under — a legal gate name segment, never a declared one's. */
+const SETUP_JOB_NAME = 'setup';
+
 /** A harness failure, not a verdict: the same code docker exec's own failures carry. */
 const gateHarness = (message: string): Error => Object.assign(new Error(message), { code: CONTAINER_GONE });
 
@@ -120,8 +123,18 @@ interface GateEntry {
     envBody: string;
     /** The per-attempt env Secret's name, when the attempt carries env at all. */
     secretName: string | null;
+    /** The `.bellows.yaml` setup command, until it has succeeded once for this attempt. */
+    pendingSetup: string | null;
     /** Per-key counter naming each run, so a gate run twice never reuses a Job name. */
     run: number;
+}
+
+/** What a re-acquire of the same attempt keeps; a different attempt starts over. */
+function carriedOver(prev: GateEntry | undefined, job: BoardJob): Pick<GateEntry, 'run' | 'pendingSetup'> {
+    if (prev && prev.job.id === job.id && prev.job.leaseToken === job.leaseToken) {
+        return { run: prev.run, pendingSetup: prev.pendingSetup };
+    }
+    return { run: 0, pendingSetup: job.gates?.setup ?? null };
 }
 
 export function createKubernetesGateManager({
@@ -240,9 +253,10 @@ export function createKubernetesGateManager({
             // keeps the run counter, so a run never lands on a name a previous run of that gate
             // already used (the reaped Job can still exist when the create lands). A different
             // attempt starts at 0: names already differ across attempts through the lease token.
-            const prev = entries.get(key);
-            const run = prev && prev.job.id === job.id && prev.job.leaseToken === job.leaseToken ? prev.run : 0;
-            entries.set(key, { job, image, envBody, secretName, run });
+            // Setup is once per attempt too: its install lives on the shared worktree volume, so a
+            // re-acquire keeps whether it already succeeded.
+            const { run, pendingSetup } = carriedOver(entries.get(key), job);
+            entries.set(key, { job, image, envBody, secretName, pendingSetup, run });
         },
 
         runGate(key, name, command, signal) {
@@ -251,7 +265,18 @@ export function createKubernetesGateManager({
             }
             // One gate at a time per checkout, as docker's queue does: two suites in one worktree
             // give flaky verdicts.
-            return serialize(key, () => runGateJob(key, name, command, signal));
+            return serialize(key, async () => {
+                // A gate Job is a fresh pod, but the worktree volume persists, so setup is a Job
+                // of its own run once before the attempt's first gate.
+                const pending = entries.get(key)?.pendingSetup;
+                if (pending) {
+                    const setupRun = await runGateJob(key, SETUP_JOB_NAME, pending, signal);
+                    if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true as const };
+                    const entry = entries.get(key);
+                    if (entry?.pendingSetup === pending) entry.pendingSetup = null;
+                }
+                return runGateJob(key, name, command, signal);
+            });
         },
 
         /**
