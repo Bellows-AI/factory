@@ -1,104 +1,34 @@
 /**
- * The verdict half of one attempt: whether a finished run is publish-due, the publish itself,
- * and the report that lands the outcome on the board — split out of `loop-run.ts` purely for
- * that file's line budget. The attempt's own fencing (the setup, the run, the stand-downs)
- * stays there; everything from "is a publish due" to "the verdict is reported" lives here, and
+ * The verdict half of one attempt: the publish itself and the report that lands the outcome on
+ * the board — split out of `loop-run.ts` purely for that file's line budget. The attempt's own
+ * fencing (the setup, the run, the stand-downs) stays there; what is publish-due, the status, the
+ * failure kind and the annotations all come from the fault ledger (`loop-ledger.ts`).
  * `loop-run.ts` is the only importer.
  */
 
-import type { Board, BoardJob, FailureKind, LeaseState } from './board.js';
+import type { Board, BoardJob, LeaseState } from './board.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import { down, type JobState } from './loop-attempt.js';
+import { kindOf, ledgerOf, type Ledger, outputOf, publishEligible, statusOf } from './loop-ledger.js';
 import type { LoopRuntime } from './loop-types.js';
 import { type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
 import type { GateRunNote, TimeoutActivity } from './timeout-note.js';
 import { timeoutNote } from './timeout-note.js';
 
-/** Whether the finish reason names a run that stopped talking before it was done. */
-export function isPrematureFinish(outcome: RunOutcome): boolean {
-    const finish = outcome.finishReason;
-    // A cache-killed run was cut mid-tool-call, so its finish reason reads as one more
-    // premature stop — the cache note already says the whole story.
-    return typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost;
-}
-
-/** The line the master prompt (server/src/db/master-prompt.ts) tells a blocked agent to end on. */
-export const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
-/** How far back in the output tail a marker line still counts as the run's final message. */
-const BLOCKED_TAIL_LINES = 20;
-const BLOCKED_REASON_MAX_CHARS = 300;
-
-const blockedText = (rest: string): string => rest.trim().slice(0, BLOCKED_REASON_MAX_CHARS) || 'no reason given';
-
-/**
- * The reason the agent reported it is blocked, or null. A close-time read that found the final
- * message settles it (`blockedLine`, its last line — never a mention inside the collapsed
- * summary); only a run with no such read falls back to a marker line among the output tail's last.
- */
-export function blockedReason(outcome: RunOutcome): string | null {
-    if (outcome.blockedLine !== undefined) return blockedText(outcome.blockedLine);
-    if (outcome.summary) return null;
-    const lines = outcome.output
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .slice(-BLOCKED_TAIL_LINES);
-    const marker = lines.findLast((line) => line.startsWith(BLOCKED_MARKER));
-    return marker === undefined ? null : blockedText(marker.slice(BLOCKED_MARKER.length));
-}
-
-/**
- * Why the declared gates must not run over this run, or null when they should: an agent that
- * did not finish cleanly left no work for a gate to judge, and a failed gate over it would fire
- * the workflow's `gate-failed` edge on work that never happened. A timeout still runs them.
- */
-export function gateSkipReason(outcome: RunOutcome, blocked: string | null): string | null {
-    if (blocked !== null) return 'the agent reported it is blocked';
-    if (outcome.cacheLost) return 'the run was killed for prompt-cache loss';
-    if (outcome.exitCode !== 0 && !outcome.timedOut) {
-        return `the agent's run exited ${outcome.exitCode ?? 'without an exit code'}`;
-    }
-    if (isPrematureFinish(outcome)) return "the agent's run ended before it finished";
-    return null;
-}
-
-/** What decides whether a finished run is publish-due: its own outcome plus every failure kind. */
-interface PublishGate {
-    outcome: RunOutcome;
-    failure: GateFailure | null;
-    deadServices: readonly DeadService[];
-    helperFailure: HelperFailureReport | null;
-    /** The agent's own blocked report — no work to publish. */
-    blocked: string | null;
-}
-
 /**
  * Publishes a succeeded, ungated-or-passed run — the deterministic end of a task. Answers null
- * when the run does not qualify (a failure, a timeout, a premature stop, or publish disabled).
+ * when the run does not qualify (any fault on the ledger, or publish disabled).
  */
 export async function publishIfDue(
     rt: LoopRuntime,
     job: BoardJob,
     state: JobState,
-    gate: PublishGate
+    ledger: Ledger
 ): Promise<PublishResult | null> {
-    const { outcome, failure, deadServices, helperFailure, blocked } = gate;
     const { board, runner, log } = rt;
-    if (
-        blocked !== null ||
-        outcome.exitCode !== 0 ||
-        outcome.timedOut ||
-        isPrematureFinish(outcome) ||
-        failure ||
-        deadServices.length > 0 ||
-        helperFailure ||
-        job.publish === false ||
-        !runner.publishGit
-    ) {
-        return null;
-    }
+    if (!publishEligible(ledger) || job.publish === false || !runner.publishGit) return null;
     // The claim's GITHUB_TOKEN was minted at claim time, and a run can outlive its hour. Ask the
     // board for a publish-fresh one; null keeps the claim env, the shape every short run still
     // publishes with.
@@ -151,43 +81,15 @@ export interface FinishCtx {
     activity: TimeoutActivity;
     /** The ad-hoc gate server's latest verdicts, read before the session's teardown clears them. */
     gateRuns: readonly GateRunNote[];
-    /** The agent's blocked report (`blockedReason`), or null. */
-    blocked: string | null;
-    /** Why declared gates were skipped (`gateSkipReason`), or null when they ran or none exist. */
+    /** Why declared gates were skipped (`skipWhyOf`), or null when they ran or none exist. */
     gatesSkipped: string | null;
     /** Whether a failed gate's tree differs from the synced one; null when unmeasured. */
     treeChanged: boolean | null;
 }
 
-/** The structured failure kind a verdict's terminal conditions name, in precedence order. */
-export function verdictFailureKind(
-    finish: Pick<FinishCtx, 'outcome' | 'failure' | 'deadServices' | 'helperFailure' | 'blocked'>,
-    publishUnlanded: boolean,
-    status: 'succeeded' | 'failed'
-): FailureKind | null {
-    if (finish.outcome.timedOut) return 'timeout';
-    if (finish.outcome.cacheLost) return 'cache_lost';
-    if (finish.blocked !== null) return 'blocked';
-    if (finish.deadServices.length > 0) return 'services';
-    if (finish.failure) return 'gate';
-    // Post-helpers run after an unclean run too, so a non-zero exit is named before the helper.
-    if (finish.helperFailure) return finish.outcome.exitCode !== 0 ? 'runner_error' : 'helper';
-    if (publishUnlanded) return 'publish';
-    // Everything else that lands failed — a non-zero exit, a premature finish, a refused
-    // `.bellows.yaml` — is the runner erroring. A success carries no kind at all.
-    return status === 'failed' ? 'runner_error' : null;
-}
-
-/** One dead service in the verdict output: how it ended, then what it last printed. */
-function deadServiceNote(dead: DeadService): string {
-    const how = `exit ${dead.exitCode ?? 'unknown'}${dead.reason ? ` (${dead.reason})` : ''}`;
-    const tail = dead.logTail.trim() ? `\n${dead.logTail.trimEnd()}` : '';
-    return `\n[driver] service "${dead.name}" (${dead.image}) ${dead.state} — ${how}; declared gates skipped${tail}`;
-}
-
-/** The verdict output text, annotated with every terminal condition worth telling the author about. */
-function buildOutput(rt: LoopRuntime, finish: FinishCtx, publishUnlanded: boolean): string {
-    const { job, outcome, failure, helperFailure, published } = finish;
+/** The verdict output text, annotated with every fault on the ledger. */
+function buildOutput(rt: LoopRuntime, finish: FinishCtx, ledger: Ledger): string {
+    const { job, outcome, published } = finish;
     const { config, log } = rt;
     let output = outcome.timedOut
         ? `${outcome.output}\n${timeoutNote(config.jobTimeoutMs, finish.activity, finish.gateRuns, finish.endedAt)}`
@@ -201,65 +103,19 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, publishUnlanded: boolea
         // publisher that cannot see the tree at all.
         log(`job ${job.id}: nothing to publish: ${published.reason}`);
     }
-    if (publishUnlanded) {
-        output = `${output}\n[driver] publish failed — the work did not land: ${published?.reason}`;
-    }
-    if (outcome.cacheLost) {
-        output =
-            `${output}\n[driver] killed — the model provider stopped serving prompt cache: ` +
-            `${outcome.cacheLost}. Every turn was re-reading the whole context, so the run was ` +
-            'burning its time budget without progressing. Retry when the cache is healthy again, or on another model.';
-    }
-    if (isPrematureFinish(outcome)) {
-        // The finish reason says the run stopped talking; the session's last provider error,
-        // when the scrape lifted one, says WHY.
-        const cause = outcome.providerError ? ` The session's last provider error: ${outcome.providerError}.` : '';
-        output =
-            `${output}\n[driver] the agent's run ended before it finished (opencode finish reason: "${outcome.finishReason}") — ` +
-            `exit 0, but no completed final message.${cause} Re-queue the task, or follow up to continue the session.`;
-    }
-    if (finish.blocked !== null) {
-        output = `${output}\n[driver] the agent reported it is blocked: ${finish.blocked}`;
-    }
-    if (finish.gatesSkipped !== null) {
-        output = `${output}\n[driver] gates skipped — ${finish.gatesSkipped}`;
-    }
-    output += finish.deadServices.map(deadServiceNote).join('');
-    if (failure) {
-        output = `${output}\n[driver] gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`;
-    }
-    if (helperFailure) {
-        output =
-            `${output}\n[driver] helper "${helperFailure.helperId}" failed ` +
-            `(${helperFailure.result.reason}): ${helperFailure.result.message}`;
-    }
-    return output;
-}
-
-/** Succeeded only when nothing at all went wrong: the run, the gates, the helpers, the publish. */
-function verdictStatus(finish: FinishCtx, publishUnlanded: boolean): 'succeeded' | 'failed' {
-    const { outcome } = finish;
-    const clean =
-        outcome.exitCode === 0 &&
-        !outcome.timedOut &&
-        !outcome.cacheLost &&
-        !isPrematureFinish(outcome) &&
-        finish.blocked === null;
-    return clean && !finish.failure && finish.deadServices.length === 0 && !finish.helperFailure && !publishUnlanded
-        ? 'succeeded'
-        : 'failed';
+    return output + outputOf(ledger, finish.gatesSkipped);
 }
 
 /** Reports the run's final verdict to the board, after settle() and any publish attempt. */
 export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<void> {
     const { job, outcome, failure, helperFailure, published } = finish;
     const { log } = rt;
-    const publishUnlanded = published !== null && !published.ok;
-    const status = verdictStatus(finish, publishUnlanded);
+    const ledger = ledgerOf(finish);
+    const status = statusOf(ledger);
     const exitCode = failure ? failure.exitCode : outcome.exitCode;
-    const output = buildOutput(rt, finish, publishUnlanded);
+    const output = buildOutput(rt, finish, ledger);
     const publication = publicationOf(published);
-    const failureKind = verdictFailureKind(finish, publishUnlanded, status);
+    const failureKind = kindOf(ledger);
 
     const verdict = await report(rt, job, {
         status,
