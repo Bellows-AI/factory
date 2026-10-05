@@ -258,8 +258,17 @@ expect_contains 'the driver forwards the runner cpu request'       "$runner_reso
 expect_contains 'the cpu request renders from the chart value'     "$runner_resources" 'value: "500m"'
 expect_contains 'the driver forwards the runner memory request'    "$runner_resources" 'name: RUNNER_MEMORY_REQUEST'
 expect_contains 'the memory request renders from the chart value'  "$runner_resources" 'value: "1Gi"'
-expect_not_contains 'no cpu limit renders by default'              "$runner_resources" 'RUNNER_CPU_LIMIT'
-expect_not_contains 'no memory limit renders by default'           "$runner_resources" 'RUNNER_MEMORY_LIMIT'
+expect_contains 'the driver forwards a default cpu limit (issue #454)' "$runner_resources" 'name: RUNNER_CPU_LIMIT'
+expect_contains 'the driver forwards a default memory limit'       "$runner_resources" 'name: RUNNER_MEMORY_LIMIT'
+expect_contains 'the memory limit defaults to 8Gi'                 "$runner_resources" 'value: "8Gi"'
+unlimited="$(render --set runner.resources.limits=null)"
+unlimited_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$unlimited")"
+expect_not_contains 'limits: null removes the cpu limit'           "$unlimited_resources" 'RUNNER_CPU_LIMIT'
+expect_not_contains 'limits: null removes the memory limit'        "$unlimited_resources" 'RUNNER_MEMORY_LIMIT'
+# The namespace LimitRange hands a pod created without limits its defaults.
+expect_contains 'a LimitRange renders by default'                  "$(cat "$work/rendered.yaml")" 'kind: LimitRange'
+expect_contains 'the LimitRange defaults the container memory limit' "$(cat "$work/rendered.yaml")" 'type: Container'
+expect_not_contains 'limitRange.enabled=false renders no LimitRange' "$(render --set limitRange.enabled=false)" 'kind: LimitRange'
 limited="$(render --set runner.resources.limits.memory=4Gi)"
 limited_resources="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$limited")"
 expect_contains 'a configured memory limit forwards'               "$limited_resources" 'name: RUNNER_MEMORY_LIMIT'

@@ -173,8 +173,7 @@ spec:
                       {{- with $.Values.runner.resources }}
                       # Resource requests and limits on every pod the driver specs (issue #360):
                       # requests make the runner fleet Burstable and are what the autoscaler sizes
-                      # for; limits render only when configured, because a memory limit on an
-                      # agent run OOM-kills a big build mid-work.
+                      # for; limits (issue #454) bound a runaway or hostile run.
                       {{- with .requests }}
                       {{- with .cpu }}
                       - name: RUNNER_CPU_REQUEST

@@ -18,6 +18,7 @@ there is no CRD and no second control loop.
 | Every `EXECUTOR`, `K8S_*` and `RUNNER_*` variable, with its boot-time validation | `driver/src/config.ts` | `driver/test/config.test.ts` |
 | The app chart: dashboard, driver, collector, RBAC, PDBs, Ingress | `charts/factory/` | `scripts/test-k8s.sh` |
 | The admission policies that fence the driver | `charts/factory/templates/driver-admission.yaml` | `driver/test/k8s-admission.test.ts` |
+| Runner cpu/memory limits (`runner.resources`) and the namespace `LimitRange` defaults | `charts/factory/values.yaml`, `charts/factory/templates/limitrange.yaml` | `scripts/test-k8s.sh` |
 | Runner network confinement | `charts/factory/templates/runner-networkpolicy.yaml` | `scripts/test-k8s.sh --netpol` |
 | Local Postgres, the workspaces claim, and the `.env`-fed local values | `charts/factory-local-state/`, `charts/factory/values-local.yaml`, `scripts/k8s-local-values.mjs` | `scripts/test-k8s.sh` |
 
@@ -110,6 +111,9 @@ named rather than discovered:
 - `blockedCidrs` covers private ranges by CIDR, so an apiserver or node address that is
   **PUBLIC is not covered**. A NetworkPolicy also **says nothing about HTTP routes**; every endpoint authorizes its
   own callers.
+- **The workspaces volume has no per-task or per-org disk cap**: one claim holds every org's trees, its size is a
+  provisioning request that neither EFS (elastic) nor kind's `standard` class enforces, so a run can fill it for
+  everyone. Stated limit, not a control.
 - Same-member tasks share a workspace subtree ([workspace.md](workspace.md)). A runner Job whose pod is gone before the
   verdict read uploads no log — a pod log does not survive its pod. A `helm upgrade` denies the old driver's pods until
   its rollout finishes; those attempts re-offer.
