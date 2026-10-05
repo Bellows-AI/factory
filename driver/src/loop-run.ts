@@ -375,12 +375,17 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      */
     const blocked = blockedReason(outcome);
+    const gating = gateSession && !outcome.refused && !state.lost ? gateSession : null;
+    // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
+    // report) must not read as the agent's progress.
+    const treeAfter = gating ? await probeTreeNow(ctx) : null;
     const gated =
-        gateSession && !outcome.refused && !state.lost
-            ? await runGatesPhase(ctx, gateSession, outcome, blocked)
+        gating && !down(state)
+            ? await runGatesPhase(ctx, gating, outcome, blocked)
             : { failure: null, deadServices: [], gatesSkipped: null };
     // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
-    const treeChanged = gated.failure ? await treeChangedSinceSync(ctx) : null;
+    const treeChanged =
+        gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
     if (down(state)) {
         await settleDown(ctx, 'its gates');
         return { done: true };
@@ -478,10 +483,11 @@ async function reportNewSession(
 }
 
 /**
- * Whether the task tree moved since the startup sync — the probe re-read after a failed gate.
- * Null whenever either half is unknown: no before-fingerprint, no probe, or a probe that failed.
+ * The task tree's fingerprint as the run left it, before the gates; compared with the startup
+ * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, no probe, or
+ * a probe that failed.
  */
-async function treeChangedSinceSync(ctx: AttemptCtx): Promise<boolean | null> {
+async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
     const { rt, job, treeBefore, state } = ctx;
     if (treeBefore === null || !rt.runner.probeTree) return null;
     // A stand-down cancels the probe's transport and stops waiting on it; the caller rechecks.
@@ -491,8 +497,7 @@ async function treeChangedSinceSync(ctx: AttemptCtx): Promise<boolean | null> {
         state,
         rt.runner.probeTree(job, cancel.signal).catch(() => null)
     );
-    const after = raced?.value ?? null;
-    return after === null ? null : after !== treeBefore;
+    return raced?.value ?? null;
 }
 
 /** The ad-hoc gate history one attempt's timeout note quotes, read before the session's teardown. */
