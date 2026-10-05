@@ -6087,7 +6087,7 @@ describe('the kubernetes gate manager', () => {
         // attempt's, and release() is what ends it.
         expect(calls.some((c) => c.method === 'DELETE' && c.path?.startsWith(`${jobsPath(namespace)}/`))).toBe(true);
         expect(calls.some((c) => c.method === 'DELETE' && c.path?.includes('/secrets/'))).toBe(false);
-        await m.release(KEY);
+        await m.release(KEY, job);
         expect(
             calls.some(
                 (c) =>

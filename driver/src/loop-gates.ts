@@ -67,7 +67,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     // A stand-down that landed while the acquire was in flight leaves the environment here:
     // the caller has stopped waiting and holds no session to release through (issue #126).
     if (down(state)) {
-        gates.manager.release(key);
+        gates.manager.release(key, job);
         return null;
     }
     try {
@@ -84,7 +84,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
         // or live may survive a stand-down detected inside this function.
         if (down(state)) {
             gates.server.unregister(token);
-            gates.manager.release(key);
+            gates.manager.release(key, job);
             return null;
         }
         return { key, token, image: job.gates.image, envBody, declared: job.gates.gates };
@@ -92,7 +92,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
         // The container came up but registration did not. Released — not stopped — so the
         // cooldown owns it and the next turn reuses it, instead of leaking one live
         // environment per failed claim until the driver restarts.
-        gates.manager.release(key);
+        gates.manager.release(key, job);
         throw e;
     }
 }
@@ -219,7 +219,7 @@ export async function probeDeadServices(rt: LoopRuntime, job: BoardJob): Promise
 }
 
 /** One gate session's teardown: the environment goes back to its cooldown, the token dies. */
-export function releaseGateSession(rt: LoopRuntime, session: GateSession): void {
+export function releaseGateSession(rt: LoopRuntime, session: GateSession, job: BoardJob): void {
     rt.gates?.server.unregister(session.token);
-    rt.gates?.manager.release(session.key);
+    rt.gates?.manager.release(session.key, job);
 }
