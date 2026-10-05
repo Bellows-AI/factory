@@ -25,6 +25,8 @@
  *   XDG_DATA_HOME        where opencode keeps its session database (opencode/opencode.db).
  *   BRANCH_REPORTER_GIT_TIMEOUT_MS  per-`git` call budget, default 1000. Only the tests set it: a
  *                        contended suite runs `git` slower than a live run ever should.
+ *   BRANCH_REPORTER_REQUEST_TIMEOUT_MS  per-report budget, default 2000. Only the tests set it:
+ *                        a starved event loop aborts a loopback POST that a live run completes.
  *
  * `--once` takes a single sample and exits; the entrypoint runs it once more after the CLI
  * closes, so a run's last branch state is reported even when the CLI exits the moment the
@@ -37,7 +39,7 @@ const { join } = require('node:path');
 // derives it from the OTLP metric names — a branch span under any other name joins to nothing.
 const AGENT = 'claude-code';
 
-const REQUEST_TIMEOUT_MS = 2_000;
+const REQUEST_TIMEOUT_MS = Number(process.env.BRANCH_REPORTER_REQUEST_TIMEOUT_MS) || 2_000;
 const SAMPLE_INTERVAL_MS = 20_000;
 const DISCOVER_INTERVAL_MS = 2_000;
 const GIT_TIMEOUT_MS = Number(process.env.BRANCH_REPORTER_GIT_TIMEOUT_MS) || 1_000;
