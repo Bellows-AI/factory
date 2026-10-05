@@ -10,7 +10,14 @@ import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
 import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
-import { blockedReason, gateSkipReason, publishIfDue, report, reportFinish } from './loop-verdict.js';
+import {
+    blockedReason,
+    gateSkipReason,
+    postHelperSkipReason,
+    publishIfDue,
+    report,
+    reportFinish,
+} from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
@@ -455,7 +462,12 @@ async function runPostHelpersAndPublish(
     outcome: RunPhaseResult
 ): Promise<{ helperFailure: HelperFailureReport | null; published: PublishResult | null } | null> {
     const { rt, job, state } = ctx;
-    const helperFailure = await runPostHelperPhase(rt, job, state);
+    const helperFailure = await runPostHelperPhase(
+        rt,
+        job,
+        state,
+        postHelperSkipReason(outcome.outcome, outcome.blocked)
+    );
     if (down(state)) return settleDown(ctx, 'its post-helpers').then(() => null);
     const published = await publishIfDue(rt, job, state, {
         outcome: outcome.outcome,

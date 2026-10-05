@@ -3112,16 +3112,48 @@ describe('block-helper steps (issue #207)', () => {
         expect(runner.published).toEqual([]);
     });
 
-    it('a non-zero exit with a failed post-helper is named after the agent, not the helper', async () => {
-        const board = stubBoard([{ ...job(1), helperPlans: [helperPlan({ phase: 'post' })] }]);
-        const { runner } = runnerWithHelper(
-            async () => ok({ exitCode: 1 }),
-            [{ ok: false, reason: 'runner_error', message: 'the helper blew up' }]
-        );
+    it('a non-zero exit is named after the agent, not a post-helper failure', async () => {
+        const { verdictFailureKind } = await import('../src/loop-verdict.js');
+        const helperFailure = {
+            helperId: 'noop',
+            result: { ok: false as const, reason: 'malformed_output' as const, message: 'x' },
+        };
+        const base = { outcome: ok({ exitCode: 1 }), failure: null, deadServices: [], helperFailure, blocked: null };
+        expect(verdictFailureKind(base, false, 'failed')).toBe('runner_error');
+    });
 
-        await drive({ ...board, runner });
+    it.each([
+        ['blocked', ok({ output: 'FACTORY_BLOCKED: no access' }), 'the agent reported it is blocked'],
+        ['a non-zero exit', ok({ exitCode: 1 }), "the agent's run exited 1"],
+        ['a timeout', ok({ exitCode: 1, timedOut: true }), 'the agent timed out'],
+        ['a cache kill', ok({ exitCode: 1, cacheLost: 'c' }), 'the run was killed for prompt-cache loss'],
+        ['a premature finish', ok({ finishReason: 'length' }), "the agent's run ended before it finished"],
+    ])('runs no post-helper after %s, writing or not', async (_label, outcome, why) => {
+        for (const githubWriting of [true, false]) {
+            const board = stubBoard([
+                { ...job(1), publish: false, helperPlans: [helperPlan({ phase: 'post', githubWriting })] },
+            ]);
+            const { runner, calls } = runnerWithHelper(async () => outcome, []);
 
-        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
+            const logs: string[] = [];
+            await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+            expect(calls).toEqual([]);
+            expect(board.board.publishTokenAsks).toEqual([]);
+            expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+            expect(logs).toContain(`job ${job(1).id}: post-run helpers skipped — ${why}`);
+        }
+    });
+
+    it('still runs a post-helper over a clean run whose gate failed', async () => {
+        const board = stubBoard([{ ...gatedJob(1), helperPlans: [helperPlan({ phase: 'post' })] }]);
+        const stack = stubGateStack({ test: 1 });
+        const { runner, calls } = runnerWithHelper(async () => ok(), [{ ok: true, output: null }]);
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(calls).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
     });
 
     it('a succeeding post-helper does not disturb an otherwise-succeeded verdict', async () => {

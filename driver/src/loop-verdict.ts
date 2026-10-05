@@ -64,6 +64,18 @@ export function gateSkipReason(outcome: RunOutcome, blocked: string | null): str
     return null;
 }
 
+/**
+ * Why the post-run helpers must not run, or null when they should: a run that was blocked,
+ * exited non-zero, timed out, lost its cache or stopped early left no finished work, so a helper
+ * has no verdict to contribute and a github-writing one would speak for work that did not land.
+ * Unlike `gateSkipReason`, a timeout counts, and a failed gate does not — that failure is what
+ * such a helper reports on.
+ */
+export function postHelperSkipReason(outcome: RunOutcome, blocked: string | null): string | null {
+    if (outcome.timedOut) return 'the agent timed out';
+    return gateSkipReason(outcome, blocked);
+}
+
 /** What decides whether a finished run is publish-due: its own outcome plus every failure kind. */
 interface PublishGate {
     outcome: RunOutcome;
