@@ -21,6 +21,11 @@ curl -sf -X POST "$BELLOWS_GATE_URL/run" \
 The answer is JSON: `{"exitCode":0,"output":"..."}`. `exitCode` `0` means the gate passed; anything
 else failed, and `output` carries its tail — read it, fix what it names, run the gate again.
 
+If the answer also carries `deadServices`, a service the repository declared (a database, a cache) has
+died: the note names its exit, reason and last log lines. That is an environment fault you cannot fix
+from the tree, and a gate that cannot reach the service (`ENOTFOUND`, connection refused) fails for it —
+do not work around it by installing the service yourself; end with `FACTORY_BLOCKED:` and the note.
+
 If `BELLOWS_GATE_URL` is unset, this environment has no gates configured: say so and verify with
 your own commands instead. Do not guess the URL.
 

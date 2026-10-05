@@ -577,6 +577,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
 
         const gateSession = await runPhases(ctx);
         if (gateSession === STOOD_DOWN) return;
+        state.gateToken = gateSession?.token ?? null;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and
         // every ad-hoc run of it in flight is cancelled the moment the verdict lands.
         if (gateSession)

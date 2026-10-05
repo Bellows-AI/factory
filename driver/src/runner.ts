@@ -147,6 +147,25 @@ export interface DeadService extends ServiceStatus {
 /** How many of a dead service's last log lines the verdict quotes. */
 export const SERVICE_LOG_TAIL_LINES = 20;
 
+/** The states a platform reports for a declared service that is gone: docker's, then the pod phases. */
+export const DEAD_SERVICE_STATES: ReadonlySet<string> = new Set(['exited', 'dead', 'failed', 'succeeded']);
+
+/** What an entrypoint prints when it cannot drop to its own user under the runners' capability drop. */
+const CAPABILITY_DROP_SIGNATURE = /failed switching to|(?:chown|gosu|su-exec)\b[^\n]*operation not permitted/i;
+
+/**
+ * The fix for a service that died on the capability-drop signature (issue #487), or null. Services
+ * start with every capability dropped, so a stock image that chowns its data dir or switches user
+ * as root cannot boot.
+ */
+export function serviceHint(logTail: string): string | null {
+    if (!CAPABILITY_DROP_SIGNATURE.test(logTail)) return null;
+    return (
+        'the service starts with every capability dropped, so its entrypoint cannot chown or switch user — ' +
+        'declare `user: "uid:gid"` (a non-root user the image runs as) or `unhardened: true` on it in .bellows.yaml'
+    );
+}
+
 export interface Runner {
     /**
      * Runs the job. `onOutput` is the live-output hook: the runner calls it with its newest output

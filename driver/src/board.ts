@@ -12,6 +12,15 @@ export interface ServiceStatus {
     name: string;
     image: string;
     state: string;
+    /**
+     * Why a dead service died (issue #487), read once when the sampler first sees it dead: the
+     * exit code, the platform's word for the ending, its last log lines, and the fix a known
+     * signature points at. Absent while the service lives.
+     */
+    exitCode?: number | null;
+    reason?: string | null;
+    logTail?: string;
+    hint?: string;
 }
 
 export interface BoardJob {

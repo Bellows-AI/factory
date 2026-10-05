@@ -308,6 +308,38 @@ describe('TaskOutcome — gates, publication and services', () => {
 });
 
 describe('TaskOutcome — services and the placeholder sweep', () => {
+    it('shows why a dead service died: its exit, reason, hint and log tail (issue #487)', () => {
+        const html = renderDetail({
+            jobs: [
+                job({
+                    runtime: {
+                        cpuPercent: null,
+                        memUsedMb: null,
+                        memPercent: null,
+                        activity: null,
+                        sampledAt: '2026-09-01T12:02:00.000Z',
+                        services: [
+                            {
+                                name: 'test-mongo',
+                                image: 'mongo:8.0.11',
+                                state: 'failed',
+                                exitCode: 1,
+                                reason: 'Error',
+                                logTail: 'error: failed switching to "mongodb"\n',
+                                hint: 'declare unhardened: true',
+                            },
+                            { name: 'test-redis', image: 'redis:6.2.6', state: 'running' },
+                        ],
+                    },
+                }),
+            ],
+        });
+        expect(html).toContain('test-mongo failed — exit 1 (Error)');
+        expect(html).toContain('failed switching to &quot;mongodb&quot;');
+        expect(html).toContain('declare unhardened: true');
+        expect(html).not.toContain('test-redis running —');
+    });
+
     it('renders the newest attempt services as last-reported states, collapsing past three', () => {
         const services = [
             { name: 'postgres', image: 'postgres', state: 'running' },

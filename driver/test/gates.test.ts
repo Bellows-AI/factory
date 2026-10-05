@@ -706,6 +706,29 @@ describe('the gate server: run history for the timeout note', () => {
         await server.close();
     });
 
+    // The one channel to an agent mid-run (issue #487): a dead service's note rides every answer.
+    it('carries the dead-service note in each answer until it is cleared or the token ends', async () => {
+        const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: 'ok' }) };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-dead', { key: KEY, image: 'node:24', job: JOB, gates: [{ name: 'test', command: 'x' }] });
+        const port = await server.listen();
+        const run = async () =>
+            (await fetch(`http://127.0.0.1:${port}/run`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-dead' },
+                body: JSON.stringify({ gate: 'test' }),
+            }).then((r) => r.json())) as Record<string, unknown>;
+
+        expect(await run()).toEqual({ exitCode: 0, output: 'ok' });
+        server.setDeadServices('tok-dead', 'service "db" failed');
+        expect(await run()).toEqual({ exitCode: 0, output: 'ok', deadServices: 'service "db" failed' });
+        server.setDeadServices('tok-dead', null);
+        expect(await run()).toEqual({ exitCode: 0, output: 'ok' });
+        // An unknown token is ignored, never registered by the set.
+        server.setDeadServices('tok-nobody', 'x');
+        await server.close();
+    });
+
     it('records nothing for a harness failure — a 409 is not a verdict', async () => {
         const manager = {
             acquire: async () => {},

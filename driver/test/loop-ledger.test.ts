@@ -60,6 +60,27 @@ const merge = (a: LedgerParts, b: LedgerParts): LedgerParts => ({
     published: a.published ?? b.published,
 });
 
+describe('a dead service note (issue #487)', () => {
+    const noteOf = (over: Partial<DeadService>) =>
+        ledgerOf(parts({ deadServices: [{ ...dead, ...over }] }))[0]?.note ?? '';
+
+    it.each([
+        'error: failed switching to "mongodb": operation not permitted',
+        'chown: changing ownership of /data/db: Operation not permitted',
+        'gosu: error: operation not permitted',
+    ])('points the capability-drop signature %j at user / unhardened', (logTail) => {
+        const note = noteOf({ logTail });
+        expect(note).toContain('hint:');
+        expect(note).toContain('user: "uid:gid"');
+        expect(note).toContain('unhardened: true');
+    });
+
+    it('adds no hint to any other ending', () => {
+        expect(noteOf({ logTail: 'FATAL: password authentication failed' })).not.toContain('hint:');
+        expect(noteOf({ logTail: '' })).not.toContain('hint:');
+    });
+});
+
 describe('the fault ledger', () => {
     it('is empty, succeeded and fully eligible for a clean run', () => {
         const ledger = ledgerOf(parts());

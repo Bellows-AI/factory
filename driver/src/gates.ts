@@ -441,6 +441,8 @@ export interface GateClaim {
     envBody?: string;
     job: BoardJob;
     gates: readonly { name: string; command: string }[];
+    /** The dead-service note the loop's sampler last set (issue #487); set on the stored claim, never at register. */
+    deadServices?: string | undefined;
 }
 
 export interface GateServer {
@@ -465,6 +467,11 @@ export interface GateServer {
      * failure (409/500) is not a verdict and records nothing; unregister clears.
      */
     lastRuns(token: string): readonly GateRunNote[];
+    /**
+     * Sets the dead-service note (issue #487) every later ad-hoc answer of this token carries as
+     * `deadServices` — the one channel to an agent mid-run. Null clears it; an unknown token does nothing.
+     */
+    setDeadServices(token: string, note: string | null): void;
     /**
      * Opens the run-control channel for one attempt: `GET /control` under this token answers
      * `{ stop }`, false until `raiseStop`. Independent of any gate registration — every launched
@@ -560,6 +567,17 @@ const runRegisteredGate = async (
     }
 };
 
+/** Mutates the STORED claim — replacing it would read as a cancel to a request already holding it. */
+const setDeadNote = (claim: GateClaim | undefined, note: string | null): void => {
+    if (claim) claim.deadServices = note ?? undefined;
+};
+
+/** An answered gate run carries the claim's dead-service note beside its verdict (issue #487). */
+const withDeadNote = (result: { status: number; body: unknown }, claim: GateClaim): unknown =>
+    result.status === HTTP_OK && claim.deadServices
+        ? { ...(result.body as object), deadServices: claim.deadServices }
+        : result.body;
+
 /**
  * Aborts when the agent hangs up before the answer is written (its runner was killed): the run
  * it asked for is cancelled the same as by the token's own cancel.
@@ -631,7 +649,7 @@ export function createGateServer({
         const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
         const result = await runRegisteredGate(manager, claim, gate, cancelled);
         if (result.status === HTTP_OK) record(auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
-        return respond(reply, result.status, result.body);
+        return respond(reply, result.status, withDeadNote(result, claim));
     };
 
     /**
@@ -679,6 +697,7 @@ export function createGateServer({
         closeControl(token) {
             controls.delete(token);
         },
+        setDeadServices: (token, note) => setDeadNote(claims.get(token), note),
         lastRuns(token) {
             return [...(history.get(token)?.values() ?? [])];
         },

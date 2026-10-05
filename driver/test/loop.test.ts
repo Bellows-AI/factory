@@ -344,6 +344,7 @@ function stubGateStack(outcomes: Record<string, number> = {}, options: { control
     const stack = {
         controlOpened: [] as string[],
         stopsRaised: [] as string[],
+        deadNotes: [] as [string, string | null][],
         controlClosed: [] as string[],
         acquired: [] as string[],
         released: [] as string[],
@@ -391,6 +392,9 @@ function stubGateStack(outcomes: Record<string, number> = {}, options: { control
             },
             // No ad-hoc gate ran through this stub, so the timeout note's verdict history is empty.
             lastRuns: () => [],
+            setDeadServices: (token: string, note: string | null) => {
+                stack.deadNotes.push([token, note]);
+            },
             listen: async () => 9099,
             close: async () => {},
         } as GateServer,
@@ -2371,6 +2375,62 @@ describe('the poll loop', () => {
             services: [{ name: 'db', image: 'postgres:16', state: 'running' }],
         });
         expect(sampled?.runtime?.activity).toBe('→ waiting for postgres');
+    });
+
+    /**
+     * A service that dies mid-run (issue #487): the first sample that sees it dead reads its
+     * ending once, the board's fleet carries it — exit, reason, log tail, the capability-drop
+     * hint — and the gate endpoint's token is handed the note the agent reads.
+     */
+    it('carries a dead service ending into the fleet and tells the agent through the gate endpoint', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const mongo: DeadService = {
+            name: 'test-mongo',
+            image: 'mongo:8.0.11',
+            state: 'failed',
+            exitCode: 1,
+            reason: 'Error',
+            logTail: 'error: failed switching to "mongodb": operation not permitted',
+        };
+        const runner = stubRunner(
+            async (_job, _session, onOutput) => {
+                onOutput?.('waiting for mongo');
+                while (!board.board.progressed.some((p) => p.runtime?.services?.[0]?.logTail)) await sleep();
+                return ok({ output: 'final' });
+            },
+            {
+                sample: {
+                    cpuPercent: null,
+                    memUsedMb: null,
+                    memPercent: null,
+                    services: [
+                        { name: 'test-mongo', image: 'mongo:8.0.11', state: 'failed' },
+                        { name: 'test-redis', image: 'redis:6.2.6', state: 'running' },
+                    ],
+                },
+                deadServices: async () => [mongo],
+            }
+        );
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        const sampled = board.board.progressed.find((p) => p.runtime?.services?.[0]?.logTail);
+        expect(sampled?.runtime?.services).toEqual([
+            {
+                name: 'test-mongo',
+                image: 'mongo:8.0.11',
+                state: 'failed',
+                exitCode: 1,
+                reason: 'Error',
+                logTail: mongo.logTail,
+                hint: expect.stringContaining('unhardened: true'),
+            },
+            { name: 'test-redis', image: 'redis:6.2.6', state: 'running' },
+        ]);
+        expect(stack.stack.deadNotes).toHaveLength(1);
+        expect(stack.stack.deadNotes[0]?.[1]).toContain('service "test-mongo" (mongo:8.0.11) failed — exit 1 (Error)');
+        expect(stack.stack.deadNotes[0]?.[1]).toContain('failed switching to "mongodb"');
     });
 
     // A run is not failed by its own telemetry. The output stream is a preview; losing it costs
