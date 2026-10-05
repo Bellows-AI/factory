@@ -182,7 +182,7 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null>
                 status: 'failed',
                 exitCode: null,
                 output: `This job's .bellows.yaml could not be read as a gate declaration: ${job.gateError}`,
-                failureKind: 'runner_error',
+                failureKind: 'config',
             },
         };
     }

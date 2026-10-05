@@ -141,6 +141,7 @@ export const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
     publish: 'publish failed',
     helper: 'helper failed',
     services: 'service failed',
+    config: 'config error',
     runner_error: 'runner error',
 };
 

@@ -3838,7 +3838,10 @@ describe('the verdict failure kind (issue #339)', () => {
 
             expect(board.board.completed[0]?.status, refusal.fragment).toBe('failed');
             expect(board.board.completed[0]?.output, refusal.fragment).toContain(refusal.fragment);
-            expect(board.board.completed[0]?.failureKind, refusal.fragment).toBe('runner_error');
+            // A refused .bellows.yaml is deterministic: its own kind, so the board rests the thread
+            // rather than retrying the same file as a transient runner error.
+            const kind = refusal.fragment.includes('gate declaration') ? 'config' : 'runner_error';
+            expect(board.board.completed[0]?.failureKind, refusal.fragment).toBe(kind);
         }
     });
 });

@@ -68,8 +68,10 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   quantity, defined in [docs/metrics.md](metrics.md). Null is the contract for unmeasured: a
   missing read is never rendered as zero. `driver/test/scripts-claude-turns.test.ts`,
   `core/test/docs.terminology.test.ts`.
-- **`blocked` is a failure kind 044's comment predates**; `FAILURE_KINDS` in
+- **`blocked` and `config` are failure kinds 044's comment predates**; `FAILURE_KINDS` in
   `server/src/routes/job-field-validation.ts` is the set — `server/test/routes.jobs.test.ts`.
+  `config` (a refused `.bellows.yaml`, `driver/src/loop-run.ts`) is no ledger fault and rests the
+  thread at once — `driver/test/loop.test.ts`, `server/test/workflow-engine.next-transition.test.ts`.
 - **A `409` from heartbeat means the container must be killed.** The board can refuse a worker, it
   cannot stop one, so double execution is prevented by the driver acting on the refusal —
   `driver/src/loop*.ts`, guarded by `driver/test/loop.test.ts`.
