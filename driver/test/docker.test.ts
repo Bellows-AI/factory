@@ -1747,7 +1747,7 @@ describe('the docker runner', () => {
         const create = calls.find((call) => call.args[0] === 'create');
         expect(create?.args).toContain(containerName(job));
         const cp = calls.find((call) => call.args[0] === 'cp');
-        expect(cp?.args).toEqual(['cp', '-', `${containerName(job)}:/etc/claude-code`]);
+        expect(cp?.args).toEqual(['cp', '-', `${containerName(job)}:/etc`]);
         expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('claude-code', 'http://otel.example:4318')))).toBe(
             true
         );
@@ -1768,7 +1768,7 @@ describe('the docker runner', () => {
         );
         await runner.run(opencodeJob, null);
         const cp = calls.find((call) => call.args[0] === 'cp');
-        expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc/opencode-otel`]);
+        expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc`]);
         expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('opencode', 'http://otel.example:4318')))).toBe(
             true
         );

@@ -14,7 +14,7 @@ import { workspacePath, claimCarriesGithubToken } from './claim.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { workspacesMountArgs, containerName, containerHardeningArgs, dockerArgs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
-import { telemetryConfig, telemetryConfigTar } from './telemetry-config.js';
+import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
 import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import {
@@ -321,9 +321,10 @@ export interface RunnerFiles {
 /**
  * Creates the runner container and copies its telemetry config in before anything starts
  * (issue #452): the file decides where telemetry goes and what it carries, and the container runs
- * as the agent's uid, so it arrives from outside, as a root-owned 0444 archive (telemetryConfigTar). A refusal of either step is the daemon's and reads the way
- * a refused `docker run` did — a container that never started, its leftover removed — so it
- * comes back as an outcome; null means the container is ready to start.
+ * as the agent's uid, so it arrives from outside, as a root-owned 0444 archive (telemetryConfigTar).
+ * A refusal of either step is the daemon's and reads the way a refused `docker run` did — a
+ * container that never started, its leftover removed — so it comes back as an outcome; null means
+ * the container is ready to start.
  */
 export async function createRunnerContainer(
     deps: { config: DriverConfig; execDocker: ExecDocker },
@@ -335,7 +336,7 @@ export async function createRunnerContainer(
     try {
         await execDocker(dockerArgs(config, job, session, options));
         const telemetry = telemetryConfig(job.executorType, config.otelEndpoint);
-        await execDocker(['cp', '-', `${containerName(job)}:${telemetry.dir}`], {
+        await execDocker(['cp', '-', `${containerName(job)}:${telemetryCopyTarget(telemetry)}`], {
             input: telemetryConfigTar(telemetry),
         });
         return null;

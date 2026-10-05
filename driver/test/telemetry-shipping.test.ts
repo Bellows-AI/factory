@@ -8,6 +8,7 @@ import {
     opencodeOtelConfig,
     telemetryConfig,
     telemetryConfigTar,
+    telemetryCopyTarget,
 } from '../src/telemetry-config.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -58,20 +59,36 @@ describe('runner telemetry shipping', () => {
     // `docker cp -` keeps the owner and mode the archive's header names, so the header is the
     // whole of the delivery's security: root:root and 0444, whoever runs the driver. Extracted
     // with the system tar, so a malformed header or checksum fails here, not in a runner.
-    it('archives the telemetry config root-owned and read-only for docker cp', () => {
-        const tar = telemetryConfigTar(telemetryConfig('claude-code', 'http://otel.example:4318'));
-        const field = (offset: number, width: number) =>
+    //
+    // The directory rides the archive too, extracted into its parent: an image without it — a
+    // custom runner image, the stubs scripts/test-jobs.sh runs — still gets a root-owned 0755 one.
+    it('archives the telemetry config and its directory root-owned for docker cp into the parent', () => {
+        const telemetry = telemetryConfig('claude-code', 'http://otel.example:4318');
+        expect(telemetryCopyTarget(telemetry)).toBe('/etc');
+        const tar = telemetryConfigTar(telemetry);
+        const field = (block: number, offset: number, width: number) =>
             tar
-                .subarray(offset, offset + width)
+                .subarray(block * 512 + offset, block * 512 + offset + width)
                 .toString('ascii')
                 .replace(/\0.*$/s, '');
-        expect(field(0, 100)).toBe('managed-settings.json');
-        expect(Number.parseInt(field(100, 8), 8)).toBe(0o444);
-        expect(Number.parseInt(field(108, 8), 8)).toBe(0);
-        expect(Number.parseInt(field(116, 8), 8)).toBe(0);
-        expect(execFileSync('tar', ['-xOf', '-', 'managed-settings.json'], { input: tar }).toString('utf8')).toBe(
-            claudeManagedSettings('http://otel.example:4318')
-        );
+        const header = (block: number) => ({
+            name: field(block, 0, 100),
+            mode: Number.parseInt(field(block, 100, 8), 8),
+            uid: Number.parseInt(field(block, 108, 8), 8),
+            gid: Number.parseInt(field(block, 116, 8), 8),
+            type: field(block, 156, 1),
+        });
+        expect(header(0)).toEqual({ name: 'claude-code/', mode: 0o755, uid: 0, gid: 0, type: '5' });
+        expect(header(1)).toEqual({
+            name: 'claude-code/managed-settings.json',
+            mode: 0o444,
+            uid: 0,
+            gid: 0,
+            type: '0',
+        });
+        expect(
+            execFileSync('tar', ['-xOf', '-', 'claude-code/managed-settings.json'], { input: tar }).toString('utf8')
+        ).toBe(claudeManagedSettings('http://otel.example:4318'));
     });
 
     it('configures both agents for OTLP/HTTP JSON while keeping prompt and tool bodies private', () => {

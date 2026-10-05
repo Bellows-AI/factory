@@ -6,8 +6,8 @@ opencode in a container, headless only, run by the driver when a task's executor
 | Concern | Code | Test |
 | --- | --- | --- |
 | The image — Node 24, `opencode-ai`, `@gcornut/opencode-otel`, `context-mode`, `gh`, `acli` (all pinned) | `Dockerfile` | `test.sh` |
-| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, the `external_directory` and `origin/HEAD` amendments | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
-| Permission policy and plugin references, at `OPENCODE_CONFIG` | `opencode-home/opencode.json` | `driver/test/executor-images.test.ts`, `test.sh` |
+| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, the `external_directory` and `origin/HEAD` allows via `OPENCODE_CONFIG_CONTENT` | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| Permission policy and plugin references, root-owned at `OPENCODE_CONFIG` (the first layer) and in the managed tier `/etc/opencode` | `opencode-home/opencode.json` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Telemetry plugin config (endpoint, `http/json`, delta temporality) at `OPENCODE_OTEL_CONFIG_PATH`, root-owned; the driver renders its endpoint | `otel.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/executor-images.test.ts`, `driver/test/telemetry-shipping.test.ts` |
 | Baked global instructions, incl. context discipline | `opencode-home/AGENTS.md` | `driver/test/executor-images.test.ts` |
 | Sidecars: branch reporting to `/api/sessions/branch` with live session discovery; killing a run hung after a provider rate limit | `branch-reporter.cjs`, `rate-limit-watch.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
@@ -23,8 +23,9 @@ opencode in a container, headless only, run by the driver when a task's executor
   catch-all first, deny globs next, allows last. The allows are exact matches — a trailing-glob
   allow would bless a compound command containing a denied one. The resulting git/gh guard is
   coarser than claude-executor's parsing hook, by design; both are guardrails, not security
-  boundaries, and the driver-side sync refusal is the last line of defence. A mounted
-  `opencode.json` replaces the whole baked config, plugin references included.
+  boundaries, and the driver-side sync refusal is the last line of defence. Both baked copies are
+  root-owned: the global one fixes the key order, the managed one restores every baked value and
+  plugin; a later layer can still add a narrower allow. Another policy is a mount over both copies.
 - opencode mints its own session ids (`ses_…`) in a sqlite database under `XDG_DATA_HOME`, which
   the driver points into the member's tree on the workspaces volume — the only reason a follow-up's
   `run --session <id>` works in a fresh container. It also answers prompts with **no key at all**

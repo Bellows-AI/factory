@@ -16,6 +16,7 @@
 import { CLAUDE_CODE, OPENCODE, type ExecutorType } from './executors.js';
 
 const READ_ONLY = 0o444;
+const DIRECTORY = 0o755;
 
 export function claudeManagedSettings(endpoint: string): string {
     const settings = {
@@ -71,30 +72,46 @@ const AT_GNAME = 297;
 /** A NUL-terminated octal field of `width` bytes, the ustar number encoding. */
 const octal = (value: number, width: number): string => `${value.toString(OCTAL).padStart(width - 1, '0')}\0`;
 
-/**
- * The config as a one-entry ustar archive for `docker cp -`. The archive, not a file path:
- * `docker cp` keeps a copied file's owner from its tar header, and a plain file path makes that
- * header the DRIVER's uid — uid 1000 itself when the driver runs as `node`. Here it is 0:0, mode
- * 0444, whoever runs the driver.
- */
-export function telemetryConfigTar({ file, body: text }: TelemetryConfig): Buffer {
+/** One ustar entry: a 512-byte header, then the body padded to the block size. */
+function tarEntry(name: string, mode: number, type: '0' | '5', text = ''): Buffer {
     const body = Buffer.from(text, 'utf8');
     const header = Buffer.alloc(BLOCK);
-    header.write(file, 0, 'ascii');
-    header.write(octal(READ_ONLY, ID_WIDTH), AT.mode, 'ascii');
+    header.write(name, 0, 'ascii');
+    header.write(octal(mode, ID_WIDTH), AT.mode, 'ascii');
     header.write(octal(0, ID_WIDTH), AT.uid, 'ascii');
     header.write(octal(0, ID_WIDTH), AT.gid, 'ascii');
     header.write(octal(body.length, NUMBER_WIDTH), AT.size, 'ascii');
     header.write(octal(0, NUMBER_WIDTH), AT.mtime, 'ascii');
     header.write(' '.repeat(ID_WIDTH), AT.checksum, 'ascii');
-    header.write('0', AT.type, 'ascii');
+    header.write(type, AT.type, 'ascii');
     header.write('ustar\u000000', AT_MAGIC, 'ascii');
     header.write('root', AT_UNAME, 'ascii');
     header.write('root', AT_GNAME, 'ascii');
     const checksum = header.reduce((sum, byte) => sum + byte, 0);
     header.write(`${checksum.toString(OCTAL).padStart(CHECKSUM_DIGITS, '0')}\0 `, AT.checksum, 'ascii');
-    const padding = Buffer.alloc((BLOCK - (body.length % BLOCK)) % BLOCK);
-    return Buffer.concat([header, body, padding, Buffer.alloc(BLOCK + BLOCK)]);
+    return Buffer.concat([header, body, Buffer.alloc((BLOCK - (body.length % BLOCK)) % BLOCK)]);
+}
+
+const parentOf = (dir: string): string => dir.slice(0, dir.lastIndexOf('/')) || '/';
+const baseOf = (dir: string): string => dir.slice(dir.lastIndexOf('/') + 1);
+
+/** Where `docker cp -` extracts the archive: the config directory's parent. */
+export const telemetryCopyTarget = ({ dir }: TelemetryConfig): string => parentOf(dir);
+
+/**
+ * The config as a ustar archive for `docker cp -` into `telemetryCopyTarget`: its directory
+ * (0755) and the file (0444), both 0:0. The archive, not a file path: `docker cp` keeps a copied
+ * entry's owner from its tar header, and a plain file path makes that header the DRIVER's uid —
+ * uid 1000 itself when the driver runs as `node`. The directory rides along so an image without it
+ * (a custom runner image, the stubs scripts/test-jobs.sh runs) still gets a root-owned one.
+ */
+export function telemetryConfigTar({ dir, file, body }: TelemetryConfig): Buffer {
+    const base = baseOf(dir);
+    return Buffer.concat([
+        tarEntry(`${base}/`, DIRECTORY, '5'),
+        tarEntry(`${base}/${file}`, READ_ONLY, '0', body),
+        Buffer.alloc(BLOCK + BLOCK),
+    ]);
 }
 
 /** The pod-spec volume the telemetry config rides in — the attempt's Secret. */

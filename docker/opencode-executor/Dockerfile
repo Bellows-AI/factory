@@ -131,13 +131,30 @@ COPY otel.json /etc/opencode-otel/otel.json
 # the rest of the shared workspaces volume and system folders included — except the runner's own
 # scratch, /tmp and $HOME, and webfetch is a flat deny. The entrypoint re-opens exactly one
 # subtree at run time: the member's own tree, derived from the driver's XDG_DATA_HOME, so a task
-# can always operate within its own workspace while other members' trees stay refused. To run
-# another policy, mount your own over /home/node/.config/opencode/opencode.json.
-COPY --chown=node:node opencode-home/ /home/node/.config/opencode/
+# can always operate within its own workspace while other members' trees stay refused.
+#
+# Root-owned, the directory included (issue #452): this global copy is the FIRST config layer, so
+# its key order is the order every later layer merges into — writable, the agent could list the
+# deny globs before a catch-all allow and silently cancel them. The entrypoint's per-run allows
+# ride OPENCODE_CONFIG_CONTENT instead of editing it. Its parents are root-owned and sticky (1777),
+# like /tmp: node still creates its own entries (gh, git, caches), but can no longer rename a root
+# entry aside and plant its own config in its place. context-mode/ is the plugin's own data
+# directory, the one writable spot inside.
+RUN chown root:root /home/node && chmod 1777 /home/node && install -d -m 1777 -o root -g root /home/node/.config
+COPY opencode-home/ /home/node/.config/opencode/
+
+# The same policy again in opencode's managed tier, root-owned: /etc/opencode is loaded above every
+# other config layer — OPENCODE_CONFIG_CONTENT, the checkout's own config — so no layer the agent
+# can write flips a baked value back, and plugins accumulate across layers, so none drops the
+# telemetry plugin. A later layer can still ADD a narrower allow (a merge never removes keys, and
+# the last match wins). To run another policy, mount your own over BOTH copies — a merge cannot
+# remove a baked key, so either copy left in place keeps its keys.
+COPY opencode-home/opencode.json /etc/opencode/opencode.json
 
 # The skills, from docker/skills/ — the same SKILL.md files claude-executor bakes, in the global
 # skills directory opencode discovers (`opencode debug skill` lists them).
-COPY --from=skills --chown=node:node . /home/node/.config/opencode/skills/
+COPY --from=skills . /home/node/.config/opencode/skills/
+RUN install -d -o node -g node /home/node/.config/opencode/context-mode
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 RUN mkdir -p /workspace && chown node:node /workspace

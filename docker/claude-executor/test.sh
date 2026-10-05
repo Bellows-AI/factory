@@ -65,7 +65,7 @@ run_rendered() { # run_rendered <endpoint> <docker create args...>
     local endpoint="$1" id status
     shift
     id="$(docker create --cap-drop ALL --security-opt no-new-privileges "$@")" || return 1
-    managed_tar "$endpoint" | docker cp - "$id:/etc/claude-code" || { docker rm -f "$id" >/dev/null; return 1; }
+    managed_tar "$endpoint" | docker cp - "$id:/etc" || { docker rm -f "$id" >/dev/null; return 1; }
     docker start -a "$id"
     status=$?
     docker rm -f "$id" >/dev/null
