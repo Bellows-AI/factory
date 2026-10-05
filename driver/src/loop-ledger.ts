@@ -188,6 +188,17 @@ export function skipWhyOf(ledger: Ledger): string | null {
     return top?.skipWhy ?? null;
 }
 
+/**
+ * Why the post-run helpers must not run, or null when they should: a run that did not finish
+ * cleanly has no verdict for a helper to contribute, and a github-writing one would speak for
+ * work that did not land. Unlike the gates, a timeout counts; a failed gate over a clean run
+ * does not, since that failure is what such a helper reports on.
+ */
+export function postHelperSkipWhy(outcome: RunOutcome): string | null {
+    if (outcome.timedOut) return 'the agent timed out';
+    return skipWhyOf(agentFaults(outcome));
+}
+
 /** Whether a finished run is publish-due: nothing at all went wrong before the publish. */
 export const publishEligible = (ledger: Ledger): boolean => ledger.length === 0;
 

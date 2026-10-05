@@ -93,9 +93,9 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN 
  * Runs the job's declared POST block-helper steps, after the agent's run and its gates have
  * resolved and before publish is decided — the same window `runDeclaredGates` runs in, with the
  * heartbeat still live and `settle()` deliberately not yet called. Unlike the pre-phase, this runs
- * unconditionally once the run itself reached this point (a gate failure or a non-zero exit
- * already dooms the verdict; deciding otherwise would be block-specific policy this generic
- * transport must not encode — see the issue's "no review- or merge-specific branching" boundary).
+ * after any clean run, a failed gate included, and is skipped whole when `skipReason`
+ * (`postHelperSkipWhy`) names a run that did not finish cleanly — never by helper kind, which
+ * this generic transport must not encode.
  * Any stand-down (`down(state)`) ends it: a stopped, lost or removed attempt has no verdict to
  * contribute, and the caller stands the attempt down rather than publishing. `conclude`
  * (issue #230) is valid only for a PRE helper — a post-helper naming it fails the verdict with a
@@ -104,11 +104,16 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN 
 export async function runPostHelperPhase(
     rt: LoopRuntime,
     job: BoardJob,
-    state: JobState
+    state: JobState,
+    skipReason: string | null
 ): Promise<HelperFailureReport | null> {
     const { runner, board, log } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'post');
     if (!plans.length || !runner.runHelper) return null;
+    if (skipReason !== null) {
+        log(`job ${job.id}: post-run helpers skipped — ${skipReason}`);
+        return null;
+    }
 
     const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
         if (down(state)) return null;
