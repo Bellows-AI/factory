@@ -1,7 +1,7 @@
 import { createPublicKey, createVerify, generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { GitHubConfig } from '../src/config.js';
-import { createAppSlugProvider, installationTokenProvider } from '../src/github/app-token.js';
+import { createAppSlugProvider, installationTokenProvider, RUNNER_TOKEN_PERMISSIONS } from '../src/github/app-token.js';
 
 /*
  * The key is generated HERE, per run, and never committed. A fixture private key in a repository is
@@ -48,6 +48,7 @@ interface Call {
     url: string;
     method: string;
     authorization: string;
+    body: unknown;
 }
 
 /** Records every request and answers the token endpoint. No network, no timers. */
@@ -61,6 +62,7 @@ function stubFetch(
             url,
             method: init?.method ?? 'GET',
             authorization: String((init?.headers as Record<string, string>)?.authorization ?? ''),
+            body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
         });
         if (url.includes('/access_tokens')) {
             return new Response(
@@ -264,9 +266,52 @@ describe('the installation token', () => {
         expect(fresh).toBe('ghs_2');
         expect(mints()).toBe(DOUBLE_MINT);
 
-        // The fresh mint is also what the cache now holds, so ordinary reads ride it.
-        await expect(tokens.get()).resolves.toBe('ghs_2');
+        // The fresh mint is repo-scoped, so it is not what the cache holds: ordinary reads need
+        // every repository and keep riding the unscoped token.
+        await expect(tokens.get()).resolves.toBe('ghs_1');
         expect(mints()).toBe(DOUBLE_MINT);
+    });
+
+    it("narrows a fresh mint to the task's repo and the runner's permissions", async () => {
+        const { calls, fetchFn } = stubFetch();
+        const tokens = provider({ fetchFn });
+
+        await tokens.fresh('acme/widgets');
+        await tokens.get();
+
+        const [scoped, unscoped] = calls.filter((call) => call.url.includes('/access_tokens'));
+        expect(scoped?.body).toEqual({ repositories: ['widgets'], permissions: RUNNER_TOKEN_PERMISSIONS });
+        // The repo-read path still needs the whole installation.
+        expect(unscoped?.body).toBeUndefined();
+    });
+
+    it('narrows the permissions alone when the task names no repo', async () => {
+        const { calls, fetchFn } = stubFetch();
+        await provider({ fetchFn }).fresh(null);
+        expect(calls.find((call) => call.url.includes('/access_tokens'))?.body).toEqual({
+            permissions: RUNNER_TOKEN_PERMISSIONS,
+        });
+    });
+
+    it('refuses a repo label that is not owner/name rather than minting wide', async () => {
+        const { calls, fetchFn } = stubFetch();
+        await expect(provider({ fetchFn }).fresh('widgets')).rejects.toThrow(/owner\/name/);
+        expect(calls).toHaveLength(0);
+    });
+
+    it("never hands one repo's in-flight mint to another repo", async () => {
+        let serial = 0;
+        const { calls, fetchFn } = stubFetch({ token: () => `ghs_${++serial}` });
+        const tokens = provider({ fetchFn });
+
+        const [a, b, a2] = await Promise.all([tokens.fresh('acme/a'), tokens.fresh('acme/b'), tokens.fresh('acme/a')]);
+        expect(a).toBe(a2);
+        expect(a).not.toBe(b);
+        const bodies = calls.filter((call) => call.url.includes('/access_tokens')).map((call) => call.body);
+        expect(bodies).toEqual([
+            { repositories: ['a'], permissions: RUNNER_TOKEN_PERMISSIONS },
+            { repositories: ['b'], permissions: RUNNER_TOKEN_PERMISSIONS },
+        ]);
     });
 });
 

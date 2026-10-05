@@ -1143,7 +1143,7 @@ export interface CreateJobStoreDeps {
      * the resolver leaves the job queued with its attempt unburned.
      */
     githubToken?: {
-        fresh(): Promise<string>;
+        fresh(repo?: string | null): Promise<string>;
     };
     /**
      * The gates reader, when the deployment has a workspace root to read checkouts from. Declared
