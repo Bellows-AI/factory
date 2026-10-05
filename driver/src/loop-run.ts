@@ -428,7 +428,9 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     const gatesSkipped = gatesEligible(agent) ? null : skipWhyOf(agent);
     if (gatesSkipped !== null) {
         rt.log(`job ${job.id}: gates skipped — ${gatesSkipped}`);
-        return { failure: null, deadServices: [], gatesSkipped };
+        // The services' faults are the run's too, gates or not: a blocked agent is the one that
+        // most needs to be told its environment was dead (issue #487).
+        return { failure: null, deadServices: await probeDeadServices(rt, job), gatesSkipped };
     }
     // A gate against a dead service fails on an environment the agent cannot fix, and a
     // failed gate is what the workflow's gate-fix edge spends a round on (issue #423).
@@ -575,6 +577,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
 
         const gateSession = await runPhases(ctx);
         if (gateSession === STOOD_DOWN) return;
+        state.gateToken = gateSession?.token ?? null;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and
         // every ad-hoc run of it in flight is cancelled the moment the verdict lands.
         if (gateSession)

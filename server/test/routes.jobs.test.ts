@@ -1339,6 +1339,43 @@ describe('POST /api/jobs/:id/output', () => {
         expect('services' in (store.progressed[5]?.runtime ?? {})).toBe(false);
     });
 
+    // A dead service's ending (issue #487) rides the fleet: the exit, the reason, the log tail
+    // (bounded to its END), the hint — and a malformed one is refused like any other bad field.
+    it('passes a dead service ending through, bounding the log tail to its last lines', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const ending = { exitCode: 1, reason: 'Error', logTail: 'boom', hint: 'set unhardened: true' };
+        const runtime = (service: object) => ({
+            ...VITALS,
+            services: [{ name: 'db', image: 'mongo', state: 'failed', ...service }],
+        });
+
+        await post(instance, `/api/jobs/${ID}/output`, { leaseToken: TOKEN, output: 'x', runtime: runtime(ending) });
+        await post(instance, `/api/jobs/${ID}/output`, {
+            leaseToken: TOKEN,
+            output: 'x',
+            runtime: runtime({ exitCode: null, reason: null, logTail: `${'a'.repeat(10_000)}END` }),
+        });
+
+        expect(store.progressed[0]?.runtime?.services).toEqual([
+            { name: 'db', image: 'mongo', state: 'failed', ...ending },
+        ]);
+        const bounded = store.progressed[1]?.runtime?.services?.[0];
+        expect(bounded?.exitCode).toBeNull();
+        expect(bounded?.reason).toBeNull();
+        expect(bounded?.logTail).toHaveLength(4096);
+        expect(bounded?.logTail?.endsWith('END')).toBe(true);
+
+        for (const bad of [{ exitCode: 1.5 }, { exitCode: '1' }, { reason: 7 }, { logTail: 7 }, { hint: 7 }]) {
+            const response = await post(instance, `/api/jobs/${ID}/output`, {
+                leaseToken: TOKEN,
+                output: 'x',
+                runtime: runtime(bad),
+            });
+            expect(response.statusCode).toBe(400);
+        }
+    });
+
     it.each([
         ['a non-object runtime', { leaseToken: TOKEN, output: 'x', runtime: 42 }],
         ['a negative cpu', { leaseToken: TOKEN, output: 'x', runtime: { ...VITALS, cpuPercent: -1 } }],

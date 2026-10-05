@@ -9,6 +9,7 @@ import type { FailureKind } from './board.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import type { PublishResult } from './publish.js';
+import { serviceHint } from './runner.js';
 import type { DeadService, RunOutcome } from './runner.js';
 
 /** One terminal condition of the attempt. */
@@ -124,10 +125,12 @@ export function agentFaults(outcome: RunOutcome): Fault[] {
 }
 
 /** One dead service in the verdict output: how it ended, then what it last printed. */
-function deadServiceNote(dead: DeadService): string {
+export function deadServiceNote(dead: DeadService, gatesSkipped: boolean): string {
     const how = `exit ${dead.exitCode ?? 'unknown'}${dead.reason ? ` (${dead.reason})` : ''}`;
     const tail = dead.logTail.trim() ? `\n${dead.logTail.trimEnd()}` : '';
-    return `service "${dead.name}" (${dead.image}) ${dead.state} — ${how}; declared gates skipped${tail}`;
+    const hint = serviceHint(dead.logTail);
+    const skipped = gatesSkipped ? '; declared gates skipped' : '';
+    return `service "${dead.name}" (${dead.image}) ${dead.state} — ${how}${skipped}${tail}${hint ? `\nhint: ${hint}` : ''}`;
 }
 
 /** Everything the phases after the agent found, beside its own outcome. */
@@ -152,7 +155,11 @@ export function ledgerOf(parts: LedgerParts): Ledger {
             ...done,
         });
     }
-    for (const dead of deadServices) faults.push({ kind: 'services', note: deadServiceNote(dead), ...done });
+    // The note claims the gates were skipped for the service only when nothing else already skipped them.
+    const skippedForService = gatesEligible(faults);
+    for (const dead of deadServices) {
+        faults.push({ kind: 'services', note: deadServiceNote(dead, skippedForService), ...done });
+    }
     if (failure) {
         faults.push({
             kind: 'gate',

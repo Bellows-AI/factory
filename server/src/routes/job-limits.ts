@@ -98,6 +98,9 @@ const SERVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/;
 const SERVICE_STATE = /^[a-z][a-z-]{0,31}$/;
 /** Past any legal registry path — an image that long must not bounce every flush of a live run. */
 const SERVICE_IMAGE_LIMIT = 2048;
+/** A dead service's reason/hint, and the tail of its log (issue #487) — ten services of it must fit the progress body. */
+const SERVICE_REASON_LIMIT = 512;
+const SERVICE_LOG_TAIL_LIMIT = 4096;
 /** A gate is a short label, not a description; well past anything a checkout's yaml declares. */
 export const GATE_NAME_LIMIT = 64;
 
@@ -113,7 +116,28 @@ function serviceStatus(raw: unknown, at: string): ServiceStatus | string {
     if (typeof state !== 'string' || !SERVICE_STATE.test(state)) {
         return `${at}.state must be a lowercase word`;
     }
-    return { name, image, state };
+    const detail = serviceDetail(raw as Record<string, unknown>, at);
+    return typeof detail === 'string' ? detail : { name, image, state, ...detail };
+}
+
+/** A dead service's ending (issue #487): an integer exit, a short reason and hint, a bounded log tail. */
+function serviceDetail(raw: Record<string, unknown>, at: string): Partial<ServiceStatus> | string {
+    const { exitCode, reason, logTail, hint } = raw;
+    if (exitCode !== undefined && exitCode !== null && !Number.isInteger(exitCode)) {
+        return `${at}.exitCode must be an integer or null`;
+    }
+    if (reason !== undefined && reason !== null && typeof reason !== 'string') {
+        return `${at}.reason must be a string or null`;
+    }
+    if (logTail !== undefined && typeof logTail !== 'string') return `${at}.logTail must be a string`;
+    if (hint !== undefined && typeof hint !== 'string') return `${at}.hint must be a string`;
+    return {
+        ...(exitCode !== undefined ? { exitCode: exitCode as number | null } : {}),
+        ...(reason !== undefined ? { reason: reason?.slice(0, SERVICE_REASON_LIMIT) ?? null } : {}),
+        // The tail keeps its END: the last lines are the cause.
+        ...(logTail !== undefined ? { logTail: logTail.slice(-SERVICE_LOG_TAIL_LIMIT) } : {}),
+        ...(hint !== undefined ? { hint: hint.slice(0, SERVICE_REASON_LIMIT) } : {}),
+    };
 }
 
 function badCpuPercent(cpuPercent: unknown): boolean {

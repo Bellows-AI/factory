@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { isTerminal, type Job } from '../api/useJobs.js';
+import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import type { JobActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
@@ -78,9 +78,31 @@ function RunHistory({ jobs }: { jobs: Job[] }) {
 /** The Services panel shows only the first few rows; the rest collapse into a count. */
 const MAX_VISIBLE_SERVICES = 3;
 
+/** Why a dead service died: its exit, reason, hint and last log lines; nothing for a live one. */
+function ServiceEnding({ service }: { service: ServiceStatus }) {
+    const { exitCode, reason, logTail, hint } = service;
+    if (exitCode === undefined && !reason && !logTail?.trim()) return null;
+    const how = `exit ${exitCode ?? 'unknown'}${reason ? ` (${reason})` : ''}`;
+    return (
+        <div>
+            <p className="muted">
+                {service.name} {service.state} — {how}
+            </p>
+            {hint ? <p className="muted">{hint}</p> : null}
+            {logTail?.trim() ? (
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable region must be keyboard-focusable or its overflow is unreachable
+                <pre className="chat-output" tabIndex={0}>
+                    {logTail.trimEnd()}
+                </pre>
+            ) : null}
+        </div>
+    );
+}
+
 /** The newest attempt's last observed service states, capped and counted. */
-function Services({ services }: { services: readonly { name: string; image: string; state: string }[] }) {
+function Services({ services }: { services: readonly ServiceStatus[] }) {
     const overflow = services.length - MAX_VISIBLE_SERVICES;
+    const visible = services.slice(0, MAX_VISIBLE_SERVICES);
     return (
         <section className="panel">
             <div className="panel-head">
@@ -88,11 +110,10 @@ function Services({ services }: { services: readonly { name: string; image: stri
             </div>
             {/* The fleet is torn down when the attempt ends, so these are its record of it, not a
             claim about now. */}
-            <KeyValues
-                pairs={services
-                    .slice(0, MAX_VISIBLE_SERVICES)
-                    .map((service) => [service.name, service.state] as [string, ReactNode])}
-            />
+            <KeyValues pairs={visible.map((service) => [service.name, service.state] as [string, ReactNode])} />
+            {visible.map((service) => (
+                <ServiceEnding key={service.name} service={service} />
+            ))}
             {overflow > 0 ? <p className="muted">and {overflow} more</p> : null}
         </section>
     );

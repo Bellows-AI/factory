@@ -1,5 +1,7 @@
-import type { BoardJob, HeartbeatVerdict, RuntimeReport } from './board.js';
-import { currentActivity } from './runner.js';
+import type { BoardJob, HeartbeatVerdict, RuntimeReport, ServiceStatus } from './board.js';
+import { deadServiceNote } from './loop-ledger.js';
+import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from './runner.js';
+import type { DeadService } from './runner.js';
 import type { RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { TimeoutActivity } from './timeout-note.js';
@@ -52,6 +54,8 @@ export interface JobState {
      * beat period — and at the lease's third afterwards (issue #126).
      */
     launched: boolean;
+    /** The attempt's gate-endpoint token once its gate session booted — where the sampler tells the agent a service died. */
+    gateToken: string | null;
     /**
      * The attempt's run-control token (`BELLOWS_CONTROL_TOKEN`), set once the control endpoint is
      * open for it; null until then, and for a driver with no endpoint at all.
@@ -98,6 +102,7 @@ export function newJobState(): JobState {
         stopped: false,
         removed: false,
         launched: false,
+        gateToken: null,
         control: null,
         running: false,
         draining: false,
@@ -321,16 +326,56 @@ interface OutputPump {
     sentSample: RuntimeSample | null;
     sampling: boolean;
     complained: boolean;
+    /** Each service the sampler saw die and what it read of its ending, by name (issue #487). */
+    dead: Map<string, DeadService>;
+}
+
+/**
+ * Carries a dead service's exit, reason, log tail and hint (issue #487) into the fleet the sample
+ * reports, read once — the first sample that sees it dead, before the teardown deletes the logs —
+ * and tells the agent through the gate endpoint when one is newly dead. A probe that cannot read
+ * the fleet costs the detail, never the sample.
+ */
+async function withDeadDetail(
+    at: { rt: LoopRuntime; job: BoardJob; state: JobState; pump: OutputPump },
+    services: ServiceStatus[]
+): Promise<ServiceStatus[]> {
+    const { rt, job, state, pump } = at;
+    const fresh = services.some((s) => DEAD_SERVICE_STATES.has(s.state) && !pump.dead.has(s.name));
+    if (fresh) {
+        const found = await rt.runner.deadServices(job).catch((): DeadService[] => []);
+        for (const dead of found) pump.dead.set(dead.name, dead);
+        if (state.gateToken && found.length > 0) {
+            rt.gates?.server.setDeadServices(
+                state.gateToken,
+                [...pump.dead.values()].map((dead) => deadServiceNote(dead, false)).join('\n\n')
+            );
+        }
+    }
+    return services.map((service) => {
+        const dead = pump.dead.get(service.name);
+        if (!dead || !DEAD_SERVICE_STATES.has(service.state)) return service;
+        const hint = serviceHint(dead.logTail);
+        return {
+            ...service,
+            exitCode: dead.exitCode,
+            reason: dead.reason,
+            logTail: dead.logTail,
+            ...(hint ? { hint } : {}),
+        };
+    });
 }
 
 /** Kicks off one runtime sample fetch, unless one is already in flight; the pump holds the newest. */
-function kickSample(rt: LoopRuntime, job: BoardJob, pump: OutputPump): void {
+function kickSample(rt: LoopRuntime, job: BoardJob, state: JobState, pump: OutputPump): void {
     if (pump.sampling) return;
     pump.sampling = true;
     rt.runner
         .sampleRuntime(job)
-        .then((read) => {
-            if (read) pump.sample = { ...read, sampledAt: new Date().toISOString() };
+        .then(async (read) => {
+            if (!read) return;
+            const services = read.services ? await withDeadDetail({ rt, job, state, pump }, read.services) : undefined;
+            pump.sample = { ...read, ...(services ? { services } : {}), sampledAt: new Date().toISOString() };
         })
         .catch(() => {})
         .finally(() => {
@@ -385,6 +430,7 @@ export function watchOutput(
         sample: null,
         sentSample: null,
         sampling: false,
+        dead: new Map(),
         complained: false,
     };
     void (async () => {
@@ -395,7 +441,7 @@ export function watchOutput(
             // launch — sampling before that is a daemon lookup per period that can answer
             // nothing (issue #126 moved the start earlier to cover the setup phase).
             if (!state.launched) continue;
-            kickSample(rt, job, pump);
+            kickSample(rt, job, state, pump);
             const verdict = await flushIfChanged(rt, job, pump);
             // The board no longer recognises this attempt. Killing the container is the
             // heartbeat's verdict alone; this pump just stops talking.

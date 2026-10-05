@@ -51,6 +51,11 @@ export interface ServiceStatus {
     name: string;
     image: string;
     state: string;
+    /** Why a dead service died: present only once the driver read its ending. */
+    exitCode?: number | null;
+    reason?: string | null;
+    logTail?: string;
+    hint?: string;
 }
 
 /**
