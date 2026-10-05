@@ -14,9 +14,23 @@ import {
 } from './k8s-auxspec.js';
 import { bellowsJobSpec, jobsPath } from './k8s-podspec.js';
 import { pollJobToTerminal, readVerdict } from './k8s-poll.js';
-import { answerPreview, expectOk, HTTP_ERROR_STATUS, livePod, parse, parseDeadServicePods } from './k8s-transport.js';
+import {
+    answerPreview,
+    expectOk,
+    HTTP_ERROR_STATUS,
+    livePod,
+    parse,
+    parseDeadServicePods,
+    parseServicePods,
+} from './k8s-transport.js';
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
-import { collectServices, splitBellowsSections } from './services.js';
+import {
+    collectServices,
+    forgetDeclaredServices,
+    missingDeclaredServices,
+    recordDeclaredServices,
+    splitBellowsSections,
+} from './services.js';
 import type { ServiceSpec } from './services.js';
 
 /**
@@ -94,6 +108,7 @@ async function sweepFleetKind(deps: K8sDeps, listPath: string, basePath: string)
  * the runner's releaseServices — once the loop's declared gates are done with them.
  */
 export async function teardownServices(deps: K8sDeps, job: BoardJob): Promise<void> {
+    forgetDeclaredServices(job);
     for (const [listPath, basePath] of [
         [podsByLeasePath(deps.config.k8sNamespace, job), podsPath(deps.config.k8sNamespace)],
         [servicesByLeasePath(deps.config.k8sNamespace, job), servicesPath(deps.config.k8sNamespace)],
@@ -113,6 +128,10 @@ export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadSe
     const found = await deps.request('GET', podsByLeasePath(deps.config.k8sNamespace, job));
     expectOk(found, 'listing the service pods');
     const out: DeadService[] = [];
+    // A declared service whose pod is not listed at all — deleted by hand, drained — is dead too.
+    for (const gone of missingDeclaredServices(job, parseServicePods(found.body))) {
+        out.push({ ...gone, exitCode: null, reason: null, logTail: '' });
+    }
     for (const { pod, ...dead } of parseDeadServicePods(found.body)) {
         const log = await deps
             .request('GET', podLogPath(deps.config.k8sNamespace, pod, SERVICE_LOG_TAIL_LINES))
@@ -188,6 +207,9 @@ export async function startServiceFleet(deps: K8sDeps, job: BoardJob): Promise<R
     if (refusal !== null) {
         return { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
     }
-    if (specs.length > 0) await startFleet(deps, job, specs);
+    if (specs.length > 0) {
+        await startFleet(deps, job, specs);
+        recordDeclaredServices(job, specs);
+    }
     return null;
 }

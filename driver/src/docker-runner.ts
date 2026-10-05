@@ -22,7 +22,7 @@ import {
     type ReclaimResult,
     type SyncResult,
 } from './publish.js';
-import { networkName, serviceContainerName } from './services.js';
+import { forgetDeclaredServices, missingDeclaredServices, networkName, serviceContainerName } from './services.js';
 import {
     containerHardeningArgs,
     containerName,
@@ -114,6 +114,7 @@ interface RunnerDeps {
  */
 async function dockerServiceTeardown(deps: RunnerDeps, job: BoardJob): Promise<void> {
     if (!deps.config.servicesEnabled) return;
+    forgetDeclaredServices(job);
     const found = await deps
         .execDocker([
             'ps',
@@ -539,7 +540,12 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
     if (!config.servicesEnabled) return [];
     const found = await execDocker(servicePsArgs(job));
     const out: DeadService[] = [];
-    for (const service of parseDockerServicePs(found.stdout)) {
+    const listed = parseDockerServicePs(found.stdout);
+    // A declared service with no container at all — removed by hand — is dead too: no exit or log to read.
+    for (const gone of missingDeclaredServices(job, listed)) {
+        out.push({ ...gone, exitCode: null, reason: null, logTail: '' });
+    }
+    for (const service of listed) {
         if (service.state !== 'exited' && service.state !== 'dead') continue;
         const name = serviceContainerName(job, service.name);
         const exit = await execDocker(['inspect', '--format', '{{json .State}}', name])

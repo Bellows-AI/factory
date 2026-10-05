@@ -20,6 +20,7 @@ import {
     readBellowsArgs,
     type ServiceSpec,
     collectServices,
+    recordDeclaredServices,
     splitBellowsSections,
     networkName,
     serviceRunArgs,
@@ -223,6 +224,7 @@ export async function setupJobServices(
         }
         assertJobNotKilled(deps.killed, job);
     }
+    recordDeclaredServices(job, specs);
     return { servicesNetwork, refusal: null };
 }
 
