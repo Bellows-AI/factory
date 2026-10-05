@@ -291,6 +291,11 @@ export function isPublishNode(definition: WorkflowDefinition, name: string): boo
     return nodeOf(definition, name)?.publish === true;
 }
 
+/** Whether the named node opts its run out of the gates — the claim and the gates re-read both ask this. */
+export function nodeSkipsGates(definition: WorkflowDefinition, name: string): boolean {
+    return nodeOf(definition, name)?.gates === false;
+}
+
 /**
  * Hard-truncates an output tail to its share of the command cap, with a visible marker — never a
  * silent cut. Exported so the interpolation tests pin the exact bytes.

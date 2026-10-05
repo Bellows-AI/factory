@@ -29,7 +29,7 @@ import type {
 } from './job-store-types.js';
 import { resolveMasterPrompt } from './master-prompt.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
-import { type WorkflowDefinition, isPublishNode, nodeOf } from './workflow-schema.js';
+import { type WorkflowDefinition, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
 
 export interface ClaimCandidateRow {
     id: string;
@@ -498,7 +498,7 @@ export function resolveClaimPublish(
         return { publish: false, ...gates };
     }
     const publish = isPublishNode(snapshot, workflowNode);
-    if (nodeOf(snapshot, workflowNode)?.gates === false) {
+    if (nodeSkipsGates(snapshot, workflowNode)) {
         return { publish, claimGates: null, gateError: null, gatesSource: null };
     }
     return { publish, ...gates };
