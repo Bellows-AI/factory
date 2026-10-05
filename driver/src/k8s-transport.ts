@@ -94,6 +94,57 @@ export const isMalformedRequest400 = (status: number, body: string): boolean =>
 export const answerPreview = (status: number, body: string): string =>
     `answered ${status}: ${body.slice(0, ERROR_PREVIEW_CHARS)}`;
 
+/** The PodMetrics read of `sampleRuntime`: a 404 there is "no sample yet", metrics-server or not. */
+const POD_METRICS_PATH = /^\/apis\/metrics\.k8s\.io\/v1beta1\/namespaces\/[^/?]+\/pods\/[^/?]+$/;
+
+/** The pod log read of `tailRunner`; the query (`tailLines`, ...) is not part of the identity. */
+const POD_LOG_PATH = /^\/api\/v1\/namespaces\/[^/?]+\/pods\/[^/?]+\/log(\?.*)?$/;
+
+/** The kubelet's answer to a log read of a container still being created, in its own words. */
+const CONTAINER_CREATING_MESSAGE = /ContainerCreating/;
+
+/** The Kubernetes `Status` object an API refusal carries; `null` for anything else. */
+const readStatus = (body: string): { message: string; reason?: string } | null => {
+    try {
+        const status = JSON.parse(body) as { kind?: unknown; message?: unknown; reason?: unknown };
+        if (status.kind !== 'Status' || typeof status.message !== 'string') return null;
+        return typeof status.reason === 'string'
+            ? { message: status.message, reason: status.reason }
+            : { message: status.message };
+    } catch {
+        return null;
+    }
+};
+
+/**
+ * The one line a refused (≥300, so a 3xx too) answer logs, or null for a success and for the two
+ * expected startup refusals: a 404 on the
+ * PodMetrics read (no sample, or no metrics-server) and a 400 `Status` on the pod log read that
+ * names the container as `ContainerCreating`. Matched on method, path, status AND content — any
+ * other 404 or 400 is still a diagnosis. A `Status` is reduced to its message (and reason); a
+ * body that is not one rides as a bounded preview. Headers are never logged.
+ */
+export function refusalDiagnosis(method: string, path: string, status: number, body: string): string | null {
+    if (status < HTTP_ERROR_STATUS) return null;
+    const parsed = readStatus(body);
+    if (method === 'GET' && status === HTTP_NOT_FOUND && POD_METRICS_PATH.test(path)) return null;
+    if (
+        method === 'GET' &&
+        status === HTTP_BAD_REQUEST &&
+        POD_LOG_PATH.test(path) &&
+        parsed &&
+        CONTAINER_CREATING_MESSAGE.test(parsed.message)
+    ) {
+        return null;
+    }
+    const head = `${method} ${path} answered ${status}`;
+    if (parsed) {
+        const detail = parsed.reason ? `${parsed.message} (${parsed.reason})` : parsed.message;
+        return `${head}: ${detail.slice(0, DIAGNOSIS_BODY_CHARS)}`;
+    }
+    return `${head} body=${body.slice(0, DIAGNOSIS_BODY_CHARS)}`;
+}
+
 /** The shell convention for a killed process — the docker manager's timeout shape, matched here. */
 export const TIMEOUT_EXIT_CODE = 124;
 
@@ -265,20 +316,12 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                         // A truncated answer carries the prefix ahead of the tail so the original
                         // start survives classification; an untruncated one is already whole.
                         const body = truncated ? prefix + text : text;
-                        if ((res.statusCode ?? 0) >= HTTP_ERROR_STATUS) {
-                            // The diagnosis line (issue #308): a refused answer carries everything
-                            // the cause needs — method, path, status, headers and the first chunk
-                            // of body — because the body IS the diagnosis: Go's pre-handler
-                            // `400 Bad Request`, a proxy's answer, or the API's own Status JSON.
-                            // Fired at the transport's own ≥300 refusal threshold, so a 3xx is
-                            // diagnosed too.
-                            log(
-                                `${method} ${path} answered ${res.statusCode} ` +
-                                    `headers=${JSON.stringify(res.headers ?? {})} ` +
-                                    `body=${prefix}`
-                            );
-                        }
-                        resolve({ status: res.statusCode ?? 0, body });
+                        const status = res.statusCode ?? 0;
+                        // The diagnosis line (issue #308): method, path, status and the API's own
+                        // words — the body IS the diagnosis.
+                        const diagnosis = refusalDiagnosis(method, path, status, prefix);
+                        if (diagnosis !== null) log(diagnosis);
+                        resolve({ status, body });
                     });
                 }
             );
