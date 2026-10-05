@@ -3266,11 +3266,18 @@ describe('block-helper steps (issue #207)', () => {
                 },
                 [{ ok: true, output: { decided: 'up-to-date' }, control: 'conclude' }]
             );
+            // A conclusion is a setup refusal like any other, and no runner is coming to release
+            // the checkout claim (issue #469).
+            const released: string[] = [];
+            runner.releaseFence = async (fencedJob) => {
+                released.push(fencedJob.id);
+            };
 
             await drive({ ...board, runner });
 
             expect(calls).toHaveLength(1);
             expect(runCalls).toEqual([]);
+            expect(released).toEqual([job(1).id]);
             expect(board.board.completed).toEqual([
                 {
                     id: job(1).id,

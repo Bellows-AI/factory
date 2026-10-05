@@ -3,7 +3,7 @@ import type { HelperFailureReport, HelperPlan, HelperResult } from './helpers.js
 import { formatConcludeOutput, runHelperPlan } from './helpers.js';
 import { down, raceStep } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
-import type { AttemptCtx, LoopRuntime } from './loop-types.js';
+import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 
 /**
@@ -19,20 +19,21 @@ import { STOOD_DOWN } from './loop-types.js';
 /**
  * Runs the job's declared PRE block-helper steps, in the order the claim carries them, fenced by
  * the same lease/stop state every setup step races against. A required pre-helper that fails
- * reports a NAMED failure without ever launching the agent — the loop's own contract for this
- * phase — and releases the kubernetes checkout fence exactly like the other terminal setup
- * refusals in `loop-run.ts`, since no runner is coming to release it itself. A pre-helper that
- * succeeds with `control: 'conclude'` (issue #230) completes the job through the ordinary board
- * completion path right here — no agent, no gates, no post-helpers, no publish — and stands the
- * attempt down exactly like a failure does, minus the failed status. A job with no declared
- * pre-helpers, or a runner that does not implement `runHelper` (docker before this issue, or any
- * future platform that has not grown one), pays no extra work at all — the ordinary case for every
- * workflow-less and `agent`-node task today (docs/workflows.md: no producer wires a real plan onto
- * a claim yet).
+ * answers a NAMED failure without ever launching the agent — the loop's own contract for this
+ * phase. A pre-helper that succeeds with `control: 'conclude'` (issue #230) answers a conclusion:
+ * the job is done right here — no agent, no gates, no post-helpers, no publish. A job with no
+ * declared pre-helpers, or a runner that does not implement `runHelper` (docker before this issue,
+ * or any future platform that has not grown one), pays no extra work at all — the ordinary case
+ * for every workflow-less and `agent`-node task today (docs/workflows.md: no producer wires a real
+ * plan onto a claim yet).
+ *
+ * It only answers: `runPhases` (`loop-run.ts`) acts on a conclusion through `concludeSetup`, so a
+ * helper refusal cannot release the kubernetes checkout fence and forget to settle — the fence has
+ * no runner coming to release it.
  */
-export async function preHelperStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN | null> {
-    const { rt, job, state, settle, standDown } = ctx;
-    const { runner, board, log } = rt;
+export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
+    const { rt, job, state } = ctx;
+    const { runner, board } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'pre');
     if (!plans.length || !runner.runHelper) return null;
 
@@ -41,49 +42,32 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN 
     // children, not just around the composite as a whole.
     const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
         const token = childPlan.githubWriting ? ((await board.publishToken(job)) ?? undefined) : undefined;
-        if (down(state)) {
-            await runner.releaseFence?.(job);
-            await standDown();
-            return null;
-        }
-        const runningHelper = runner.runHelper!(job, childPlan, token);
-        const resultOut = await raceStep(state, runningHelper);
-        if (resultOut === null || down(state)) {
-            await runner.releaseFence?.(job);
-            await standDown();
-            return null;
-        }
-        return resultOut.value;
+        if (down(state)) return null;
+        const resultOut = await raceStep(state, runner.runHelper!(job, childPlan, token));
+        return resultOut === null || down(state) ? null : resultOut.value;
     };
 
     for (const plan of plans) {
         const result = await runHelperPlan(plan, invokeChild);
         if (result === null) return STOOD_DOWN;
         if (!result.ok) {
-            await runner.releaseFence?.(job);
-            await settle();
-            log(
-                `job ${job.id}: pre-run helper "${plan.helperId}" failed (${result.reason}), ` +
-                    'failing without launching the agent'
-            );
-            await rt
-                .report(job, {
+            return {
+                halt: 'fault',
+                log: `pre-run helper "${plan.helperId}" failed (${result.reason}), failing without launching the agent`,
+                verdict: {
                     status: 'failed',
                     exitCode: null,
                     output: `The declared pre-run helper "${plan.helperId}" failed (${result.reason}): ${result.message}`,
                     failureKind: 'helper' satisfies FailureKind,
-                })
-                .catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
-            return STOOD_DOWN;
+                },
+            };
         }
         if (result.control === 'conclude') {
-            await runner.releaseFence?.(job);
-            await settle();
-            log(`job ${job.id}: pre-run helper "${plan.helperId}" concluded the job without launching the agent`);
-            await rt
-                .report(job, { status: 'succeeded', exitCode: 0, output: formatConcludeOutput(result.output) })
-                .catch((e: Error) => log(`job ${job.id}: could not report the conclusion: ${e.message}`));
-            return STOOD_DOWN;
+            return {
+                halt: 'concluded',
+                log: `pre-run helper "${plan.helperId}" concluded the job without launching the agent`,
+                verdict: { status: 'succeeded', exitCode: 0, output: formatConcludeOutput(result.output) },
+            };
         }
     }
     return null;
