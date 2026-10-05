@@ -7,10 +7,10 @@ import { gitProbeScript } from '../src/publish.js';
 import { GIT_FIXTURE_CONFIG, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * Gremlin repros for the tree fingerprint (git-probe.cjs / git-worktree.cjs fingerprintOf). The
+ * The tree fingerprint (git-probe.cjs / git-worktree.cjs fingerprintOf), issue #438. The
  * engine only stops a gate-fix loop on `treeChanged === false`; null and true both keep it going.
  */
-describe.skipIf(!hasGit())('gremlin/gates: the tree fingerprint', () => {
+describe.skipIf(!hasGit())('the tree fingerprint', () => {
     const fx = setupWorktreeFixture();
     const probed = (): string | null => {
         const out = execFileSync('node', ['-e', gitProbeScript], {
@@ -35,7 +35,7 @@ describe.skipIf(!hasGit())('gremlin/gates: the tree fingerprint', () => {
     ])('stays measurable with an untracked %s', (_what, make) => {
         fx.sync();
         make();
-        // Observed: null — treeChanged is null on every round, so the no-progress stop never fires.
+        // A null fingerprint is treeChanged null every round: the no-progress stop never fires.
         expect(probed()).toMatch(/^[0-9a-f]{40}:[0-9a-f]{64}$/);
     });
 
@@ -45,7 +45,7 @@ describe.skipIf(!hasGit())('gremlin/gates: the tree fingerprint', () => {
     // ---- false negative: a submodule that was dirty and is now differently dirty -------------------
     it('moves when a dirty submodule’s content changes again', () => {
         fx.sync();
-        const subSrc = realpathSync(mkdtempSync(join(tmpdir(), 'gremlin-sub-')));
+        const subSrc = realpathSync(mkdtempSync(join(tmpdir(), 'fingerprint-sub-')));
         git(subSrc, 'init');
         writeFileSync(join(subSrc, 'lib.txt'), 'v1\n');
         git(subSrc, 'add', 'lib.txt');
@@ -59,20 +59,18 @@ describe.skipIf(!hasGit())('gremlin/gates: the tree fingerprint', () => {
         writeFileSync(join(fx.worktree(), 'sub', 'lib.txt'), 'agent edit one\n');
         const before = probed();
         writeFileSync(join(fx.worktree(), 'sub', 'lib.txt'), 'agent edit two — the real fix\n');
-        // Observed: equal (" m sub" / "Subproject commit X-dirty" both unchanged) — treeChanged
-        // false, and the engine drops the gate-fix edge on a round that did change the tree.
+        // " m sub" / "Subproject commit X-dirty" stay identical: only the submodule's content moves.
         expect(probed()).not.toBe(before);
     });
 
-    // ---- held up (kept as regression pins) ---------------------------------------------------------
-    it('held: untracked names git C-quotes (a double quote, a tab)', () => {
+    it('untracked names git C-quotes (a double quote, a tab)', () => {
         fx.sync();
         writeFileSync(join(fx.worktree(), 'say "hi".txt'), 'x');
         writeFileSync(join(fx.worktree(), 'a\tb.txt'), 'x');
         expect(probed()).toMatch(/^[0-9a-f]{40}:[0-9a-f]{64}$/);
     });
 
-    it('held: moves on a mode-only change, and survives a stale index.lock', () => {
+    it('moves on a mode-only change, and survives a stale index.lock', () => {
         fx.sync();
         const before = probed();
         chmodSync(join(fx.worktree(), 'README.md'), 0o755);
