@@ -1,0 +1,21 @@
+{{/*
+A namespace LimitRange (issue #454): a pod created without limits — by anything, not only the
+driver — inherits these defaults instead of running unbounded in a namespace that carries no
+ResourceQuota. A container's own limits and requests win; the runner pods set theirs explicitly
+(runner.resources).
+*/}}
+{{- if .Values.limitRange.enabled }}
+apiVersion: v1
+kind: LimitRange
+metadata:
+    name: {{ include "factory.fullname" . }}-defaults
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    limits:
+        - type: Container
+          default:
+            {{- toYaml .Values.limitRange.default | nindent 12 }}
+          defaultRequest:
+            {{- toYaml .Values.limitRange.defaultRequest | nindent 12 }}
+{{- end }}
