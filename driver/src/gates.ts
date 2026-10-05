@@ -50,6 +50,8 @@ const OUTPUT_OVERFLOW_EXIT_CODE = 1;
 export interface GateRun {
     exitCode: number | null;
     output: string;
+    /** True when the environment's `setup` command failed: the gate itself never ran. */
+    setupFailed?: true;
 }
 
 type ExecDocker = (
@@ -74,6 +76,8 @@ interface Entry {
     name: string;
     image: string;
     envBody: string;
+    /** The `.bellows.yaml` setup command, until it has succeeded once in this container. */
+    pendingSetup: string | null;
     /** The pending teardown timer, when release() has armed one. */
     teardown: NodeJS.Timeout | null;
     /** The attempt the newest acquire filed — its services network is the one gates must reach. */
@@ -89,6 +93,8 @@ export interface GateManager {
      * The job is the attempt context the kubernetes manager files gate runs under (labels,
      * names, its own per-run env Secret); the docker manager keys the container off the checkout
      * and uses the job only to join the attempt's services network before a gate runs.
+     * The job's `gates.setup` is run once per environment, lazily before its first gate (a gate
+     * answers `setupFailed` when it fails), so an environment no gate ever uses pays nothing.
      */
     acquire(key: string, image: string, envBody?: string, job?: BoardJob): Promise<void>;
     /**
@@ -151,6 +157,63 @@ function gateRunFromExecError(error: DockerExecError, gateTimeoutMs: number): Ga
         });
     }
     return { exitCode: error.code, output: output || error.message || `exit ${error.code}` };
+}
+
+/** One `docker exec` of a script, answered as a verdict (or a CONTAINER_GONE rejection). */
+async function execInContainer({
+    execDocker,
+    name,
+    script,
+    gateTimeoutMs,
+    onKilled,
+}: {
+    execDocker: ExecDocker;
+    name: string;
+    script: string;
+    gateTimeoutMs: number;
+    /** Called when the exec client was killed (timeout, output overflow) — the script lives on. */
+    onKilled: () => void;
+}): Promise<GateRun> {
+    try {
+        const read = await execDocker(gateExecArgs(name, script), {
+            timeout: gateTimeoutMs,
+            maxBuffer: GATE_OUTPUT_MAX_BUFFER_BYTES,
+        });
+        return { exitCode: 0, output: reportTail(read.stdout.trim()) };
+    } catch (e) {
+        const error = e as DockerExecError;
+        // The kill took the `docker exec` client only: the gate's process lives on in the warm
+        // container, so the environment goes, as it does for a cancel.
+        if (error.killed || error.code === STDIO_MAXBUFFER_CODE) onKilled();
+        return gateRunFromExecError(error, gateTimeoutMs);
+    }
+}
+
+const newEntry = (name: string, image: string, envBody: string, job: BoardJob | null): Entry => ({
+    name,
+    image,
+    envBody,
+    pendingSetup: job?.gates?.setup ?? null,
+    teardown: null,
+    job,
+    network: null,
+});
+
+/**
+ * Runs the container's pending setup, then the gate. Setup is once per container: a failed one
+ * stays pending, so the next gate retries it, and the failing gate never runs.
+ */
+async function setupThenGate(
+    entry: Pick<Entry, 'pendingSetup'>,
+    command: string,
+    exec: (script: string) => Promise<GateRun>
+): Promise<GateRun> {
+    if (entry.pendingSetup) {
+        const setupRun = await exec(entry.pendingSetup);
+        if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true };
+        entry.pendingSetup = null;
+    }
+    return exec(command);
 }
 
 /**
@@ -279,7 +342,7 @@ export function createGateManager({
                     await writeFile(envFileFor(key), envBody, { mode: 0o600 });
                 }
                 await execDocker(gateEnvArgs(config, key, image, envBody ? envFileFor(key) : undefined));
-                entries.set(key, { name, image, envBody, teardown: null, job: job ?? null, network: null });
+                entries.set(key, newEntry(name, image, envBody, job ?? null));
             });
         },
 
@@ -315,19 +378,11 @@ export function createGateManager({
             const queued = serialize(key, async (): Promise<GateRun> => {
                 if (signal?.aborted) return cancelled;
                 signal?.addEventListener('abort', cancel, { once: true });
+                const exec = (script: string): Promise<GateRun> =>
+                    execInContainer({ execDocker, name: entry.name, script, gateTimeoutMs, onKilled: cancel });
                 try {
                     await joinServices(entry);
-                    const read = await execDocker(gateExecArgs(entry.name, command), {
-                        timeout: gateTimeoutMs,
-                        maxBuffer: GATE_OUTPUT_MAX_BUFFER_BYTES,
-                    });
-                    return { exitCode: 0, output: reportTail(read.stdout.trim()) };
-                } catch (e) {
-                    const error = e as DockerExecError;
-                    // The kill took the `docker exec` client only: the gate's process lives on in
-                    // the warm container, so the environment goes, as it does for a cancel.
-                    if (error.killed || error.code === STDIO_MAXBUFFER_CODE) cancel();
-                    return gateRunFromExecError(error, gateTimeoutMs);
+                    return await setupThenGate(entry, command, exec);
                 } finally {
                     signal?.removeEventListener('abort', cancel);
                     armCooldown(key, entry);

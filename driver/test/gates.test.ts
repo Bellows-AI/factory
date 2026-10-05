@@ -63,6 +63,9 @@ const JOB: BoardJob = {
     workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
 };
 
+/** The same attempt, whose checkout declares `setup: npm ci`. */
+const WITH_SETUP: BoardJob = { ...JOB, gates: { image: 'node:24', setup: 'npm ci', gates: [] } };
+
 /** The execFile-shaped seam: resolves on exit 0, rejects with `.code` otherwise. */
 type ExecResult = { stdout: string; stderr: string };
 type ExecError = Error & { code?: number | string; stdout?: string; stderr?: string };
@@ -185,6 +188,46 @@ describe('the gate environment manager: running gates', () => {
             exitCode: GATE_FAIL_EXIT_CODE,
             output: '2 problems',
         });
+        await manager.stop();
+    });
+
+    it('runs the declared setup once per environment, before the first gate, and not again', async () => {
+        const scripts: string[] = [];
+        const setupExec = exec((args) => {
+            if (args[0] === 'exec') scripts.push(args[4] ?? '');
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
+        await manager.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await manager.runGate(KEY, 'test', 'npm test');
+        await manager.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await manager.runGate(KEY, 'lint', 'npm run lint');
+
+        expect(scripts).toEqual(['npm ci', 'npm test', 'npm run lint']);
+        await manager.stop();
+    });
+
+    it('answers a failed setup as a setup failure, skips the gate, and retries setup next time', async () => {
+        const SETUP_EXIT_CODE = 7;
+        const scripts: string[] = [];
+        let setupFails = true;
+        const setupExec = exec((args) => {
+            if (args[0] !== 'exec') return { stdout: '', stderr: '' };
+            scripts.push(args[4] ?? '');
+            if (args[4] === 'npm ci' && setupFails) return fails(SETUP_EXIT_CODE, 'registry down\n');
+            return { stdout: '', stderr: '' };
+        });
+        const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
+        await manager.acquire(KEY, 'node:24', '', WITH_SETUP);
+
+        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toEqual({
+            exitCode: SETUP_EXIT_CODE,
+            output: 'registry down',
+            setupFailed: true,
+        });
+        setupFails = false;
+        await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
+        expect(scripts).toEqual(['npm ci', 'npm ci', 'npm test']);
         await manager.stop();
     });
 

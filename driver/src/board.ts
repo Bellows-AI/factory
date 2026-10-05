@@ -97,7 +97,7 @@ export interface BoardJob {
      * the environment image they run in and the named commands. Null when the repository declares
      * none — the ordinary case. Absent on a board that predates gates, read as "no gates".
      */
-    gates?: { image: string; gates: readonly { name: string; command: string }[] } | null;
+    gates?: { image: string; setup?: string; gates: readonly { name: string; command: string }[] } | null;
     /**
      * Why the gates file exists but could not be honoured. The loop fails such a job outright —
      * running the work while pretending its gates do not exist is the one outcome worse than the

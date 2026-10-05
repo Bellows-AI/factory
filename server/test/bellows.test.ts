@@ -28,6 +28,24 @@ describe('parseBellows: valid documents', () => {
         });
     });
 
+    it('reads an optional environment setup command', () => {
+        const text = EXAMPLE.replace('    image: node:24', '    image: node:24\n    setup: "npm ci"');
+        expect(parseBellows(text)).toEqual({
+            image: 'node:24',
+            setup: 'npm ci',
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
+    });
+
+    it.each([
+        ['an empty setup', '    setup: ""', /line 3: setup is empty/],
+        ['a valueless setup', '    setup:', /line 3: setup takes a value/],
+        ['a second setup', '    setup: a\n    setup: b', /line 4: setup is declared twice/],
+    ])('refuses %s', (_label, setup, message) => {
+        const text = EXAMPLE.replace('    image: node:24', `    image: node:24\n${setup}`);
+        expect(() => parseBellows(text)).toThrow(message);
+    });
+
     it('tolerates comments and blank lines', () => {
         const text = [
             '# CI gates for this repository',

@@ -12,6 +12,8 @@ import { worktreeRelDir } from './publish.js';
 const GATES_REPORT_BUDGET_BYTES = 16384;
 const PER_GATE_OUTPUT_FLOOR_BYTES = 1024;
 const REFUSED_TO_RUN_EXIT_CODE = 125;
+/** Heads the output of a gate that never ran because the environment's `setup` command failed. */
+const SETUP_FAILED_PREFIX = '[setup failed — the gate did not run]\n';
 
 /**
  * One gated job's live registration: the checkout key its environment is filed under, the token
@@ -220,17 +222,20 @@ export async function runDeclaredGates(
         // and a cancelled gate is never reported failed — `gate-failed` must not read it.
         if (!outcome || down(state)) return null;
         const failed = outcome.exitCode !== 0;
+        // A failed setup is not this gate's verdict: the output names it so the board's `gates`
+        // and the job's `output` tell the two apart.
+        const text = outcome.setupFailed ? `${SETUP_FAILED_PREFIX}${outcome.output}` : outcome.output;
         // Replace the gate's own entry — one entry per declared gate, always, so the list the
         // board stores IS the declared list at its current state.
         results[results.length - 1] = {
             name: gate.name,
             status: failed ? 'failed' : 'passed',
             exitCode: outcome.exitCode,
-            output: tailBytes(outcome.output, perGate),
+            output: tailBytes(text, perGate),
         };
         await report();
         if (failed) {
-            return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: outcome.output };
+            return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
         }
     }
     return null;

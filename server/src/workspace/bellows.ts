@@ -14,6 +14,9 @@
  *              - name: test
  *                command: "npm test"
  *
+ * `environment:` may also carry `setup: <command>` — run once per gate environment, before its
+ * first gate, in the worktree (an install step); its failure is a setup failure, not a gate's.
+ *
  * One exception, and it is not leniency: a top-level `services:` block is the SERVICES half of
  * the file, read by the driver's own parser (driver/src/services.ts), and one file may carry both
  * halves. This parser skips the block wholesale — it does not judge the services grammar, and a
@@ -35,6 +38,8 @@ export interface GateDef {
 
 export interface BellowsConfig {
     readonly image: string;
+    /** Runs once per gate environment before the first gate; absent when none is declared. */
+    readonly setup?: string;
     readonly gates: readonly GateDef[];
 }
 
@@ -95,6 +100,7 @@ interface RawGate {
 
 interface BellowsState {
     image: string | null;
+    setup: string | null;
     inEnvironment: boolean;
     inGates: boolean;
     /** Inside a top-level `services:` block — the services half, not this parser's grammar. */
@@ -206,19 +212,33 @@ function handleGateField({
     }
 }
 
-/** A direct child of `environment:` (`image:` / `gates:`). */
+/** `setup: <command>` under `environment:` — one non-empty command, declared once. */
+function readSetup(state: BellowsState, line: number, raw: string | undefined): void {
+    if (raw === undefined) fail(line, 'setup takes a value');
+    if (state.setup !== null) fail(line, 'setup is declared twice');
+    const command = scalar(line, raw, 'setup');
+    if (command.trim() === '') fail(line, 'setup is empty');
+    if (command.length > MAX_COMMAND_LENGTH) {
+        fail(line, `setup is longer than ${MAX_COMMAND_LENGTH} characters`);
+    }
+    state.setup = command;
+}
+
+/** A direct child of `environment:` (`image:` / `setup:` / `gates:`). */
 function handleEnvironmentField(state: BellowsState, line: number, key: string, match: RegExpExecArray): void {
     const hasValue = match[3] !== undefined;
     if (key === 'image') {
         if (!hasValue) fail(line, 'image takes a value');
         state.image = checkImage(line, scalar(line, match[3] ?? '', 'image'));
+    } else if (key === 'setup') {
+        readSetup(state, line, match[3]);
     } else if (key === 'gates') {
         // `gates:` with nothing after it — including a trailing space, the same courtesy
         // `environment:` gets — opens the list. A real inline value is outside the subset.
         if (hasValue && match[3] !== '') fail(line, 'gates takes a list, not a value');
         state.inGates = true;
     } else {
-        fail(line, `unknown key "${key}" inside environment — only image and gates are read`);
+        fail(line, `unknown key "${key}" inside environment — only image, setup and gates are read`);
     }
 }
 
@@ -267,6 +287,7 @@ function processLine(state: BellowsState, line: number, rawLine: string): void {
 export function parseBellows(text: string): BellowsConfig | null {
     const state: BellowsState = {
         image: null,
+        setup: null,
         inEnvironment: false,
         inGates: false,
         inServices: false,
@@ -289,7 +310,7 @@ export function parseBellows(text: string): BellowsConfig | null {
 
     if (!state.inEnvironment) return null;
     if (state.image === null) throw new BellowsError('.bellows.yaml: environment declares no image');
-    return { image: state.image, gates: state.gates };
+    return { image: state.image, ...(state.setup === null ? {} : { setup: state.setup }), gates: state.gates };
 }
 
 /**

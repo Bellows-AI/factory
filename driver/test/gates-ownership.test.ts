@@ -316,6 +316,62 @@ describe('gate ownership: two attempts on one checkout key', () => {
     });
 });
 
+describe('gate setup: kubernetes runs it as its own Job once per attempt', () => {
+    const WITH_SETUP: BoardJob = { ...JOB(LEASE_A), gates: { image: 'node:24', setup: 'npm ci', gates: [] } };
+
+    /** Every created gate Job's command, in order; the pod list answers `setupExit` for the setup Job. */
+    const fakeCluster = (setupExit: () => number) => {
+        const commands: string[] = [];
+        let lastCommand = '';
+        const request: K8sRequest = async (method, path, body) => {
+            if (method === 'POST' && path === jobsPath('factory')) {
+                const spec = body as { spec: { template: { spec: { containers: { command: string[] }[] } } } };
+                lastCommand = spec.spec.template.spec.containers[0]?.command[2] ?? '';
+                commands.push(lastCommand);
+                return { status: 201, body: '{}' };
+            }
+            if (method === 'GET' && path.startsWith(`${jobsPath('factory')}/`)) {
+                return { status: 200, body: JSON.stringify({ status: { succeeded: 1 } }) };
+            }
+            if (method === 'GET' && path.includes('/log')) return { status: 200, body: 'log' };
+            if (method === 'GET') {
+                const exitCode = lastCommand === 'npm ci' ? setupExit() : 0;
+                const pod = {
+                    metadata: { name: 'p' },
+                    status: { containerStatuses: [{ state: { terminated: { exitCode } } }] },
+                };
+                return { status: 200, body: JSON.stringify({ items: [pod] }) };
+            }
+            return { status: 201, body: '{}' };
+        };
+        return { request, commands };
+    };
+
+    it('runs setup before the first gate only, across the per-gate re-acquires', async () => {
+        const cluster = fakeCluster(() => 0);
+        const m = createKubernetesGateManager({ config: k8sConfig, request: cluster.request, sleep: async () => {} });
+        await m.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await m.runGate(KEY, 'test', 'npm test');
+        await m.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await m.runGate(KEY, 'lint', 'npm run lint');
+
+        expect(cluster.commands).toEqual(['npm ci', 'npm test', 'npm run lint']);
+    });
+
+    it('answers a failed setup as setupFailed and does not run the gate', async () => {
+        const SETUP_EXIT_CODE = 9;
+        const cluster = fakeCluster(() => SETUP_EXIT_CODE);
+        const m = createKubernetesGateManager({ config: k8sConfig, request: cluster.request, sleep: async () => {} });
+        await m.acquire(KEY, 'node:24', '', WITH_SETUP);
+
+        await expect(m.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({
+            exitCode: SETUP_EXIT_CODE,
+            setupFailed: true,
+        });
+        expect(cluster.commands).toEqual(['npm ci']);
+    });
+});
+
 describe('gate ownership: docker/kubernetes parity of concurrent runs', () => {
     it('kubernetes serializes two gate runs on one checkout, as docker does', async () => {
         let posts = 0;

@@ -1,5 +1,6 @@
 environment:
     image: node:24
+    setup: "npm ci"
     gates:
          - name: test
            command: "npm test"
