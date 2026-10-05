@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { claudeManagedSettings, managedSettingsTar } from '../src/managed-settings.js';
+import {
+    claudeManagedSettings,
+    opencodeOtelConfig,
+    telemetryConfig,
+    telemetryConfigTar,
+} from '../src/telemetry-config.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const read = (relative: string): string => readFileSync(join(ROOT, relative), 'utf8');
@@ -22,11 +27,39 @@ describe('runner telemetry shipping', () => {
         });
     });
 
+    it('renders the baked opencode otel.json with only the endpoint replaced', () => {
+        const baked = JSON.parse(read('docker/opencode-executor/otel.json')) as Record<string, string>;
+        expect(JSON.parse(opencodeOtelConfig('http://otel.example:4318'))).toEqual({
+            ...baked,
+            endpoint: 'http://otel.example:4318',
+        });
+    });
+
+    // Each executor's file lands where its CLI reads it: claude's managed-settings directory, and
+    // the root-owned directory the opencode image's OPENCODE_OTEL_CONFIG_PATH names.
+    it.each([
+        ['claude-code', '/etc/claude-code', 'managed-settings.json'],
+        ['opencode', '/etc/opencode-otel', 'otel.json'],
+    ] as const)('places the %s telemetry config at %s/%s', (executor, dir, file) => {
+        expect(telemetryConfig(executor, 'http://x:4318')).toMatchObject({ dir, file });
+    });
+
+    // No executor, no file: the same refusal executorImage makes, never a silent pick.
+    it('refuses to place a telemetry config for a task with no executor type', () => {
+        expect(() => telemetryConfig(null, 'http://x:4318')).toThrow(/no configured executor type/);
+    });
+
+    it('names the opencode config path the driver renders into', () => {
+        expect(read('docker/opencode-executor/Dockerfile')).toContain(
+            'ENV OPENCODE_OTEL_CONFIG_PATH=/etc/opencode-otel/otel.json\n'
+        );
+    });
+
     // `docker cp -` keeps the owner and mode the archive's header names, so the header is the
     // whole of the delivery's security: root:root and 0444, whoever runs the driver. Extracted
     // with the system tar, so a malformed header or checksum fails here, not in a runner.
-    it('archives the managed settings root-owned and read-only for docker cp', () => {
-        const tar = managedSettingsTar('http://otel.example:4318');
+    it('archives the telemetry config root-owned and read-only for docker cp', () => {
+        const tar = telemetryConfigTar(telemetryConfig('claude-code', 'http://otel.example:4318'));
         const field = (offset: number, width: number) =>
             tar
                 .subarray(offset, offset + width)
@@ -45,7 +78,7 @@ describe('runner telemetry shipping', () => {
         const claude = JSON.parse(read('docker/claude-executor/managed-settings.json')) as {
             env: Record<string, string>;
         };
-        const opencode = JSON.parse(read('docker/opencode-executor/opencode-home/otel.json')) as Record<string, string>;
+        const opencode = JSON.parse(read('docker/opencode-executor/otel.json')) as Record<string, string>;
 
         expect(claude.env).toMatchObject({
             CLAUDE_CODE_ENABLE_TELEMETRY: '1',

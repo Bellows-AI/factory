@@ -104,7 +104,7 @@ COPY --chown=node:node claude-home/ /home/node/.claude/
 # silently, since the CLI never reports a failed export. It also outranks a member's executor
 # config, so telemetry cannot be switched off or redirected from there. Root-owned and read-only to
 # the agent's uid, like the git guard: nothing in the container writes it. The driver replaces it,
-# root-owned again, with its endpoint rendered in (driver/src/managed-settings.ts).
+# root-owned again, with its endpoint rendered in (driver/src/telemetry-config.ts).
 COPY managed-settings.json /etc/claude-code/managed-settings.json
 
 # The skills, from docker/skills/ — one source for both executor images, so a task sees the same

@@ -53,13 +53,13 @@ check 'onboarding done'   'true'  run --entrypoint node "$IMAGE" -e \
 # Managed settings outrank every scope the agent can reach, so the agent's uid must not be able to
 # rewrite them (issue #452): baked root-owned, and replaced by the driver root-owned again. The
 # driver's delivery is reproduced exactly — create, `docker cp -` of the archive
-# driver/src/managed-settings.ts renders (uid 0, mode 0444), start attached.
+# driver/src/telemetry-config.ts renders (uid 0, mode 0444), start attached.
 check 'managed settings are not writable by the runtime user' 'ok' run --entrypoint sh "$IMAGE" -c \
     'f=/etc/claude-code/managed-settings.json; [ ! -w "$f" ] && [ ! -w "${f%/*}" ] && [ "$(stat -c %u:%g "$f")" = 0:0 ] && echo ok'
 
 managed_tar() { # managed_tar <endpoint>: the driver's own archive, rendered by its own code
     (cd "$REPO" && ENDPOINT="$1" npx --no-install tsx -e \
-        "import { managedSettingsTar } from './driver/src/managed-settings.ts'; process.stdout.write(managedSettingsTar(process.env.ENDPOINT));")
+        "import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('claude-code', process.env.ENDPOINT)));")
 }
 run_rendered() { # run_rendered <endpoint> <docker create args...>
     local endpoint="$1" id status

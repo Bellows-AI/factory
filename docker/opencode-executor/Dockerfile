@@ -112,10 +112,15 @@ ENV OPENCODE_CONFIG=/home/node/.config/opencode/opencode.json
 
 # Telemetry. opencode's binary has no native OTLP metric surface (its bundled SDK only emits
 # spans, and only behind `experimental.openTelemetry: true`), so metrics come from the plugin
-# installed above, configured by opencode-home/otel.json. That file is the single source of
-# truth — it points the plugin's exporter at the compose collector on 4318 with http/json, not
-# the OTEL_EXPORTER_OTLP_* variables (the plugin reads neither). Off the compose network the
-# exporter fails to connect and the runs go unrecorded; the CLI still works.
+# installed above, configured by otel.json. That file is the single source of truth — it points
+# the plugin's exporter at the compose collector on 4318 with http/json, not the
+# OTEL_EXPORTER_OTLP_* variables (the plugin reads neither). Off the compose network the exporter
+# fails to connect and the runs go unrecorded; the CLI still works. It also decides whether prompt
+# and tool bodies ride along, so it lives root-owned and read-only outside the node-owned config
+# home, like the claude executor's managed settings — the driver replaces it, root-owned again,
+# with its endpoint rendered in (driver/src/telemetry-config.ts).
+ENV OPENCODE_OTEL_CONFIG_PATH=/etc/opencode-otel/otel.json
+COPY otel.json /etc/opencode-otel/otel.json
 
 # The predefined configuration. Permissions live here, NOT in a CLI flag — unlike claude-code,
 # opencode takes policy from this file, and "ask" is unusable in a headless `run`: there is nobody

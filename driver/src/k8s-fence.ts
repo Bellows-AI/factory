@@ -1,8 +1,7 @@
 import type { BoardJob } from './board.js';
 import { runnerClaimEnv } from './claim.js';
 import type { DriverConfig } from './config.js';
-import { CLAUDE_CODE } from './executors.js';
-import { claudeManagedSettings, MANAGED_SETTINGS_FILE } from './managed-settings.js';
+import { telemetryConfig, type TelemetryConfig } from './telemetry-config.js';
 import {
     claimBody,
     claimPath,
@@ -55,12 +54,12 @@ const runnerEnv = (config: DriverConfig, job: BoardJob): Record<string, string> 
     ...(job.gateEnv ?? {}),
     RUNNER_JOB_ID: job.id,
     RUNNER_LEASE_TOKEN: job.leaseToken,
-    // Issue #452: the claude-code runner's managed settings, rendered here and mounted read-only
-    // by the pod spec (k8s-podspec.ts managedSettingsFields) — never written inside the pod.
-    ...(job.executorType === CLAUDE_CODE
-        ? { [MANAGED_SETTINGS_FILE]: claudeManagedSettings(config.otelEndpoint) }
-        : {}),
+    // Issue #452: the runner's telemetry config, rendered here and mounted read-only by the pod
+    // spec (k8s-podspec.ts, telemetryConfigK8s) — never written inside the pod.
+    ...telemetrySecretEntry(telemetryConfig(job.executorType, config.otelEndpoint)),
 });
+
+const telemetrySecretEntry = ({ file, body }: TelemetryConfig): Record<string, string> => ({ [file]: body });
 
 /**
  * Best-effort delete of THIS attempt's own Job — by its own attempt-scoped name, which is what

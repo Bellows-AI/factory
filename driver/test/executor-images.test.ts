@@ -747,6 +747,21 @@ describe('the claude-executor managed settings', () => {
     });
 });
 
+// The opencode twin: the otel plugin's config also decides where telemetry goes and whether prompt
+// and tool bodies ride along, so it lives root-owned outside the node-owned config home.
+describe('the opencode-executor telemetry config', () => {
+    it('is baked root-owned outside the config home, where the plugin is pointed', () => {
+        const dockerfile = read('docker/opencode-executor/Dockerfile');
+        expect(dockerfile).toContain('COPY otel.json /etc/opencode-otel/otel.json\n');
+        expect(dockerfile).toContain('ENV OPENCODE_OTEL_CONFIG_PATH=/etc/opencode-otel/otel.json\n');
+        expect(existsSync(join(ROOT, 'docker/opencode-executor/opencode-home/otel.json'))).toBe(false);
+    });
+
+    it('is never rewritten by the entrypoint, which runs as the agent uid', () => {
+        expect(read('docker/opencode-executor/entrypoint.sh')).not.toContain('otel.json');
+    });
+});
+
 /*
  * One set of skills for both executors: docker/skills/ is baked into each image's own skills
  * directory through the named `skills` build context, so a task sees the same skills whichever

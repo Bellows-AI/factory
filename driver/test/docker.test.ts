@@ -39,7 +39,7 @@ import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import { networkName, readBellowsArgs, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import { syncCheckoutArgs } from '../src/docker-runner-support.js';
-import { managedSettingsTar } from '../src/managed-settings.js';
+import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
@@ -1615,8 +1615,8 @@ describe('the runner env for a gated job', () => {
     });
 
     // opencode's plugin reads its endpoint from otel.json, not from OTEL_EXPORTER_OTLP_ENDPOINT —
-    // the executor entrypoint rewrites the file. This is the driver half of that contract: the env
-    // var has to reach the runner at all, for this CLI no less than for claude-code.
+    // the driver renders that file (telemetry-config.ts). The env var still reaches the runner,
+    // for this CLI no less than for claude-code.
     it('forwards the OTEL endpoint to the opencode runner too', () => {
         const line = dockerArgs(
             loadDriverConfig({ RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }),
@@ -1748,21 +1748,30 @@ describe('the docker runner', () => {
         expect(create?.args).toContain(containerName(job));
         const cp = calls.find((call) => call.args[0] === 'cp');
         expect(cp?.args).toEqual(['cp', '-', `${containerName(job)}:/etc/claude-code`]);
-        expect(cp?.input?.equals(managedSettingsTar('http://otel.example:4318'))).toBe(true);
+        expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('claude-code', 'http://otel.example:4318')))).toBe(
+            true
+        );
         expect(verbs.indexOf('create')).toBeLessThan(verbs.indexOf('cp'));
         expect(spawnFn.mock.calls).toEqual([['docker', ['start', '-a', containerName(job)], expect.anything()]]);
     });
 
-    it('copies no managed settings into an opencode runner', async () => {
-        const calls: string[][] = [];
-        const exec = (args: string[]) => {
-            calls.push(args);
+    it('copies the rendered otel.json into an opencode runner, where its plugin is pointed', async () => {
+        const calls: { args: string[]; input?: Buffer }[] = [];
+        const exec = (args: string[], options?: { input?: Buffer }) => {
+            calls.push({ args, ...(options?.input ? { input: options.input } : {}) });
             return noContainer(args);
         };
-        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', '', 0), exec);
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }),
+            child('', '', 0),
+            exec
+        );
         await runner.run(opencodeJob, null);
-        expect(calls.some((args) => args[0] === 'create')).toBe(true);
-        expect(calls.some((args) => args[0] === 'cp')).toBe(false);
+        const cp = calls.find((call) => call.args[0] === 'cp');
+        expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc/opencode-otel`]);
+        expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('opencode', 'http://otel.example:4318')))).toBe(
+            true
+        );
     });
 
     // The daemon refusing the create (a name conflict, a missing image) or the copy is what a

@@ -9,6 +9,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
 cd "$HERE" || exit 1
 
 IMAGE="opencode-executor-test"
@@ -141,7 +142,7 @@ else
     bad 'the baked opencode.json enables the telemetry plugin' 'plugin array does not reference the baked package'
 fi
 otel="$(docker run --rm --entrypoint sh "$IMAGE" \
-    -c 'cat "$XDG_CONFIG_HOME/opencode/otel.json"')"
+    -c 'cat "$OPENCODE_OTEL_CONFIG_PATH"')"
 if node -e \
     'try { const o = JSON.parse(process.argv[1]); process.exit(o.endpoint === "http://collector:4318" && o.protocol === "http/json" ? 0 : 1); } catch { process.exit(1); }' \
     "$otel" >/dev/null 2>&1; then
@@ -200,25 +201,31 @@ else
     bad 'no mcp.context-mode entry beside the plugin entry' 'a plugin entry and an mcp.context-mode entry together register zero ctx_* tools'
 fi
 
-# The driver's RUNNER_OTEL_ENDPOINT override arrives as OTEL_EXPORTER_OTLP_ENDPOINT, which the
-# opencode-otel plugin does not read — the entrypoint patches otel.json when it is set. The config
-# directory is bind-mounted so the patched file can be read back on the host; `--help` runs the
-# entrypoint's patch then exits the agent with no credential needed.
-CNF="$(mktemp -d)"
-cp "$HERE/opencode-home/otel.json" "$CNF/otel.json"
-chmod -R a+rwX "$CNF"
-docker run --rm \
-    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
-    -v "$CNF:/home/node/.config/opencode" \
-    "$IMAGE" --help >/dev/null 2>&1
-patched="$(cat "$CNF/otel.json")"
-rm -rf "$CNF"
-if node -e \
-    'try { const o = JSON.parse(process.argv[1]); process.exit(o.endpoint === "http://collector.example:4318" ? 0 : 1); } catch { process.exit(1); }' \
-    "$patched" >/dev/null 2>&1; then
-    ok 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT'
+# otel.json decides where telemetry goes and whether prompt and tool bodies ride along, so the
+# agent's uid must not be able to rewrite it (issue #452): baked root-owned in a root-owned
+# directory the plugin is pointed at, and replaced by the driver root-owned again. The driver's
+# delivery is reproduced exactly — create, `docker cp -` of the archive
+# driver/src/telemetry-config.ts renders (uid 0, mode 0444), start attached.
+owned="$(docker run --rm --entrypoint sh "$IMAGE" -c \
+    'f="$OPENCODE_OTEL_CONFIG_PATH"; [ ! -w "$f" ] && [ ! -w "${f%/*}" ] && [ "$(stat -c %u:%g "$f")" = 0:0 ] && echo ok' 2>&1)"
+if [ "$owned" = ok ]; then
+    ok 'otel.json is not writable by the runtime user'
 else
-    bad 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
+    bad 'otel.json is not writable by the runtime user' "$owned"
+fi
+
+ENDPOINT=http://collector.example:4318
+id="$(docker create --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$IMAGE" -c \
+    'f="$OPENCODE_OTEL_CONFIG_PATH"; node -p "require(\"$f\").endpoint" | tr "\n" " "; printf "%s " "$(stat -c %u:%g "$f")"; if (: >> "$f") 2>/dev/null; then echo rw; else echo ro; fi')"
+(cd "$REPO" && ENDPOINT="$ENDPOINT" npx --no-install tsx -e \
+    "import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('opencode', process.env.ENDPOINT)));") |
+    docker cp - "$id:/etc/opencode-otel"
+rendered="$(docker start -a "$id" 2>&1)"
+docker rm -f "$id" >/dev/null 2>&1
+if [ "$rendered" = "$ENDPOINT 0:0 ro" ]; then
+    ok 'the driver-rendered otel.json carries its endpoint, root-owned and read-only'
+else
+    bad 'the driver-rendered otel.json carries its endpoint, root-owned and read-only' "$rendered"
 fi
 
 # The task workspace allow: the driver's XDG_DATA_HOME names the member tree on the shared

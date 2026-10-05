@@ -6,9 +6,10 @@ opencode in a container, headless only, run by the driver when a task's executor
 | Concern | Code | Test |
 | --- | --- | --- |
 | The image — Node 24, `opencode-ai`, `@gcornut/opencode-otel`, `context-mode`, `gh`, `acli` (all pinned) | `Dockerfile` | `test.sh` |
-| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, the `external_directory` and `origin/HEAD` amendments, OTLP endpoint rewrite | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, the `external_directory` and `origin/HEAD` amendments | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Permission policy and plugin references, at `OPENCODE_CONFIG` | `opencode-home/opencode.json` | `driver/test/executor-images.test.ts`, `test.sh` |
-| Telemetry plugin config (endpoint, `http/json`, delta temporality); baked global instructions, incl. context discipline | `opencode-home/otel.json`, `opencode-home/AGENTS.md` | `test.sh`, `driver/test/executor-images.test.ts` |
+| Telemetry plugin config (endpoint, `http/json`, delta temporality) at `OPENCODE_OTEL_CONFIG_PATH`, root-owned; the driver renders its endpoint | `otel.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/executor-images.test.ts`, `driver/test/telemetry-shipping.test.ts` |
+| Baked global instructions, incl. context discipline | `opencode-home/AGENTS.md` | `driver/test/executor-images.test.ts` |
 | Sidecars: branch reporting to `/api/sessions/branch` with live session discovery; killing a run hung after a provider rate limit | `branch-reporter.cjs`, `rate-limit-watch.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Skills, shared with claude-executor | `../skills/` | `driver/test/executor-images.test.ts` |
 
@@ -48,3 +49,7 @@ docker/opencode-executor/test.sh                   # builds opencode-executor-te
 docker run --rm -e ANTHROPIC_API_KEY -v "$PWD:/workspace" \
     opencode-executor run 'summarise the diff on this branch'
 ```
+
+To export telemetry, join the compose network (`--network factory-ai_default`); any other endpoint
+has to be rendered into `$OPENCODE_OTEL_CONFIG_PATH`, as the driver does — the plugin never reads
+`OTEL_EXPORTER_OTLP_ENDPOINT`.

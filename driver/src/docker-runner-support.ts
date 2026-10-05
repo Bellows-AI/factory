@@ -14,8 +14,7 @@ import { workspacePath, claimCarriesGithubToken } from './claim.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { workspacesMountArgs, containerName, containerHardeningArgs, dockerArgs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
-import { CLAUDE_CODE } from './executors.js';
-import { MANAGED_SETTINGS_DIR, managedSettingsTar } from './managed-settings.js';
+import { telemetryConfig, telemetryConfigTar } from './telemetry-config.js';
 import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import {
@@ -320,10 +319,9 @@ export interface RunnerFiles {
 }
 
 /**
- * Creates the runner container and, for claude-code, copies its managed settings in before
- * anything starts (issue #452): managed scope outranks every settings file the agent can reach,
- * and the container runs as the agent's uid, so the file arrives from outside, as a root-owned
- * 0444 archive (managedSettingsTar). A refusal of either step is the daemon's and reads the way
+ * Creates the runner container and copies its telemetry config in before anything starts
+ * (issue #452): the file decides where telemetry goes and what it carries, and the container runs
+ * as the agent's uid, so it arrives from outside, as a root-owned 0444 archive (telemetryConfigTar). A refusal of either step is the daemon's and reads the way
  * a refused `docker run` did — a container that never started, its leftover removed — so it
  * comes back as an outcome; null means the container is ready to start.
  */
@@ -336,11 +334,10 @@ export async function createRunnerContainer(
     const { config, execDocker } = deps;
     try {
         await execDocker(dockerArgs(config, job, session, options));
-        if (job.executorType === CLAUDE_CODE) {
-            await execDocker(['cp', '-', `${containerName(job)}:${MANAGED_SETTINGS_DIR}`], {
-                input: managedSettingsTar(config.otelEndpoint),
-            });
-        }
+        const telemetry = telemetryConfig(job.executorType, config.otelEndpoint);
+        await execDocker(['cp', '-', `${containerName(job)}:${telemetry.dir}`], {
+            input: telemetryConfigTar(telemetry),
+        });
         return null;
     } catch (error) {
         return dockerRunVerdict(CONTAINER_GONE, {
