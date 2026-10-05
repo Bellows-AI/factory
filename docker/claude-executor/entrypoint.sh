@@ -26,6 +26,23 @@ if [ ! -f "$CLAUDE_CONFIG_DIR/settings.json" ] && [ -d /opt/claude-home ]; then
     cp -a /opt/claude-home/. "$CLAUDE_CONFIG_DIR/"
 fi
 
+# The seed above runs once, but the directory outlives the container and the agent can edit its
+# settings.json — stripping the git guard hook there would disarm it for every later run of the
+# thread. So the baked `hooks` block (the fence, and the file's only content) is laid over the
+# persisted file on EVERY start; every other key is left as the thread wrote it. A settings.json
+# that no longer parses is replaced by the baked copy: the guard outranks the unreadable state.
+if [ -f /opt/claude-home/settings.json ] && [ -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then
+    SETTINGS="$CLAUDE_CONFIG_DIR/settings.json" node -e "
+        const fs = require('fs');
+        const f = process.env.SETTINGS;
+        const baked = JSON.parse(fs.readFileSync('/opt/claude-home/settings.json', 'utf8'));
+        let c;
+        try { c = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { c = baked; }
+        c.hooks = baked.hooks;
+        fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
+    " || echo "claude-executor: could not re-seed the baked hooks into settings.json" >&2
+fi
+
 if [ ! -d "$WORKDIR" ]; then
     echo "claude-executor: WORKDIR '$WORKDIR' does not exist." >&2
     echo "Mount a checkout at it, e.g. -v \"\$PWD:/workspace\"." >&2

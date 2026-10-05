@@ -200,6 +200,13 @@ describe('the claude-executor transcript redirect', () => {
         expect(entry).toMatch(/\n {4}export CLAUDE_CONFIG_DIR="\$FACTORY_TRANSCRIPT_DIR"\n/);
     });
 
+    it('re-lays the baked hooks block over the persisted settings.json on every start', () => {
+        const entry = read(ENTRYPOINT);
+        const reseed = entry.indexOf('/opt/claude-home/settings.json');
+        expect(reseed).toBeGreaterThan(entry.indexOf('cp -a /opt/claude-home/.'));
+        expect(entry).toContain('c.hooks = baked.hooks;');
+    });
+
     it('carries no Remote Control trust patch', () => {
         expect(read(ENTRYPOINT)).not.toContain('TRUST_WORKDIR');
     });
