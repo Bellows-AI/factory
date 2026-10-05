@@ -569,6 +569,52 @@ describe('the gate server', () => {
     });
 });
 
+describe('the gate server: run control (issue #442)', () => {
+    const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
+    const read = (port: number, token: string) =>
+        fetch(`http://127.0.0.1:${port}/control`, { headers: { authorization: `Bearer ${token}` } });
+
+    it('answers stop=false until a stop is raised, then true — idempotently, per token', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.openControl('tok-a');
+        server.openControl('tok-b');
+        const port = await server.listen();
+
+        expect(server.controlPolled('tok-a')).toBe(false);
+        await expect((await read(port, 'tok-a')).json()).resolves.toEqual({ stop: false });
+        expect(server.controlPolled('tok-a')).toBe(true);
+        expect(server.controlPolled('tok-b')).toBe(false);
+        server.raiseStop('tok-a');
+        server.raiseStop('tok-a');
+        await expect((await read(port, 'tok-a')).json()).resolves.toEqual({ stop: true });
+        // Another attempt's token is unaffected by the first one's stop.
+        await expect((await read(port, 'tok-b')).json()).resolves.toEqual({ stop: false });
+        await server.close();
+    });
+
+    it('opens without any gate registration and refuses unknown or closed tokens', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.openControl('tok-c');
+        const port = await server.listen();
+
+        expect((await read(port, 'tok-c')).status).toBe(OK_STATUS);
+        expect((await read(port, 'nope')).status).toBe(UNAUTHORIZED_STATUS);
+        server.raiseStop('unknown');
+        server.closeControl('tok-c');
+        expect((await read(port, 'tok-c')).status).toBe(UNAUTHORIZED_STATUS);
+        await server.close();
+    });
+
+    it('does not let a gate token read the control channel', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('gate-tok', { key: KEY, image: 'node:24', job: JOB, gates: [] });
+        const port = await server.listen();
+
+        expect((await read(port, 'gate-tok')).status).toBe(UNAUTHORIZED_STATUS);
+        await server.close();
+    });
+});
+
 describe('the gate server: run history for the timeout note', () => {
     // A timed-out run's kill note quotes the latest ad-hoc verdicts (issue #339), so the server
     // records them as they complete: one entry per declared gate name, the latest run winning.

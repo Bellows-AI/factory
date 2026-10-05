@@ -19,6 +19,17 @@
                     }
                 ]
             }
+        ],
+        "PostToolUse": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node /usr/local/bin/stop-hook.cjs",
+                        "timeout": 10
+                    }
+                ]
+            }
         ]
     }
 }

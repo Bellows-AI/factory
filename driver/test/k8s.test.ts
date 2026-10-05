@@ -408,6 +408,30 @@ describe('the runner job spec', () => {
         expect(JSON.stringify(container.env)).not.toContain('shh');
     });
 
+    // Issue #442: the run-control channel rides the same per-attempt Secret as the gate pair, so a
+    // kubernetes runner's stop poller reaches the driver pod's endpoint exactly as a docker one does.
+    it('names the run-control channel by secretKeyRef into the per-job Secret', () => {
+        const controlled: BoardJob = {
+            ...job,
+            gateEnv: {
+                BELLOWS_CONTROL_URL: 'http://10.1.2.3:41000',
+                BELLOWS_CONTROL_TOKEN: 'ctl-secret',
+                BELLOWS_CONTROL_POLL_MS: '5000',
+            },
+        };
+        const container = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), controlled, {
+            id: SESSION,
+            resume: false,
+        }).spec.template.spec.containers[0];
+        for (const name of ['BELLOWS_CONTROL_URL', 'BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_POLL_MS']) {
+            expect(container.env).toContainEqual({
+                name,
+                valueFrom: { secretKeyRef: { name: secretName(controlled), key: name } },
+            });
+        }
+        expect(JSON.stringify(container.env)).not.toContain('ctl-secret');
+    });
+
     it('carries no claim env entries for an env-less claim', () => {
         const container = spec().spec.template.spec.containers[0];
         // The attempt pair names the per-attempt Secret now, always — that is the runner's own

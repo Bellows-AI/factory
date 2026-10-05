@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
-import { envFileBody } from './claim.js';
+import { CONTROL_POLL_MS_ENV, CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import type { GateRun } from './gates.js';
-import { down, raceStep } from './loop-attempt.js';
+import { down, raceStep, RUN_CONTROL_POLL_MS } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import { worktreeRelDir } from './publish.js';
@@ -95,6 +95,38 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
         gates.manager.release(key, job);
         throw e;
     }
+}
+
+/**
+ * Opens the run-control channel for one attempt about to launch, gated or not (issue #442): a
+ * token scoped to this lease, advertised to the runner beside the gate pair so its stop poller
+ * can read a Stop the board raised. Best-effort — a driver whose endpoint cannot bind keeps
+ * today's immediate-kill Stop, said out loud, instead of refusing every job over a feature.
+ */
+export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
+    const { gates } = rt;
+    if (!gates) return;
+    try {
+        const port = await gates.server.listen();
+        const token = randomUUID();
+        gates.server.openControl(token);
+        job.gateEnv = {
+            ...job.gateEnv,
+            [CONTROL_URL_ENV]: gates.advertiseUrl(port),
+            [CONTROL_TOKEN_ENV]: token,
+            [CONTROL_POLL_MS_ENV]: String(RUN_CONTROL_POLL_MS),
+        };
+        state.control = token;
+    } catch (e) {
+        rt.log(
+            `job ${job.id}: could not open the run-control endpoint, a Stop will kill at once: ${(e as Error).message}`
+        );
+    }
+}
+
+/** Closes the attempt's control token, if one was opened. */
+export function closeRunControl(rt: LoopRuntime, state: JobState): void {
+    if (state.control !== null) rt.gates?.server.closeControl(state.control);
 }
 
 /** The declared gates of one running attempt: what `runDeclaredGates` and its helper share. */

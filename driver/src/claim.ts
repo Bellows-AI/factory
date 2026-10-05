@@ -104,6 +104,11 @@ export function workspacePath(job: BoardJob): string {
     return path;
 }
 
+/** The env names the loop mints for a launched attempt's run-control channel (issue #442). */
+export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';
+export const CONTROL_TOKEN_ENV = 'BELLOWS_CONTROL_TOKEN';
+export const CONTROL_POLL_MS_ENV = 'BELLOWS_CONTROL_POLL_MS';
+
 /**
  * The names the runner's own contract claims — WORKDIR is the working directory dockerArgs itself
  * sets, the two BELLOWS_GATE_ names are the
@@ -130,6 +135,11 @@ export const RESERVED_ENV_NAMES = [
     'WORKDIR',
     'BELLOWS_GATE_URL',
     'BELLOWS_GATE_TOKEN',
+    // The run-control channel the loop mints per launched attempt (issue #442): where the
+    // runner's stop poller reads the board's Stop, and how often.
+    CONTROL_URL_ENV,
+    CONTROL_TOKEN_ENV,
+    CONTROL_POLL_MS_ENV,
     'CRED_HELPER',
     'RESTORE',
     'SYNC_LOCK_WAIT_MS',

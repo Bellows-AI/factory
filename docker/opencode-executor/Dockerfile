@@ -172,7 +172,12 @@ COPY entrypoint.sh /usr/local/bin/opencode-executor
 # siblings of the CLI, outside the config directory nothing mounted at run time can shadow.
 COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
 COPY rate-limit-watch.cjs /usr/local/bin/rate-limit-watch.cjs
-RUN chmod 0755 /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs
+# The cooperative Stop (issue #442): the poller writes the stop marker, the baked factory-stop
+# plugin (registered in opencode.json) reads it at each step boundary. Root-owned like the other
+# baked plugins, so the agent cannot edit the plugin out of its own run.
+COPY stop-poller.cjs /usr/local/bin/stop-poller.cjs
+COPY stop-plugin/ /usr/local/lib/node_modules/factory-stop-plugin/
+RUN chmod 0755 /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/stop-poller.cjs
 
 USER node
 

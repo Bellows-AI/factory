@@ -160,16 +160,26 @@ fi
 CLI_PID=''
 REPORTER_PID=''
 PROGRESS_PID=''
+STOP_POLLER_PID=''
 TERM_PENDING=''
 on_term() {
     TERM_PENDING=1
     # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
-    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID $STOP_POLLER_PID 2>/dev/null || true
 }
 trap on_term TERM INT
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
+# The cooperative Stop (issue #442): the poller reads the driver's control endpoint and writes the
+# stop marker the baked PostToolUse hook (stop-hook.cjs) checks after each tool call. Exported so
+# the poller and the hook agree on one path; any marker left from before is cleared first. A
+# background sibling like the reporter, stdio discarded.
+FACTORY_STOP_MARKER=/tmp/factory-stop
+export FACTORY_STOP_MARKER
+rm -f "$FACTORY_STOP_MARKER"
+node /usr/local/bin/stop-poller.cjs >/dev/null 2>&1 &
+STOP_POLLER_PID=$!
 PROGRESS_DIR="$(mktemp -d)"
 PROGRESS_FIFO="$PROGRESS_DIR/events"
 mkfifo "$PROGRESS_FIFO"
@@ -195,7 +205,7 @@ CLI_PID=$!
 
 if [ -n "$TERM_PENDING" ]; then
     # shellcheck disable=SC2086 # same reason as on_term
-    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $PROGRESS_PID $STOP_POLLER_PID 2>/dev/null || true
 fi
 
 set +e
@@ -213,6 +223,8 @@ set -e
 # last thing that runs.
 kill -TERM "$REPORTER_PID" 2>/dev/null || true
 wait "$REPORTER_PID" 2>/dev/null || true
+kill -TERM "$STOP_POLLER_PID" 2>/dev/null || true
+wait "$STOP_POLLER_PID" 2>/dev/null || true
 kill -TERM "$PROGRESS_PID" 2>/dev/null || true
 wait "$PROGRESS_PID" 2>/dev/null || true
 rm -rf "$PROGRESS_DIR"

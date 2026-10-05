@@ -138,7 +138,11 @@ COPY entrypoint.sh /usr/local/bin/claude-executor
 COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
 COPY git-guard.cjs /usr/local/bin/git-guard.cjs
 COPY claude-progress.cjs /usr/local/bin/claude-progress.cjs
-RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs
+# The cooperative Stop (issue #442): the poller writes the stop marker, the PostToolUse hook in
+# settings.json reads it. Absolute paths in /usr/local/bin for the same reason as the git guard.
+COPY stop-poller.cjs /usr/local/bin/stop-poller.cjs
+COPY stop-hook.cjs /usr/local/bin/stop-hook.cjs
+RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/stop-poller.cjs /usr/local/bin/stop-hook.cjs
 
 USER node
 

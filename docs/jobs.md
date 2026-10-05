@@ -30,6 +30,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Gates, execution | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts`, `gates-limits.test.ts` |
 | Gate environment owned by the lease: release/cancel no-op for another attempt, per-lease k8s Secret, teardown awaited by acquire, one run per key | `driver/src/gates.ts`, `k8s-gates.ts`, `loop-gates.ts` | `driver/test/gates-ownership.test.ts` |
 | Gates skipped over an unclean run; the agent's `FACTORY_BLOCKED:` report | `driver/src/loop-ledger.ts`, `loop-verdict.ts`, `loop-run.ts` | `driver/test/loop-ledger.test.ts`, `loop.test.ts` |
+| Run control: the per-attempt `GET /control` endpoint (every launched attempt, gated or not), `BELLOWS_CONTROL_*` env, the runner's stop poller and step-boundary hook/plugin | `driver/src/gates.ts`, `loop-gates.ts`, `docker/claude-executor/stop-poller.cjs`, `stop-hook.cjs`, `docker/opencode-executor/stop-plugin/index.js` | `driver/test/gates.test.ts`, `driver/test/run-control.test.ts`, `driver/test/executor-images.test.ts` |
 | Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
 | Tree fingerprint: sync before, probe after the run and before the gates, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
@@ -71,9 +72,17 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 - **A `409` from heartbeat means the container must be killed.** The board can refuse a worker, it
   cannot stop one, so double execution is prevented by the driver acting on the refusal —
   `driver/src/loop*.ts`, guarded by `driver/test/loop.test.ts`.
-- **A `cancelRequested: true` beat means kill the run and `suspend` the row.** Same beat, same
-  kill, then a terminal `stopped` — `driver/test/loop.test.ts`,
+- **A `cancelRequested: true` beat during the setup phase or after the agent's run means kill and
+  `suspend` the row.** Same beat, same kill, then a terminal `stopped` — `driver/test/loop.test.ts`,
   `server/test-db/job-store.stop-remove.test.ts`.
+- **During the agent's run it means drain, not kill.** The first such beat raises the stop on the
+  attempt's control endpoint once (`JobState.draining`, not `down()`), the runner's poller turns it
+  into a marker the baked Claude Code hook / OpenCode plugin reads at the next model-step boundary,
+  and the attempt settles `stopped` when the agent exits — session report, artifacts, `suspend`;
+  never gates, post-helpers, publish or `complete`. `RUN_CONTROL_POLL_MS` (5 s) paces the beat and
+  the poller; `STOP_GRACE_MS` (5 min) is the hard-kill deadline. Lease loss and Remove still kill at
+  once. No config knob for either. A driver whose endpoint cannot bind keeps the immediate kill.
+  `driver/src/loop-attempt.ts`, `driver/test/loop.test.ts`, `driver/test/run-control.test.ts`.
 - **A null `masterPrompt` on the wire is refused before any setup step runs**
   (`masterPromptRefusalReason`, read in `driver/src/loop-run.ts` beside the executor-selection
   refusal) — `driver/test/master-prompt.test.ts`. The render is pure and fails closed; it never

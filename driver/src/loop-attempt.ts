@@ -16,6 +16,17 @@ const PROGRESS_MS = 2_000;
  * spawning — within one period, and the row settles `stopped` right away.
  */
 const SETUP_POLL_MS = 2_000;
+/**
+ * How often a launched attempt's heartbeat polls — and so how soon a Stop is seen — when that is
+ * sooner than a lease third. Also the pace the runner's stop poller reads the control endpoint at
+ * (handed to it as `BELLOWS_CONTROL_POLL_MS`). Not configurable (issue #442).
+ */
+export const RUN_CONTROL_POLL_MS = 5_000;
+/**
+ * How long a draining attempt (a Stop raised on the control endpoint, the agent finishing its
+ * current model step) gets before the hard kill lands. Not configurable (issue #442).
+ */
+export const STOP_GRACE_MS = 300_000;
 const MIN_HEARTBEAT_PERIOD_MS = 1_000;
 const HEARTBEAT_PERIOD_DIVISOR = 3;
 const MS_PER_SECOND = 1_000;
@@ -41,6 +52,26 @@ export interface JobState {
      * beat period — and at the lease's third afterwards (issue #126).
      */
     launched: boolean;
+    /**
+     * The attempt's run-control token (`BELLOWS_CONTROL_TOKEN`), set once the control endpoint is
+     * open for it; null until then, and for a driver with no endpoint at all.
+     */
+    control: string | null;
+    /**
+     * True only while `runner.run` is in flight — the agent is working. A Stop is cooperative
+     * only then; after the run (the gates, helpers, publish) there is no agent left to ask, and a
+     * Stop stands the attempt down at once as it always did.
+     */
+    running: boolean;
+    /**
+     * True once a Stop was raised on the control endpoint: the agent finishes its current model
+     * step and exits on its own, and the attempt settles as stopped when it does. Separate from
+     * `stopped` and excluded from `down()` — the lease keeps renewing and the gates a draining
+     * agent asked for keep running until the grace deadline or the exit.
+     */
+    draining: boolean;
+    /** The grace deadline's timer while draining; cleared when the attempt settles. */
+    graceTimer: ReturnType<typeof setTimeout> | null;
     /** Resolves the moment the run ends, so the heartbeat can stop waiting out its period. */
     woken: Promise<void>;
     wake: () => void;
@@ -67,6 +98,10 @@ export function newJobState(): JobState {
         stopped: false,
         removed: false,
         launched: false,
+        control: null,
+        running: false,
+        draining: false,
+        graceTimer: null,
         woken,
         wake,
         signal: controller.signal,
@@ -76,6 +111,11 @@ export function newJobState(): JobState {
 
 /** The verdicts that end an attempt where it stands: a stop, a lost lease, a removed thread. */
 export const down = (state: JobState): boolean => state.stopped || state.lost || state.removed;
+
+/** A draining attempt whose run threw was being stopped all along: it stands down as stopped. */
+export function stopIfDraining(state: JobState): void {
+    if (state.draining) state.stopped = true;
+}
 
 /** The loser side of every setup race: the stand-down resolved, the step did not. */
 const RACE_LOST = Symbol('raceStep: the stand-down won');
@@ -114,6 +154,28 @@ export async function raceStep<T>(signal: AbortSignal, step: Promise<T>): Promis
     }
 }
 
+/**
+ * A Stop on a launched attempt: raised once on the control endpoint, with the grace deadline
+ * armed. No kill — the agent finishes its current model step and exits, and the run's end settles
+ * the attempt as stopped. Later stop beats find `draining` set and do nothing. The deadline is the
+ * hard kill for an agent that never gets to a boundary.
+ */
+function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, control: string): void {
+    if (state.draining) return;
+    state.draining = true;
+    rt.gates?.server.raiseStop(control);
+    const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
+    rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
+    state.graceTimer = setTimeout(() => {
+        if (state.finished || down(state)) return;
+        state.stopped = true;
+        rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
+        state.abortNow();
+        void rt.runner.kill(job).catch(() => {});
+    }, graceMs);
+    state.graceTimer.unref?.();
+}
+
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
 async function applyHeartbeatVerdict(rt: LoopRuntime, job: BoardJob, state: JobState, verdict: HeartbeatVerdict) {
     const { runner, log } = rt;
@@ -124,6 +186,13 @@ async function applyHeartbeatVerdict(rt: LoopRuntime, job: BoardJob, state: JobS
         state.removed = true;
         log(`job ${job.id}: removed while it ran, killing the runner`);
     } else if (verdict.cancelRequested) {
+        // While the agent runs, with a control endpoint to raise the stop on: cooperative.
+        // Everywhere else (setup, the gates and later phases, a driver with no endpoint) the stop
+        // is today's immediate stand-down.
+        // Only when a poller has actually read the endpoint: otherwise nothing would ever hear it.
+        if (state.running && state.control !== null && rt.gates?.server.controlPolled(state.control)) {
+            return startDraining(rt, job, state, state.control);
+        }
         state.stopped = true;
         log(`job ${job.id}: stop requested, killing the runner`);
     }
@@ -184,9 +253,11 @@ async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained:
  */
 export function heartbeat(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
     const { config, sleep } = rt;
-    const every = Math.max(
-        MIN_HEARTBEAT_PERIOD_MS,
-        Math.floor((config.leaseSeconds * MS_PER_SECOND) / HEARTBEAT_PERIOD_DIVISOR)
+    // Once launched, never slower than the control poll: a Stop reaches the agent within one
+    // `RUN_CONTROL_POLL_MS` however long the lease is (issue #442).
+    const every = Math.min(
+        RUN_CONTROL_POLL_MS,
+        Math.max(MIN_HEARTBEAT_PERIOD_MS, Math.floor((config.leaseSeconds * MS_PER_SECOND) / HEARTBEAT_PERIOD_DIVISOR))
     );
     return (async () => {
         let complained = false;

@@ -504,6 +504,19 @@ describe("the board's environment", () => {
         );
     });
 
+    // Issue #442: the run-control channel the loop mints per attempt rides the env file, after the
+    // claim lines — and a member cannot mint it for themselves.
+    it('writes the run-control channel after the claim lines, and drops a member-set one', () => {
+        const controlled = {
+            ...envJob,
+            env: { MY_TOKEN: 'board-secret', BELLOWS_CONTROL_TOKEN: 'member-forged' },
+            gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:41000', BELLOWS_CONTROL_TOKEN: 'minted' },
+        };
+        expect(envFileBody(controlled)).toBe(
+            'MY_TOKEN=board-secret\nBELLOWS_CONTROL_URL=http://driver:41000\nBELLOWS_CONTROL_TOKEN=minted\n'
+        );
+    });
+
     it('never forwards a name the runner itself claims', () => {
         expect(claimEnv(envJob)).toEqual({ MY_TOKEN: 'board-secret' });
         const line = dockerArgs(

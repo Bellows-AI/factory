@@ -21,6 +21,8 @@ export interface LoopDeps {
     gates?: GateStack;
     log?: (message: string) => void;
     sleep?: (ms: number) => Promise<void>;
+    /** Test seam for the draining grace (`STOP_GRACE_MS`); production never sets it. */
+    stopGraceMs?: number;
 }
 
 const COMPLETE_ATTEMPTS = 5;
@@ -67,7 +69,15 @@ function claimRefusal(job: BoardJob): { log: string; output: string } | null {
     return null;
 }
 
-export function createLoop({ board, runner, config, gates, log = () => {}, sleep = wait }: LoopDeps): Loop {
+export function createLoop({
+    board,
+    runner,
+    config,
+    gates,
+    log = () => {},
+    sleep = wait,
+    stopGraceMs,
+}: LoopDeps): Loop {
     let running = true;
     const active = new Set<Promise<void>>();
 
@@ -105,7 +115,17 @@ export function createLoop({ board, runner, config, gates, log = () => {}, sleep
      * Built once and handed to every `runJob` (moved to loop-run.ts, issue #223's line-count
      * split): none of these change between attempts, only the job each call carries does.
      */
-    const rt: LoopRuntime = { board, runner, config, log, sleep, reclaims, report, ...(gates ? { gates } : {}) };
+    const rt: LoopRuntime = {
+        board,
+        runner,
+        config,
+        log,
+        sleep,
+        reclaims,
+        report,
+        ...(gates ? { gates } : {}),
+        ...(stopGraceMs === undefined ? {} : { stopGraceMs }),
+    };
 
     /**
      * The verdict is reported, then the task worktree is reclaimed — but only when the thread is

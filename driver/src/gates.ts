@@ -410,10 +410,29 @@ export interface GateServer {
      * failure (409/500) is not a verdict and records nothing; unregister clears.
      */
     lastRuns(token: string): readonly GateRunNote[];
+    /**
+     * Opens the run-control channel for one attempt: `GET /control` under this token answers
+     * `{ stop }`, false until `raiseStop`. Independent of any gate registration — every launched
+     * attempt gets one, gated or not. Idempotent.
+     */
+    openControl(token: string): void;
+    /**
+     * Whether a runner has read this control token at least once. A stop is cooperative only when
+     * something is listening: an unpolled token (an old image, an unreachable endpoint) is killed
+     * at once instead of waiting out the grace.
+     */
+    controlPolled(token: string): boolean;
+    /** Raises the stop on an open control token; repeated calls and unknown tokens do nothing. */
+    raiseStop(token: string): void;
+    /** Ends the control token: the runner's poller gets 401 from here on. */
+    closeControl(token: string): void;
     /** Idempotent. Resolves with the bound port, which is what the advertised URL is built from. */
     listen(): Promise<number>;
     close(): Promise<void>;
 }
+
+/** The run-control poll route the runner's stop poller reads (docker/*-executor/stop-poller.cjs). */
+export const CONTROL_PATH = '/control';
 
 /** `{"gate":"<≤64 chars>"}` — a body many times that size is an attack, not a request. */
 const BODY_LIMIT = 4096;
@@ -510,6 +529,8 @@ export function createGateServer({
     const cancels = new Map<string, AbortController>();
     /** Per token, the latest completed run per gate name — the timeout note's raw material. */
     const history = new Map<string, Map<string, GateRunNote>>();
+    /** Per control token, whether a stop has been raised on it. */
+    const controls = new Map<string, { stop: boolean; polled: boolean }>();
     let server: Server | null = null;
     let listening: Promise<number> | null = null;
 
@@ -519,11 +540,25 @@ export function createGateServer({
         reply.end(JSON.stringify(body));
     };
 
+    /** The runner's stop poll: `{ stop }` for an open control token, 401 for any other. */
+    const handleControl = (auth: string, reply: ServerResponse): void => {
+        const control = controls.get(auth);
+        if (control) control.polled = true;
+        if (control) respond(reply, HTTP_OK, { stop: control.stop });
+        else respond(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
+    };
+
     const handle = async (request: IncomingMessage, reply: ServerResponse): Promise<void> => {
+        const auth = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
+        if (request.method === 'GET' && request.url === CONTROL_PATH) return handleControl(auth, reply);
         if (request.method !== 'POST' || request.url !== '/run') {
             return respond(reply, HTTP_NOT_FOUND, { error: 'not found' });
         }
-        const auth = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
+        return handleRun(request, reply, auth);
+    };
+
+    /** The ad-hoc gate call: `POST /run` under a gate token. */
+    const handleRun = async (request: IncomingMessage, reply: ServerResponse, auth: string): Promise<void> => {
         const claim = claims.get(auth);
         if (!claim) return respond(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
 
@@ -576,6 +611,19 @@ export function createGateServer({
         cancel(token) {
             this.unregister(token);
         },
+        openControl(token) {
+            if (!controls.has(token)) controls.set(token, { stop: false, polled: false });
+        },
+        controlPolled(token) {
+            return controls.get(token)?.polled ?? false;
+        },
+        raiseStop(token) {
+            const control = controls.get(token);
+            if (control) control.stop = true;
+        },
+        closeControl(token) {
+            controls.delete(token);
+        },
         lastRuns(token) {
             return [...(history.get(token)?.values() ?? [])];
         },
@@ -620,6 +668,7 @@ export function createGateServer({
             server = null;
             listening = null;
             claims.clear();
+            controls.clear();
             history.clear();
             closing.closeAllConnections();
             return new Promise((resolve) => closing.close(() => resolve()));
