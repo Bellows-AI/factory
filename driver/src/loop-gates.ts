@@ -65,7 +65,7 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
     // The job is the kubernetes gate manager's attempt context — its gate Jobs carry the
     // job and lease labels, and their names are derived from them. The docker manager joins
     // the attempt's services network by it.
-    await gates.manager.acquire(key, job.gates.image, envBody, job);
+    await gates.manager.acquire(key, job.gates.image, envBody, { job, signal: state.signal });
     // A stand-down that landed while the acquire was in flight leaves the environment here:
     // the caller has stopped waiting and holds no session to release through (issue #126).
     if (down(state)) {
@@ -147,7 +147,7 @@ async function runOneGate(ctx: GatesRunCtx, gate: { name: string; command: strin
     const { gates } = rt;
     if (!gates) return null;
     return gates.manager
-        .acquire(gateSession.key, gateSession.image, gateSession.envBody, job)
+        .acquire(gateSession.key, gateSession.image, gateSession.envBody, { job })
         .then(() => {
             // The heartbeat can mark the lease lost — or the task stopped or removed — while
             // acquire is pending: a slow revival or cluster request outlives the beat that said

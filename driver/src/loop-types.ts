@@ -83,5 +83,5 @@ export type SetupHalt =
  */
 export type SetupConclusion = SetupHalt | typeof STOOD_DOWN;
 
-/** A terminal outcome of a setup step: it already reported and settled, or stood the attempt down. */
+/** A setup step's answer that the attempt is down: `runPhases` (`loop-run.ts`) acts on it through `standDown`. */
 export const STOOD_DOWN = 'stood-down' as const;

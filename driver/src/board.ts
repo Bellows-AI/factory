@@ -290,9 +290,12 @@ export interface Board {
      * driver's startup sync freshened the checkout, so a repository whose gates file just arrived
      * would run ungated for its whole first task if the stale answer stood. Null — a refused,
      * lost, or failed answer — keeps the claim's decision; freshness is worth a request, not a
-     * error path.
+     * error path. An aborted `signal` (the attempt's stand-down) cancels the request; the answer is null.
      */
-    rereadGates(job: BoardJob): Promise<{ gates: BoardJob['gates']; gateError: string | null } | null>;
+    rereadGates(
+        job: BoardJob,
+        signal?: AbortSignal
+    ): Promise<{ gates: BoardJob['gates']; gateError: string | null } | null>;
     /**
      * A credential to publish this job's work with, fresh enough for the push. The claim env's
      * GITHUB_TOKEN was minted at claim time and a long run can outlive it — observed 2026-09-13:
@@ -473,7 +476,7 @@ export function createBoard({
     token?: string | undefined;
     fetch?: Fetch;
 }): Board {
-    const post = async (path: string, body: unknown, allow404 = false): Promise<Response> => {
+    const post = async (path: string, body: unknown, allow404 = false, signal?: AbortSignal): Promise<Response> => {
         const response = await fetch(`${url}${path}`, {
             method: 'POST',
             headers: {
@@ -484,6 +487,7 @@ export function createBoard({
                 ...(token ? { authorization: `Bearer ${token}` } : {}),
             },
             body: JSON.stringify(body),
+            ...(signal ? { signal } : {}),
         });
         // 409 is a verdict, not a failure; 404 is a verdict too for the calls that ask for one (a
         // heartbeat against a removed thread, an ack for a row that left the queue); everything
@@ -594,9 +598,10 @@ export function createBoard({
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
-        async rereadGates(job) {
+        async rereadGates(job, signal) {
             try {
-                const response = await post(`/api/jobs/${job.id}/gates-reread`, { leaseToken: job.leaseToken });
+                const lease = { leaseToken: job.leaseToken };
+                const response = await post(`/api/jobs/${job.id}/gates-reread`, lease, false, signal);
                 if (!response.ok) return null;
                 const body = (await response.json()) as { gates?: BoardJob['gates']; gateError?: string | null };
                 return { gates: body.gates ?? null, gateError: body.gateError ?? null };

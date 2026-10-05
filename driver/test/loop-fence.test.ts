@@ -123,6 +123,25 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(lines.join('\n')).toContain('lease was lost during setup');
     });
 
+    it('runs the pre-park hook for a stopped attempt, after the settle and before the park', async () => {
+        const { ctx, calls } = fencedAttempt();
+        ctx.state.stopped = true;
+
+        expect(await standDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
+
+        expect(calls).toEqual([...CLAIM_BACK, 'hook', 'suspend', 'log']);
+    });
+
+    it.each(['lost', 'removed'] as const)('skips the pre-park hook when the lease is %s', async (verdict) => {
+        const { ctx, calls, lines } = fencedAttempt();
+        ctx.state[verdict] = true;
+
+        expect(await standDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
+
+        expect(calls).toEqual([...CLAIM_BACK, 'log']);
+        expect(lines.join('\n')).toContain('during its run');
+    });
+
     it('answers an attempt that is not down with nothing done', async () => {
         const { ctx, calls } = fencedAttempt();
 
@@ -179,6 +198,13 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
             .filter(([file, source]) => file !== 'loop-attempt.ts' && source.includes('new AbortController'))
             .map(([file]) => file);
         expect(minting).toEqual([]);
+    });
+
+    it('leaves loop-run no second stand-down path and no phase-level check of its own', () => {
+        // What remains of `down(state)` are re-checks after an await INSIDE a step (loop-gates,
+        // loop-helpers); a phase boundary asks `standDown` (issue #488).
+        const run = loopSources().find(([file]) => file === 'loop-run.ts')?.[1] ?? '';
+        expect(run).not.toMatch(/settleNonFinish|\bdown\(/);
     });
 
     it('fences every phase boundary from loop-run, and nowhere else', () => {

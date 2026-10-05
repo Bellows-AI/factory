@@ -138,4 +138,9 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   `AUTH_MODE=none` the worker routes are open too ([docs/security.md](security.md)).
 - No service volumes, health checks, `depends_on` ordering or restart policies in `.bellows.yaml`;
   the one liveness read is the dead-service probe before the gates.
+- No abort for an in-flight publish: a push cannot be recalled, so a lease lost after
+  `publishBranch` pushed stands down without reporting and the next holder re-runs it
+  (`driver/test/loop.test.ts`, "a lease lost after the push"). Nor for the kubernetes checkout
+  sync, which writes the worktree: a stand-down abandons it and `releaseAbandonedSync` hands the
+  claim back when it lands.
 - No artifact TTL sweeper: retention is the job row's lifetime, by `on delete cascade`.
