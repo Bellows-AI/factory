@@ -116,11 +116,15 @@ describe('the executor branch reporter', () => {
         // empty until its child starts, and an empty "$VAR" would hand kill an empty argument
         // instead of nothing at all.
         if (cli === 'opencode') {
-            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$WATCHER_PID/);
-            expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" 2>\/dev\/null \|\| true/);
+            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$WATCHER_PID \$STOP_POLLER_PID/);
+            expect(entry).toMatch(
+                /kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" "\$STOP_POLLER_PID" 2>\/dev\/null \|\| true/
+            );
+            expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" "\$STOP_POLLER_PID" 2>\/dev\/null \|\| true/);
         } else {
-            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$PROGRESS_PID/);
+            expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$PROGRESS_PID \$STOP_POLLER_PID/);
+            expect(entry).toMatch(/kill -TERM "\$STOP_POLLER_PID" 2>\/dev\/null \|\| true/);
+            expect(entry).toMatch(/wait "\$STOP_POLLER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
             expect(entry).toMatch(/wait "\$PROGRESS_PID" 2>\/dev\/null \|\| true/);

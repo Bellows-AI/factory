@@ -13,6 +13,7 @@ there is no CRD and no second control loop.
 | Wire types, the transport, protocol constants and status thresholds | `driver/src/k8s-transport.ts` | `driver/test/k8s-transport.test.ts` |
 | Job specs: runner, gates, readouts, transcript; sync/reclaim/publish/service; per-attempt Secret naming; resource, scheduling and disruption fields | `driver/src/k8s-podspec.ts`, `k8s-auxspec.ts`, `k8s-podfields.ts` | `driver/test/k8s.test.ts` |
 | The re-claim fence (checkout-claim ConfigMap, sweep, create brackets), the polling it brackets, and what a Stop mid-run leaves them (`k8s-kill.ts`) | `driver/src/k8s-fence.ts`, `k8s-poll.ts`, `k8s-kill.ts` | `driver/test/k8s.test.ts` |
+| The cooperative Stop's control channel: `BELLOWS_CONTROL_*` rides the per-attempt Secret beside the gate pair, and the runner polls the driver pod's own IP, so Kubernetes drains exactly as docker does | `driver/src/k8s-podspec.ts`, `k8s-fence.ts`, `loop-gates.ts` | `driver/test/k8s.test.ts`, `driver/test/loop.test.ts` |
 | Gates as Jobs; declared services as pods under the attempt's headless Service | `driver/src/k8s-gates.ts`, `k8s-services.ts` | `driver/test/k8s.test.ts` |
 | The orphan reaper | `driver/src/reaper.ts`, `driver/src/k8s-reaper.ts` | `driver/test/k8s-reaper.test.ts` |
 | Every `EXECUTOR`, `K8S_*` and `RUNNER_*` variable, with its boot-time validation | `driver/src/config.ts` | `driver/test/config.test.ts` |

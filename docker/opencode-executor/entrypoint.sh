@@ -142,16 +142,26 @@ fi
 CLI_PID=''
 REPORTER_PID=''
 WATCHER_PID=''
+STOP_POLLER_PID=''
 TERM_PENDING=''
 on_term() {
     TERM_PENDING=1
     # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
-    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $STOP_POLLER_PID 2>/dev/null || true
 }
 trap on_term TERM INT
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
+# The cooperative Stop (issue #442): the poller reads the driver's control endpoint and writes the
+# stop marker the baked factory-stop plugin checks at each step boundary. Exported so the poller
+# and the plugin agree on one path; any marker left from before is cleared first. A background
+# sibling like the reporter, stdio discarded.
+FACTORY_STOP_MARKER=/tmp/factory-stop
+export FACTORY_STOP_MARKER
+rm -f "$FACTORY_STOP_MARKER"
+node /usr/local/bin/stop-poller.cjs >/dev/null 2>&1 &
+STOP_POLLER_PID=$!
 # The CLI is forked through a subshell that CLEARS the inherited handler and execs. A background
 # child inherits the parent's traps until it execs, so a TERM landing in that sliver runs
 # `on_term` IN THE CHILD — which sets a copy of TERM_PENDING nothing reads, and swallows the very
@@ -176,7 +186,7 @@ WATCHER_PID=$!
 
 if [ -n "$TERM_PENDING" ]; then
     # shellcheck disable=SC2086 # same reason as on_term
-    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $STOP_POLLER_PID 2>/dev/null || true
 fi
 
 set +e
@@ -192,7 +202,7 @@ set -e
 
 # The run is over: stop the sampler and the watcher and reap them before the close-time sample,
 # which is the last thing that runs.
-kill -TERM "$REPORTER_PID" "$WATCHER_PID" 2>/dev/null || true
-wait "$REPORTER_PID" "$WATCHER_PID" 2>/dev/null || true
+kill -TERM "$REPORTER_PID" "$WATCHER_PID" "$STOP_POLLER_PID" 2>/dev/null || true
+wait "$REPORTER_PID" "$WATCHER_PID" "$STOP_POLLER_PID" 2>/dev/null || true
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
 exit "$STATUS"

@@ -3,8 +3,15 @@ import type { BoardJob } from './board.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
-import { beginGates, probeDeadServices, releaseGateSession, runDeclaredGates } from './loop-gates.js';
-import { down, heartbeat, newJobState, raceStep, watchOutput } from './loop-attempt.js';
+import {
+    beginGates,
+    closeRunControl,
+    openRunControl,
+    probeDeadServices,
+    releaseGateSession,
+    runDeclaredGates,
+} from './loop-gates.js';
+import { down, heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
 import { concludeSetup, handBackFence, releaseAbandonedSync, standDown } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
@@ -306,7 +313,9 @@ async function settleNonFinish(
         log(`job ${job.id}: removed while it ran; the queue owns the tree`);
         return true;
     }
-    if (state.stopped) {
+    // A draining attempt settles as stopped even after a clean exit: the agent stopped because it
+    // was asked to, so no gates, helpers, publish or `complete` follow (issue #442).
+    if (state.stopped || state.draining) {
         await settle();
         await reportScrapedSession(rt, job, executorType, outcome);
         // The artifacts ride the same pre-park window the session report does (issue #325):
@@ -336,6 +345,9 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     const { rt, job, state, settle } = ctx;
     const { runner, log } = rt;
     const { session, gateSession, executorType, onOutput } = inputs;
+    // Every launched attempt gets a control endpoint (issue #442), minted before the stand-down
+    // check so the env the runner is launched with already names it.
+    await openRunControl(rt, job, state);
     // A Stop, lost lease or Remove that landed during setup, before the spawn: nothing runs, and
     // the stand-down fence releases a claim the runner never took.
     if (await standDown(ctx, 'setup')) return { done: true };
@@ -343,7 +355,10 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // The launch hands the checkout claim to the runner, which releases it when the run ends.
     ctx.fenced = false;
 
-    const outcome = await runner.run(job, session, onOutput);
+    state.running = true;
+    const outcome = await runner.run(job, session, onOutput).finally(() => {
+        state.running = false;
+    });
     // The run's end, stamped HERE — not at verdict time: the gates, helpers and session scrape
     // below can run minutes after a kill, and the timeout note's active/idle verdict must
     // describe the run as it ended, not as it was reported.
@@ -537,6 +552,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
 
     const settle = async () => {
         state.finished = true;
+        if (state.graceTimer) clearTimeout(state.graceTimer);
         state.wake();
         await beating;
     };
@@ -589,6 +605,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 treeChanged: outcome.treeChanged,
             });
         } finally {
+            closeRunControl(rt, state);
             if (gateSession) releaseGateSession(rt, gateSession, job);
             // The services outlived run() for the declared gates' sake; they go now, on every
             // exit path — a thrown run included, whose own cleanup no longer takes them.
@@ -602,6 +619,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         // lease simply expires and the job is offered again, which is visible in `attempts`.
         // A killed run can reject (the runner's own Job vanished under it): the stand-down
         // that killed it owns the settlement, not the lease.
+        stopIfDraining(state);
         if (await standDown(ctx, 'its run')) return;
         // A throw is the path that would otherwise leak the claim: no runner ever launched, so none
         // of them releases it, and it would sit there until the cluster noticed (issue #469).

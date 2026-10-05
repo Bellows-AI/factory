@@ -47,8 +47,7 @@ const runner = config.executor === 'kubernetes' ? createKubernetesRunner(config,
 // The gate machinery exists under both executors: docker keeps a warm environment container per
 // checkout and execs into it, kubernetes runs each gate as a Job in the declared image — the
 // runner decides, the loop does not. The endpoint is NOT opened here — the server listens
-// lazily on the first gated claim, so a driver that never meets a gated job opens no socket at
-// all.
+// lazily on the first launched attempt (it also carries the run-control channel, issue #442).
 const gates: GateStack = (() => {
     if (config.executor === 'kubernetes') {
         const manager = createKubernetesGateManager({ config, request: request! });

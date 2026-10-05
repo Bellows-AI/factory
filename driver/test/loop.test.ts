@@ -16,7 +16,7 @@ import type { PublishResult, ReclaimResult, SyncResult } from '../src/publish.js
 import { createLoop, type Loop } from '../src/loop.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
-import { newJobState, watchOutput } from '../src/loop-attempt.js';
+import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -340,8 +340,11 @@ async function drive(
  * scripted exit codes; the server's listen answers a fixed port so the advertised URL is
  * predictable.
  */
-function stubGateStack(outcomes: Record<string, number> = {}) {
+function stubGateStack(outcomes: Record<string, number> = {}, options: { control?: boolean; polled?: boolean } = {}) {
     const stack = {
+        controlOpened: [] as string[],
+        stopsRaised: [] as string[],
+        controlClosed: [] as string[],
         acquired: [] as string[],
         released: [] as string[],
         registered: 0,
@@ -372,6 +375,19 @@ function stubGateStack(outcomes: Record<string, number> = {}) {
             },
             cancel: (token: string) => {
                 stack.cancelled.push(token);
+            },
+            // The run-control channel (issue #442) is opt-in: a stack without it models a driver
+            // whose endpoint could not open, where a Stop kills at once.
+            openControl: (token: string) => {
+                if (!options.control) throw new Error('no control endpoint in this stub');
+                stack.controlOpened.push(token);
+            },
+            controlPolled: () => options.polled ?? true,
+            raiseStop: (token: string) => {
+                stack.stopsRaised.push(token);
+            },
+            closeControl: (token: string) => {
+                stack.controlClosed.push(token);
             },
             // No ad-hoc gate ran through this stub, so the timeout note's verdict history is empty.
             lastRuns: () => [],
@@ -4280,5 +4296,259 @@ describe('a stand-down after the gates (issue #427)', () => {
 
         expect(runner.killed).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
+    });
+});
+
+describe('a cooperative stop (issue #442)', () => {
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const until = async (condition: () => boolean) => {
+        for (let i = 0; i < 2_000 && !condition(); i++) await tick();
+        expect(condition()).toBe(true);
+    };
+
+    async function driveControlled(
+        deps: { board: BoardStub; attach: (loop: Loop) => void; runner: Runner; gates: GateStack },
+        options: { stopGraceMs?: number; sleep?: (ms: number) => Promise<void>; env?: NodeJS.ProcessEnv } = {}
+    ) {
+        const loop = createLoop({
+            board: deps.board,
+            runner: deps.runner,
+            config: config(options.env),
+            gates: deps.gates,
+            sleep: options.sleep ?? sleep,
+            ...(options.stopGraceMs === undefined ? {} : { stopGraceMs: options.stopGraceMs }),
+        });
+        deps.attach(loop);
+        await loop.start();
+        return loop;
+    }
+
+    it('lets the agent exit on its own: one stop on the control endpoint, no kill, parked stopped', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const { stack, gates } = stubGateStack({}, { control: true });
+        let launchedEnv: BoardJob['gateEnv'];
+        const runner = stubRunner(async (running) => {
+            launchedEnv = { ...running.gateEnv };
+            options.cancelRequested = true;
+            // Several stop beats land while the agent is still finishing its step.
+            const target = board.board.beats + 4;
+            await until(() => board.board.beats >= target);
+            return ok();
+        });
+
+        await driveControlled({ ...board, runner, gates });
+
+        // Ungated job, yet the endpoint opened: the control channel is not a gate feature.
+        expect(Object.keys(launchedEnv ?? {}).sort()).toEqual([
+            'BELLOWS_CONTROL_POLL_MS',
+            'BELLOWS_CONTROL_TOKEN',
+            'BELLOWS_CONTROL_URL',
+        ]);
+        expect(launchedEnv?.BELLOWS_CONTROL_POLL_MS).toBe('5000');
+        expect(stack.controlOpened).toEqual([launchedEnv?.BELLOWS_CONTROL_TOKEN]);
+        // Repeated stop beats are idempotent: one raise, scoped to this attempt's token.
+        expect(stack.stopsRaised).toEqual(stack.controlOpened);
+        expect(runner.killed).toEqual([]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+        expect(stack.controlClosed).toEqual(stack.controlOpened);
+    });
+
+    it('runs no declared gate, post-helper, publish or completion after a draining exit', async () => {
+        const postPlan: HelperPlan = { helperId: 'noop', phase: 'post', input: null, githubWriting: false };
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([{ ...gatedJob(1), helperPlans: [postPlan] }], options);
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            const target = board.board.beats + 2;
+            await until(() => board.board.beats >= target);
+            // A clean exit: the agent stopped at a step boundary because it was asked to.
+            return ok();
+        });
+        runner.runHelper = async () => {
+            throw new Error('no helper may run after a stop');
+        };
+
+        await driveControlled({ ...board, runner, gates });
+
+        expect(stack.ran.names).toEqual([]);
+        expect(runner.published).toEqual([]);
+        expect(runner.killed).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    it('reports the session and artifacts before the park, even after a clean draining exit', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([{ ...job(1), executorType: 'opencode' }], options);
+        const events: string[] = [];
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            events.push(
+                `parked after ${board.board.sessions.length} session(s) and ${board.board.artifacts.length} artifact(s)`
+            );
+            return rawSuspend(claimed);
+        };
+        const { gates } = stubGateStack({}, { control: true });
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            const target = board.board.beats + 2;
+            await until(() => board.board.beats >= target);
+            return ok({ sessionId: 'ses_drained000000000000001', fullLog: 'log\n' });
+        });
+
+        await driveControlled({ ...board, runner, gates });
+
+        expect(events).toEqual(['parked after 1 session(s) and 1 artifact(s)']);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('force-kills an agent that has not stopped when the grace passes', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            // A hung agent: it only ends because the grace deadline killed it.
+            await until(() => runner.killed.length > 0);
+            return ok({ exitCode: 137 });
+        });
+
+        await driveControlled({ ...board, runner, gates }, { stopGraceMs: 30 });
+
+        expect(stack.stopsRaised).toHaveLength(1);
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('does not arm the grace kill once the run ends', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const { gates } = stubGateStack({}, { control: true });
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            const target = board.board.beats + 2;
+            await until(() => board.board.beats >= target);
+            return ok();
+        });
+
+        await driveControlled({ ...board, runner, gates }, { stopGraceMs: 40 });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+
+        expect(runner.killed).toEqual([]);
+    });
+
+    it('still kills at once on a lost lease while draining', async () => {
+        const board = stubBoard([job(1)]);
+        let verdict: HeartbeatVerdict = { result: 'held', cancelRequested: false };
+        board.board.heartbeat = async () => {
+            board.board.beats += 1;
+            return verdict;
+        };
+        const { gates } = stubGateStack({}, { control: true });
+        const runner = stubRunner(async () => {
+            verdict = { result: 'held', cancelRequested: true };
+            const target = board.board.beats + 2;
+            await until(() => board.board.beats >= target);
+            verdict = 'lost';
+            await until(() => runner.killed.length > 0);
+            return ok();
+        });
+
+        await driveControlled({ ...board, runner, gates });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([]);
+    });
+
+    it('stops at once, as before, when the driver has no control endpoint', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const { gates } = stubGateStack();
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            await until(() => runner.killed.length > 0);
+            return ok();
+        });
+
+        await driveControlled({ ...board, runner, gates });
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    it('kills at once when no runner ever polled the control endpoint', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const { stack, gates } = stubGateStack({}, { control: true, polled: false });
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            await until(() => runner.killed.length > 0);
+            return ok();
+        });
+
+        await driveControlled({ ...board, runner, gates });
+
+        expect(stack.stopsRaised).toEqual([]);
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    it('settles a draining attempt as stopped when its run rejects', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const { gates } = stubGateStack({}, { control: true });
+        const runner = stubRunner(async () => {
+            options.cancelRequested = true;
+            const target = board.board.beats + 2;
+            await until(() => board.board.beats >= target);
+            throw new Error('the pod vanished under the agent');
+        });
+
+        await driveControlled({ ...board, runner, gates });
+
+        expect(runner.killed).toEqual([]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('polls at RUN_CONTROL_POLL_MS under a long lease, not at a lease third', async () => {
+        const board = stubBoard([job(1)]);
+        const { gates } = stubGateStack({}, { control: true });
+        const slept: number[] = [];
+        const runner = stubRunner(async () => {
+            const target = board.board.beats + 3;
+            await until(() => board.board.beats >= target);
+            return ok();
+        });
+
+        await driveControlled(
+            { ...board, runner, gates },
+            {
+                env: { DRIVER_LEASE_SECONDS: '3600', DRIVER_POLL_MS: '1000' },
+                sleep: (ms) => {
+                    slept.push(ms);
+                    return sleep();
+                },
+            }
+        );
+
+        expect(slept).toContain(RUN_CONTROL_POLL_MS);
+        expect(Math.max(...slept)).toBe(RUN_CONTROL_POLL_MS);
+    });
+
+    it('gives a replacement attempt its own control token', async () => {
+        const board = stubBoard([job(1), job(2)], { idleBeforeStop: 1 });
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const runner = stubRunner(async () => ok());
+
+        await driveControlled({ ...board, runner, gates });
+
+        expect(stack.controlOpened).toHaveLength(2);
+        expect(new Set(stack.controlOpened).size).toBe(2);
+        expect(stack.stopsRaised).toEqual([]);
     });
 });

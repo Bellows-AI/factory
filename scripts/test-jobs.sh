@@ -1028,5 +1028,66 @@ else
     fi
 fi
 
+# --- A cooperative Stop at the model-step boundary (issue #442) --------------------------------
+#
+# The real `claude` and `opencode` binaries, in the real executor images (`make runners`), against
+# scripts/fake-model-endpoint.mjs: offline, deterministic, no credential. The endpoint also plays
+# the driver's control endpoint and raises the Stop the moment the first model request arrives —
+# inside the first step. The stop poller turns it into the marker, and the baked hook / plugin
+# must end the run after that step's tool call and before a second model request: the endpoint
+# counts exactly one agent request, the first step's tool ran, the second never did, and the
+# container exited on its own.
+
+echo
+echo '# cooperative stop (real agent CLIs against a scripted model endpoint)'
+
+stop_lane() { # stop_lane <claude|opencode>
+    local cli="$1" image="$1-executor" dir="$work/stop-$1" fake_pid port requests
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli stops at the step boundary" "the $image image is missing — run make runners"
+        return
+    fi
+    mkdir -p "$dir"
+    chmod 777 "$dir"
+    node scripts/fake-model-endpoint.mjs --first-delay-ms 3000 --tool-steps 3 >"$work/fake-$cli.port" &
+    fake_pid=$!
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-$cli.port" ] && break
+        sleep 0.25
+    done
+    port="$(cat "$work/fake-$cli.port")"
+    local host="http://host.docker.internal:$port" run=(docker run --rm --add-host host.docker.internal:host-gateway)
+    run+=(-v "$dir:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key
+        -e "BELLOWS_CONTROL_URL=$host" -e BELLOWS_CONTROL_TOKEN=lane -e BELLOWS_CONTROL_POLL_MS=200)
+    if [ "$cli" = claude ]; then
+        run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" -p 'touch the step markers' --dangerously-skip-permissions
+            --model fake-model)
+    else
+        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            "$image" run 'touch the step markers')
+    fi
+    if timeout 180 "${run[@]}" >"$work/stop-$cli.log" 2>&1; then
+        ok "$cli exits on its own after the stop"
+    else
+        bad "$cli exits on its own after the stop" "$(tail -5 "$work/stop-$cli.log")"
+    fi
+    requests="$(node -e 'fetch(process.argv[1] + "/requests").then((r) => r.json()).then((j) => console.log(j.agentRequests))' "http://127.0.0.1:$port")"
+    kill "$fake_pid" 2>/dev/null
+    wait "$fake_pid" 2>/dev/null
+    if [ "$requests" = 1 ]; then
+        ok "$cli makes no model request after the stop"
+    else
+        bad "$cli makes no model request after the stop" "agent model requests: $requests"
+    fi
+    if [ -e "$dir/step-1" ] && [ ! -e "$dir/step-2" ]; then
+        ok "$cli finished the step it was in and started no other"
+    else
+        bad "$cli finished the step it was in and started no other" "$(ls "$dir")"
+    fi
+}
+
+stop_lane claude
+stop_lane opencode
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -28,6 +28,8 @@ export interface LoopRuntime {
     runner: Runner;
     config: DriverConfig;
     gates?: GateStack;
+    /** Overrides `STOP_GRACE_MS` — a test seam, never set in production (issue #442). */
+    stopGraceMs?: number;
     log: (message: string) => void;
     sleep: (ms: number) => Promise<void>;
     reclaims: Map<string, Promise<void>>;

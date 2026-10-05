@@ -4,7 +4,8 @@
     "disabled_providers": ["github-copilot"],
     "plugin": [
         "/usr/local/lib/node_modules/@gcornut/opencode-otel",
-        "/usr/local/lib/node_modules/context-mode"
+        "/usr/local/lib/node_modules/context-mode",
+        "/usr/local/lib/node_modules/factory-stop-plugin"
     ],
     "permission": {
         "*": "allow",

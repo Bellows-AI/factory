@@ -10,6 +10,7 @@ so the lanes are listed by boundary, not by coverage.
 | `npm run test:coverage:executors` | nothing | The same surface against the thresholds in that config. |
 | `DATABASE_URL=…/factory_test npm run test:db` | postgres | Real lease, fencing, attribution, deduplication and rollup SQL (`vitest.db.config.ts`). |
 | `npm run test:jobs` | docker, port 8129 | Real board HTTP, a real driver, real containers, a disposable database (`scripts/test-jobs.sh`). Required before changing docker runner behavior. |
+| the cooperative-Stop phase of `npm run test:jobs` | docker, `make runners` | The real `claude` and `opencode` in the executor images against `scripts/fake-model-endpoint.mjs` (offline, no credential): a Stop raised inside the first model step ends the run after that step's tool call and before a second model request. The endpoint's own protocol is pinned in `driver/test/fake-model-endpoint.test.ts`. |
 | `npm run test:k8s` | helm | `helm lint`/`helm template` assertions in both the local and the EKS value shapes, including the rendered CEL and the port-scoped egress rules. Required before changing Kubernetes runner behavior. |
 | `npm run test:k8s -- --cluster` | kind, kubectl, docker | A real apiserver compiles the admission policy and refuses a pod missing each field in turn; a queued job comes back succeeded; the workspace boundary is probed from inside a pod. |
 | `npm run test:k8s -- --netpol` | kind, kubectl, docker, network | The network denials, on a cluster this lane creates with kindnet disabled and Calico installed. |
@@ -43,7 +44,8 @@ so the lanes are listed by boundary, not by coverage.
 - **Fault injection in the kind phase** — it proves successful execution, not API outage,
   stop-during-sync, a superseded claim or a failed cleanup.
 - **A real agent CLI honouring the master prompt's flags.** Both transports' argv is pinned
-  offline; nothing proves the vendor binaries accept them. That needs a model credential.
+  offline; nothing proves the vendor binaries accept them. That needs a model credential. (The
+  scripted endpoint above proves the Stop boundary only — not model quality or the prompt's flags.)
 - **Allowlisted block helpers under `--cluster`** — only the bare echo-executor happy path. Both
   real blocks need a "GitHub" to talk to, and no agreed way to fake one inside kind.
 - **The cloud metadata endpoint (169.254.169.254) is not probed.** Nothing answers on it in kind,
