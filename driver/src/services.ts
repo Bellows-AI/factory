@@ -11,7 +11,7 @@
  * stays testable without a daemon and the modules cannot knot.
  */
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
-import type { BoardJob } from './board.js';
+import type { BoardJob, ServiceStatus } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { containerScript } from './container-scripts.js';
 import { WORKSPACE_PATH, worktreeDir } from './publish.js';
@@ -619,6 +619,36 @@ export function collectServices(sections: { repo: string; text: string }[]): Ser
         throw new Error(`.bellows.yaml: at most ${MAX_SERVICES} services across the workspace, got ${specs.length}`);
     }
     return specs;
+}
+
+/** The state a declared service reports when the executor lists nothing for it: gone, not failed. */
+export const MISSING_SERVICE_STATE = 'missing';
+
+/**
+ * The declared fleet of each attempt, by lease token, recorded once the fleet is started and
+ * dropped by the attempt's teardown. Dead-service detection diffs the executor's listing against
+ * it: a service removed by hand or evicted is absent from the listing, never failed in it.
+ * Process-local on purpose — the probe runs in the driver that started the fleet.
+ */
+const declaredFleets = new Map<string, { name: string; image: string }[]>();
+
+export function recordDeclaredServices(job: BoardJob, specs: ServiceSpec[]): void {
+    declaredFleets.set(
+        job.leaseToken,
+        specs.map(({ name, image }) => ({ name, image }))
+    );
+}
+
+export function forgetDeclaredServices(job: BoardJob): void {
+    declaredFleets.delete(job.leaseToken);
+}
+
+/** The attempt's declared services that the executor's listing does not name. */
+export function missingDeclaredServices(job: BoardJob, listed: readonly { name: string }[]): ServiceStatus[] {
+    const present = new Set(listed.map((service) => service.name));
+    return (declaredFleets.get(job.leaseToken) ?? [])
+        .filter(({ name }) => !present.has(name))
+        .map(({ name, image }) => ({ name, image, state: MISSING_SERVICE_STATE }));
 }
 
 /**

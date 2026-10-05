@@ -3409,6 +3409,26 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         ).toBe(true);
         expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }, { envFile: envFilePath(job) }));
     });
+
+    it('reports a declared service that vanished from docker ps as dead (issue #471)', async () => {
+        const base = daemon(READOUT);
+        let removedByHand = false;
+        const exec = vitest.fn(async (args: string[]) =>
+            removedByHand && args[0] === 'ps' ? { stdout: '' } : base(args)
+        ) as unknown as ReturnType<typeof daemon>;
+        const { fn } = spawnRecording('', 0);
+        const runner = servicesRunner(exec, fn);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        removedByHand = true; // `docker rm -f` of the stub service, between the run and the gates
+        const dead = await runner.deadServices(job);
+        expect(dead).toMatchObject([{ name: 'stub', state: 'missing', exitCode: null, logTail: '' }]);
+
+        // The attempt's teardown ends the declaration: nothing is expected of a released fleet.
+        await runner.releaseServices(job);
+        expect(await runner.deadServices(job)).toEqual([]);
+    });
 });
 
 describe('publishing the produced work', () => {

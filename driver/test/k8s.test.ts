@@ -6670,6 +6670,20 @@ describe('the kubernetes services flow', () => {
         await expect(servicesRunner(failing).run(job, { id: SESSION, resume: false })).rejects.toThrow();
     });
 
+    it('reports a declared service whose pod is gone from the lease list as dead (issue #471)', async () => {
+        const { request } = servicesFake(); // the lease-scoped pod list answers empty: the pod is gone
+        const runner = servicesRunner(request);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome.exitCode).toBe(0);
+
+        const dead = await runner.deadServices(job);
+        expect(dead).toMatchObject([{ name: 'cache', state: 'missing', exitCode: null, logTail: '' }]);
+
+        // The attempt's teardown ends the declaration: nothing is expected of a released fleet.
+        await runner.releaseServices(job);
+        expect(await runner.deadServices(job)).toEqual([]);
+    });
+
     /*
      * Issue #444: the task's own repo is read from its worktree — the tree the gates read — so a
      * service or a `user:` its base clone has not checked out yet still reaches the pod. The
