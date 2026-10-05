@@ -25,10 +25,13 @@ import {
     doNotDisruptField,
     podHardeningField,
     resourcesField,
+    runnerVolumesField,
     schedulingField,
     type ContainerSecurityContext,
     type PodResources,
     type PodSecurityContext,
+    type RunnerMount,
+    type RunnerVolume,
 } from './k8s-podfields.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
@@ -93,9 +96,9 @@ export interface RunnerJobSpec {
                     securityContext: ContainerSecurityContext;
                     env: EnvVar[];
                     args: string[];
-                    volumeMounts: { name: string; mountPath: string; subPath: string }[];
+                    volumeMounts: RunnerMount[];
                 }[];
-                volumes: { name: string; persistentVolumeClaim: { claimName: string } }[];
+                volumes: RunnerVolume[];
             };
         };
     };
@@ -202,6 +205,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // nothing. Asserted from the same line dockerArgs asserts it from.
     assertWorktreeResolvable(config, job);
     const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }, ...runnerCredentialEnv(config, job)];
+    const { mounts, volumes } = runnerVolumesField(config, job.executorType, path, secretName(job));
 
     // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
     // database path, or claude-code's transcript store and session id) — decided once, for both
@@ -278,12 +282,10 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                             ...containerHardeningField(),
                             env,
                             args,
-                            volumeMounts: [
-                                { name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path },
-                            ],
+                            volumeMounts: mounts,
                         },
                     ],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
+                    volumes,
                 },
             },
         },

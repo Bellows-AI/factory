@@ -26,7 +26,6 @@ import { forgetDeclaredServices, missingDeclaredServices, networkName, serviceCo
 import {
     containerHardeningArgs,
     containerName,
-    dockerArgs,
     envFilePath,
     parseDockerServiceExit,
     parseDockerServicePs,
@@ -51,6 +50,7 @@ import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
     assertNotKilledAfterEnvWrite,
+    createRunnerContainer,
     dockerErrorDetail,
     dockerRunVerdict,
     linesOf,
@@ -155,7 +155,7 @@ async function dockerKill(deps: RunnerDeps, job: BoardJob): Promise<void> {
     // is recorded — a sibling attempt of the same job carries a different token and must
     // not read this one's cancellation.
     deps.killed.add(job.leaseToken);
-    // Killing the `docker run` process would only detach the CLI; the container keeps running
+    // Killing the attached `docker start` process would only detach the CLI; the container keeps running
     // and the workspace keeps being written to. The daemon has to be told — by ID, resolved
     // through this attempt's own lease label, never by name: a kill that resolved a
     // job-derived name would address whatever owns that name at daemon-execution time, and
@@ -590,8 +590,8 @@ async function dockerRun(
      * setupJobServices checks after every awaited step, teardown-free by design: kill()
      * ran the attempt-scoped teardown already, and anything created after that point is
      * a leftover for the NEXT attempt's fence, not this dying one's business. The same
-     * check runs once more here, after the claim-env file write below — the last await
-     * before the spawn — so the gap between that final check and spawnFn is synchronous.
+     * check runs again after the claim-env file write below and after the create/copy — the
+     * last awaits before the spawn — so the gap between that final check and spawnFn is synchronous.
      */
     const { servicesNetwork, refusal } = await setupJobServices(job, config, {
         execDocker,
@@ -623,6 +623,21 @@ async function dockerRun(
     // reach spawnFn.
     await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
 
+    const refused = await createRunnerContainer(deps, job, session, {
+        servicesNetwork,
+        ...(file ? { envFile: file } : {}),
+    });
+    if (refused) {
+        if (file) await files.rm(file).catch(() => undefined);
+        return refused;
+    }
+    // The create and the copy are awaits too: a lease lost behind them must not reach the start.
+    // The created container is this attempt's leftover to remove, the env file with it.
+    if (killed.has(job.leaseToken)) {
+        await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
+        await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
+    }
+
     const outcome = new Promise<RunOutcome>((resolve, reject) => {
         // See dockerRunVerdict for what a close decides and why. Bound to this attempt's
         // own mutable state, read at call time (the close handler, well after all of it
@@ -642,13 +657,9 @@ async function dockerRun(
         // on it: a follow-up resumes its session's conversation, so the delta each read
         // reports is bounded to what THIS run wrote.
         const startedAt = new Date().toISOString();
-        const child = spawnFn(
-            'docker',
-            dockerArgs(config, job, session, { servicesNetwork, ...(file ? { envFile: file } : {}) }),
-            {
-                stdio: ['ignore', 'pipe', 'pipe'],
-            }
-        );
+        const child = spawnFn('docker', ['start', '-a', containerName(job)], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
         let timedOut = false;
         const cacheState: { cacheLost: string | null } = { cacheLost: null };
 
@@ -761,7 +772,13 @@ async function dockerRun(
 export function createDockerRunner(
     config: DriverConfig,
     spawnFn: Spawn = spawn,
-    execDocker: ExecDocker = (args, options) => run('docker', args, { ...options, encoding: 'utf8' }),
+    execDocker: ExecDocker = (args, { input, ...options } = {}) => {
+        const pending = run('docker', args, { ...options, encoding: 'utf8' });
+        // A CLI that exits before reading its stdin must not crash the driver with an EPIPE.
+        pending.child.stdin?.on('error', () => undefined);
+        if (input) pending.child.stdin?.end(input);
+        return pending;
+    },
     files: RunnerFiles = { writeFile, rm }
 ): Runner {
     const deps: RunnerDeps = { config, execDocker, files, spawnFn, killed: new Set() };

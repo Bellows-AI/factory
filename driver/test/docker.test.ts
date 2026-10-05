@@ -39,6 +39,7 @@ import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
 import { networkName, readBellowsArgs, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import { syncCheckoutArgs } from '../src/docker-runner-support.js';
+import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
@@ -1614,8 +1615,8 @@ describe('the runner env for a gated job', () => {
     });
 
     // opencode's plugin reads its endpoint from otel.json, not from OTEL_EXPORTER_OTLP_ENDPOINT —
-    // the executor entrypoint rewrites the file. This is the driver half of that contract: the env
-    // var has to reach the runner at all, for this CLI no less than for claude-code.
+    // the driver renders that file (telemetry-config.ts). The env var still reaches the runner,
+    // for this CLI no less than for claude-code.
     it('forwards the OTEL endpoint to the opencode runner too', () => {
         const line = dockerArgs(
             loadDriverConfig({ RUNNER_OTEL_ENDPOINT: 'http://collector:4318' }),
@@ -1724,6 +1725,109 @@ describe('the docker runner', () => {
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
     });
 
+    // Issue #452: the runner is created, handed its managed settings as a root-owned 0444
+    // archive, and only then started attached. Nothing inside the container — which runs as the
+    // agent's uid — ever writes the file.
+    it('creates a claude-code runner, copies its rendered managed settings in, then starts it attached', async () => {
+        const calls: { args: string[]; input?: Buffer }[] = [];
+        const exec = (args: string[], options?: { input?: Buffer }) => {
+            calls.push({ args, ...(options?.input ? { input: options.input } : {}) });
+            return noContainer(args);
+        };
+        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }),
+            spawnFn as unknown as typeof spawn,
+            exec
+        );
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ exitCode: 0, started: true });
+        const verbs = calls.map((call) => call.args[0]);
+        const create = calls.find((call) => call.args[0] === 'create');
+        expect(create?.args).toContain(containerName(job));
+        const cp = calls.find((call) => call.args[0] === 'cp');
+        expect(cp?.args).toEqual(['cp', '-', `${containerName(job)}:/etc`]);
+        expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('claude-code', 'http://otel.example:4318')))).toBe(
+            true
+        );
+        expect(verbs.indexOf('create')).toBeLessThan(verbs.indexOf('cp'));
+        expect(spawnFn.mock.calls).toEqual([['docker', ['start', '-a', containerName(job)], expect.anything()]]);
+    });
+
+    it('copies the rendered otel.json into an opencode runner, where its plugin is pointed', async () => {
+        const calls: { args: string[]; input?: Buffer }[] = [];
+        const exec = (args: string[], options?: { input?: Buffer }) => {
+            calls.push({ args, ...(options?.input ? { input: options.input } : {}) });
+            return noContainer(args);
+        };
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0', RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }),
+            child('', '', 0),
+            exec
+        );
+        await runner.run(opencodeJob, null);
+        const cp = calls.find((call) => call.args[0] === 'cp');
+        expect(cp?.args).toEqual(['cp', '-', `${containerName(opencodeJob)}:/etc`]);
+        expect(cp?.input?.equals(telemetryConfigTar(telemetryConfig('opencode', 'http://otel.example:4318')))).toBe(
+            true
+        );
+    });
+
+    // The daemon refusing the create (a name conflict, a missing image) or the copy is what a
+    // refused `docker run` was: a container that never started, nothing spawned, the leftover
+    // removed, and the daemon's own words in the output.
+    it.each(['create', 'cp'])('reads a refused %s as a container that never started', async (verb) => {
+        const calls: string[][] = [];
+        const exec = (args: string[]) => {
+            calls.push(args);
+            if (args[0] === verb) {
+                return Promise.reject(
+                    Object.assign(new Error('Command failed'), { stderr: 'Error response from daemon: Conflict\n' })
+                );
+            }
+            return noContainer(args);
+        };
+        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            spawnFn as unknown as typeof spawn,
+            exec
+        );
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 125, started: false });
+        expect(outcome.output).toContain('Error response from daemon: Conflict');
+        expect(spawnFn).not.toHaveBeenCalled();
+        expect(calls).toContainEqual(['rm', '-f', containerName(job)]);
+    });
+
+    // `docker start -a` exits 1 — not run's 125 — when the runtime cannot start the process
+    // (a bad mount, a missing binary). The daemon still holds the container as `created`: never
+    // started, so the attempt is left to its lease rather than reported as a failed run.
+    it('reads a start the runtime refused as a container that never started', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.resolve({ stdout: '{"Status":"created","ExitCode":0}\n' })
+                : Promise.resolve({ stdout: '' });
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            child('', 'Error response from daemon: failed to create task for container\n', 1),
+            exec
+        );
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 1, started: false });
+    });
+
+    it('still reads a run that exited non-zero as a verdict', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.resolve({ stdout: '{"Status":"exited","ExitCode":1}\n' })
+                : Promise.resolve({ stdout: '' });
+        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', 'boom\n', 1), exec);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 1, started: true });
+    });
+
     // The full-log accumulator (issue #325): everything the stream printed, tail-kept at the
     // artifact cap — the artifact the loop uploads at close, of which the verdict's rolling tail
     // is only the end. The refused-start path carries neither.
@@ -1816,20 +1920,25 @@ describe('the docker runner', () => {
         // environment stays the operator's — a member-configured PATH or DOCKER_* can never steer
         // the CLI this driver executes.
         const spawnFn = vitest.fn(() => fakeChild('', '', 0));
-        const runner = createDockerRunner(loadDriverConfig({}), spawnFn as unknown as typeof spawn, noContainer);
+        let create: string[] = [];
+        const exec = (args: string[]) => {
+            if (args[0] === 'create') create = args;
+            return noContainer(args);
+        };
+        const runner = createDockerRunner(loadDriverConfig({}), spawnFn as unknown as typeof spawn, exec);
         const outcome = await runner.run({ ...job, env: { MY_TOKEN: 'board-secret' } }, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0 });
         const [cmd, argv, options] = spawnFn.mock.calls[0]!;
         expect(cmd).toBe('docker');
-        const args = argv as string[];
-        const fileArg = args[args.indexOf('--env-file') + 1];
+        const fileArg = create[create.indexOf('--env-file') + 1];
+        expect(create).toContain('--env-file');
         expect(fileArg).toBeTruthy();
         // The file existed and carried the value while the CLI ran; it is gone once the run is.
-        expect(existsSync(fileArg)).toBe(false);
+        expect(existsSync(fileArg!)).toBe(false);
         // The CLI's environment is inherited, never merged with claim values.
         expect(options && 'env' in options).toBe(false);
-        expect(args.some((arg) => arg.includes('board-secret'))).toBe(false);
+        expect([...create, ...(argv as string[])].some((arg) => arg.includes('board-secret'))).toBe(false);
     });
 
     /**
@@ -2146,14 +2255,16 @@ describe('the docker runner', () => {
     // keyed on the claim alone, the file would not exist and the runner could never call a gate.
     it('writes the gate credentials into the env file of a job whose claim env is empty', async () => {
         let fileBody: string | null = null;
-        const spawnFn = vitest.fn((_cmd: unknown, argv: unknown) => {
-            // Read at spawn time, through the argv: what the CLI could see is what counts.
-            const args = argv as string[];
-            const fileArg = args[args.indexOf('--env-file') + 1];
-            fileBody = readFileSync(fileArg, 'utf8');
-            return fakeChild('', '', 0);
-        });
-        const runner = createDockerRunner(loadDriverConfig({}), spawnFn as unknown as typeof spawn, noContainer);
+        let create: string[] = [];
+        const exec = (args: string[]) => {
+            // Read at create time, through the argv: what the CLI could see is what counts.
+            if (args[0] === 'create') {
+                create = args;
+                fileBody = readFileSync(args[args.indexOf('--env-file') + 1]!, 'utf8');
+            }
+            return noContainer(args);
+        };
+        const runner = createDockerRunner(loadDriverConfig({}), child('', '', 0), exec);
 
         const outcome = await runner.run(
             { ...job, gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' } },
@@ -2161,8 +2272,7 @@ describe('the docker runner', () => {
         );
 
         expect(outcome).toMatchObject({ exitCode: 0 });
-        const [, argv] = spawnFn.mock.calls[0]!;
-        expect(argv).toContain('--env-file');
+        expect(create).toContain('--env-file');
         expect(fileBody).toBe(
             'BELLOWS_GATE_URL=http://host.docker.internal:9099\nBELLOWS_GATE_TOKEN=tok\n' +
                 `RUNNER_JOB_ID=${job.id}\nRUNNER_LEASE_TOKEN=${job.leaseToken}\n`
@@ -2218,6 +2328,37 @@ describe('the docker runner', () => {
         // No leak: the file the write just created is removed on the abort path.
         expect(writtenTo).toBeTruthy();
         expect(existsSync(writtenTo!)).toBe(false);
+    });
+
+    // Issue #452 split the launch into create → cp → start, and the create and the copy are
+    // awaits too: a lease lost behind them must not reach the start. The created container is
+    // this attempt's own leftover, removed by name, and the env file goes with it.
+    it('starts nothing when the lease is lost during the create, and leaves no container or file behind', async () => {
+        const calls: string[][] = [];
+        let envFile: string | null = null;
+        let runner: ReturnType<typeof createDockerRunner> | null = null;
+        const exec = async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'create') {
+                envFile = args[args.indexOf('--env-file') + 1]!;
+                await runner!.kill(job); // the lease dies while the create is pending
+            }
+            return noContainer(args);
+        };
+        const spawnSpy = vitest.fn(() => fakeChild('', '', 0));
+        runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            spawnSpy as unknown as typeof spawn,
+            exec
+        );
+
+        await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /killed while setting up services/
+        );
+        expect(spawnSpy).not.toHaveBeenCalled();
+        expect(calls).toContainEqual(['rm', '-f', containerName(job)]);
+        expect(envFile).toBeTruthy();
+        expect(existsSync(envFile!)).toBe(false);
     });
 });
 
@@ -2330,9 +2471,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     /*
      * A stateful daemon for the cross-attempt tests: containers and networks live in maps keyed
      * by id/name with their labels, `ps` and `network ls` honor `--filter label=` pairs, and rm /
-     * network rm remove exactly what they are told. Service containers and networks register
-     * through the exec seam itself; runner containers register through acceptRun, because the
-     * runner's own `docker run` goes through spawnFn. With this daemon the "B is untouched"
+     * network rm remove exactly what they are told. Service containers, networks and the
+     * runner's own `docker create` all register through the exec seam. With this daemon the "B is untouched"
      * assertions stop being argv-shaped and become state: B's entries are still in the maps
      * after everything A did.
      */
@@ -2396,18 +2536,13 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--entrypoint')) return { stdout: readout };
-            if (args[0] === 'run' && args.includes('--network-alias')) {
+            if ((args[0] === 'run' && args.includes('--network-alias')) || args[0] === 'create') {
                 containers.set(args[args.indexOf('--name') + 1]!, labelsOf(args));
                 return { stdout: '' };
             }
             return { stdout: '' };
         });
-        const acceptRun = (argv: string[]): void => {
-            calls.push(argv);
-            const name = argv[argv.indexOf('--name') + 1];
-            if (name) containers.set(name, labelsOf(argv));
-        };
-        return { containers, networks, calls, exec, acceptRun };
+        return { containers, networks, calls, exec };
     };
 
     it('reads .bellows.yaml, creates the job network, starts the service, and joins the runner to it', async () => {
@@ -2428,7 +2563,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls[serviceAt]).toEqual(serviceRunArgs(job, { name: 'stub', image: 'stub-svc:1', environment: [] }));
         // The runner shares the network — that is the whole feature: inside the job, `stub`
         // resolves to the service container.
-        expect(seen[0]).toEqual(
+        expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
+        expect(calls.find((a) => a[0] === 'create')).toEqual(
             dockerArgs(
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
@@ -2509,7 +2645,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const outcome = await servicesRunner(exec, fn).run(job, { id: SESSION, resume: false });
 
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
-        expect(seen[0]).toEqual(
+        const calls = exec.mock.calls.map((call) => call[0]);
+        expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
+        expect(calls.find((a) => a[0] === 'create')).toEqual(
             dockerArgs(
                 loadDriverConfig({ RUNNER_SERVICES: '1' }),
                 job,
@@ -2517,7 +2655,6 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 { envFile: envFilePath(job) }
             )
         );
-        const calls = exec.mock.calls.map((call) => call[0]);
         expect(calls).not.toContainEqual(['network', 'create', networkName(job)]);
         expect(calls.every((a) => !a.includes('--network-alias'))).toBe(true);
     });
@@ -3249,8 +3386,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // carries A's lease, B's names appear in no argv, and B finishes its run untouched.
     it("keeps a replacement attempt unaddressable to a stale attempt's late kill across two runner instances", async () => {
         const d = scriptedDaemon(READOUT);
-        const spawnA = gatedSpawns((argv) => d.acceptRun(argv));
-        const spawnB = gatedSpawns((argv) => d.acceptRun(argv));
+        const spawnA = gatedSpawns();
+        const spawnB = gatedSpawns();
         const runner1 = createDockerRunner(
             loadDriverConfig({ RUNNER_SERVICES: '1' }),
             spawnA.fn,
@@ -3333,9 +3470,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // The fence removed both of A's leftovers by label.
         expect(d.containers.has(containerName(attemptA))).toBe(false);
         expect(d.containers.has(serviceContainerName(attemptA, 'stub'))).toBe(false);
-        // And B's own spawn argv is B-scoped: no name A could have been holding.
-        const spawnedArgv = seen[0]!;
-        expect(spawnedArgv[spawnedArgv.indexOf('--name') + 1]).toBe(containerName(attemptB));
+        // And B's own create and start are B-scoped: no name A could have been holding.
+        const created = d.calls.find((a) => a[0] === 'create')!;
+        expect(created[created.indexOf('--name') + 1]).toBe(containerName(attemptB));
+        expect(seen[0]).toEqual(['start', '-a', containerName(attemptB)]);
     });
 
     // The fence is the only job-scoped sweep, and this is its full inventory: every labeled
@@ -3407,7 +3545,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                     a.some((x) => typeof x === 'string' && x.startsWith('CLAUDE_TRANSCRIPT_DIR='))
             )
         ).toBe(true);
-        expect(seen[0]).toEqual(dockerArgs(cfg, job, { id: SESSION, resume: false }, { envFile: envFilePath(job) }));
+        expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
+        expect(calls.find((a) => a[0] === 'create')).toEqual(
+            dockerArgs(cfg, job, { id: SESSION, resume: false }, { envFile: envFilePath(job) })
+        );
     });
 
     it('reports a declared service that vanished from docker ps as dead (issue #471)', async () => {

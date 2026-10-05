@@ -4,6 +4,7 @@ import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript, claudeTranscriptScript, opencodeTranscriptScript } from '../src/container-scripts.js';
 import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
+import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import {
@@ -167,6 +168,43 @@ describe('the runner job spec', () => {
             name: 'workspaces',
             mountPath: `/workspaces/bellows/${USER}`,
             subPath: `bellows/${USER}`,
+        });
+    });
+
+    // Issue #452: the managed settings come from the per-attempt Secret, mounted read-only and
+    // 0444 over /etc/claude-code — root-owned in the pod, so the agent (uid 1000) cannot rewrite
+    // the scope that outranks every other.
+    it('mounts the rendered managed settings read-only from the attempt Secret for a claude-code runner', () => {
+        const s = spec();
+        expect(s.spec.template.spec.volumes).toContainEqual({
+            name: 'telemetry-config',
+            secret: {
+                secretName: secretName(job),
+                items: [{ key: 'managed-settings.json', path: 'managed-settings.json' }],
+                defaultMode: 0o444,
+            },
+        });
+        expect(s.spec.template.spec.containers[0]!.volumeMounts).toContainEqual({
+            name: 'telemetry-config',
+            mountPath: '/etc/claude-code',
+            readOnly: true,
+        });
+    });
+
+    it('mounts the rendered otel.json read-only from the attempt Secret for an opencode runner', () => {
+        const s = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null);
+        expect(s.spec.template.spec.volumes).toContainEqual({
+            name: 'telemetry-config',
+            secret: {
+                secretName: secretName(opencodeJob),
+                items: [{ key: 'otel.json', path: 'otel.json' }],
+                defaultMode: 0o444,
+            },
+        });
+        expect(s.spec.template.spec.containers[0]!.volumeMounts).toContainEqual({
+            name: 'telemetry-config',
+            mountPath: '/etc/opencode-otel',
+            readOnly: true,
         });
     });
 
@@ -3027,6 +3065,30 @@ describe('the kubernetes runner', () => {
         expect(secretPost?.body).toMatchObject({
             stringData: { RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken },
         });
+    });
+
+    // Issue #452: the Secret carries the managed settings the pod mounts, rendered with the
+    // driver's endpoint — the entrypoint no longer rewrites them in place.
+    it.each([
+        [{}, 'http://collector:4318'],
+        [{ RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }, 'http://otel.example:4318'],
+    ])('renders the managed settings into a claude-code runner Secret (%o)', async (env, endpoint) => {
+        const { request, calls } = fakeRequest();
+        await runner(request, env).run(job, { id: SESSION, resume: false });
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
+        expect(stringData['managed-settings.json']).toBe(claudeManagedSettings(endpoint));
+    });
+
+    it('renders otel.json, and no managed settings, into an opencode runner Secret', async () => {
+        const { request, calls } = fakeRequest();
+        await runner(request, { RUNNER_OTEL_ENDPOINT: 'http://otel.example:4318' }).run(opencodeJob, null);
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
+        expect(stringData['otel.json']).toBe(opencodeOtelConfig('http://otel.example:4318'));
+        expect(stringData).not.toHaveProperty('managed-settings.json');
     });
 
     // Issue #244: the per-attempt Secret and the pod spec's env NAMES must agree on

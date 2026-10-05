@@ -132,26 +132,6 @@ if [ -n "${CLAUDE_CODE_CONFIG_CONTENT:-}" ]; then
     fi
 fi
 
-# Claude Code's settings env blocks OVERRIDE the container environment — the settings file value
-# applies — so the endpoint the driver forwards (OTEL_EXPORTER_OTLP_ENDPOINT) would be defeated by
-# the baked http://collector:4318, which only a compose network can resolve. Rewrite the managed
-# settings value when the driver has pointed us elsewhere, the same way the opencode executor
-# patches otel.json. Managed, not $CLAUDE_CONFIG_DIR/settings.json: a user-scope value loses to the
-# checkout's own .claude/settings.json (see the Dockerfile).
-if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
-    SETTINGS=/etc/claude-code/managed-settings.json
-    if [ -f "$SETTINGS" ]; then
-        SETTINGS="$SETTINGS" node -e "
-            const fs = require('fs');
-            const f = process.env.SETTINGS;
-            const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-            c.env = c.env || {};
-            c.env.OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-            fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
-        " || echo "claude-executor: could not rewrite managed-settings.json's OTEL_EXPORTER_OTLP_ENDPOINT" >&2
-    fi
-fi
-
 # The branch reporter samples session -> (repo, branch) beside the run, so the board can
 # attribute the session's tokens to a PR. A background SIBLING of the CLI, never its child — a
 # CLI crash must not take the reporter down mid-run — with stdio discarded: the output stream

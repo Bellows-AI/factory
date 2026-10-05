@@ -102,9 +102,10 @@ COPY --chown=node:node claude-home/ /home/node/.claude/
 # for host development (this repo points OTEL_EXPORTER_OTLP_ENDPOINT at 127.0.0.1:4318) would
 # otherwise win inside the runner and export every datapoint into the container's own loopback —
 # silently, since the CLI never reports a failed export. It also outranks a member's executor
-# config, so telemetry cannot be switched off or redirected from there. Owned by node because the
-# entrypoint rewrites its endpoint from the driver's OTEL_EXPORTER_OTLP_ENDPOINT.
-COPY --chown=node:node managed-settings.json /etc/claude-code/managed-settings.json
+# config, so telemetry cannot be switched off or redirected from there. Root-owned and read-only to
+# the agent's uid, like the git guard: nothing in the container writes it. The driver replaces it,
+# root-owned again, with its endpoint rendered in (driver/src/telemetry-config.ts).
+COPY managed-settings.json /etc/claude-code/managed-settings.json
 
 # The skills, from docker/skills/ — one source for both executor images, so a task sees the same
 # skills whichever executor runs it. Before the /opt/claude-home snapshot below, so a seeded config

@@ -38,12 +38,14 @@ Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.
   so an unparseable body gets 200 and a malformed branch report gets 400.
 - **A branch report's organization comes from the attempt's job id + lease token headers, never
   from the report's `repo` field** (CWE-862). A refused report is a silent no-op.
-- **Both executors honor `RUNNER_OTEL_ENDPOINT` by rewriting the file their agent reads.** Claude's
-  entrypoint rewrites `/etc/claude-code/managed-settings.json` (its `env` block overrides the
-  container environment, defeating a forwarded `OTEL_EXPORTER_OTLP_ENDPOINT`); opencode's rewrites
-  `otel.json`'s `endpoint`, since its plugin reads neither the var nor a settings envelope. Managed
-  scope, never user scope — a checkout's `.claude/settings.json` and a member's executor config
-  both outrank user scope, and managed outranks both.
+- **Both executors honor `RUNNER_OTEL_ENDPOINT` in the file their agent reads, rendered by the
+  driver and delivered root-owned** (`driver/src/telemetry-config.ts`). Claude's is
+  `/etc/claude-code/managed-settings.json` (its `env` block overrides the container environment,
+  defeating a forwarded `OTEL_EXPORTER_OTLP_ENDPOINT`); opencode's is
+  `/etc/opencode-otel/otel.json`, named by `OPENCODE_OTEL_CONFIG_PATH`, since its plugin reads
+  neither the var nor a settings envelope. Managed scope, never user scope — a checkout's
+  `.claude/settings.json` and a member's executor config both outrank user scope, and managed
+  outranks both.
 - **The collector exporter sets `compression: none`.** It gzips by default and Fastify's JSON
   parser does not decompress: a flat 400 on every export, and an `empty` dashboard.
 - **Transcripts carry only token usage** — no edit decisions, no active time (null for backfilled

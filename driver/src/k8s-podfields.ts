@@ -1,4 +1,6 @@
 import type { DriverConfig } from './config.js';
+import type { ExecutorType } from './executors.js';
+import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from './telemetry-config.js';
 
 /**
  * The pod-spec field builders the driver renders from its own configuration — the resource
@@ -138,4 +140,35 @@ export interface ContainerSecurityContext {
 
 export function containerHardeningField(): { securityContext: ContainerSecurityContext } {
     return { securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ['ALL'] } } };
+}
+
+/** A runner container's volume mount. */
+export interface RunnerMount {
+    name: string;
+    mountPath: string;
+    subPath?: string;
+    readOnly?: boolean;
+}
+
+/** A runner pod's volume: the workspaces claim, or the attempt Secret its telemetry config rides. */
+export type RunnerVolume = { name: string; persistentVolumeClaim: { claimName: string } } | TelemetryConfigVolume;
+
+/**
+ * The runner's volumes: the member's own subtree of the workspaces claim (`path`, asserted by the
+ * caller), and its telemetry config read-only from the attempt Secret `secretName` (issue #452).
+ */
+export function runnerVolumesField(
+    config: DriverConfig,
+    executorType: ExecutorType | null,
+    path: string,
+    secretName: string
+): { mounts: RunnerMount[]; volumes: RunnerVolume[] } {
+    const telemetry = telemetryConfigK8s(telemetryConfig(executorType, config.otelEndpoint), secretName);
+    return {
+        mounts: [{ name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path }, telemetry.mount],
+        volumes: [
+            { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
+            telemetry.volume,
+        ],
+    };
 }

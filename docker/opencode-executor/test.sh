@@ -9,6 +9,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
 cd "$HERE" || exit 1
 
 IMAGE="opencode-executor-test"
@@ -141,7 +142,7 @@ else
     bad 'the baked opencode.json enables the telemetry plugin' 'plugin array does not reference the baked package'
 fi
 otel="$(docker run --rm --entrypoint sh "$IMAGE" \
-    -c 'cat "$XDG_CONFIG_HOME/opencode/otel.json"')"
+    -c 'cat "$OPENCODE_OTEL_CONFIG_PATH"')"
 if node -e \
     'try { const o = JSON.parse(process.argv[1]); process.exit(o.endpoint === "http://collector:4318" && o.protocol === "http/json" ? 0 : 1); } catch { process.exit(1); }' \
     "$otel" >/dev/null 2>&1; then
@@ -200,71 +201,123 @@ else
     bad 'no mcp.context-mode entry beside the plugin entry' 'a plugin entry and an mcp.context-mode entry together register zero ctx_* tools'
 fi
 
-# The driver's RUNNER_OTEL_ENDPOINT override arrives as OTEL_EXPORTER_OTLP_ENDPOINT, which the
-# opencode-otel plugin does not read — the entrypoint patches otel.json when it is set. The config
-# directory is bind-mounted so the patched file can be read back on the host; `--help` runs the
-# entrypoint's patch then exits the agent with no credential needed.
-CNF="$(mktemp -d)"
-cp "$HERE/opencode-home/otel.json" "$CNF/otel.json"
-chmod -R a+rwX "$CNF"
-docker run --rm \
-    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
-    -v "$CNF:/home/node/.config/opencode" \
-    "$IMAGE" --help >/dev/null 2>&1
-patched="$(cat "$CNF/otel.json")"
-rm -rf "$CNF"
-if node -e \
-    'try { const o = JSON.parse(process.argv[1]); process.exit(o.endpoint === "http://collector.example:4318" ? 0 : 1); } catch { process.exit(1); }' \
-    "$patched" >/dev/null 2>&1; then
-    ok 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT'
+# The baked policy is root-owned twice over (issue #452): the global copy, the first config layer,
+# fixes the key order every later layer merges into; the managed copy (/etc/opencode) outranks
+# every layer the agent can write and restores each baked value. A checkout config that drops the
+# plugins, flips webfetch and lists the deny globs BEFORE the catch-all allows — a reorder that
+# would otherwise cancel them under last-match-wins — still runs with the baked plugins, values and
+# order. It can still add a narrower allow: that limit is stated in docs/security.md.
+owned="$(docker run --rm --entrypoint sh "$IMAGE" -c '
+    for f in /etc/opencode/opencode.json "$OPENCODE_CONFIG"; do
+        [ ! -w "$f" ] && [ ! -w "${f%/*}" ] && [ "$(stat -c %u:%g "$f")" = 0:0 ] || { echo "writable: $f"; exit 1; }
+    done; echo ok' 2>&1)"
+moved="$(docker run --rm --entrypoint sh "$IMAGE" -c '
+    mv /home/node/.config/opencode /home/node/.config/x 2>/dev/null && { echo "renamed the config dir"; exit 1; }
+    mv /home/node/.config /home/node/.cfg 2>/dev/null && { echo "renamed ~/.config"; exit 1; }
+    mkdir /home/node/.config/gh && touch /home/node/probe && echo ok' 2>&1)"
+[ "$moved" = ok ] || owned="$moved"
+if [ "$owned" = ok ]; then
+    ok 'both baked opencode.json copies are not writable, nor their directories movable, by the runtime user'
 else
-    bad 'the entrypoint rewrites otel.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
+    bad 'both baked opencode.json copies are not writable, nor their directories movable, by the runtime user' "$owned"
+fi
+effective="$(docker run --rm --entrypoint sh "$IMAGE" -c '
+    mkdir -p /tmp/repo && cd /tmp/repo && git init -q
+    printf "%s" "{\"plugin\":[],\"permission\":{\"webfetch\":\"allow\",\"bash\":{\"git checkout *\":\"deny\",\"*\":\"allow\"},\"external_directory\":{\"/tmp/*\":\"allow\",\"*\":\"allow\"}}}" > opencode.json
+    opencode debug config 2>/dev/null' 2>&1)"
+if node -e '
+    const s = process.argv[1]; const c = JSON.parse(s.slice(s.indexOf("{")));
+    const before = (o, a, b) => Object.keys(o).indexOf(a) < Object.keys(o).indexOf(b);
+    const { bash, external_directory: ext } = c.permission;
+    const ok = c.plugin.some((p) => p.includes("@gcornut/opencode-otel")) && c.permission.webfetch === "deny" &&
+        bash["git checkout *"] === "deny" && before(bash, "*", "git checkout *") &&
+        ext["*"] === "deny" && before(ext, "*", "/tmp/*");
+    process.exit(ok ? 0 : 1);' "$effective" >/dev/null 2>&1; then
+    ok 'a checkout config cannot drop the telemetry plugin, flip or reorder the baked policy'
+else
+    bad 'a checkout config cannot drop the telemetry plugin, flip or reorder the baked policy' "${effective:0:400}"
 fi
 
+# otel.json decides where telemetry goes and whether prompt and tool bodies ride along, so the
+# agent's uid must not be able to rewrite it (issue #452): baked root-owned in a root-owned
+# directory the plugin is pointed at, and replaced by the driver root-owned again. The driver's
+# delivery is reproduced exactly — create, `docker cp -` of the archive
+# driver/src/telemetry-config.ts renders (uid 0, mode 0444), start attached.
+owned="$(docker run --rm --entrypoint sh "$IMAGE" -c \
+    'f="$OPENCODE_OTEL_CONFIG_PATH"; [ ! -w "$f" ] && [ ! -w "${f%/*}" ] && [ "$(stat -c %u:%g "$f")" = 0:0 ] && echo ok' 2>&1)"
+if [ "$owned" = ok ]; then
+    ok 'otel.json is not writable by the runtime user'
+else
+    bad 'otel.json is not writable by the runtime user' "$owned"
+fi
+
+ENDPOINT=http://collector.example:4318
+if id="$(docker create --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$IMAGE" -c \
+    'f="$OPENCODE_OTEL_CONFIG_PATH"; node -p "require(\"$f\").endpoint" | tr "\n" " "; printf "%s " "$(stat -c %u:%g "$f")"; if (: >> "$f") 2>/dev/null; then echo rw; else echo ro; fi')" &&
+    (cd "$REPO" && ENDPOINT="$ENDPOINT" npx --no-install tsx -e \
+        "import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('opencode', process.env.ENDPOINT)));") |
+    docker cp - "$id:/etc"; then
+    rendered="$(docker start -a "$id" 2>&1)"
+else
+    rendered='docker create, or the docker cp of the driver-rendered otel.json, failed'
+fi
+docker rm -f "$id" >/dev/null 2>&1
+if [ "$rendered" = "$ENDPOINT 0:0 ro" ]; then
+    ok 'the driver-rendered otel.json carries its endpoint, root-owned and read-only'
+else
+    bad 'the driver-rendered otel.json carries its endpoint, root-owned and read-only' "$rendered"
+fi
+
+# The per-run allows, read from the config opencode actually runs with (`debug config`, through
+# the entrypoint): the baked policy is root-owned, so they ride OPENCODE_CONFIG_CONTENT, whose new
+# keys merge in after the baked deny globs.
+#
 # The task workspace allow: the driver's XDG_DATA_HOME names the member tree on the shared
-# workspaces volume, and the entrypoint opens exactly that subtree in the baked fence — `**`,
-# because the allow must reach the tree's dot-directories. Config bind-mounted so the patched
-# file reads back on the host; `--help` runs the patch then exits with no credential needed.
-CNF="$(mktemp -d)"
-cp "$HERE/opencode-home/opencode.json" "$CNF/opencode.json"
-chmod -R a+rwX "$CNF"
+# workspaces volume, and the entrypoint opens exactly that subtree — `**`, because the allow must
+# reach the tree's dot-directories. The member tree is mounted writable, as the driver mounts the
+# workspaces volume: the entrypoint creates the data directory in it.
 WS="$(mktemp -d)"
 chmod -R a+rwX "$WS"
-# The member tree is mounted writable, as the driver mounts the workspaces volume: the entrypoint
-# creates the data directory in it, and a mkdir that cannot happen must fail loudly, not skip the
-# patch in silence.
-docker run --rm \
-    -e XDG_DATA_HOME=/workspaces/org/uuid/.opencode \
-    -v "$CNF:/home/node/.config/opencode" \
-    -v "$WS:/workspaces/org/uuid" \
-    "$IMAGE" --help >/dev/null 2>&1
-patched="$(cat "$CNF/opencode.json")"
-rm -rf "$CNF" "$WS"
-if node -e \
-    'try { const o = JSON.parse(process.argv[1]).permission.external_directory; process.exit(o["/workspaces/org/uuid/**"] === "allow" && o["*"] === "deny" ? 0 : 1); } catch { process.exit(1); }' \
-    "$patched" >/dev/null 2>&1; then
+member="$(docker run --rm -e XDG_DATA_HOME=/workspaces/org/uuid/.opencode -v "$WS:/workspaces/org/uuid" \
+    "$IMAGE" debug config 2>/dev/null)"
+rm -rf "$WS"
+if node -e '
+    const s = process.argv[1]; const o = JSON.parse(s.slice(s.indexOf("{"))).permission.external_directory;
+    const keys = Object.keys(o);
+    process.exit(o["/workspaces/org/uuid/**"] === "allow" && o["*"] === "deny" &&
+        keys.indexOf("*") < keys.indexOf("/workspaces/org/uuid/**") ? 0 : 1);' "$member" >/dev/null 2>&1; then
     ok 'the entrypoint allows the member tree from XDG_DATA_HOME'
 else
-    bad 'the entrypoint allows the member tree from XDG_DATA_HOME' "$patched"
+    bad 'the entrypoint allows the member tree from XDG_DATA_HOME' "${member:0:400}"
 fi
 
 # The fence is not loosened for a data directory that is not the driver's shape: a standalone run
 # that merely points XDG_DATA_HOME somewhere keeps the deny-everything default.
-CNF="$(mktemp -d)"
-cp "$HERE/opencode-home/opencode.json" "$CNF/opencode.json"
-chmod -R a+rwX "$CNF"
-docker run --rm \
-    -e XDG_DATA_HOME=/tmp/just-data \
-    -v "$CNF:/home/node/.config/opencode" \
-    "$IMAGE" --help >/dev/null 2>&1
-unpatched="$(cat "$CNF/opencode.json")"
-rm -rf "$CNF"
-if node -e \
-    'try { const o = JSON.parse(process.argv[1]).permission.external_directory; process.exit(o["*"] === "deny" && !Object.keys(o).some((k) => k.endsWith("/**")) ? 0 : 1); } catch { process.exit(1); }' \
-    "$unpatched" >/dev/null 2>&1; then
+standalone="$(docker run --rm -e XDG_DATA_HOME=/tmp/just-data "$IMAGE" debug config 2>/dev/null)"
+if node -e '
+    const s = process.argv[1]; const o = JSON.parse(s.slice(s.indexOf("{"))).permission.external_directory;
+    process.exit(o["*"] === "deny" && !Object.keys(o).some((k) => k.endsWith("/**")) ? 0 : 1);' \
+    "$standalone" >/dev/null 2>&1; then
     ok 'the fence stays as baked without the driver-shaped XDG_DATA_HOME'
 else
-    bad 'the fence stays as baked without the driver-shaped XDG_DATA_HOME' "$unpatched"
+    bad 'the fence stays as baked without the driver-shaped XDG_DATA_HOME' "${standalone:0:400}"
+fi
+
+# A checkout whose origin/HEAD names another default may merge it — exact allows, ranked after the
+# baked `git merge *` deny.
+REPO_DEV="$(mktemp -d)"
+git -C "$REPO_DEV" init -q && git -C "$REPO_DEV" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+chmod -R a+rwX "$REPO_DEV"
+branch="$(docker run --rm -v "$REPO_DEV:/workspace" "$IMAGE" debug config 2>/dev/null)"
+rm -rf "$REPO_DEV"
+if node -e '
+    const s = process.argv[1]; const b = JSON.parse(s.slice(s.indexOf("{"))).permission.bash;
+    const keys = Object.keys(b);
+    process.exit(b["git merge origin/develop"] === "allow" && keys.indexOf("git merge *") < keys.indexOf("git merge origin/develop") ? 0 : 1);' \
+    "$branch" >/dev/null 2>&1; then
+    ok 'the entrypoint allows merging a non-main origin/HEAD default, after the deny globs'
+else
+    bad 'the entrypoint allows merging a non-main origin/HEAD default, after the deny globs' "${branch:0:400}"
 fi
 
 # A missing WORKDIR must refuse in place, not start an agent in the wrong directory.

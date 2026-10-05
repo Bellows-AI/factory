@@ -39,6 +39,18 @@ Credentials: [auth.md](auth.md) · runner env: [env.md](env.md) · cluster: [kub
   never into its own environment. An agent can still `printenv` its own container.
 - **Keep `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_DETAILS` at `0`**
   in `.claude/settings.json`: that content arrives as the log record *body*, not an attribute.
+- **A runner's telemetry config is root-owned and 0444, in a root-owned directory** — claude's
+  managed settings (the one scope that outranks the agent's own) and opencode's `otel.json` (which
+  holds `logUserPrompts`/`logToolDetails`). The driver renders them (`driver/src/telemetry-config.ts`):
+  a uid-0 archive `docker cp`'d in before the start on docker, a read-only Secret mount on
+  kubernetes; the entrypoints run as uid 1000 and never write them. Both `test.sh`,
+  `driver/test/docker.test.ts`, `driver/test/k8s.test.ts`.
+- **opencode's policy is baked root-owned twice**: the global copy (`~/.config/opencode`, the first
+  config layer) fixes the key order every later layer merges into, and the managed copy
+  (`/etc/opencode`) outranks every layer the agent can write — so no checkout or inline config drops
+  the telemetry plugin, flips a baked value or reorders the fence. The entrypoint's per-run allows
+  ride `OPENCODE_CONFIG_CONTENT`. A later layer can still add a narrower allow (a merge never removes
+  keys, and the last match wins): the fence stays a guardrail. `docker/opencode-executor/test.sh`.
 - **The collector listens on 4317/4318, bound to `127.0.0.1`**, and OTLP ingest is open unless
   `auth.ingest_token` is set — an authenticity check, not an authorization one, since
   `metric_point` has no `org_id`. `POST /api/sessions/branch` is the exception ([auth.md](auth.md)).

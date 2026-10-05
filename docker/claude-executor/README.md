@@ -10,7 +10,7 @@ this repo's application.
 | Git/gh guard, wired as the `PreToolUse` hook | `git-guard.cjs`, `claude-home/settings.json` | `driver/test/executor-images.test.ts`, `git-guard.cjs --selftest` |
 | Sidecars: branch reporting (`session → repo, branch`) to `/api/sessions/branch`; progress over the CLI's `stream-json` | `branch-reporter.cjs`, `claude-progress.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Baked global instructions and config dir (`CLAUDE_CONFIG_DIR`) | `claude-home/` | `driver/test/executor-images.test.ts` |
-| OTLP exporter config, unoverridable by a checkout | `managed-settings.json` | `test.sh` |
+| OTLP exporter config, root-owned, unoverridable by a checkout or the agent; the driver renders its endpoint | `managed-settings.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts` |
 | Skills, shared with opencode-executor | `../skills/` | `driver/test/executor-images.test.ts` |
 
 ## Invariants
@@ -47,4 +47,5 @@ docker run --rm -e WORKDIR=/workspace/server -v "$PWD:/workspace" claude-executo
 ```
 
 `ANTHROPIC_API_KEY` works in place of `CLAUDE_CODE_OAUTH_TOKEN`. To export telemetry, join the
-compose network (`--network factory-ai_default`) or override `OTEL_EXPORTER_OTLP_ENDPOINT`.
+compose network (`--network factory-ai_default`); any other endpoint has to be rendered into
+`/etc/claude-code/managed-settings.json`, as the driver does — `-e OTEL_EXPORTER_OTLP_ENDPOINT` loses to it.

@@ -251,6 +251,7 @@ SLEEP_PID=$!
 # above: written first, a TERM landing in the gap leaves the pid file absent.
 echo "$SLEEP_PID" > "$STUB_DIR/sleep-pid"
 printf '%s' "\${JIRA_API-unset}" > "$STUB_DIR/jira-api"
+printf '%s' "\${OPENCODE_CONFIG_CONTENT-unset}" > "$STUB_DIR/opencode-config-content"
 echo started > "$STUB_DIR/started"
 wait "$SLEEP_PID"
 exit "\${STUB_STATUS:-0}"
@@ -730,6 +731,65 @@ describe('the claude-executor git guard', () => {
 });
 
 /*
+ * Issue #452: managed settings outrank every scope the agent can reach, so the agent (uid 1000)
+ * must not own them. The image bakes them root-owned; the driver renders the endpoint override
+ * and delivers it root-owned too (docker cp / a read-only Secret mount) — the entrypoint, which
+ * runs as uid 1000, never writes the file.
+ */
+describe('the claude-executor managed settings', () => {
+    it('are baked root-owned, like the git guard', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toContain('COPY managed-settings.json /etc/claude-code/managed-settings.json\n');
+        expect(dockerfile).not.toMatch(/--chown[^\n]*managed-settings\.json/);
+    });
+
+    it('are never rewritten by the entrypoint, which runs as the agent uid', () => {
+        expect(read('docker/claude-executor/entrypoint.sh')).not.toContain('/etc/claude-code');
+    });
+});
+
+// The opencode twin: the otel plugin's config also decides where telemetry goes and whether prompt
+// and tool bodies ride along, so it lives root-owned outside the node-owned config home.
+describe('the opencode-executor telemetry config', () => {
+    it('is baked root-owned outside the config home, where the plugin is pointed', () => {
+        const dockerfile = read('docker/opencode-executor/Dockerfile');
+        expect(dockerfile).toContain('COPY otel.json /etc/opencode-otel/otel.json\n');
+        expect(dockerfile).toContain('ENV OPENCODE_OTEL_CONFIG_PATH=/etc/opencode-otel/otel.json\n');
+        expect(existsSync(join(ROOT, 'docker/opencode-executor/opencode-home/otel.json'))).toBe(false);
+    });
+
+    it('is never rewritten by the entrypoint, which runs as the agent uid', () => {
+        expect(read('docker/opencode-executor/entrypoint.sh')).not.toContain('otel.json');
+    });
+});
+
+// opencode's managed tier (/etc/opencode/opencode.json, loaded above every other config layer):
+// the baked policy, root-owned, so the agent rewriting its own opencode.json cannot drop the
+// telemetry plugin — plugins accumulate across layers — nor flip a baked value such as webfetch.
+describe('the opencode-executor managed config', () => {
+    it('bakes the policy root-owned into the managed tier', () => {
+        const dockerfile = read('docker/opencode-executor/Dockerfile');
+        expect(dockerfile).toContain('COPY opencode-home/opencode.json /etc/opencode/opencode.json\n');
+        expect(dockerfile).not.toMatch(/--chown[^\n]*\/etc\/opencode\//);
+    });
+
+    // The global copy is the first config layer, so its key order is what every later layer merges
+    // into: root-owned, directory and skills included, with the plugin's data directory the one
+    // writable spot.
+    it('bakes the global config directory root-owned, its plugin data directory aside', () => {
+        const dockerfile = read('docker/opencode-executor/Dockerfile');
+        expect(dockerfile).toContain('COPY opencode-home/ /home/node/.config/opencode/\n');
+        expect(dockerfile).toContain('COPY --from=skills . /home/node/.config/opencode/skills/\n');
+        expect(dockerfile).not.toMatch(/--chown[^\n]*\/home\/node\/\.config\/opencode/);
+        expect(dockerfile).toContain('RUN install -d -o node -g node /home/node/.config/opencode/context-mode\n');
+        // Its parents sticky and root-owned, or node could rename the directory aside and plant its own.
+        expect(dockerfile).toContain(
+            'RUN chown root:root /home/node && chmod 1777 /home/node && install -d -m 1777 -o root -g root /home/node/.config\n'
+        );
+    });
+});
+
+/*
  * One set of skills for both executors: docker/skills/ is baked into each image's own skills
  * directory through the named `skills` build context, so a task sees the same skills whichever
  * executor its profile picks. The repo's dev skills follow the same rule from the other side —
@@ -737,14 +797,19 @@ describe('the claude-executor git guard', () => {
  */
 describe('the shared executor skills', () => {
     const SKILLS = 'docker/skills';
+    // claude's config home is node-owned (the CLI writes into it); opencode's is root-owned (#452).
     const IMAGES = [
-        { dockerfile: 'docker/claude-executor/Dockerfile', target: '/home/node/.claude/skills/' },
-        { dockerfile: 'docker/opencode-executor/Dockerfile', target: '/home/node/.config/opencode/skills/' },
+        {
+            dockerfile: 'docker/claude-executor/Dockerfile',
+            target: '/home/node/.claude/skills/',
+            chown: '--chown=node:node ',
+        },
+        { dockerfile: 'docker/opencode-executor/Dockerfile', target: '/home/node/.config/opencode/skills/', chown: '' },
     ];
 
     it('bakes docker/skills into both images', () => {
-        for (const { dockerfile, target } of IMAGES) {
-            expect(read(dockerfile)).toContain(`COPY --from=skills --chown=node:node . ${target}`);
+        for (const { dockerfile, target, chown } of IMAGES) {
+            expect(read(dockerfile)).toContain(`COPY --from=skills ${chown}. ${target}`);
         }
     });
 
@@ -941,44 +1006,39 @@ describe('the opencode-executor git guard policy', () => {
     });
 
     // The baked allows name origin/main only; the entrypoint adds the same exact allows for a
-    // repo whose origin/HEAD names another default, appended so they still rank last.
+    // repo whose origin/HEAD names another default. The baked policy is root-owned, so they ride
+    // OPENCODE_CONFIG_CONTENT — the inline layer, whose new keys merge in after the baked ones.
     const MERGE_ALLOWS = (ref: string) => [
         `git merge ${ref}`,
         `git merge --no-edit ${ref}`,
         `git merge ${ref} --no-edit`,
     ];
 
-    const runWithDefault = async (defaultBranch: string | null) => {
+    /** What the entrypoint hands opencode as OPENCODE_CONFIG_CONTENT; `unset` when it exports none. */
+    const runEntrypoint = async (opts: { defaultBranch?: string | null; env?: NodeJS.ProcessEnv }) => {
         const sandbox = makeSandbox();
         try {
             const git = (...args: string[]) => execFileSync('git', args, { cwd: sandbox.work, stdio: 'ignore' });
             git('init', '-q');
-            if (defaultBranch) {
-                git('symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${defaultBranch}`);
+            if (opts.defaultBranch) {
+                git('symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${opts.defaultBranch}`);
             }
-            const config = join(sandbox.env.HOME!, '.config', 'opencode');
-            mkdirSync(config, { recursive: true });
-            writeFileSync(join(config, 'opencode.json'), read(PATH));
-            const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig') };
+            const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig'), ...opts.env };
             const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run'], env);
             expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-            return JSON.parse(readFileSync(join(config, 'opencode.json'), 'utf8')).permission.bash as Record<
-                string,
-                string
-            >;
+            return readFileSync(join(sandbox.bin, 'opencode-config-content'), 'utf8');
         } finally {
             sandbox.cleanup();
         }
     };
 
     it(
-        'allows merging the origin/HEAD default when it is not main, ranked last',
+        'allows merging the origin/HEAD default when it is not main, through the inline config',
         async () => {
-            const bash = await runWithDefault('develop');
-            const keys = Object.keys(bash);
-            expect(keys.slice(-3)).toEqual(MERGE_ALLOWS('origin/develop'));
-            for (const rule of MERGE_ALLOWS('origin/develop')) expect(bash[rule]).toBe('allow');
-            expect(bash['git merge *']).toBe('deny');
+            const inline = JSON.parse(await runEntrypoint({ defaultBranch: 'develop' }));
+            expect(inline).toEqual({
+                permission: { bash: Object.fromEntries(MERGE_ALLOWS('origin/develop').map((r) => [r, 'allow'])) },
+            });
         },
         CASE_TIMEOUT_MS
     );
@@ -989,11 +1049,54 @@ describe('the opencode-executor git guard policy', () => {
     ])(
         'adds nothing when the default is %s',
         async (_label, defaultBranch) => {
-            const bash = await runWithDefault(defaultBranch);
-            expect(bash).toEqual(JSON.parse(read(PATH)).permission.bash);
+            expect(await runEntrypoint({ defaultBranch })).toBe('unset');
         },
         CASE_TIMEOUT_MS
     );
+
+    // The member tree, from the driver-shaped XDG_DATA_HOME, merged INTO the claim's own inline
+    // config (the reserved factory agent rides it) rather than replacing it.
+    it(
+        "allows the member tree beside the claim's own inline config",
+        async () => {
+            const sandboxData = mkdtempSync(join(tmpdir(), 'executor-member-'));
+            try {
+                const inline = JSON.parse(
+                    await runEntrypoint({
+                        env: {
+                            XDG_DATA_HOME: join(sandboxData, 'org', 'uuid', '.opencode'),
+                            OPENCODE_CONFIG_CONTENT: JSON.stringify({ agent: { factory: { mode: 'primary' } } }),
+                        },
+                    })
+                );
+                expect(inline).toEqual({
+                    agent: { factory: { mode: 'primary' } },
+                    permission: { external_directory: { [`${join(sandboxData, 'org', 'uuid')}/**`]: 'allow' } },
+                });
+            } finally {
+                rmSync(sandboxData, { recursive: true, force: true });
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // A value the merge cannot extend is passed through untouched, with a warning — never an abort
+    // of the run under set -eu, and never the allows silently dropped onto an array.
+    it.each([
+        ['not JSON', '{nope'],
+        ['an array', '[]'],
+    ])(
+        'passes %s in OPENCODE_CONFIG_CONTENT through unchanged',
+        async (_label, content) => {
+            const got = await runEntrypoint({ defaultBranch: 'develop', env: { OPENCODE_CONFIG_CONTENT: content } });
+            expect(got).toBe(content);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it('never edits the baked opencode.json', () => {
+        expect(read('docker/opencode-executor/entrypoint.sh')).not.toContain('writeFileSync');
+    });
 });
 
 /*

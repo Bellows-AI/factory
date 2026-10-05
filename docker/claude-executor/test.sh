@@ -50,31 +50,32 @@ check 'rejects bad WORKDIR'    'does not exist'   run -e WORKDIR=/nope "$IMAGE" 
 check 'onboarding done'   'true'  run --entrypoint node "$IMAGE" -e \
     'console.log(require(process.env.CLAUDE_CONFIG_DIR + "/.claude.json").hasCompletedOnboarding)'
 
-# The driver's RUNNER_OTEL_ENDPOINT override arrives as OTEL_EXPORTER_OTLP_ENDPOINT. Claude Code's
-# settings env blocks override the container environment, so the forwarded value would be silently
-# defeated by the baked http://collector:4318 — the entrypoint rewrites the managed settings value
-# when it is set, the same way the opencode executor patches otel.json. The managed file is
-# bind-mounted so the patched copy can be read back on the host; `--version` runs the entrypoint's
-# rewrite then exits the CLI with no credential needed.
-MANAGED="$(mktemp -d)"
-cp "$HERE/managed-settings.json" "$MANAGED/managed-settings.json"
-chmod -R a+rwX "$MANAGED"
-docker run --rm \
-    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
-    -v "$MANAGED/managed-settings.json:/etc/claude-code/managed-settings.json" \
-    -v "$REPO:/workspace" \
-    "$IMAGE" --version >/dev/null 2>&1
-patched="$(cat "$MANAGED/managed-settings.json")"
-rm -rf "$MANAGED"
-if node -e \
-    'const c = JSON.parse(process.argv[1]); process.exit(c?.env?.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector.example:4318" ? 0 : 1)' \
-    "$patched" >/dev/null 2>&1; then
-    printf 'ok   %s\n' 'the entrypoint rewrites managed-settings.json from OTEL_EXPORTER_OTLP_ENDPOINT'
-    pass=$((pass + 1))
-else
-    printf 'FAIL %s\n     patched settings: %s\n' 'the entrypoint rewrites managed-settings.json from OTEL_EXPORTER_OTLP_ENDPOINT' "$patched"
-    fail=$((fail + 1))
-fi
+# Managed settings outrank every scope the agent can reach, so the agent's uid must not be able to
+# rewrite them (issue #452): baked root-owned, and replaced by the driver root-owned again. The
+# driver's delivery is reproduced exactly — create, `docker cp -` of the archive
+# driver/src/telemetry-config.ts renders (uid 0, mode 0444), start attached.
+check 'managed settings are not writable by the runtime user' 'ok' run --entrypoint sh "$IMAGE" -c \
+    'f=/etc/claude-code/managed-settings.json; [ ! -w "$f" ] && [ ! -w "${f%/*}" ] && [ "$(stat -c %u:%g "$f")" = 0:0 ] && echo ok'
+
+managed_tar() { # managed_tar <endpoint>: the driver's own archive, rendered by its own code
+    (cd "$REPO" && ENDPOINT="$1" npx --no-install tsx -e \
+        "import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('claude-code', process.env.ENDPOINT)));")
+}
+run_rendered() { # run_rendered <endpoint> <docker create args...>
+    local endpoint="$1" id status
+    shift
+    id="$(docker create --cap-drop ALL --security-opt no-new-privileges "$@")" || return 1
+    managed_tar "$endpoint" | docker cp - "$id:/etc" || { docker rm -f "$id" >/dev/null; return 1; }
+    docker start -a "$id"
+    status=$?
+    docker rm -f "$id" >/dev/null
+    return "$status"
+}
+
+check 'the driver-rendered managed settings carry its endpoint, root-owned and read-only' \
+    'http://collector.example:4318 0:0 ro' run_rendered http://collector.example:4318 \
+    -v "$REPO:/workspace" --entrypoint sh "$IMAGE" -c \
+    'f=/etc/claude-code/managed-settings.json; node -p "require(\"$f\").env.OTEL_EXPORTER_OTLP_ENDPOINT" | tr "\n" " "; printf "%s " "$(stat -c %u:%g "$f")"; if (: >> "$f") 2>/dev/null; then echo rw; else echo ro; fi'
 
 # The checkout's own .claude/settings.json must not steer telemetry. A target repo that points
 # OTEL_EXPORTER_OTLP_ENDPOINT at 127.0.0.1:4318 for host development used to win over the runner's
@@ -87,8 +88,7 @@ mkdir -p "$CHECKOUT/.claude"
 printf '{"env":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://127.0.0.1:4318"}}\n' > "$CHECKOUT/.claude/settings.json"
 chmod -R a+rwX "$CHECKOUT"
 SINK='for (const p of [4318, 4999]) require("http").createServer((q, r) => { console.log("SINK:" + p); q.resume(); q.on("end", () => r.end("{}")); }).listen(p)'
-sinks="$(docker run --rm \
-    -e OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4999 \
+sinks="$(run_rendered http://127.0.0.1:4999 \
     -v "$CHECKOUT:/workspace" \
     --entrypoint sh "$IMAGE" -c "node -e '$SINK' & sleep 1; timeout 30 claude-executor -p hello >/dev/null 2>&1; sleep 12" 2>&1)"
 rm -rf "$CHECKOUT"
@@ -194,7 +194,7 @@ if node -e '
         JSON.stringify(c.hooks) === JSON.stringify(require(process.argv[2]).hooks) &&
         m.env.CLAUDE_CODE_ENABLE_TELEMETRY === "1" &&
         m.env.OTEL_LOG_USER_PROMPTS === "0" &&
-        m.env.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector.example:4318";
+        m.env.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector:4318";
     process.exit(ok ? 0 : 1);
 ' "$patched" "$HERE/claude-home/settings.json" "$managed" >/dev/null 2>&1; then
     printf 'ok   %s\n' 'CLAUDE_CODE_CONFIG_CONTENT merges member settings without touching managed telemetry, hooks or plugins'

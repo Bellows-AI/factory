@@ -44,32 +44,23 @@ elif [ -n "${ATLASSIAN_SITE:-}${ATLASSIAN_EMAIL:-}${ATLASSIAN_API_TOKEN:-}" ]; t
     echo "opencode-executor: Jira needs ATLASSIAN_SITE, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN; skipped" >&2
 fi
 
+# The baked policy is root-owned (issue #452): the global copy under $HOME/.config/opencode
+# fixes the key order, the managed copy under /etc/opencode restores every baked value. The per-run
+# allows below therefore ride OPENCODE_CONFIG_CONTENT — the inline layer, merged after the global
+# copy, so its new keys land after the baked deny globs (last-match-wins) — never a file edit.
+#
 # The baked bash table allows merging only `origin/main`, by exact match — a glob allow would
 # bless compounds. A repo whose default is another name gets the same three exact allows for
-# its own default, read from origin/HEAD, appended so they rank after the deny globs
-# (last-match-wins). No origin/HEAD, or a default of main: nothing to add.
-OPENCODE_JSON="$HOME/.config/opencode/opencode.json"
+# its own default, read from origin/HEAD. No origin/HEAD, or a default of main: nothing to add.
 DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
 DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
-if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != main ] && [ -f "$OPENCODE_JSON" ]; then
-    DEFAULT_BRANCH="$DEFAULT_BRANCH" OPENCODE_JSON="$OPENCODE_JSON" node -e "
-        const fs = require('fs');
-        const f = process.env.OPENCODE_JSON;
-        const ref = 'origin/' + process.env.DEFAULT_BRANCH;
-        const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-        c.permission ??= {};
-        c.permission.bash ??= {};
-        for (const rule of ['git merge ' + ref, 'git merge --no-edit ' + ref, 'git merge ' + ref + ' --no-edit']) {
-            c.permission.bash[rule] = 'allow';
-        }
-        fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
-    " || echo "opencode-executor: could not allow merging $DEFAULT_BRANCH in opencode.json" >&2
-fi
+if [ "$DEFAULT_BRANCH" = main ]; then DEFAULT_BRANCH=''; fi
 
 # The driver points XDG_DATA_HOME at a per-member directory on the workspaces volume so the
 # session database outlives the container — that persistence is what makes a follow-up's
 # `--session <id>` resumable at all. The directory may not exist yet for a member's first run;
 # create it rather than letting the first run fail inside opencode's own setup.
+MEMBER_ROOT=''
 if [ -n "${XDG_DATA_HOME:-}" ]; then
     mkdir -p "$XDG_DATA_HOME"
 
@@ -78,40 +69,47 @@ if [ -n "${XDG_DATA_HOME:-}" ]; then
     # working directory because the volume under the mount is shared by every member; the one
     # subtree a run may always operate in is its own member's. `**` rather than `*`: the allow
     # must cross "/" and reach the dot-directories the tree is made of. A path without the
-    # driver's shape patches nothing — standalone runs keep the fence as baked.
+    # driver's shape allows nothing — standalone runs keep the fence as baked.
     case "$XDG_DATA_HOME" in
-    */.opencode)
-        MEMBER_ROOT="${XDG_DATA_HOME%/.opencode}"
-        OPENCODE_JSON="$HOME/.config/opencode/opencode.json"
-        if [ -f "$OPENCODE_JSON" ]; then
-            MEMBER_ROOT="$MEMBER_ROOT" OPENCODE_JSON="$OPENCODE_JSON" node -e "
-                const fs = require('fs');
-                const f = process.env.OPENCODE_JSON;
-                const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-                c.permission ??= {};
-                c.permission.external_directory ??= {};
-                c.permission.external_directory[process.env.MEMBER_ROOT + '/**'] = 'allow';
-                fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
-            " || echo "opencode-executor: could not allow $MEMBER_ROOT in opencode.json" >&2
-        fi
-        ;;
+    */.opencode) MEMBER_ROOT="${XDG_DATA_HOME%/.opencode}" ;;
     esac
 fi
 
-# The opencode-otel plugin reads its endpoint from otel.json, not from OTEL_EXPORTER_OTLP_ENDPOINT.
-# The driver overrides that env var via RUNNER_OTEL_ENDPOINT so the executor's baked endpoint
-# (http://collector:4318) can be redirected — for instance to a collector that the compose network
-# cannot name. Patch the file here so the plugin picks up the override.
-if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
-    OTEL_JSON="$HOME/.config/opencode/otel.json"
-    if [ -f "$OTEL_JSON" ]; then
-        OTEL_JSON="$OTEL_JSON" node -e "
-            const fs = require('fs');
-            const f = process.env.OTEL_JSON;
-            const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-            c.endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-            fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
-        " || echo "opencode-executor: could not patch otel.json for $OTEL_EXPORTER_OTLP_ENDPOINT" >&2
+if [ -n "$DEFAULT_BRANCH$MEMBER_ROOT" ]; then
+    # Single-quoted: the shell expands nothing in the script. A value the merge cannot extend is
+    # named in one line on stderr and passed through untouched.
+    if amended="$(DEFAULT_BRANCH="$DEFAULT_BRANCH" MEMBER_ROOT="$MEMBER_ROOT" node -e '
+        let c;
+        try {
+            c = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}");
+        } catch (e) {
+            console.error("opencode-executor: OPENCODE_CONFIG_CONTENT is not JSON: " + e.message);
+            process.exit(1);
+        }
+        if (typeof c !== "object" || c === null || Array.isArray(c)) {
+            console.error("opencode-executor: OPENCODE_CONFIG_CONTENT is not a JSON object");
+            process.exit(1);
+        }
+        c.permission ??= {};
+        const branch = process.env.DEFAULT_BRANCH;
+        if (branch) {
+            const ref = "origin/" + branch;
+            c.permission.bash ??= {};
+            for (const rule of ["git merge " + ref, "git merge --no-edit " + ref, "git merge " + ref + " --no-edit"]) {
+                c.permission.bash[rule] = "allow";
+            }
+        }
+        const root = process.env.MEMBER_ROOT;
+        if (root) {
+            c.permission.external_directory ??= {};
+            c.permission.external_directory[root + "/**"] = "allow";
+        }
+        process.stdout.write(JSON.stringify(c));
+    ')"; then
+        OPENCODE_CONFIG_CONTENT="$amended"
+        export OPENCODE_CONFIG_CONTENT
+    else
+        echo "opencode-executor: could not add the per-run allows to OPENCODE_CONFIG_CONTENT" >&2
     fi
 fi
 
