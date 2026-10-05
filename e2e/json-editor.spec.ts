@@ -150,6 +150,58 @@ for (const width of [1440, 390]) {
                 await expect(dialog.getByRole('button', { name: FORMAT_JSON_LABEL })).toBeFocused();
             });
 
+            test('select-all and partial selections keep the painted text readable under the highlight', async ({
+                page,
+                context,
+            }) => {
+                const { input } = await openEditor(page);
+                await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+                await input.fill(sample);
+                await input.focus();
+                const selection = () =>
+                    input.evaluate((el: HTMLTextAreaElement) => {
+                        const wash = getComputedStyle(el, '::selection').backgroundColor;
+                        const paint = getComputedStyle(el.parentElement!.querySelector('code')!);
+                        return { wash, ink: paint.color, hidden: paint.visibility === 'hidden' };
+                    });
+                const alpha = (color: string) => {
+                    const channels = /\/\s*([\d.]+)\s*\)|,\s*([\d.]+)\s*\)$/.exec(color);
+                    return channels ? Number(channels[1] ?? channels[2]) : 1;
+                };
+                mkdirSync(SHOTS, { recursive: true });
+
+                await input.press('ControlOrMeta+a');
+                const full = await selection();
+                // An opaque wash over the transparent textarea text would cover the glyphs painted
+                // beneath it; the selection must stay see-through.
+                expect(alpha(full.wash)).toBeGreaterThan(0);
+                expect(alpha(full.wash)).toBeLessThan(0.6);
+                expect(full.hidden).toBe(false);
+                await page.screenshot({ path: `${SHOTS}/select-all-${theme}-${width}.png` });
+                await expect(input).toHaveValue(sample);
+                await page.evaluate(() => navigator.clipboard.writeText(''));
+                await input.press('ControlOrMeta+c');
+                expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(sample);
+                await expect(input).toHaveValue(sample);
+
+                await clickPaint(page, input, 4);
+                for (let step = 0; step < 6; step++) await page.keyboard.press('Shift+ArrowRight');
+                expect(
+                    await input.evaluate((el: HTMLTextAreaElement) =>
+                        el.value.slice(el.selectionStart, el.selectionEnd)
+                    )
+                ).toBe('"model');
+                await page.screenshot({ path: `${SHOTS}/select-partial-${theme}-${width}.png` });
+
+                await input.press('ControlOrMeta+a');
+                await page.keyboard.insertText('{}');
+                await expect(input).toHaveValue('{}');
+                await input.press('ControlOrMeta+z');
+                await expect(input).toHaveValue(sample);
+                await clickPaint(page, input, 4);
+                await expect(page.locator('.json-editor-highlight code')).toHaveText(`${sample}\n `);
+            });
+
             test('scrolling to all edges and replacing a scrolled draft keeps paint aligned', async ({ page }) => {
                 const { input, dialog } = await openEditor(page);
                 await input.fill(longConfig);
