@@ -156,7 +156,7 @@
     }
 
     .json-editor-input::selection {
-        background: var(--accent-wash);
+        background: var(--selection-wash);
         color: transparent;
     }
 

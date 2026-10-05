@@ -61,6 +61,9 @@
     /* Issue 224: the quiet selector's hover/focus/open highlight, and the floating panel's
        shadow — a soft surface, never another hairline. */
     --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
+    /* Issue 441: a selection over a transparent-text field must stay see-through so the glyphs
+       painted beneath it read; --accent-wash is opaque in the light theme. */
+    --selection-wash: color-mix(in oklab, var(--accent) 30%, transparent);
     --shadow-float: color-mix(in oklab, black 40%, transparent);
 }
 
@@ -116,6 +119,7 @@
     --chart-primary: color-mix(in oklab, var(--accent) 70%, black);
     --lamp-glow: color-mix(in oklab, currentColor 26%, transparent);
     --accent-wash: color-mix(in oklab, var(--accent) 8%, var(--surface-raised));
+    --selection-wash: color-mix(in oklab, var(--accent) 30%, transparent);
     --shadow-float: color-mix(in oklab, var(--ink) 14%, transparent);
 }
 
