@@ -76,25 +76,36 @@ if [ -n "${XDG_DATA_HOME:-}" ]; then
 fi
 
 if [ -n "$DEFAULT_BRANCH$MEMBER_ROOT" ]; then
-    if amended="$(DEFAULT_BRANCH="$DEFAULT_BRANCH" MEMBER_ROOT="$MEMBER_ROOT" node -e 2>/dev/null "
-        const c = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || '{}');
-        if (typeof c !== 'object' || c === null || Array.isArray(c)) process.exit(1);
+    # Single-quoted: the shell expands nothing in the script. A value the merge cannot extend is
+    # named in one line on stderr and passed through untouched.
+    if amended="$(DEFAULT_BRANCH="$DEFAULT_BRANCH" MEMBER_ROOT="$MEMBER_ROOT" node -e '
+        let c;
+        try {
+            c = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}");
+        } catch (e) {
+            console.error("opencode-executor: OPENCODE_CONFIG_CONTENT is not JSON: " + e.message);
+            process.exit(1);
+        }
+        if (typeof c !== "object" || c === null || Array.isArray(c)) {
+            console.error("opencode-executor: OPENCODE_CONFIG_CONTENT is not a JSON object");
+            process.exit(1);
+        }
         c.permission ??= {};
         const branch = process.env.DEFAULT_BRANCH;
         if (branch) {
-            const ref = 'origin/' + branch;
+            const ref = "origin/" + branch;
             c.permission.bash ??= {};
-            for (const rule of ['git merge ' + ref, 'git merge --no-edit ' + ref, 'git merge ' + ref + ' --no-edit']) {
-                c.permission.bash[rule] = 'allow';
+            for (const rule of ["git merge " + ref, "git merge --no-edit " + ref, "git merge " + ref + " --no-edit"]) {
+                c.permission.bash[rule] = "allow";
             }
         }
         const root = process.env.MEMBER_ROOT;
         if (root) {
             c.permission.external_directory ??= {};
-            c.permission.external_directory[root + '/**'] = 'allow';
+            c.permission.external_directory[root + "/**"] = "allow";
         }
         process.stdout.write(JSON.stringify(c));
-    ")"; then
+    ')"; then
         OPENCODE_CONFIG_CONTENT="$amended"
         export OPENCODE_CONFIG_CONTENT
     else

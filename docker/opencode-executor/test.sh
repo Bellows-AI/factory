@@ -252,12 +252,15 @@ else
 fi
 
 ENDPOINT=http://collector.example:4318
-id="$(docker create --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$IMAGE" -c \
-    'f="$OPENCODE_OTEL_CONFIG_PATH"; node -p "require(\"$f\").endpoint" | tr "\n" " "; printf "%s " "$(stat -c %u:%g "$f")"; if (: >> "$f") 2>/dev/null; then echo rw; else echo ro; fi')"
-(cd "$REPO" && ENDPOINT="$ENDPOINT" npx --no-install tsx -e \
-    "import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('opencode', process.env.ENDPOINT)));") |
-    docker cp - "$id:/etc"
-rendered="$(docker start -a "$id" 2>&1)"
+if id="$(docker create --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$IMAGE" -c \
+    'f="$OPENCODE_OTEL_CONFIG_PATH"; node -p "require(\"$f\").endpoint" | tr "\n" " "; printf "%s " "$(stat -c %u:%g "$f")"; if (: >> "$f") 2>/dev/null; then echo rw; else echo ro; fi')" &&
+    (cd "$REPO" && ENDPOINT="$ENDPOINT" npx --no-install tsx -e \
+        "import { telemetryConfig, telemetryConfigTar } from './driver/src/telemetry-config.ts'; process.stdout.write(telemetryConfigTar(telemetryConfig('opencode', process.env.ENDPOINT)));") |
+    docker cp - "$id:/etc"; then
+    rendered="$(docker start -a "$id" 2>&1)"
+else
+    rendered='docker create, or the docker cp of the driver-rendered otel.json, failed'
+fi
 docker rm -f "$id" >/dev/null 2>&1
 if [ "$rendered" = "$ENDPOINT 0:0 ro" ]; then
     ok 'the driver-rendered otel.json carries its endpoint, root-owned and read-only'
