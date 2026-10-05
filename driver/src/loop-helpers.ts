@@ -94,7 +94,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<typeof STOOD_DOWN 
  * resolved and before publish is decided — the same window `runDeclaredGates` runs in, with the
  * heartbeat still live and `settle()` deliberately not yet called. Unlike the pre-phase, this runs
  * after any clean run, a failed gate included, and is skipped whole when `skipReason`
- * (`postHelperSkipReason`) names a run that did not finish cleanly — never by helper kind, which
+ * (`postHelperSkipWhy`) names a run that did not finish cleanly — never by helper kind, which
  * this generic transport must not encode.
  * Any stand-down (`down(state)`) ends it: a stopped, lost or removed attempt has no verdict to
  * contribute, and the caller stands the attempt down rather than publishing. `conclude`

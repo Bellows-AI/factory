@@ -3113,13 +3113,13 @@ describe('block-helper steps (issue #207)', () => {
     });
 
     it('a non-zero exit is named after the agent, not a post-helper failure', async () => {
-        const { verdictFailureKind } = await import('../src/loop-verdict.js');
+        const { kindOf, ledgerOf } = await import('../src/loop-ledger.js');
         const helperFailure = {
             helperId: 'noop',
             result: { ok: false as const, reason: 'malformed_output' as const, message: 'x' },
         };
-        const base = { outcome: ok({ exitCode: 1 }), failure: null, deadServices: [], helperFailure, blocked: null };
-        expect(verdictFailureKind(base, false, 'failed')).toBe('runner_error');
+        const parts = { outcome: ok({ exitCode: 1 }), failure: null, deadServices: [], helperFailure, published: null };
+        expect(kindOf(ledgerOf(parts))).toBe('runner_error');
     });
 
     it.each([
@@ -3926,18 +3926,6 @@ describe('the agent reporting it is blocked', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded', 'succeeded']);
-    });
-
-    it('ranks blocked after timeout and before services and gate', async () => {
-        const { verdictFailureKind } = await import('../src/loop-verdict.js');
-        const failure = { name: 'test', exitCode: 1, output: '' };
-        const dead = { name: 'db', image: 'mongo', state: 'failed', exitCode: 1, reason: null, logTail: '' };
-        const base = { outcome: ok(), failure, deadServices: [dead], helperFailure: null, blocked: 'x' };
-        expect(verdictFailureKind({ ...base, outcome: ok({ timedOut: true }) }, false, 'failed')).toBe('timeout');
-        expect(verdictFailureKind({ ...base, outcome: ok({ cacheLost: 'c' }) }, false, 'failed')).toBe('cache_lost');
-        expect(verdictFailureKind(base, false, 'failed')).toBe('blocked');
-        expect(verdictFailureKind({ ...base, blocked: null }, false, 'failed')).toBe('services');
-        expect(verdictFailureKind({ ...base, blocked: null, deadServices: [] }, false, 'failed')).toBe('gate');
     });
 });
 

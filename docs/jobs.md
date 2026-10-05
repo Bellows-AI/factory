@@ -28,7 +28,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Kubernetes runner | `driver/src/k8s-*.ts` | `driver/test/k8s.test.ts`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |
 | Gates, execution | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts`, `gates-limits.test.ts` |
 | Gate environment owned by the lease: release/cancel no-op for another attempt, per-lease k8s Secret, teardown awaited by acquire, one run per key | `driver/src/gates.ts`, `k8s-gates.ts`, `loop-gates.ts` | `driver/test/gates-ownership.test.ts` |
-| Gates skipped over an unclean run; the agent's `FACTORY_BLOCKED:` report | `driver/src/loop-verdict.ts`, `loop-run.ts` | `driver/test/loop.test.ts` |
+| Gates skipped over an unclean run; the agent's `FACTORY_BLOCKED:` report | `driver/src/loop-ledger.ts`, `loop-verdict.ts`, `loop-run.ts` | `driver/test/loop-ledger.test.ts`, `loop.test.ts` |
 | Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
 | Tree fingerprint: sync before, probe after the run and before the gates, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
@@ -39,7 +39,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Run artifacts (full log, transcript) | `driver/src/artifacts.ts`, `server/migrations/046_job_artifacts.sql` | `driver/test/artifacts.test.ts` |
 | Container scripts | `driver/src/container-scripts.ts`, `driver/src/scripts/` | `driver/test/scripts.test.ts`, `driver/test/scripts-*.test.ts` |
 | Orphan reaper | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
-| Failure kind, timeout note, branch attribution | `driver/src/loop-verdict.ts`, `exec-codes.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/loop.test.ts`, `timeout-note.test.ts`, `branch-reporter.test.ts` |
+| Failure kind, timeout note, branch attribution | `driver/src/loop-ledger.ts`, `loop-verdict.ts`, `exec-codes.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/loop-ledger.test.ts`, `loop.test.ts`, `timeout-note.test.ts`, `branch-reporter.test.ts` |
 | CLI (`factory job …`) | `cli/src/index.ts`, `run.ts`, `board.ts`, `config.ts`, `render.ts` | `cli/test/commands.test.ts`, `board-client.test.ts`, `config.test.ts` |
 | Board + driver end to end | `scripts/test-jobs.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/compose.test.ts` |
 
