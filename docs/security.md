@@ -30,7 +30,9 @@ Credentials: [auth.md](auth.md) · runner env: [env.md](env.md) · cluster: [kub
   `SESSION_SECRET` (rotating it signs everyone out), `INGEST_TOKEN`, `GITHUB_WEBHOOK_SECRET`, `JOB_BOARD_TOKEN`.
 - **Required App installation permissions: `Metadata: read`, `Contents: read`.** Runners that
   commit, open PRs or read CI need `Contents: write`, `Pull requests: write` and `Actions: read`
-  granted there — the claim's token carries only what the installation has.
+  granted there. The claim's token is narrowed to the task's repo and `RUNNER_TOKEN_PERMISSIONS`
+  (`server/src/github/app-token.ts`, `server/test/github.app-token.test.ts`), which must be a
+  subset of the installation's grants or the mint fails with a 422.
 - **Runner env values and secrets are stored plaintext** — they must be retrieved to be injected,
   so database read access equals holding every runner credential. The API is write-only (lists
   null the value, admin included); the driver writes them to a 0600 `--env-file` around the spawn,

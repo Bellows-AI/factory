@@ -200,7 +200,7 @@ export async function publishTokenJob(
     const resolved = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, sql) : undefined;
     if (resolved?.GITHUB_TOKEN !== undefined) return { result: 'ok', token: resolved.GITHUB_TOKEN };
     if (!githubToken) return { result: 'ok', token: null };
-    return { result: 'ok', token: await githubToken.fresh() };
+    return { result: 'ok', token: await githubToken.fresh(row.repo) };
 }
 
 export type CompleteResult = Parameters<JobStore['complete']>[2];

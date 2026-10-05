@@ -397,7 +397,7 @@ export async function resolveClaimExecutor(
     // live token nothing holds.
     let claimEnv =
         githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
-            ? withMintedToken(await githubToken.fresh(), resolvedEnv)
+            ? withMintedToken(await githubToken.fresh(row.repo), resolvedEnv)
             : resolvedEnv;
     // The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
     // 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
