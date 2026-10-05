@@ -44,13 +44,42 @@ export interface AttemptCtx {
     job: BoardJob;
     state: JobState;
     settle: () => Promise<void>;
-    standDown: () => Promise<void>;
+    /**
+     * Whether this attempt holds the kubernetes checkout claim: taken by a successful sync, handed
+     * to the runner at launch, and given back by `handBackFence` (`loop-fence.ts`) and by nothing
+     * else — a refusal that ends an attempt no runner ever reached would otherwise hold the claim
+     * for the life of the cluster (issue #469).
+     */
+    fenced: boolean;
     /** The task tree's fingerprint the startup sync answered; null when unknown. */
     treeBefore: string | null;
 }
 
+/** The completion body the board's `complete` takes: what a conclusion reports. */
+export type VerdictBody = Parameters<Board['complete']>[1];
+
 /**
- * A terminal outcome of a setup step: it already reported and settled, or stood the attempt down.
- * Shared for the same reason `AttemptCtx` is.
+ * A terminal conclusion of the setup phase, as data and never as acting. `runPhases`
+ * (`loop-run.ts`) is the only thing that acts on one — the claim handed back, the attempt settled,
+ * the line logged, the verdict reported — so a new refusal cannot forget any of it (issue #472,
+ * step 3 of #433).
+ *
+ * - `fault` — a named failure, reported `failed`. The agent never runs.
+ * - `leave` — infrastructure, not a verdict: the claim goes back to the board and the lease
+ *   decides (issue #307's lock contention, a sync that threw).
+ * - `concluded` — the job really is done (a pre-run helper's `control: 'conclude'`, issue #230),
+ *   reported `succeeded` with no agent, no gates, no post-helper and no publish.
  */
+export type SetupHalt =
+    | { halt: 'fault'; log: string; verdict: VerdictBody }
+    | { halt: 'leave'; log: string }
+    | { halt: 'concluded'; log: string; verdict: VerdictBody };
+
+/**
+ * What ends the setup phase: a stand-down the caller must stand down on, or a conclusion to land.
+ * A step that is not done answers `null`.
+ */
+export type SetupConclusion = SetupHalt | typeof STOOD_DOWN;
+
+/** A terminal outcome of a setup step: it already reported and settled, or stood the attempt down. */
 export const STOOD_DOWN = 'stood-down' as const;

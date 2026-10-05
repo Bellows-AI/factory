@@ -24,6 +24,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Master prompt, rendered | `server/src/db/master-prompt.ts` | `server/test/master-prompt.test.ts` |
 | Master prompt, delivered (argv, OpenCode `factory` agent) | `driver/src/master-prompt.ts`, `runner-plan.ts`, `claim.ts` | `driver/test/master-prompt.test.ts` |
 | Claim loop, verdicts, reclaim | `driver/src/loop*.ts`, `board.ts`, `claim.ts` | `driver/test/loop.test.ts`, `board.test.ts` |
+| Setup conclusion (`SetupHalt`) and the stand-down fence: the one checkout-claim release, the one settle, the one park, and the one `AbortSignal` a step is raced against | `driver/src/loop-fence.ts`, `loop-types.ts`, `loop-attempt.ts`, `loop-run.ts`, `loop-helpers.ts`, `loop-gates.ts`, `loop-verdict.ts` | `driver/test/loop-fence.test.ts` |
 | Docker runner, env, argv | `driver/src/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker.test.ts`, `config.test.ts` |
 | Kubernetes runner | `driver/src/k8s-*.ts` | `driver/test/k8s.test.ts`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |
 | Gates, execution | `driver/src/gates.ts`, `loop-gates.ts`, `k8s-gates.ts` | `driver/test/gates.test.ts`, `gates-limits.test.ts` |

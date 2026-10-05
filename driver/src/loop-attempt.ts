@@ -45,11 +45,13 @@ export interface JobState {
     woken: Promise<void>;
     wake: () => void;
     /**
-     * Resolves the moment any verdict ends the attempt where it stands — stop, lost lease, Remove.
-     * The setup races (raceStep) wait on this, so a slow sync or gate boot stops holding a
-     * stand-down in place.
+     * Aborted the moment any verdict ends the attempt where it stands — stop, lost lease, Remove.
+     * The one signal every slow step is raced against (`raceStep`) and the one handed to the
+     * transports that take one (the gate exec, the tree probe, the gate-session teardown), so a
+     * stand-down cancels in-flight work instead of leaving each step its own controller
+     * (issue #472).
      */
-    abort: Promise<void>;
+    signal: AbortSignal;
     abortNow: () => void;
 }
 
@@ -58,10 +60,7 @@ export function newJobState(): JobState {
     const woken = new Promise<void>((resolve) => {
         wake = resolve;
     });
-    let abortNow = () => {};
-    const abort = new Promise<void>((resolve) => {
-        abortNow = resolve;
-    });
+    const controller = new AbortController();
     return {
         finished: false,
         lost: false,
@@ -70,8 +69,8 @@ export function newJobState(): JobState {
         launched: false,
         woken,
         wake,
-        abort,
-        abortNow,
+        signal: controller.signal,
+        abortNow: () => controller.abort(),
     };
 }
 
@@ -91,13 +90,28 @@ const RACE_LOST = Symbol('raceStep: the stand-down won');
  * anymore. A step that finished first answers `{ value }` even when the stand-down landed in the
  * same instant — the caller's own flag check decides.
  */
-export async function raceStep<T>(state: JobState, step: Promise<T>): Promise<{ value: T } | null> {
+export async function raceStep<T>(signal: AbortSignal, step: Promise<T>): Promise<{ value: T } | null> {
     // A side-band subscriber, so the loser of the race can never become an unhandled rejection:
-    // subscribing neither consumes the step from the race nor changes its result.
+    // subscribing neither consumes the step from the race nor changes its result. First, because
+    // the check below abandons the step with nobody left to read it — and an abandoned step that
+    // rejects must not take the driver with it.
     step.catch(() => {});
-    const lost = state.abort.then((): typeof RACE_LOST => RACE_LOST);
-    const outcome: T | typeof RACE_LOST = await Promise.race([step, lost] as const);
-    return outcome === RACE_LOST ? null : { value: outcome };
+    // Already stood down: never even wait for the step, which is still running with nobody left
+    // to read it.
+    if (signal.aborted) return null;
+    let onAbort: () => void = () => {};
+    const lost = new Promise<typeof RACE_LOST>((resolve) => {
+        onAbort = () => resolve(RACE_LOST);
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+        const outcome: T | typeof RACE_LOST = await Promise.race([step, lost] as const);
+        return outcome === RACE_LOST ? null : { value: outcome };
+    } finally {
+        // The attempt has as many steps as it has phases, and each subscribes: without this the
+        // signal would keep every step that finished first alive until the attempt ends.
+        signal.removeEventListener('abort', onAbort);
+    }
 }
 
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
