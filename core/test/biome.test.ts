@@ -128,6 +128,7 @@ describe('biome', () => {
     it('exposes the lint and format scripts and an exact-pinned biome devDependency', () => {
         const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
         expect(pkg.scripts.lint).toBe('biome check .');
+        expect(pkg.scripts['lint:changed']).toBe('sh scripts/lint-changed.sh');
         expect(pkg.scripts.format).toBe('biome format --write .');
         expect(pkg.devDependencies['@biomejs/biome']).toMatch(/^\d+\.\d+\.\d+$/);
     });

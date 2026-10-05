@@ -110,8 +110,9 @@ Then, in order:
 3. Read the report, not just the exit code: pass counts non-zero, no `.skip`, no `.only`, and the
    console-error / failed-request assertions included in the green.
 
-Gates after, all green: `npm test`, `npm run typecheck`, `npm run lint` (`npm run format` for pure
-drift). Never delete, skip or weaken an assertion — yours or the repo's — to get there.
+Gates after, all green: `npm test`, `npm run typecheck`, `npm run lint:changed` (only the files the
+branch touched; never the whole-repo `npm run lint`, which CI runs —
+`npm run lint:changed -- --write` or `npm run format` for pure drift). Never delete, skip or weaken an assertion — yours or the repo's — to get there.
 
 ## Phase 6 — Review and ship
 

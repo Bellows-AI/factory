@@ -97,6 +97,7 @@ npm test                        # offline: no token, no quota, no database, no d
 npm run test:executors          # focused board/driver/runner/telemetry suites
 npm run typecheck               # tsc -b, plus server/tsconfig.test.json and e2e/tsconfig.json
 npm run lint                    # biome check; npm run format / lint:fix are the fixers
+npm run lint:changed            # biome on the branch's files only (vs origin/main), niced
 npm run verify:ui               # real chromium; needs postgres + playwright install chromium
 
 DATABASE_URL=…/factory_seed npm run seed        # synthetic sessions, disposable names only
