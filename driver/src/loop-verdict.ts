@@ -9,7 +9,6 @@
 import type { Board, BoardJob, LeaseState } from './board.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
-import { down, type JobState } from './loop-attempt.js';
 import { kindOf, ledgerOf, type Ledger, outputOf, publishEligible, statusOf } from './loop-ledger.js';
 import type { LoopRuntime } from './loop-types.js';
 import { type PublishResult, publishFailed } from './publish.js';
@@ -18,27 +17,37 @@ import type { GateRunNote, TimeoutActivity } from './timeout-note.js';
 import { timeoutNote } from './timeout-note.js';
 
 /**
- * Publishes a succeeded, ungated-or-passed run — the deterministic end of a task. Answers null
- * when the run does not qualify (any fault on the ledger, or publish disabled).
+ * Whether this attempt's ledger calls for a publish at all: succeeded, ungated or passed, publish
+ * not disabled, and a runner that can push. The caller fences around the two halves below.
  */
-export async function publishIfDue(
+export function publishDue(rt: LoopRuntime, job: BoardJob, ledger: Ledger): boolean {
+    return publishEligible(ledger) && job.publish !== false && Boolean(rt.runner.publishGit);
+}
+
+/**
+ * The publish-fresh token for the push: the claim's GITHUB_TOKEN was minted at claim time, and a run
+ * can outlive its hour, so the board is asked for a new one. Null keeps the claim env, the shape
+ * every short run still publishes with.
+ */
+export async function askPublishToken(rt: LoopRuntime, job: BoardJob): Promise<string | null> {
+    const publishToken = await rt.board.publishToken(job);
+    if (!publishToken)
+        rt.log(`job ${job.id}: publish-token ask answered nothing fresh — publishing with the claim env`);
+    return publishToken;
+}
+
+/**
+ * Pushes the branch and opens the PR. Deliberately NOT raced against the stand-down and not
+ * abortable: a push already in flight is not a thing the driver can take back, and half a push is
+ * worse than a fenced one. The caller fences before asking for the token instead (issue #472).
+ */
+export async function publishBranch(
     rt: LoopRuntime,
     job: BoardJob,
-    state: JobState,
-    ledger: Ledger
+    publishToken: string | null
 ): Promise<PublishResult | null> {
-    const { board, runner, log } = rt;
-    if (!publishEligible(ledger) || job.publish === false || !runner.publishGit) return null;
-    // The claim's GITHUB_TOKEN was minted at claim time, and a run can outlive its hour. Ask the
-    // board for a publish-fresh one; null keeps the claim env, the shape every short run still
-    // publishes with.
-    const publishToken = await board.publishToken(job);
-    // A Stop that landed during the ask killed the runner; publishing now outlives it.
-    if (down(state)) return null;
-    if (!publishToken) {
-        log(`job ${job.id}: publish-token ask answered nothing fresh — publishing with the claim env`);
-    }
-    return runner
+    if (!rt.runner.publishGit) return null;
+    return rt.runner
         .publishGit(job, publishToken ?? undefined)
         .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`));
 }

@@ -12,7 +12,7 @@ import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
 import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
-import { publishIfDue, report, reportFinish } from './loop-verdict.js';
+import { askPublishToken, publishBranch, publishDue, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
@@ -75,7 +75,7 @@ async function reportScrapedSession(
 async function waitReclaimBarrier(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     const inflight = rt.reclaims.get(job.rootJobId ?? job.id);
-    if (inflight) await raceStep(state, inflight);
+    if (inflight) await raceStep(state.signal, inflight);
     return down(state) ? STOOD_DOWN : null;
 }
 
@@ -86,7 +86,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     const syncing = runner.syncCheckout(job);
     let syncedOut: { value: SyncResult } | null;
     try {
-        syncedOut = await raceStep(state, syncing);
+        syncedOut = await raceStep(state.signal, syncing);
     } catch (e) {
         // A sync that threw took its own claim down inside the runner, so nothing is held here.
         return { halt: 'leave', log: `checkout sync threw, leaving it to the lease: ${(e as Error).message}` };
@@ -142,7 +142,7 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null>
     const { rt, job, state } = ctx;
     const { board, log } = rt;
 
-    const freshOut = await raceStep(state, board.rereadGates(job));
+    const freshOut = await raceStep(state.signal, board.rereadGates(job));
     if (freshOut === null || down(state)) return STOOD_DOWN;
     const fresh = freshOut.value;
     if (fresh) {
@@ -204,7 +204,7 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null>
 async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null | SetupConclusion> {
     const { rt, job, state } = ctx;
     try {
-        const gateOut = await raceStep(state, beginGates(rt, job, state));
+        const gateOut = await raceStep(state.signal, beginGates(rt, job, state));
         if (gateOut === null || down(state)) {
             // A session the boot already handed back is released HERE: the caller stands the attempt
             // down instead of running, so the cleanup that would have released it never comes.
@@ -437,7 +437,16 @@ async function runPostHelpersAndPublish(
     const { rt, job, state } = ctx;
     const helperFailure = await runPostHelperPhase(rt, job, state, postHelperSkipWhy(outcome.outcome));
     if (await standDown(ctx, 'its post-helpers')) return null;
-    const published = await publishIfDue(rt, job, state, ledgerOf({ ...outcome, helperFailure, published: null }));
+    const ledger = ledgerOf({ ...outcome, helperFailure, published: null });
+    let published: PublishResult | null = null;
+    if (publishDue(rt, job, ledger)) {
+        const publishToken = await askPublishToken(rt, job);
+        // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
+        // and pushing now would outlive it. The push itself is never fenced — it cannot be
+        // recalled (issue #472).
+        if (await standDown(ctx, 'its publish')) return null;
+        published = await publishBranch(rt, job, publishToken);
+    }
     if (await standDown(ctx, 'its publish')) return null;
     return { helperFailure, published };
 }
@@ -464,12 +473,11 @@ async function reportNewSession(
 async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
     const { rt, job, treeBefore, state } = ctx;
     if (treeBefore === null || !rt.runner.probeTree) return null;
-    // A stand-down cancels the probe's transport and stops waiting on it; the caller rechecks.
-    const cancel = new AbortController();
-    void state.abort.then(() => cancel.abort());
+    // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
+    // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
     const raced = await raceStep(
-        state,
-        rt.runner.probeTree(job, cancel.signal).catch(() => null)
+        state.signal,
+        rt.runner.probeTree(job, state.signal).catch(() => null)
     );
     return raced?.value ?? null;
 }
@@ -553,7 +561,10 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         if (gateSession === STOOD_DOWN) return;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and
         // every ad-hoc run of it in flight is cancelled the moment the verdict lands.
-        if (gateSession) void state.abort.then(() => rt.gates?.server.cancel(gateSession.token));
+        if (gateSession)
+            state.signal.addEventListener('abort', () => rt.gates?.server.cancel(gateSession.token), {
+                once: true,
+            });
 
         try {
             const outcome = await runAttempt(ctx, { session, gateSession, executorType, onOutput });

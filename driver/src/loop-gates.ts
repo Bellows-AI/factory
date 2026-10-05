@@ -149,10 +149,10 @@ export async function runDeclaredGates(
 ): Promise<GateFailure | null> {
     const { gates, log } = rt;
     if (!gates) return null;
-    // A stand-down cancels the gate in flight, not only the ones after it.
-    const cancel = new AbortController();
-    void state.abort.then(() => cancel.abort());
-    const runCtx: GatesRunCtx = { rt, job, gateSession, state, signal: cancel.signal };
+    // The attempt's own signal is the gate transport's abort: a stand-down cancels the gate in
+    // flight, not only the ones after it, and no second controller exists to keep in step
+    // (issue #472).
+    const runCtx: GatesRunCtx = { rt, job, gateSession, state, signal: state.signal };
     const results: GateReport[] = [];
     const report = async (): Promise<void> => {
         try {
@@ -182,7 +182,7 @@ export async function runDeclaredGates(
         // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
         // Raced against the stand-down: the re-acquire (an image pull, a cluster request) has no
         // timeout of its own, and the heartbeat keeps the lease while a Stop waits on it.
-        const raced = await raceStep(state, runOneGate(runCtx, gate));
+        const raced = await raceStep(state.signal, runOneGate(runCtx, gate));
         const outcome = raced?.value;
         // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
         // and a cancelled gate is never reported failed — `gate-failed` must not read it.

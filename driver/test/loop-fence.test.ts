@@ -1,8 +1,9 @@
+import { getEventListeners } from 'node:events';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob, LeaseState } from '../src/board.js';
-import { newJobState } from '../src/loop-attempt.js';
+import { newJobState, raceStep } from '../src/loop-attempt.js';
 import { concludeSetup, handBackFence, standDown } from '../src/loop-fence.js';
 import type { AttemptCtx, SetupHalt } from '../src/loop-types.js';
 
@@ -168,5 +169,65 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         const helpers = loopSources().find(([file]) => file === 'loop-helpers.ts')?.[1] ?? '';
         expect(helpers.match(/await (ctx\.)?settle\(\)/g) ?? []).toEqual([]);
         expect(helpers.match(/releaseFence/g) ?? []).toEqual([]);
+    });
+
+    it('mints the attempt one signal, never one per step', () => {
+        // The gate exec, the tree probe and the gate-session cancel all take `state.signal`: a
+        // controller per transport is a controller that can answer a stand-down out of step with
+        // the race that decides one (issue #472).
+        const minting = loopSources()
+            .filter(([file, source]) => file !== 'loop-attempt.ts' && source.includes('new AbortController'))
+            .map(([file]) => file);
+        expect(minting).toEqual([]);
+    });
+
+    it('fences every phase boundary from loop-run, and nowhere else', () => {
+        const callers = loopSources()
+            .filter(([file, source]) => file !== 'loop-fence.ts' && /standDown\(ctx, '/.test(source))
+            .map(([file]) => file);
+        expect(callers).toEqual(['loop-run.ts']);
+    });
+});
+
+describe('one abort signal per attempt (issue #472)', () => {
+    it('is aborted by the heartbeat verdict, through abortNow', () => {
+        const state = newJobState();
+
+        expect(state.signal.aborted).toBe(false);
+        state.abortNow();
+        expect(state.signal.aborted).toBe(true);
+    });
+
+    it('answers the step that won the race', async () => {
+        const state = newJobState();
+
+        expect(await raceStep(state.signal, Promise.resolve('value'))).toEqual({ value: 'value' });
+    });
+
+    it('never waits on a step the attempt already stood down', async () => {
+        const state = newJobState();
+        state.abortNow();
+
+        // A promise nobody can settle: the race must answer on the signal, not on the step.
+        expect(await raceStep(state.signal, new Promise<string>(() => {}))).toBeNull();
+    });
+
+    it('answers null when the stand-down lands mid-step', async () => {
+        const state = newJobState();
+        const running = raceStep(state.signal, new Promise<string>(() => {}));
+
+        state.abortNow();
+
+        expect(await running).toBeNull();
+    });
+
+    it('leaves no abort listener behind when a step won', async () => {
+        // An attempt has one step per phase; a signal that kept every finished step's listener
+        // would hold them all until the attempt ends.
+        const state = newJobState();
+
+        await raceStep(state.signal, Promise.resolve('value'));
+
+        expect(getEventListeners(state.signal, 'abort')).toHaveLength(0);
     });
 });
