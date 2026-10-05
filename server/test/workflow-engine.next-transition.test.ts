@@ -107,6 +107,18 @@ describe('nextTransition: blocked and no-progress rests', () => {
         expect(t).toEqual({ action: 'rest', reason: 'blocked' });
     });
 
+    // A refused .bellows.yaml fails identically on every retry: rest on the first, never a failed edge.
+    it('rests a config completion on the first failure, a custom failed edge included', () => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'fix', when: 'failed' }] },
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({ id: 'r1', status: 'failed', failureKind: 'config' }),
+        });
+        expect(t).toEqual({ action: 'rest', reason: 'config' });
+    });
+
     it('rests a gate-failed edge over a tree the run left unchanged', () => {
         const t = nextTransition({
             params: {},

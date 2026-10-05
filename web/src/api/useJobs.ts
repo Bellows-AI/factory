@@ -31,6 +31,7 @@ export type FailureKind =
     | 'publish'
     | 'helper'
     | 'services'
+    | 'config'
     | 'runner_error';
 
 /** Where one declared verification gate stands. The board stores current/last only — no history. */

@@ -68,6 +68,8 @@ export interface CompletedRun {
  * - `services`          the run failed on a dead declared service: another round over the same
  *                       service can only fail the same way (the `blocked` precedent).
  * - `publish`           the run's publish step failed: resting it spends no round.
+ * - `config`            the run's `.bellows.yaml` could not be read: the same file fails the same
+ *                       way on every retry, so no edge is followed, a custom `failed` one included.
  * - `no_progress`       the matched rule is `gate-failed` and the run left the tree unchanged:
  *                       a gate-fix round over the same tree can only fail the same way.
  * - `thread_busy`       an off-graph follow-up completed while a graph row of the thread is still
@@ -83,6 +85,7 @@ export type RestReason =
     | 'blocked'
     | 'services'
     | 'publish'
+    | 'config'
     | 'no_progress'
     | 'thread_busy';
 
@@ -91,6 +94,7 @@ const REST_BY_KIND: Partial<Record<FailureKind, RestReason>> = {
     blocked: 'blocked',
     services: 'services',
     publish: 'publish',
+    config: 'config',
 };
 
 export type Transition =

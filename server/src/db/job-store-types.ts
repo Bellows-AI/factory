@@ -32,6 +32,7 @@ export type FailureKind =
     | 'publish'
     | 'helper'
     | 'services'
+    | 'config'
     | 'runner_error';
 
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */

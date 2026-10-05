@@ -35,8 +35,11 @@ const parts = (over: Partial<LedgerParts> = {}): LedgerParts => ({
     ...over,
 });
 
-/** One fault each, by the kind it must name — the table the pairwise test crosses with itself. */
-const SINGLE: Record<FailureKind, LedgerParts> = {
+/**
+ * One fault each, by the kind it must name — the table the pairwise test crosses with itself.
+ * `config` is a pre-run refusal (loop-run.ts), never a ledger fault, so it is not ranked.
+ */
+const SINGLE: Record<Exclude<FailureKind, 'config'>, LedgerParts> = {
     timeout: parts({ outcome: outcome({ timedOut: true }) }),
     cache_lost: parts({ outcome: outcome({ cacheLost: 'c' }) }),
     blocked: parts({ outcome: outcome({ blockedLine: 'x' }) }),
@@ -46,6 +49,8 @@ const SINGLE: Record<FailureKind, LedgerParts> = {
     publish: parts({ published: { ok: false, published: false, reason: 'r' } as never }),
     runner_error: parts({ outcome: outcome({ exitCode: 2 }) }),
 };
+
+const single = (kind: FailureKind): LedgerParts => SINGLE[kind as keyof typeof SINGLE];
 
 const merge = (a: LedgerParts, b: LedgerParts): LedgerParts => ({
     outcome: {
@@ -71,10 +76,10 @@ describe('the fault ledger', () => {
     });
 
     it('ranks every pair of faults by RANK, and every single fault names its own kind', () => {
-        for (const kind of RANK) expect(kindOf(ledgerOf(SINGLE[kind]))).toBe(kind);
+        for (const kind of RANK) expect(kindOf(ledgerOf(single(kind)))).toBe(kind);
         for (const [i, a] of RANK.entries()) {
             for (const b of RANK.slice(i + 1)) {
-                const ledger = ledgerOf(merge(SINGLE[a], SINGLE[b]));
+                const ledger = ledgerOf(merge(single(a), single(b)));
                 expect(statusOf(ledger)).toBe('failed');
                 expect(kindOf(ledger), `${a} + ${b}`).toBe(a);
                 expect(publishEligible(ledger)).toBe(false);
@@ -83,7 +88,7 @@ describe('the fault ledger', () => {
     });
 
     it('lets only a timeout, a gate, services, a helper or a publish leave the gates running', () => {
-        const runs = (kind: FailureKind): boolean => gatesEligible(ledgerOf(SINGLE[kind]));
+        const runs = (kind: FailureKind): boolean => gatesEligible(ledgerOf(single(kind)));
         expect(RANK.filter(runs)).toEqual(['timeout', 'services', 'gate', 'helper', 'publish']);
         // A non-zero exit that is the timeout's own kill still leaves the work to judge.
         expect(gatesEligible(agentFaults(outcome({ timedOut: true, exitCode: 137 })))).toBe(true);

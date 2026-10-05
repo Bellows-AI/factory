@@ -196,6 +196,7 @@ export type FailureKind =
     | 'publish'
     | 'helper'
     | 'services'
+    | 'config'
     | 'runner_error';
 
 /**
