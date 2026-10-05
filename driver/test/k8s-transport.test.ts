@@ -5,7 +5,65 @@ import type { request as httpsRequest } from 'node:https';
 import type { RequestOptions } from 'node:https';
 import { describe, expect, it, vi } from 'vitest';
 import { OUTPUT_LIMIT } from '../src/runner.js';
-import { DIAGNOSIS_BODY_CHARS, inClusterRequest, isMalformedRequest400 } from '../src/k8s-transport.js';
+import {
+    DIAGNOSIS_BODY_CHARS,
+    inClusterRequest,
+    isMalformedRequest400,
+    refusalDiagnosis,
+} from '../src/k8s-transport.js';
+
+const METRICS_PATH = '/apis/metrics.k8s.io/v1beta1/namespaces/factory/pods/runner-1';
+const LOG_PATH = '/api/v1/namespaces/factory/pods/runner-1/log?tailLines=1000';
+const status = (message: string, reason?: string) => JSON.stringify({ kind: 'Status', message, reason, code: 400 });
+const CREATING = status('container "runner" in pod "runner-1" is waiting to start: ContainerCreating', 'BadRequest');
+
+describe('refusalDiagnosis', () => {
+    it('stays quiet for the expected metrics 404 and ContainerCreating log 400 only', () => {
+        expect(refusalDiagnosis('GET', METRICS_PATH, 404, status('not found', 'NotFound'))).toBeNull();
+        expect(refusalDiagnosis('GET', METRICS_PATH, 404, '')).toBeNull();
+        expect(refusalDiagnosis('GET', LOG_PATH, 400, CREATING)).toBeNull();
+        expect(refusalDiagnosis('GET', LOG_PATH, 200, 'ok')).toBeNull();
+    });
+
+    it('keeps every look-alike diagnosable', () => {
+        const cases: [string, string, number, string][] = [
+            ['GET', '/api/v1/namespaces/factory/pods/runner-1', 404, status('pod not found', 'NotFound')],
+            ['DELETE', METRICS_PATH, 404, ''],
+            ['GET', METRICS_PATH, 403, status('forbidden', 'Forbidden')],
+            ['GET', METRICS_PATH, 500, 'boom'],
+            ['GET', LOG_PATH, 400, status('previous terminated container not found', 'BadRequest')],
+            ['GET', LOG_PATH, 400, '400 Bad Request'],
+            ['GET', LOG_PATH, 400, 'ContainerCreating'],
+            ['GET', LOG_PATH, 404, CREATING],
+            ['POST', LOG_PATH, 400, CREATING],
+            ['GET', '/api/v1/namespaces/factory/pods/runner-1/status', 400, CREATING],
+        ];
+        for (const [method, path, code, body] of cases) {
+            expect(refusalDiagnosis(method, path, code, body), `${method} ${path} ${code}`).toContain(
+                `${method} ${path} answered ${code}`
+            );
+        }
+    });
+
+    it('reduces a Status to its message and reason, without the raw JSON', () => {
+        const line = refusalDiagnosis('GET', '/api/v1/pods', 403, status('pods is forbidden', 'Forbidden'));
+
+        expect(line).toBe('GET /api/v1/pods answered 403: pods is forbidden (Forbidden)');
+    });
+
+    it('previews plain text and invalid JSON, bounded', () => {
+        const long = `{"kind":"Status","message":"${'z'.repeat(2 * DIAGNOSIS_BODY_CHARS)}`;
+        const hugeMessage = status('m'.repeat(2 * DIAGNOSIS_BODY_CHARS));
+
+        expect(refusalDiagnosis('GET', '/x', 502, 'bad gateway')).toBe('GET /x answered 502 body=bad gateway');
+        expect(refusalDiagnosis('GET', '/x', 502, long)).toHaveLength(
+            'GET /x answered 502 body='.length + DIAGNOSIS_BODY_CHARS
+        );
+        expect(refusalDiagnosis('GET', '/x', 400, hugeMessage)).toHaveLength(
+            'GET /x answered 400: '.length + DIAGNOSIS_BODY_CHARS
+        );
+    });
+});
 
 interface TransportCall {
     options: RequestOptions;
@@ -229,7 +287,7 @@ describe('the in-cluster kubernetes transport', () => {
         expect(logs[0]).toContain('/apis/batch/v1/namespaces/default/jobs/factory-sync-x');
         expect(logs[0]).toContain('400');
         expect(logs[0]).toContain('400 Bad Request');
-        expect(logs[0]).toContain(JSON.stringify({ 'content-type': 'text/plain' }));
+        expect(logs[0]).not.toContain('headers');
         expect(logs[1]).toContain('POST');
         expect(logs[1]).toContain('500');
         expect(logs[1]).toContain(oversized.slice(0, DIAGNOSIS_BODY_CHARS));
