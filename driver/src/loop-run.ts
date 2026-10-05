@@ -10,7 +10,8 @@ import type { AttemptCtx, LoopRuntime } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
 import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
-import { blockedReason, gateSkipReason, publishIfDue, report, reportFinish } from './loop-verdict.js';
+import { agentFaults, gatesEligible, ledgerOf, skipWhyOf } from './loop-ledger.js';
+import { publishIfDue, report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
@@ -272,8 +273,6 @@ type RunPhaseResult = {
      * last output from VERDICT time would report a run that was streaming when it died as idle.
      */
     endedAt: number;
-    /** The agent's blocked report, or null. */
-    blocked: string | null;
     /** Why the declared gates were skipped, or null. */
     gatesSkipped: string | null;
     /** Whether the failed gate's tree differs from the synced one; null when unmeasured. */
@@ -374,14 +373,13 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * suite can take minutes and it must not outrun the lease it runs under. A run that did not
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      */
-    const blocked = blockedReason(outcome);
     const gating = gateSession && !outcome.refused && !state.lost ? gateSession : null;
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress.
     const treeAfter = gating ? await probeTreeNow(ctx) : null;
     const gated =
         gating && !down(state)
-            ? await runGatesPhase(ctx, gating, outcome, blocked)
+            ? await runGatesPhase(ctx, gating, outcome)
             : { failure: null, deadServices: [], gatesSkipped: null };
     // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
     const treeChanged =
@@ -391,7 +389,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
         return { done: true };
     }
 
-    return { done: false, outcome, ...gated, endedAt, blocked, treeChanged };
+    return { done: false, outcome, ...gated, endedAt, treeChanged };
 }
 
 /** What the gates phase of one attempt found: the failed gate, the dead services, or why it skipped. */
@@ -402,14 +400,10 @@ interface GatesPhase {
 }
 
 /** The declared gates, unless the run did not finish cleanly or a declared service is dead. */
-async function runGatesPhase(
-    ctx: AttemptCtx,
-    gateSession: GateSession,
-    outcome: RunOutcome,
-    blocked: string | null
-): Promise<GatesPhase> {
+async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome: RunOutcome): Promise<GatesPhase> {
     const { rt, job, state } = ctx;
-    const gatesSkipped = gateSkipReason(outcome, blocked);
+    const agent = agentFaults(outcome);
+    const gatesSkipped = gatesEligible(agent) ? null : skipWhyOf(agent);
     if (gatesSkipped !== null) {
         rt.log(`job ${job.id}: gates skipped — ${gatesSkipped}`);
         return { failure: null, deadServices: [], gatesSkipped };
@@ -457,13 +451,7 @@ async function runPostHelpersAndPublish(
     const { rt, job, state } = ctx;
     const helperFailure = await runPostHelperPhase(rt, job, state);
     if (down(state)) return settleDown(ctx, 'its post-helpers').then(() => null);
-    const published = await publishIfDue(rt, job, state, {
-        outcome: outcome.outcome,
-        failure: outcome.failure,
-        deadServices: outcome.deadServices,
-        helperFailure,
-        blocked: outcome.blocked,
-    });
+    const published = await publishIfDue(rt, job, state, ledgerOf({ ...outcome, helperFailure, published: null }));
     if (down(state)) return settleDown(ctx, 'its publish').then(() => null);
     return { helperFailure, published };
 }
@@ -615,7 +603,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 endedAt: outcome.endedAt,
                 activity: outputPump.snapshot(),
                 gateRuns: gateHistory(rt, gateSession),
-                blocked: outcome.blocked,
                 gatesSkipped: outcome.gatesSkipped,
                 treeChanged: outcome.treeChanged,
             });
