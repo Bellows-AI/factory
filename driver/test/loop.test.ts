@@ -3628,7 +3628,7 @@ describe('a dead declared service (issue #423)', () => {
         expect(board.board.completed.map((c) => c.failureKind ?? null)).toEqual(['runner_error', null]);
     });
 
-    it('never probes a run whose gates are skipped — an unclean exit or a blocked agent', async () => {
+    it('names the dead service when the gates are skipped — an unclean exit or a blocked agent (issue #487)', async () => {
         const board = stubBoard([gatedJob(1), gatedJob(2)]);
         const stack = stubGateStack();
         let ran = 0;
@@ -3640,9 +3640,14 @@ describe('a dead declared service (issue #423)', () => {
 
         await drive({ ...board, runner, gates: stack.gates });
 
-        expect(runner.deadServiceProbes).toBe(0);
+        expect(runner.deadServiceProbes).toBe(2);
         expect(stack.stack.ran.names).toEqual([]);
-        expect(board.board.completed.map((c) => c.failureKind ?? null)).toEqual(['runner_error', 'blocked']);
+        expect(board.board.completed.map((c) => c.failureKind ?? null)).toEqual(['services', 'blocked']);
+        for (const complete of board.board.completed) {
+            expect(complete.output).toContain('[driver] service "test-mongo" (mongo:8.0.11) failed — exit 1 (Error)');
+            expect(complete.output).toContain('chown: changing ownership of /data/db: Operation not permitted');
+            expect(complete.output).not.toContain('declared gates skipped');
+        }
     });
 
     it('ranks a timeout above the dead service', async () => {
