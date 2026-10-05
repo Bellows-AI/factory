@@ -2,6 +2,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
+import { createWorkflowStore } from '../src/db/workflow-store.js';
+import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -23,6 +25,17 @@ const followUp = (target: JobStore, root: string, command: string, userId: strin
         if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
         return ref;
     });
+
+/** A saved workflow row for the job's snapshot to name. */
+const new_workflow = async (definition: WorkflowDefinition, name: string): Promise<string> => {
+    const created = await createWorkflowStore({ sql, orgId: ORG }).create({
+        name,
+        scope: { kind: 'org' },
+        definition,
+        createdBy: null,
+    });
+    return (created as { id: string }).id;
+};
 
 beforeAll(async () => {
     if (!enabled) return;
@@ -75,6 +88,41 @@ describe.runIf(enabled)('gates on the job store: re-reads', () => {
             result: 'ok',
             gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
             gateError: null,
+        });
+    });
+
+    // A worktree whose .bellows.yaml cannot be parsed fails a gated node, but a node that declared
+    // `gates: false` never reads it — on the claim and on the re-read alike.
+    it.each([
+        { gates: false, expectError: false },
+        { gates: true, expectError: true },
+    ])('answers an unparseable .bellows.yaml per the node (gates: $gates)', async ({ gates, expectError }) => {
+        const userId = await account(gates ? 6010 : 6011, gates ? 'gate-owl' : 'gate-fox');
+        const PARSE_ERROR = '.bellows.yaml line 3: unknown key "setup" inside environment';
+        const reader = createJobStore({
+            sql,
+            orgId: ORG,
+            gates: { readFor: async () => ({ config: null, error: PARSE_ERROR, source: 'worktree' as const }) },
+        });
+        const definition: WorkflowDefinition = {
+            entry: 'collect',
+            params: [],
+            nodes: [{ name: 'collect', kind: 'agent', session: 'fresh', gates, prompt: 'collect' }],
+            edges: [],
+        };
+        const created = await new_workflow(definition, `reread-gates-${gates}`);
+        await reader.create('collect', userId, {
+            repo: 'acme/web',
+            executor: null,
+            workflow: { id: created, name: `reread-gates-${gates}`, node: 'collect', snapshot: definition, params: {} },
+        });
+        const claim = await reader.claim('driver-1', LEASE_SECONDS);
+
+        expect(claim?.gateError ?? null).toBe(expectError ? PARSE_ERROR : null);
+        expect(await reader.rereadGates(claim!.id, claim!.leaseToken)).toEqual({
+            result: 'ok',
+            gates: null,
+            gateError: expectError ? PARSE_ERROR : null,
         });
     });
 
