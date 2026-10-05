@@ -45,6 +45,15 @@ export interface HelperPlan {
     githubWriting: boolean;
 }
 
+/**
+ * What one helper run carries beyond its plan, as the transports take it: the fresh GitHub token a
+ * github-writing helper runs with, and the attempt's stand-down signal that cancels it (issue #488).
+ */
+export interface HelperCall {
+    token?: string | undefined;
+    signal?: AbortSignal | undefined;
+}
+
 /** Every named, bounded way a helper run can fail — never a thrown context leak into the agent. */
 export type HelperFailureReason =
     | 'unknown_helper'

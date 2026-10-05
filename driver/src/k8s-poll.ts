@@ -295,12 +295,15 @@ export async function auxVerdict(
  * A block-helper aux Job's verdict (issue #207) — `auxVerdict`'s shape, plus whether the
  * kubelet's own `activeDeadlineSeconds` is what ended it, the same `DeadlineExceeded` condition
  * check `pollRunnerJobUntilTerminal` makes for the runner Job. A helper that outlives its bound is
- * reported as a named `timeout` failure by its caller, never an ordinary exit.
+ * reported as a named `timeout` failure by its caller, never an ordinary exit. An aborted `signal`
+ * ends the poll by throwing, like `auxVerdict`.
  */
 export async function helperVerdict(
     deps: K8sDeps,
-    jobName: string
+    jobName: string,
+    signal?: AbortSignal
 ): Promise<{ exitCode: number | null; output: string; timedOut: boolean }> {
+    if (signal?.aborted) throw new Error(`the helper job ${jobName} was cancelled`);
     const result = await readJobStatus(deps, jobName, `reading the helper job ${jobName}`);
     if (result.kind === 'notFound') {
         throw new Error(`the helper job ${jobName} no longer exists`);
@@ -308,7 +311,7 @@ export async function helperVerdict(
     if (result.kind === 'error') throw new Error(refusal(result, 'reading the helper job')!);
     if (result.kind === 'pending') {
         await deps.sleep(POLL_MS);
-        return helperVerdict(deps, jobName);
+        return helperVerdict(deps, jobName, signal);
     }
     const verdict = await readJobPodVerdict(
         deps,

@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { gateEnvArgs, gateEnvContainerName, gateExecArgs } from './docker.js';
+import { startEnvContainer } from './docker-runner-support.js';
 import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRunNote } from './timeout-note.js';
@@ -56,7 +57,7 @@ export interface GateRun {
 
 type ExecDocker = (
     args: string[],
-    options?: { timeout?: number; maxBuffer?: number }
+    options?: { timeout?: number; maxBuffer?: number; signal?: AbortSignal }
 ) => Promise<{ stdout: string; stderr: string }>;
 
 const defaultExec: ExecDocker = (args, options) =>
@@ -86,17 +87,26 @@ interface Entry {
     network: string | null;
 }
 
+/**
+ * The attempt one `acquire` is for. The job is the context the kubernetes manager files gate runs
+ * under (labels, names, its own per-run env Secret); the docker manager keys the container off the
+ * checkout and uses the job only to join the attempt's services network before a gate runs. An
+ * aborted `signal` (the attempt's stand-down) cancels the environment's start, and the acquire
+ * rejects.
+ */
+export interface GateAttempt {
+    job: BoardJob;
+    signal?: AbortSignal;
+}
+
 export interface GateManager {
     /**
      * Ensures the environment for the checkout exists, cancelling any teardown already
      * scheduled for it. Idempotent: an existing environment is reused as-is, env included.
-     * The job is the attempt context the kubernetes manager files gate runs under (labels,
-     * names, its own per-run env Secret); the docker manager keys the container off the checkout
-     * and uses the job only to join the attempt's services network before a gate runs.
-     * The job's `gates.setup` is run once per environment, lazily before its first gate (a gate
+     * The attempt's `gates.setup` is run once per environment, lazily before its first gate (a gate
      * answers `setupFailed` when it fails), so an environment no gate ever uses pays nothing.
      */
-    acquire(key: string, image: string, envBody?: string, job?: BoardJob): Promise<void>;
+    acquire(key: string, image: string, envBody?: string, attempt?: GateAttempt): Promise<void>;
     /**
      * Runs one declared gate inside the checkout's environment container. An abort of `signal`
      * cancels the gate where it stands — its process killed, its kubernetes Job deleted — and
@@ -314,7 +324,8 @@ export function createGateManager({
     };
 
     return {
-        async acquire(key, image, envBody = '', job?: BoardJob) {
+        async acquire(key, image, envBody = '', attempt?: GateAttempt) {
+            const job = attempt?.job;
             const existing = entries.get(key);
             if (existing) {
                 if (job) existing.job = job;
@@ -341,7 +352,8 @@ export function createGateManager({
                 if (envBody) {
                     await writeFile(envFileFor(key), envBody, { mode: 0o600 });
                 }
-                await execDocker(gateEnvArgs(config, key, image, envBody ? envFileFor(key) : undefined));
+                const args = gateEnvArgs(config, key, image, envBody ? envFileFor(key) : undefined);
+                await startEnvContainer(execDocker, name, args, attempt?.signal);
                 entries.set(key, newEntry(name, image, envBody, job ?? null));
             });
         },
@@ -546,7 +558,7 @@ const runRegisteredGate = async (
     // cooldown 0 nothing would ever tear the new one down again.
     if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
     try {
-        await manager.acquire(claim.key, claim.image, claim.envBody ?? '', claim.job);
+        await manager.acquire(claim.key, claim.image, claim.envBody ?? '', claim.job && { job: claim.job });
     } catch (e) {
         return {
             status: HTTP_INTERNAL_SERVER_ERROR,

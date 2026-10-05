@@ -226,9 +226,11 @@ export interface Runner {
      * throwing; the loop turns that into the verdict — except a reason carrying the script's
      * transient marker (TRANSIENT_SYNC_REASON, issue #307: lock contention on the shared
      * checkout), which is infrastructure: the loop leaves the job to its lease and no verdict
-     * lands.
+     * lands. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a sync
+     * writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
+     * at all — the abandoned sync finishes and `releaseAbandonedSync` hands its claim back.
      */
-    syncCheckout(job: BoardJob): Promise<SyncResult>;
+    syncCheckout(job: BoardJob, signal?: AbortSignal): Promise<SyncResult>;
     /**
      * Reclaims the task worktree after the thread's LAST job is terminal: removes the per-thread
      * tree and prunes its admin entry, so a finished or deleted task does not leave its tree
@@ -242,10 +244,10 @@ export interface Runner {
     reclaimWorktree(job: BoardJob): Promise<ReclaimResult>;
     /**
      * Hands back whatever the startup sync's fence took — the kubernetes checkout claim, which
-     * syncCheckout acquires and HOLDS through the run. The loop calls this only on the terminal
-     * pre-run refusals that complete the job failed WITHOUT runner.run, where run()'s finally —
-     * the ordinary release path — never executes; a refusal that never runs must not hold the
-     * checkout. Ownership-checked inside the runner: only the exact claim this attempt still
+     * syncCheckout acquires and HOLDS through the run. The loop calls this (`handBackFence`) on
+     * every exit that never reaches runner.run — a terminal refusal, a stand-down, a throw — where
+     * run()'s finally, the ordinary release path, never executes; an attempt that never runs must
+     * not hold the checkout. Ownership-checked inside the runner: only the exact claim this attempt still
      * holds is released, never one that moved on. Optional: docker's fence leaves nothing
      * behind to release, so its runner implements nothing and a loop facing it never calls.
      */
@@ -267,9 +269,11 @@ export interface Runner {
      * helper (`plan.githubWriting`); a read-only helper gets none and the transport runs it with
      * the claim env untouched. Optional: a job with no `helperPlans` never calls it, and a runner
      * that does not implement one simply cannot run helpers — the same "this platform does not
-     * support it" reading `publishGit`'s optionality already carries.
+     * support it" reading `publishGit`'s optionality already carries. An aborted `signal` (the
+     * attempt's stand-down) ends a kubernetes helper's poll and reaps its Job; on docker it
+     * detaches the client and the container is removed by name, a github-writing one included.
      */
-    runHelper?(job: BoardJob, plan: HelperPlan, token?: string): Promise<HelperResult>;
+    runHelper?(job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal): Promise<HelperResult>;
 }
 
 /**

@@ -82,9 +82,10 @@ export interface JobState {
     /**
      * Aborted the moment any verdict ends the attempt where it stands — stop, lost lease, Remove.
      * The one signal every slow step is raced against (`raceStep`) and the one handed to the
-     * transports that take one (the gate exec, the tree probe, the gate-session teardown), so a
-     * stand-down cancels in-flight work instead of leaving each step its own controller
-     * (issue #472).
+     * transports that take one (the docker checkout sync's client, the gates re-read, the helpers, the gate
+     * environment's start, the gate exec, the tree probe), so a stand-down cancels in-flight work
+     * instead of leaving each step its own controller (issues #472, #488). The publish is the one
+     * slow call with no signal: a push cannot be recalled.
      */
     signal: AbortSignal;
     abortNow: () => void;

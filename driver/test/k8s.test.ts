@@ -6163,7 +6163,7 @@ describe('the kubernetes gate manager', () => {
     it('creates the attempt env Secret before the Job, and reaps the Job with the verdict', async () => {
         const { request, calls } = gateFake();
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', 'CORE_TOKEN=shh\n', job);
+        await m.acquire(KEY, 'node:24', 'CORE_TOKEN=shh\n', { job });
         const outcome = await m.runGate(KEY, 'test', 'npm test');
 
         expect(outcome).toEqual({ exitCode: 0, output: 'gate said hi' });
@@ -6198,7 +6198,7 @@ describe('the kubernetes gate manager', () => {
     it('runs a gate with no env at all without touching a Secret', async () => {
         const { request, calls } = gateFake();
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
         await m.runGate(KEY, 'test', 'npm test');
         expect(calls.some((c) => c.path?.includes('/secrets'))).toBe(false);
     });
@@ -6213,7 +6213,7 @@ describe('the kubernetes gate manager', () => {
             },
         });
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
         const outcome = await m.runGate(KEY, 'test', 'npm test');
         expect(outcome.exitCode).toBe(124);
     });
@@ -6240,7 +6240,7 @@ describe('the kubernetes gate manager', () => {
             },
         });
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
         const outcome = await m.runGate(KEY, 'test', 'npm test');
         expect(outcome.exitCode).toBe(124);
         expect(outcome.output).toMatch(/gate killed after \d+ms/);
@@ -6259,7 +6259,7 @@ describe('the kubernetes gate manager', () => {
             request: watching,
             sleep: () => new Promise((resolve) => setTimeout(resolve, 1)),
         });
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
 
         await expect(m.runGate(KEY, 'test', 'npm test', cancel.signal)).rejects.toMatchObject({ code: 125 });
 
@@ -6271,7 +6271,7 @@ describe('the kubernetes gate manager', () => {
     it('creates no Job for a signal already aborted', async () => {
         const { request, calls } = gateFake();
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
 
         await expect(m.runGate(KEY, 'test', 'npm test', AbortSignal.abort())).rejects.toMatchObject({ code: 125 });
 
@@ -6281,7 +6281,7 @@ describe('the kubernetes gate manager', () => {
     it('rejects with the harness code when the cluster refuses the run', async () => {
         const { request } = gateFake({ jobCreate: { status: 403, body: 'forbidden' } });
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
         await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
     });
 
@@ -6298,7 +6298,7 @@ describe('the kubernetes gate manager', () => {
             return Promise.reject(new Error(`gate fake has no answer for ${method} ${path}`));
         };
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
         await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toMatchObject({ code: 125 });
     });
 
@@ -6322,7 +6322,7 @@ describe('the kubernetes gate manager', () => {
             },
         });
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
         const error = await m.runGate(KEY, 'test', 'npm test').then(
             () => null,
             (e: Error) => e
@@ -6342,15 +6342,15 @@ describe('the kubernetes gate manager', () => {
     it('validates the checkout key and image shapes at acquire, before anything runs', async () => {
         const { request } = gateFake();
         const m = manager(request);
-        await expect(m.acquire('../other/repo', 'node:24', '', job)).rejects.toThrow(/checkout key/);
-        await expect(m.acquire(KEY, 'not an image!!', '', job)).rejects.toThrow(/image reference/);
-        await expect(m.acquire(KEY, 'node:24', '', job)).resolves.toBeUndefined();
+        await expect(m.acquire('../other/repo', 'node:24', '', { job })).rejects.toThrow(/checkout key/);
+        await expect(m.acquire(KEY, 'not an image!!', '', { job })).rejects.toThrow(/image reference/);
+        await expect(m.acquire(KEY, 'node:24', '', { job })).resolves.toBeUndefined();
     });
 
     it('names the gate Job so two runs of one gate never collide', async () => {
         const { request, calls } = gateFake();
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', '', job);
+        await m.acquire(KEY, 'node:24', '', { job });
         await m.runGate(KEY, 'test', 'npm test');
         await m.runGate(KEY, 'test', 'npm test');
         const names = calls
@@ -6368,9 +6368,9 @@ describe('the kubernetes gate manager', () => {
     it('keeps the run counter across re-acquires of the same attempt, so a re-acquired run never reuses a name', async () => {
         const { request, calls } = gateFake({ secretCreate: { status: 409, body: '{}' } });
         const m = manager(request);
-        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', job);
+        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', { job });
         await m.runGate(KEY, 'test', 'npm test');
-        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', job);
+        await m.acquire(KEY, 'node:24', 'GATE_VAR=1', { job });
         await m.runGate(KEY, 'test', 'npm test');
         const names = calls
             .filter((c) => c.method === 'POST' && c.path === jobsPath(namespace))
@@ -7443,6 +7443,25 @@ describe('the block-helper transport (issue #207)', () => {
         expect(calls.some((c) => c.method === 'DELETE' && c.path.startsWith(jobPath(namespace, jobName)))).toBe(true);
         // A read-only helper creates no Secret.
         expect(calls.some((c) => c.path === secretsPathFor && c.method === 'POST')).toBe(false);
+    });
+
+    it('ends the verdict poll when the stand-down signal aborts, and still reaps the Job and Secret (issue #488)', async () => {
+        const { request, calls } = fakeRequest({ log: { status: 200, body: NOOP_VERDICT } });
+        const result = await runner(request).runHelper!(
+            repoJob,
+            plan({ githubWriting: true }),
+            'fresh-install-token',
+            AbortSignal.abort()
+        );
+        expect(result).toEqual({ ok: false, reason: 'runner_error', message: expect.stringContaining('cancelled') });
+        expect(calls.some((c) => c.method === 'GET' && c.path.includes('/jobs/'))).toBe(false);
+        const jobName = (
+            calls.find((c) => c.method === 'POST' && c.path === jobsPath(namespace))!.body as {
+                metadata: { name: string };
+            }
+        ).metadata.name;
+        expect(calls.some((c) => c.method === 'DELETE' && c.path.startsWith(jobPath(namespace, jobName)))).toBe(true);
+        expect(calls.some((c) => c.method === 'DELETE' && c.path.startsWith(secretsPathFor))).toBe(true);
     });
 
     it('creates an attempt-scoped Secret only for a github-writing helper, and reaps it', async () => {

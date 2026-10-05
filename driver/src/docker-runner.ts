@@ -5,7 +5,7 @@ import { rm, writeFile } from 'node:fs/promises';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { HELPER_TIMEOUT_MS, helperInputValue, lookupHelper, parseHelperOutput } from './helpers.js';
-import type { HelperPlan, HelperResult } from './helpers.js';
+import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import {
     gitWorktreeRemoveScript,
     parseLastJsonLine,
@@ -251,7 +251,7 @@ async function dockerReclaimFence(deps: RunnerDeps, job: BoardJob): Promise<void
  * { ok: false } with the reason — the loop fails the run before it starts rather than leaving the
  * worktree mid-rebase for every later turn to trip over.
  */
-async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob): Promise<SyncResult> {
+async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob, signal?: AbortSignal): Promise<SyncResult> {
     const { config, execDocker, files } = deps;
     const clone = repoPath(config, job);
     const worktree = worktreeDir(config, job);
@@ -281,7 +281,10 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob): Promise<Sync
         // this exact call once shipped as `docker -v ... -w ...`, which is not a command
         // docker knows, and the sync failed on every job while the compile and the flow
         // tests (which match argv by shape, not by head) stayed green.
-        const out = await execDocker(syncCheckoutArgs(config, job, { clone, worktree, restore, envFile: file }));
+        const out = await execDocker(
+            syncCheckoutArgs(config, job, { clone, worktree, restore, envFile: file }),
+            signal ? { signal } : undefined
+        );
         return parseLastJsonLine<SyncResult>(out.stdout, () => ({
             ok: false,
             reason: `${syncUnreadable.reason}: ${unreadableDockerDetail(out.stdout)}`,
@@ -434,7 +437,7 @@ async function dockerRunHelper(
     deps: RunnerDeps,
     job: BoardJob,
     plan: HelperPlan,
-    token?: string
+    { token, signal }: HelperCall
 ): Promise<HelperResult> {
     const descriptor = lookupHelper(plan.helperId);
     if (!descriptor) {
@@ -476,9 +479,12 @@ async function dockerRunHelper(
         args.push('--entrypoint', 'node', executorImage(config, job.executorType), '-e', descriptor.scriptBody);
         let out: { stdout: string };
         try {
-            out = await execDocker(args, { timeout: HELPER_TIMEOUT_MS });
+            out = await execDocker(
+                args,
+                signal ? { timeout: HELPER_TIMEOUT_MS, signal } : { timeout: HELPER_TIMEOUT_MS }
+            );
         } catch (e) {
-            const timedOut = (e as { killed?: boolean }).killed === true;
+            const timedOut = (e as { killed?: boolean }).killed === true && !signal?.aborted;
             return {
                 ok: false,
                 reason: timedOut ? 'timeout' : 'runner_error',
@@ -785,14 +791,14 @@ export function createDockerRunner(
     return {
         kill: (job) => dockerKill(deps, job),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
-        syncCheckout: (job) => dockerSyncCheckout(deps, job),
+        syncCheckout: (job, signal) => dockerSyncCheckout(deps, job, signal),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),
         // The probe needs no claim env: no env file is written for it. A stand-down kills the
         // client; the read-only `--rm` probe container exits and is removed on its own.
         probeTree: (job, signal) =>
             probeTreeFingerprint(config, job, (step) => dockerPublishStep(deps, job, step, { envFile: null, signal })),
-        runHelper: (job, plan, token) => dockerRunHelper(deps, job, plan, token),
+        runHelper: (job, plan, token, signal) => dockerRunHelper(deps, job, plan, { token, signal }),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),

@@ -161,7 +161,7 @@ describe('gate ownership: ad-hoc cancel races', () => {
         const { execDocker, live } = fakeDocker();
         const manager = createGateManager({ config, cooldownMs: 0, execDocker });
         const server = createGateServer({ host: '127.0.0.1', manager });
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_A));
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         server.register('tok', claim);
         const port = await server.listen();
 
@@ -224,10 +224,10 @@ describe('gate ownership: teardown vs re-acquire', () => {
         // The released container takes 50ms to die; the follow-up's acquire lands inside that.
         const { execDocker } = fakeDocker({ rmDelay: (n) => (n === 0 ? 50 : 0) });
         const manager = createGateManager({ config, cooldownMs: 0, execDocker });
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_A));
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         manager.release(KEY, JOB(LEASE_A));
 
-        await expect(manager.acquire(KEY, 'node:24', '', JOB(LEASE_B))).resolves.toBeUndefined();
+        await expect(manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) })).resolves.toBeUndefined();
         await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
         await manager.stop();
     });
@@ -235,11 +235,11 @@ describe('gate ownership: teardown vs re-acquire', () => {
     it('the cooldown teardown firing just before a re-acquire does not fail the next gate', async () => {
         const { execDocker } = fakeDocker({ rmDelay: (n) => (n === 0 ? 50 : 0) });
         const manager = createGateManager({ config, cooldownMs: 5, execDocker });
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_A));
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         manager.release(KEY, JOB(LEASE_A));
         await delay(15); // cooldown fired; its rm is still in flight
 
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_B));
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) });
         await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({ exitCode: 0 });
         await manager.stop();
     });
@@ -258,8 +258,8 @@ describe('gate ownership: two attempts on one checkout key', () => {
             },
         });
         const manager = createGateManager({ config, cooldownMs: 0, execDocker: docker.execDocker });
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_A));
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_B)); // reclaimed attempt, same root worktree
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) }); // reclaimed attempt, same root worktree
         const gateB = manager.runGate(KEY, 'test', 'npm test'); // B's gate is running
         await delay(5);
         manager.release(KEY, JOB(LEASE_A)); // A's finally
@@ -282,11 +282,11 @@ describe('gate ownership: two attempts on one checkout key', () => {
                     : Promise.resolve({ stdout: 'ok', stderr: '' }),
         });
         const manager = createGateManager({ config, cooldownMs: 60_000, execDocker });
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_A));
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         const cancelA = new AbortController();
         const gateA = manager.runGate(KEY, 'test', 'npm test', cancelA.signal);
         await delay(5);
-        await manager.acquire(KEY, 'node:24', '', JOB(LEASE_B)); // fast path: entry exists
+        await manager.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) }); // fast path: entry exists
         const gateB = manager.runGate(KEY, 'test', 'npm test');
         cancelA.abort(); // A's lease is lost
         finishA();
@@ -303,8 +303,8 @@ describe('gate ownership: two attempts on one checkout key', () => {
             return { status: 201, body: '{}' };
         };
         const m = createKubernetesGateManager({ config: k8sConfig, request, sleep: async () => {} });
-        await m.acquire(KEY, 'node:24', 'A=1\n', JOB(LEASE_A));
-        await m.acquire(KEY, 'node:24', 'A=1\n', JOB(LEASE_B));
+        await m.acquire(KEY, 'node:24', 'A=1\n', { job: JOB(LEASE_A) });
+        await m.acquire(KEY, 'node:24', 'A=1\n', { job: JOB(LEASE_B) });
         m.release(KEY, JOB(LEASE_A)); // A's finally
 
         expect(deleted.some((p) => p.endsWith(`/${gateEnvSecretName(JOB(LEASE_A))}`))).toBe(true);
@@ -350,9 +350,9 @@ describe('gate setup: kubernetes runs it as its own Job once per attempt', () =>
     it('runs setup before the first gate only, across the per-gate re-acquires', async () => {
         const cluster = fakeCluster(() => 0);
         const m = createKubernetesGateManager({ config: k8sConfig, request: cluster.request, sleep: async () => {} });
-        await m.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await m.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
         await m.runGate(KEY, 'test', 'npm test');
-        await m.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await m.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
         await m.runGate(KEY, 'lint', 'npm run lint');
 
         expect(cluster.commands).toEqual(['npm ci', 'npm test', 'npm run lint']);
@@ -362,7 +362,7 @@ describe('gate setup: kubernetes runs it as its own Job once per attempt', () =>
         const SETUP_EXIT_CODE = 9;
         const cluster = fakeCluster(() => SETUP_EXIT_CODE);
         const m = createKubernetesGateManager({ config: k8sConfig, request: cluster.request, sleep: async () => {} });
-        await m.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await m.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
 
         await expect(m.runGate(KEY, 'test', 'npm test')).resolves.toMatchObject({
             exitCode: SETUP_EXIT_CODE,
@@ -384,7 +384,7 @@ describe('gate ownership: docker/kubernetes parity of concurrent runs', () => {
             return { status: 201, body: '{}' };
         };
         const m = createKubernetesGateManager({ config: k8sConfig, request, sleep: () => delay(2) });
-        await m.acquire(KEY, 'node:24', '', JOB(LEASE_A));
+        await m.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         const stop = new AbortController();
         void m.runGate(KEY, 'test', 'npm test', stop.signal).catch(() => undefined); // the orphaned ad-hoc run
         void m.runGate(KEY, 'test', 'npm test', stop.signal).catch(() => undefined); // the declared gate
@@ -403,7 +403,7 @@ describe('gate ownership: pins', () => {
             return { status: 201, body: '{}' };
         };
         const m = createKubernetesGateManager({ config: k8sConfig, request, sleep: async () => {} });
-        await m.acquire(KEY, 'node:24', '', JOB(LEASE_A));
+        await m.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
         m.release(KEY, JOB(LEASE_A));
 
         await expect(m.runGate(KEY, 'test', 'npm test')).rejects.toThrow(/no gate environment/);
@@ -424,8 +424,8 @@ describe('gate ownership: pins', () => {
         };
         const driverA = createKubernetesGateManager({ config: k8sConfig, request, sleep: async () => {} });
         const driverB = createKubernetesGateManager({ config: k8sConfig, request, sleep: async () => {} });
-        await driverA.acquire(KEY, 'node:24', 'A=1\n', JOB(LEASE_A));
-        await driverB.acquire(KEY, 'node:24', 'B=1\n', JOB(LEASE_B));
+        await driverA.acquire(KEY, 'node:24', 'A=1\n', { job: JOB(LEASE_A) });
+        await driverB.acquire(KEY, 'node:24', 'B=1\n', { job: JOB(LEASE_B) });
         driverA.release(KEY, JOB(LEASE_A));
         await delay(5);
 
@@ -447,8 +447,8 @@ describe('gate ownership: pins', () => {
         const dockerB = fakeDocker();
         const driverA = createGateManager({ config, cooldownMs: 0, execDocker: dockerA.execDocker });
         const driverB = createGateManager({ config, cooldownMs: 0, execDocker: dockerB.execDocker });
-        await driverA.acquire(KEY, 'node:24', '', JOB(LEASE_A));
-        await driverB.acquire(KEY, 'node:24', '', JOB(LEASE_B));
+        await driverA.acquire(KEY, 'node:24', '', { job: JOB(LEASE_A) });
+        await driverB.acquire(KEY, 'node:24', '', { job: JOB(LEASE_B) });
         const bOpsBefore = dockerB.ops.length;
         driverA.release(KEY, JOB(LEASE_A));
         await delay(5);
