@@ -411,8 +411,10 @@ export function dockerArgs(
      * kubernetes runner asserts it from.
      */
     assertWorktreeResolvable(config, job);
+    // `create`, not `run`: the runner is started attached only once its managed settings are in
+    // (issue #452, see createRunnerContainer in docker-runner-support.ts).
     const args = [
-        'run',
+        'create',
         ...containerHardeningArgs(),
         '--name',
         containerName(job),

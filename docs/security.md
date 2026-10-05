@@ -39,6 +39,11 @@ Credentials: [auth.md](auth.md) · runner env: [env.md](env.md) · cluster: [kub
   never into its own environment. An agent can still `printenv` its own container.
 - **Keep `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_DETAILS` at `0`**
   in `.claude/settings.json`: that content arrives as the log record *body*, not an attribute.
+- **A claude-code runner's managed settings are root-owned and 0444** — the one scope that
+  outranks the agent's own. The driver renders them (`driver/src/managed-settings.ts`): a uid-0
+  archive `docker cp`'d in before the start on docker, a read-only Secret mount on kubernetes; the
+  entrypoint runs as uid 1000 and never writes them. `docker/claude-executor/test.sh`,
+  `driver/test/docker.test.ts`, `driver/test/k8s.test.ts`.
 - **The collector listens on 4317/4318, bound to `127.0.0.1`**, and OTLP ingest is open unless
   `auth.ingest_token` is set — an authenticity check, not an authorization one, since
   `metric_point` has no `org_id`. `POST /api/sessions/branch` is the exception ([auth.md](auth.md)).

@@ -730,6 +730,24 @@ describe('the claude-executor git guard', () => {
 });
 
 /*
+ * Issue #452: managed settings outrank every scope the agent can reach, so the agent (uid 1000)
+ * must not own them. The image bakes them root-owned; the driver renders the endpoint override
+ * and delivers it root-owned too (docker cp / a read-only Secret mount) — the entrypoint, which
+ * runs as uid 1000, never writes the file.
+ */
+describe('the claude-executor managed settings', () => {
+    it('are baked root-owned, like the git guard', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toContain('COPY managed-settings.json /etc/claude-code/managed-settings.json\n');
+        expect(dockerfile).not.toMatch(/--chown[^\n]*managed-settings\.json/);
+    });
+
+    it('are never rewritten by the entrypoint, which runs as the agent uid', () => {
+        expect(read('docker/claude-executor/entrypoint.sh')).not.toContain('/etc/claude-code');
+    });
+});
+
+/*
  * One set of skills for both executors: docker/skills/ is baked into each image's own skills
  * directory through the named `skills` build context, so a task sees the same skills whichever
  * executor its profile picks. The repo's dev skills follow the same rule from the other side —

@@ -1,12 +1,46 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { claudeManagedSettings, managedSettingsTar } from '../src/managed-settings.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const read = (relative: string): string => readFileSync(join(ROOT, relative), 'utf8');
 
 describe('runner telemetry shipping', () => {
+    // The driver's copy of the baked managed settings (it may not import from docker/): the file
+    // it delivers root-owned to every claude-code runner must be the baked one with only the
+    // endpoint swapped, or a rendered run would ship a different telemetry policy than the image.
+    it('renders the baked claude managed settings with only the endpoint replaced', () => {
+        const baked = JSON.parse(read('docker/claude-executor/managed-settings.json')) as {
+            env: Record<string, string>;
+        };
+        expect(JSON.parse(claudeManagedSettings('http://otel.example:4318'))).toEqual({
+            ...baked,
+            env: { ...baked.env, OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel.example:4318' },
+        });
+    });
+
+    // `docker cp -` keeps the owner and mode the archive's header names, so the header is the
+    // whole of the delivery's security: root:root and 0444, whoever runs the driver. Extracted
+    // with the system tar, so a malformed header or checksum fails here, not in a runner.
+    it('archives the managed settings root-owned and read-only for docker cp', () => {
+        const tar = managedSettingsTar('http://otel.example:4318');
+        const field = (offset: number, width: number) =>
+            tar
+                .subarray(offset, offset + width)
+                .toString('ascii')
+                .replace(/\0.*$/s, '');
+        expect(field(0, 100)).toBe('managed-settings.json');
+        expect(Number.parseInt(field(100, 8), 8)).toBe(0o444);
+        expect(Number.parseInt(field(108, 8), 8)).toBe(0);
+        expect(Number.parseInt(field(116, 8), 8)).toBe(0);
+        expect(execFileSync('tar', ['-xOf', '-', 'managed-settings.json'], { input: tar }).toString('utf8')).toBe(
+            claudeManagedSettings('http://otel.example:4318')
+        );
+    });
+
     it('configures both agents for OTLP/HTTP JSON while keeping prompt and tool bodies private', () => {
         const claude = JSON.parse(read('docker/claude-executor/managed-settings.json')) as {
             env: Record<string, string>;

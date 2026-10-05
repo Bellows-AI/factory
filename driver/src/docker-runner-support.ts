@@ -2,7 +2,7 @@
  * The docker runner's daemon plumbing and per-step helpers, beside `createDockerRunner` in
  * docker-runner.ts: the `ExecDocker` seam every daemon call goes through (so a test can stand in
  * for the daemon), error-detail and listing helpers, the worktree-sync argv, the aux-services
- * setup, the `docker run` verdict, and the killed-job guards around the env-file write.
+ * setup, the runner's create and verdict, and the killed-job guards around the env-file write.
  */
 
 import { JOB_LABEL, LEASE_LABEL } from './labels.js';
@@ -12,10 +12,12 @@ import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import { workspacePath, claimCarriesGithubToken } from './claim.js';
 import { type DriverConfig, executorImage } from './config.js';
-import { workspacesMountArgs, containerName, containerHardeningArgs } from './docker.js';
+import { workspacesMountArgs, containerName, containerHardeningArgs, dockerArgs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import { CLAUDE_CODE } from './executors.js';
+import { MANAGED_SETTINGS_DIR, managedSettingsTar } from './managed-settings.js';
 import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
-import type { RunOutcome } from './runner.js';
+import type { RunOutcome, RunSession } from './runner.js';
 import {
     readBellowsArgs,
     type ServiceSpec,
@@ -31,17 +33,18 @@ export const run = promisify(execFile);
 export type Spawn = typeof spawn;
 
 /**
- * Everything the runner does through the daemon other than the `docker run` itself — the fence,
- * the post-run inspect and the cleanup — goes through this one seam, so a test can stand in for
- * the daemon instead of shelling out to it.
+ * Everything the runner does through the daemon other than the attached `docker start` itself —
+ * the fence, the create, the post-run inspect and the cleanup — goes through this one seam, so a
+ * test can stand in for the daemon instead of shelling out to it.
  *
  * One `docker` invocation off the hot paths. `timeout` (ms) bounds the whole exec — the process
  * is killed and the promise rejects — which is what keeps a close-time read from holding a
  * runner's verdict open forever when the daemon stalls. An aborted `signal` kills it the same way.
+ * `input` is written to the CLI's stdin — the archive a `docker cp -` reads.
  */
 export type ExecDocker = (
     args: string[],
-    options?: { timeout?: number; signal?: AbortSignal }
+    options?: { timeout?: number; signal?: AbortSignal; input?: Buffer }
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 /** How much of a failed aux container's own error detail rides in a sync/reclaim/publish reason. */
@@ -232,8 +235,8 @@ export async function setupJobServices(
  * The verdict for a close, decided after the process is gone. An exit CONTAINER_GONE is
  * ambiguous on the shared stderr — the daemon's refusal and a command that genuinely exited that
  * code are printed onto the same stream — so the daemon is asked instead: a container that
- * exists ran, and its State is the truth; "no such container" means `docker run` never got one
- * accepted, and nothing ran. Any other exit code unambiguously belongs to the attached container.
+ * exists ran, and its State is the truth; "no such container" means the create never made one
+ * accepted, and nothing ran. Any other failing code is the container's unless it is still `created`.
  *
  * Cleanup is explicit (`--rm` is not on the spawn argv, precisely so the inspect above can see
  * the container): the fence on the next claim would catch it anyway, but leaving one daemon
@@ -255,15 +258,19 @@ export async function dockerRunVerdict(
         logTruncated?: boolean;
     }
 ): Promise<RunOutcome> {
+    // 125 is the CLI's own refusal or the command's exit — only the daemon can tell, and a
+    // container it cannot answer for never ran. Any other failing code from the attached
+    // `docker start` (it exits 1 when the runtime cannot start the process) is a verdict unless
+    // the daemon still holds the container as `created`.
     let started = true;
-    if (code === CONTAINER_GONE) {
+    if (code !== null && code !== 0) {
         try {
             const state = JSON.parse(
                 (await ctx.execDocker(['inspect', '--format', '{{json .State}}', containerName(ctx.job)])).stdout
             ) as { Status?: string };
-            started = state.Status === 'exited';
+            started = code === CONTAINER_GONE ? state.Status === 'exited' : state.Status !== 'created';
         } catch {
-            started = false;
+            started = code !== CONTAINER_GONE;
         }
     }
     await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
@@ -310,4 +317,38 @@ export async function assertNotKilledAfterEnvWrite(
 export interface RunnerFiles {
     writeFile: typeof writeFile;
     rm: typeof rm;
+}
+
+/**
+ * Creates the runner container and, for claude-code, copies its managed settings in before
+ * anything starts (issue #452): managed scope outranks every settings file the agent can reach,
+ * and the container runs as the agent's uid, so the file arrives from outside, as a root-owned
+ * 0444 archive (managedSettingsTar). A refusal of either step is the daemon's and reads the way
+ * a refused `docker run` did — a container that never started, its leftover removed — so it
+ * comes back as an outcome; null means the container is ready to start.
+ */
+export async function createRunnerContainer(
+    deps: { config: DriverConfig; execDocker: ExecDocker },
+    job: BoardJob,
+    session: RunSession | null,
+    options: { servicesNetwork: string | null; envFile?: string }
+): Promise<RunOutcome | null> {
+    const { config, execDocker } = deps;
+    try {
+        await execDocker(dockerArgs(config, job, session, options));
+        if (job.executorType === CLAUDE_CODE) {
+            await execDocker(['cp', '-', `${containerName(job)}:${MANAGED_SETTINGS_DIR}`], {
+                input: managedSettingsTar(config.otelEndpoint),
+            });
+        }
+        return null;
+    } catch (error) {
+        return dockerRunVerdict(CONTAINER_GONE, {
+            execDocker,
+            job,
+            output: dockerErrorDetail(error),
+            timedOut: false,
+            cacheLost: null,
+        });
+    }
 }
