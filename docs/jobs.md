@@ -56,7 +56,9 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 - **A declared service found dead before the declared gates skips them and fails the verdict
   `services`, never `gate`** — a gate against a dead service fails on an environment the agent
   cannot fix, and `gate-failed` would spend a gate-fix round on it. The verdict quotes the
-  service's exit and last log lines. A job with no declared gates is never probed.
+  service's exit and last log lines. A failed gate re-probes, so a service that died during the
+  gates is blamed too; a k8s pod Pending on an image-pull or config error counts as dead. A job
+  with no declared gates is never probed.
   `driver/src/loop-run.ts`, `loop-verdict.ts`, `driver/test/loop.test.ts`.
 - **A run reports agent turns, never a bare "turns"** — the close-time agent-turn read
   (`driver/src/close-read.ts`) counts the executor's own transcript, and a job turn is a different

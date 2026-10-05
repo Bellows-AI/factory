@@ -2839,6 +2839,18 @@ describe('the runner vitals', () => {
                 { pod: 'svc-mongo', name: 'mongo', image: 'mongo:1', state: 'failed', exitCode: 1, reason: 'Error' },
             ]);
             expect(parseDeadServicePods('not json')).toEqual([]);
+            // A pod stuck Pending on an image or config error never starts: docker fails the same as infrastructure.
+            const stuck = (waiting: string) => ({
+                metadata: { name: 'svc-mongo', labels: { 'factory.service': 'mongo' } },
+                spec: { containers: [{ image: 'mongo:1' }] },
+                status: { phase: 'Pending', containerStatuses: [{ state: { waiting: { reason: waiting } } }] },
+            });
+            for (const reason of ['ImagePullBackOff', 'ErrImagePull', 'CreateContainerConfigError']) {
+                expect(parseDeadServicePods(JSON.stringify({ items: [stuck(reason)] }))).toEqual([
+                    { pod: 'svc-mongo', name: 'mongo', image: 'mongo:1', state: 'pending', exitCode: null, reason },
+                ]);
+            }
+            expect(parseDeadServicePods(JSON.stringify({ items: [stuck('ContainerCreating')] }))).toEqual([]);
             // An eviction records no container termination: the pod's own reason stands in.
             const evicted = {
                 metadata: { name: 'svc-mongo', labels: { 'factory.service': 'mongo' } },

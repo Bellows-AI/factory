@@ -411,9 +411,12 @@ async function runGatesPhase(
     }
     // A gate against a dead service fails on an environment the agent cannot fix, and a
     // failed gate is what the workflow's gate-fix edge spends a round on (issue #423).
-    const deadServices = await probeDeadServices(rt, job);
-    const failure = deadServices.length === 0 ? await runDeclaredGates(rt, job, gateSession, state) : null;
-    return { failure, deadServices, gatesSkipped: null };
+    const deadBefore = await probeDeadServices(rt, job);
+    if (deadBefore.length > 0) return { failure: null, deadServices: deadBefore, gatesSkipped: null };
+    const failure = await runDeclaredGates(rt, job, gateSession, state);
+    // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
+    const deadAfter = failure ? await probeDeadServices(rt, job) : [];
+    return { failure, deadServices: deadAfter, gatesSkipped: null };
 }
 
 /**

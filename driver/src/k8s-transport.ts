@@ -489,6 +489,19 @@ function servicePodRows(body: string): ServicePodRow[] {
     return out.sort((a, b) => (a.status.name < b.status.name ? -1 : a.status.name > b.status.name ? 1 : 0));
 }
 
+/** Waiting reasons a Pending service pod never recovers from: docker fails these `run -d`s as infrastructure. */
+const STUCK_WAITING_REASONS: ReadonlySet<string> = new Set([
+    'ImagePullBackOff',
+    'ErrImagePull',
+    'InvalidImageName',
+    'CreateContainerConfigError',
+]);
+
+const isGoneForGood = (phase: string, waitingReason: string | undefined): boolean =>
+    phase === 'failed' ||
+    phase === 'succeeded' ||
+    (phase === 'pending' && STUCK_WAITING_REASONS.has(waitingReason ?? ''));
+
 /** A dead service pod: its status, the pod to read the log of, and the kubelet's termination. */
 export interface DeadServicePod extends ServiceStatus {
     pod: string;
@@ -506,14 +519,15 @@ export function parseDeadServicePods(body: string): DeadServicePod[] {
     const out: DeadServicePod[] = [];
     for (const { status, pod } of servicePodRows(body)) {
         const name = pod.metadata?.name;
-        if (!name || (status.state !== 'failed' && status.state !== 'succeeded')) continue;
-        const terminated = pod.status?.containerStatuses?.[0]?.state?.terminated;
-        const reason = terminated?.reason ?? pod.status?.reason ?? null;
-        const message = terminated?.message ?? pod.status?.message ?? null;
+        const state = pod.status?.containerStatuses?.[0]?.state;
+        if (!name || !isGoneForGood(status.state, state?.waiting?.reason)) continue;
+        const ending = state?.terminated ?? state?.waiting;
+        const reason = ending?.reason ?? pod.status?.reason ?? null;
+        const message = ending?.message ?? pod.status?.message ?? null;
         out.push({
             pod: name,
             ...status,
-            exitCode: terminated?.exitCode ?? null,
+            exitCode: state?.terminated?.exitCode ?? null,
             reason: reason && message ? `${reason}: ${message}` : (reason ?? message),
         });
     }
