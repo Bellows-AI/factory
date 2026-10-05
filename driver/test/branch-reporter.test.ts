@@ -98,14 +98,20 @@ const NODE_ARGS = ['--disable-warning=ExperimentalWarning'];
  * still wins), so the reporter under test exercises discovery, and the attempt-pair test sees a
  * genuinely bare environment, unless a test hands an id on purpose.
  *
- * The reporter gives each `git` call 1s and gives up silently past it, which a contended full
- * run exceeds: the child exits 0 having sent nothing, and the test reads zero requests. The
- * suite widens the budget; the silent give-up itself is the contract, not the flake.
+ * The reporter gives each `git` call 1s and its report 2s, and gives up silently past either,
+ * which a contended full run exceeds: the child exits 0 having sent nothing, and the test reads
+ * zero requests. The suite widens both budgets; the silent give-up itself is the contract, not
+ * the flake.
  */
 const GIT_TIMEOUT_MS = '30000';
+const REQUEST_TIMEOUT_MS = '30000';
 const OUTER_ENV: Record<string, string> = (() => {
     const { BELLOWS_SESSION_ID: _session, RUNNER_JOB_ID: _job, RUNNER_LEASE_TOKEN: _lease, ...rest } = process.env;
-    return { ...rest, BRANCH_REPORTER_GIT_TIMEOUT_MS: GIT_TIMEOUT_MS } as Record<string, string>;
+    return {
+        ...rest,
+        BRANCH_REPORTER_GIT_TIMEOUT_MS: GIT_TIMEOUT_MS,
+        BRANCH_REPORTER_REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
+    } as Record<string, string>;
 })();
 
 const run = (
@@ -171,20 +177,20 @@ describe('the branch reporter: wire shape and redirects', () => {
                 RUNNER_JOB_ID: '11111111-1111-4111-8111-111111111111',
                 RUNNER_LEASE_TOKEN: ' 22222222-2222-4222-8222-222222222222 ',
             });
-            expect(withPair.requests[0].headers['x-factory-job-id']).toBe('11111111-1111-4111-8111-111111111111');
-            expect(withPair.requests[0].headers['x-factory-job-lease-token']).toBe(
-                '22222222-2222-4222-8222-222222222222'
-            );
+            const paired = await withPair.waitForRequest();
+            expect(paired.headers['x-factory-job-id']).toBe('11111111-1111-4111-8111-111111111111');
+            expect(paired.headers['x-factory-job-lease-token']).toBe('22222222-2222-4222-8222-222222222222');
             // A credential never travels as a query parameter — it lands in access logs.
-            expect(withPair.requests[0].path).toBe('/api/sessions/branch');
+            expect(paired.path).toBe('/api/sessions/branch');
 
             await run(CLAUDE_REPORTER, {
                 FACTORY_STATS_URL: withoutPair.url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
             });
-            expect(withoutPair.requests[0].headers['x-factory-job-id']).toBeUndefined();
-            expect(withoutPair.requests[0].headers['x-factory-job-lease-token']).toBeUndefined();
+            const bare = await withoutPair.waitForRequest();
+            expect(bare.headers['x-factory-job-id']).toBeUndefined();
+            expect(bare.headers['x-factory-job-lease-token']).toBeUndefined();
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -219,6 +225,57 @@ describe('the branch reporter: wire shape and redirects', () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+});
+
+/*
+ * Both budget knobs are read from the environment, so both can be handed a value Node cannot
+ * arm. A non-finite, non-positive or over-32-bit `setTimeout` delay becomes a 1 ms timer AND
+ * prints a Timeout*Warning to stderr — the reporter would both abort its own report and break
+ * the "nothing reaches stderr" contract; `execFileSync` throws ERR_OUT_OF_RANGE on the same
+ * values, which the silent catch turns into "no report at all". Neither failure depends on the
+ * clock: the warning is printed when the timer is armed and the throw is synchronous.
+ */
+describe('the branch reporter: timeout overrides', () => {
+    for (const value of ['Infinity', '-1', '2147483648', 'soon']) {
+        it(`falls back to the default request budget for ${value}`, async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            try {
+                const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+                    FACTORY_STATS_URL: url,
+                    BELLOWS_SESSION_ID: SESSION,
+                    WORKDIR: dir,
+                    BRANCH_REPORTER_REQUEST_TIMEOUT_MS: value,
+                });
+                expect(status).toBe(0);
+                expect(stdout).toBe('');
+                expect(stderr).toBe('');
+                expect(requests).toHaveLength(1);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it(`falls back to the default git budget for ${value}`, async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            try {
+                const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+                    FACTORY_STATS_URL: url,
+                    BELLOWS_SESSION_ID: SESSION,
+                    WORKDIR: dir,
+                    BRANCH_REPORTER_GIT_TIMEOUT_MS: value,
+                });
+                expect(status).toBe(0);
+                expect(stdout).toBe('');
+                expect(stderr).toBe('');
+                expect(requests).toHaveLength(1);
+                expect(requests[0].body).toMatchObject({ repo: 'acme/widgets', branch: 'main' });
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        });
+    }
 });
 
 describe('the branch reporter: endpoint and git state', () => {
@@ -282,7 +339,7 @@ describe('the branch reporter: endpoint and git state', () => {
     // Detached HEAD reports null — the literal 'HEAD' would join to nothing while looking like
     // a branch name. The SHA still travels, so the commit is attributable even when the branch is not.
     it('reports a null branch on a detached HEAD, with the SHA', async () => {
-        const { url, requests } = await board();
+        const { url, waitForRequest } = await board();
         const dir = gitRepo();
         execFileSync('git', ['checkout', '-q', '--detach', 'HEAD'], { cwd: dir, stdio: 'ignore' });
         try {
@@ -291,8 +348,9 @@ describe('the branch reporter: endpoint and git state', () => {
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
             });
-            expect(requests[0].body?.branch).toBeNull();
-            expect(requests[0].body?.headSha).toMatch(/^[0-9a-f]{40}$/);
+            const seen = await waitForRequest();
+            expect(seen.body?.branch).toBeNull();
+            expect(seen.body?.headSha).toMatch(/^[0-9a-f]{40}$/);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -347,7 +405,7 @@ describe('the branch reporter: opencode session discovery', () => {
     });
 
     it('prefers the session id it was handed over the database', async () => {
-        const { url, requests } = await board();
+        const { url, waitForRequest } = await board();
         const dir = gitRepo();
         const data = tempDir();
         mkdirSync(join(data, 'opencode'), { recursive: true });
@@ -367,7 +425,7 @@ describe('the branch reporter: opencode session discovery', () => {
                 XDG_DATA_HOME: data,
                 WORKDIR: dir,
             });
-            expect(requests[0].body?.sessionId).toBe(SESSION);
+            expect((await waitForRequest()).body?.sessionId).toBe(SESSION);
         } finally {
             rmSync(dir, { recursive: true, force: true });
             rmSync(data, { recursive: true, force: true });
