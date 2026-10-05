@@ -107,6 +107,18 @@ check 'seeds an empty volume' 'backend-fix' docker run --rm -v "$VOL:/home/node/
     --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null; ls "$CLAUDE_CONFIG_DIR"/skills'
 check 'seeding is idempotent' 'ok' docker run --rm -v "$VOL:/home/node/.claude" \
     --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null; echo marker > "$CLAUDE_CONFIG_DIR"/keep; claude-executor --version >/dev/null; [ -f "$CLAUDE_CONFIG_DIR"/keep ] && echo ok'
+# The seed runs once; the hooks block (the guard) is re-laid on every start, so an agent that emptied
+# it in the thread's settings.json cannot disarm the guard for later runs, while an unrelated key
+# the thread wrote survives. An unparseable file is replaced by the baked copy.
+check 'a stripped hooks block is restored, other keys kept' 'ok' docker run --rm -v "$VOL:/home/node/.claude" \
+    --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null
+        echo "{\"hooks\":{},\"model\":\"keep-me\"}" > "$CLAUDE_CONFIG_DIR"/settings.json
+        claude-executor --version >/dev/null
+        grep -q git-guard.cjs "$CLAUDE_CONFIG_DIR"/settings.json && grep -q keep-me "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
+check 'an unparseable settings.json is replaced by the baked copy' 'ok' docker run --rm -v "$VOL:/home/node/.claude" \
+    --entrypoint sh "$IMAGE" -c 'echo "{broken" > "$CLAUDE_CONFIG_DIR"/settings.json
+        claude-executor --version >/dev/null
+        grep -q git-guard.cjs "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
 docker volume rm "$VOL" >/dev/null 2>&1
 
 # A bind mount carries the host uid, so without safe.directory git refuses the repository outright.
