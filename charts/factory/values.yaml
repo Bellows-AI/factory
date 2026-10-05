@@ -131,6 +131,19 @@ workspaces:
     storageClass: ''
     existingClaim: ''
 
+# A namespace LimitRange (issue #454): a pod created WITHOUT limits — by anything, not only the
+# driver — inherits these instead of running unbounded. A container's own limits win. It applies
+# to every container in the namespace, the dashboard and driver included, so keep the defaults
+# above what those pods burst to.
+limitRange:
+    enabled: true
+    default:
+        cpu: '4'
+        memory: 8Gi
+    defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+
 secret:
     # Creates the dashboard Secret from the values below. With existingSecret set, the chart
     # creates nothing and references that one — for a Secret managed by external-secrets or
@@ -290,18 +303,20 @@ runner:
     # Requests and limits on every pod the driver specs — the runner, the gates, the sync, the
     # reclaim, the publish steps, the block helpers and the declared services — forwarded as
     # RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST / RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT
-    # (kubernetes quantities: "500m", "1Gi"). Requests by default, so a runner fleet is Burstable
-    # rather than BestEffort and the autoscaler (Karpenter, Cluster Autoscaler) can size for it —
-    # a zero-request pod schedules onto any free pod slot and provisions nothing. Limits render
-    # only when set: a memory limit on an agent run turns a big build into an OOM kill mid-work,
-    # the requests-only posture the dashboard and driver pods above carry deliberately. Both maps
-    # unset keeps every pod BestEffort. In override files, use requests: null to remove
-    # the defaults; requests: {} retains them through Helm's map merge.
+    # (kubernetes quantities: "500m", "1Gi"). Requests keep a runner fleet Burstable rather than
+    # BestEffort so the autoscaler (Karpenter, Cluster Autoscaler) can size for it — a zero-request
+    # pod schedules onto any free pod slot and provisions nothing. Limits (issue #454) bound a
+    # runaway or hostile run so it cannot starve the node, the board, the driver or sibling tasks;
+    # they are generous because a memory limit turns a big build into an OOM kill mid-work — raise
+    # them on a cloud install with big builds. In override files, use requests: null / limits: null
+    # to remove the defaults; {} retains them through Helm's map merge.
     resources:
         requests:
             cpu: 500m
             memory: 1Gi
-        limits: {}
+        limits:
+            cpu: '4'
+            memory: 8Gi
     # Created by this chart when secret.create is true, with one key per `env` name, valued from
     # `credentials` (empty when absent). Referencing the Secret by name is the whole point: the
     # credential never appears in the pod spec, which anyone who can `get pods` can read.
