@@ -1,7 +1,16 @@
 import { expect, test } from '@playwright/test';
 import type { ConsoleMessage, Page } from '@playwright/test';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
-import { addExecutorViaDialog, countLaunches, E2E_EXECUTOR, mockExecutors, withExecutor } from './executor.js';
+import {
+    addExecutorViaDialog,
+    countLaunches,
+    E2E_EXECUTOR,
+    E2E_EXECUTOR_ROW,
+    E2E_REPO,
+    mockExecutors,
+    stubLaunch,
+    withExecutor,
+} from './executor.js';
 import { noHorizontalOverflow } from './viewport.js';
 
 const SHOTS = 'artifacts/ui';
@@ -55,16 +64,6 @@ async function openSelector(page: Page, label: string) {
     const trigger = page.getByLabel(label);
     await trigger.evaluate((element) => element.scrollIntoView({ block: 'center' }));
     await trigger.click();
-}
-
-/**
- * Leave no claimable task behind: the task-detail spec claims against the same seeded board, and
- * its "own queued task is the only one claimable" invariant is what keeps that deterministic.
- * Stop the task this page just opened — the page's own primary action for a queued task.
- */
-async function stopOpenedTask(page: Page) {
-    await page.locator('.page-header-actions').getByRole('button', { name: 'Stop run' }).click();
-    await expect(page.locator('.page-header-meta')).toContainText(/stopped/i, { timeout: 10_000 });
 }
 
 test.describe('the guided task composer', () => {
@@ -227,6 +226,7 @@ test.describe('the guided task composer', () => {
 
     test('the keyboard path shares the button validation: marks, focuses, and never queues', async ({ page }) => {
         const problems = watchConsole(page);
+        await stubLaunch(page);
         await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
@@ -251,8 +251,82 @@ test.describe('the guided task composer', () => {
         await issue.press('ControlOrMeta+Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(problems.join('\n')).toBe('');
+    });
 
-        await stopOpenedTask(page);
+    // The synced-repository requirement (issue 263). The poll is mocked, so `repos` is whatever
+    // the test says; no launch reaches the board unless the test stubs it.
+    test('with nothing synced, both launch triggers open the dialog, queue nothing, and Cancel keeps the draft', async ({
+        page,
+    }) => {
+        await page.unroute('**/api/workspace');
+        await mockExecutors(page, [E2E_EXECUTOR_ROW], [{ ...E2E_REPO, status: 'cloning' }]);
+        const launches = countLaunches(page);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+
+        const prompt = page.getByLabel('What should the agent do?');
+        await prompt.fill('fix the login crash');
+        const start = page.getByRole('button', { name: 'Start task' });
+        await expect(start).toBeEnabled();
+        await expect(page.locator('.composer .banner-bad')).toContainText('No repos synced');
+
+        await start.click();
+        const dialog = page.getByRole('dialog', { name: 'No repos synced' });
+        await expect(dialog).toContainText(
+            'Go to the Repositories page to select and sync a repository before running a task.'
+        );
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        await expect(dialog).toHaveCount(0);
+        await expect(start).toBeFocused();
+        await expect(prompt).toHaveValue('fix the login crash');
+
+        await prompt.press('ControlOrMeta+Enter');
+        await expect(dialog).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0);
+        await expect(prompt).toBeFocused();
+        expect(launches.bodies).toHaveLength(0);
+    });
+
+    test('Go to Repositories carries the draft there and back', async ({ page }) => {
+        await page.unroute('**/api/workspace');
+        await mockExecutors(page, [E2E_EXECUTOR_ROW], []);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+
+        const prompt = page.getByLabel('What should the agent do?');
+        await prompt.fill('fix the login crash');
+        await page.getByRole('button', { name: 'Start task' }).click();
+        await page
+            .getByRole('dialog', { name: 'No repos synced' })
+            .getByRole('button', { name: 'Go to Repositories' })
+            .click();
+        await expect(page).toHaveURL(/\/settings\/repos\?return=\/tasks\/new$/);
+        await page.getByRole('link', { name: 'Back to new task' }).click();
+        await expect(prompt).toHaveValue('fix the login crash');
+    });
+
+    test('a chosen repository that is not ready blocks launch even though another is ready', async ({ page }) => {
+        await page.unroute('**/api/workspace');
+        await mockExecutors(
+            page,
+            [E2E_EXECUTOR_ROW],
+            [
+                { ...E2E_REPO, status: 'ready' },
+                { owner: 'acme', name: 'api', status: 'cloning' },
+            ]
+        );
+        const launches = countLaunches(page);
+        await awaitSeedRefresh(page);
+        await page.goto('/tasks/new');
+
+        await page.getByLabel('What should the agent do?').fill('fix the login crash');
+        await openSelector(page, 'Repository');
+        await page.getByRole('option', { name: 'acme/api' }).click();
+        await expect(page.locator('.composer .banner-bad')).toContainText('Repository not synced');
+        await expect(page.getByRole('button', { name: 'Start task' })).toBeDisabled();
+        await page.getByLabel('What should the agent do?').press('ControlOrMeta+Enter');
+        expect(launches.bodies).toHaveLength(0);
     });
 
     test('a fresh composer opens without a red banner, counts the request, and blocks it past the limit', async ({
@@ -326,8 +400,9 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
     test('add an executor in Settings, come back, and launch once with everything restored', async ({ page }) => {
         const problems = watchConsole(page);
-        const held = await mockExecutors(page, []);
+        const held = await mockExecutors(page, [], [E2E_REPO]);
         const launches = countLaunches(page);
+        await stubLaunch(page);
         await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
@@ -366,11 +441,11 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         expect(launches.bodies[0]).toMatchObject({
             command: 'fix the login crash',
             executor: 'fresh-executor',
+            repo: `${E2E_REPO.owner}/${E2E_REPO.name}`,
             workflow: 'fix-issue',
             workflowParams: { issue: '#12' },
         });
         expect(problems.join('\n')).toBe('');
-        await stopOpenedTask(page);
     });
 
     test('Cancel in Settings comes back to the same draft, optional-step override included', async ({ page }) => {

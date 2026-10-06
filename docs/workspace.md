@@ -63,6 +63,10 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
   the shared loop reports as a failed task before any runner starts — docker and kubernetes alike,
   for retries and follow-ups too. A running task is untouched.
   `server/test/routes.executor-lifecycle.test.ts`, `server/test-db/job-store.executor-scope.test.ts`.
+- **A member's task launches only against a repository in their own selection whose clone is
+  `ready`**, revalidated at submission (400 `REPO_REQUIRED`, 409 `REPO_NOT_READY`) for docker and
+  kubernetes alike; the composer mirrors it with `repoReadiness`.
+  `server/test/routes.executor-lifecycle.test.ts`, `web/test/task-composer-logic.test.ts`.
 - **By-id writes carry their owner into the WHERE clause** (`deleteOwnedRow`, `setSuspendedRow`), so
   another member's id, an org id through the personal door and another organization's id match
   nothing. `server/test-db/user-executor-store.test.ts`.

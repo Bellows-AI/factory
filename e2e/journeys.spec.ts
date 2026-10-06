@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { addExecutorViaDialog, countLaunches, mockExecutors } from './executor.js';
+import { addExecutorViaDialog, countLaunches, E2E_REPO, mockExecutors, stubLaunch } from './executor.js';
 import {
     authoredBy,
     failedGateFollowUpThread,
@@ -101,7 +101,8 @@ for (const theme of THEMES) {
     }) => {
         const problems = watchConsole(page);
         await atTheme(page, theme);
-        await mockExecutors(page, []);
+        await mockExecutors(page, [], [E2E_REPO]);
+        await stubLaunch(page);
         const launches = countLaunches(page);
         const command = `journey: tidy the retry helper (${theme})`;
         const prompt = page.getByLabel('What should the agent do?');
@@ -128,15 +129,14 @@ for (const theme of THEMES) {
 
         await page.getByRole('button', { name: 'Start task' }).click();
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
-        await expect(meta(page)).toContainText('Queued');
         expect(launches.bodies).toHaveLength(1);
-        expect(launches.bodies[0]).toMatchObject({ command, executor: 'journey-executor' });
-        await shoot(page, 'configure', 'launched', theme);
-
-        // Leave no claimable task behind: task-detail.spec.ts claims against this same board.
-        await header(page).getByRole('button', { name: 'Stop run' }).click();
-        await expect(meta(page)).toContainText(/stopped/i, { timeout: 10_000 });
-        expect(launches.bodies).toHaveLength(1);
+        expect(launches.bodies[0]).toMatchObject({
+            command,
+            executor: 'journey-executor',
+            repo: `${E2E_REPO.owner}/${E2E_REPO.name}`,
+        });
+        // The launch is stubbed (issue 263: the open board holds no synced repository), so no task
+        // is left claimable for task-detail.spec.ts and there is none to stop.
         expect(problems.join('\n')).toBe('');
     });
 

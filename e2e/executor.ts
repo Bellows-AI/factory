@@ -12,6 +12,44 @@ export const E2E_EXECUTOR = {
 /** The member's resolved default the poll carries (issue 391): the one executor, by scope. */
 export const E2E_DEFAULT_EXECUTOR = { scope: 'user' as const, name: E2E_EXECUTOR.name };
 
+/** The executor as `mockExecutors` holds it: the list row with its (empty) configuration. */
+export const E2E_EXECUTOR_ROW = { ...E2E_EXECUTOR, config: {} };
+
+/**
+ * The one synced repository the composer specs launch against (issue 263). The open board has no
+ * workspace root, so no real clone exists: the poll carries it, and `stubLaunch` answers the launch.
+ */
+export const E2E_REPO = { owner: 'acme', name: 'web' };
+
+const E2E_LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
+
+/**
+ * Answers `POST /api/jobs` with the board's 201. The real board revalidates the repository against
+ * the member's stored selection, and this open board has none to hold, so a launch the spec means
+ * to succeed is acknowledged here instead of reaching it.
+ */
+export async function stubLaunch(page: Page): Promise<void> {
+    await page.route('**/api/jobs', (route) =>
+        route.request().method() === 'POST'
+            ? route.fulfill({ status: 201, json: { id: E2E_LAUNCHED_ID, status: 'queued' } })
+            : route.fallback()
+    );
+}
+
+/** A selected repository as the poll carries it, ready unless the spec says otherwise. */
+function pollRepo(repo: { owner: string; name: string; status?: string }) {
+    return {
+        status: 'ready',
+        error: null,
+        selectedAt: E2E_EXECUTOR.createdAt,
+        readyAt: E2E_EXECUTOR.createdAt,
+        branch: null,
+        lastCommit: null,
+        sizeBytes: null,
+        ...repo,
+    };
+}
+
 /**
  * Give the page one configured executor.
  *
@@ -27,7 +65,13 @@ export async function withExecutor(page: Page): Promise<void> {
         const body = (await response.json()) as Record<string, unknown>;
         await route.fulfill({
             response,
-            json: { ...body, executors: [E2E_EXECUTOR], orgExecutors: [], defaultExecutor: E2E_DEFAULT_EXECUTOR },
+            json: {
+                ...body,
+                executors: [E2E_EXECUTOR],
+                orgExecutors: [],
+                defaultExecutor: E2E_DEFAULT_EXECUTOR,
+                repos: [pollRepo(E2E_REPO)],
+            },
         });
     });
 }
@@ -51,19 +95,10 @@ export interface MockExecutor {
 export async function mockExecutors(
     page: Page,
     initial: MockExecutor[],
-    repos: { owner: string; name: string }[] = []
+    repos: { owner: string; name: string; status?: string }[] = []
 ): Promise<{ executors: MockExecutor[] }> {
     const held = { executors: initial };
-    const selected = repos.map((repo) => ({
-        ...repo,
-        status: 'ready',
-        error: null,
-        selectedAt: E2E_EXECUTOR.createdAt,
-        readyAt: E2E_EXECUTOR.createdAt,
-        branch: null,
-        lastCommit: null,
-        sizeBytes: null,
-    }));
+    const selected = repos.map(pollRepo);
     await page.route('**/api/workspace', async (route) => {
         const response = await route.fetch();
         const body = (await response.json()) as Record<string, unknown>;

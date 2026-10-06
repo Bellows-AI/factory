@@ -70,7 +70,7 @@ export function TaskComposerPage() {
                 <TaskComposerSkeleton />
             ) : (
                 <TaskComposer
-                    repos={workspace.data?.repos.map(({ owner, name }) => ({ owner, name })) ?? null}
+                    repos={workspace.data?.repos.map(({ owner, name, status }) => ({ owner, name, status })) ?? null}
                     workspaceError={workspace.error}
                     onRetryWorkspace={workspace.refresh}
                     executors={composerExecutorOptions(

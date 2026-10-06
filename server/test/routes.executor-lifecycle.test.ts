@@ -41,6 +41,8 @@ beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'factory-exec-lifecycle-'));
 });
 
+const READY_REPO = { owner: 'acme', name: 'web' };
+
 const entry = (name: string, extra: Record<string, unknown> = {}) => ({
     name,
     type: 'claude-code',
@@ -54,6 +56,11 @@ async function boot() {
     const member = auth.seedMember('test-org', 'octocat');
     const other = auth.seedMember('test-org', 'hubot');
     const executors = memoryUserExecutorStore();
+    // A task needs a synced repository (issue 263): the member has one, so these tests keep
+    // exercising the executor refusal rather than the repository's.
+    const repos = memoryUserRepoStore();
+    await repos.select(member.user.id, [READY_REPO]);
+    await repos.markReady(member.user.id, READY_REPO);
     const queued: { command: string; executor: string | null; scope: string | undefined }[] = [];
     const jobs = {
         async create(command: string, _by: string | null, target?: { executor?: string; executorScope?: string }) {
@@ -67,7 +74,7 @@ async function boot() {
         orgs: staticRegistry({
             config,
             jobs,
-            userRepos: memoryUserRepoStore(),
+            userRepos: repos,
             userExecutors: executors,
             telemetry: stubTelemetryClient(),
         }),
@@ -77,6 +84,8 @@ async function boot() {
     return {
         instance,
         executors,
+        repos,
+        memberId: member.user.id,
         queued,
         adminCookie: await signedIn(auth, admin),
         memberCookie: await signedIn(auth, member),
@@ -113,7 +122,7 @@ const queue = (b: Booted, cookie: string, executor: string, executorScope: 'user
         method: 'POST',
         url: '/api/jobs',
         headers: { cookie },
-        payload: { command: 'echo hi', executor, executorScope },
+        payload: { command: 'echo hi', executor, executorScope, repo: `${READY_REPO.owner}/${READY_REPO.name}` },
     });
 
 describe('personal profiles: remove by id', () => {
@@ -347,5 +356,66 @@ describe('POST /api/jobs against a suspended profile', () => {
         await suspend(b, url, b.memberCookie, false);
 
         expect((await queue(b, b.memberCookie, 'mine', 'user')).statusCode).toBe(HTTP_CREATED);
+    });
+});
+
+describe('POST /api/jobs against an unsynced repository (issue 263)', () => {
+    const launch = (b: Booted, payload: Record<string, unknown>) =>
+        b.instance.inject({
+            method: 'POST',
+            url: '/api/jobs',
+            headers: { cookie: b.memberCookie },
+            payload: { command: 'echo hi', executor: 'mine', executorScope: 'user', ...payload },
+        });
+
+    const bootWithExecutor = async () => {
+        const b = await boot();
+        await putPersonal(b, b.memberCookie, [entry('mine')]);
+        return b;
+    };
+
+    it('refuses a task with no repository, even though another repository is ready', async () => {
+        const b = await bootWithExecutor();
+        const response = await launch(b, {});
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('REPO_REQUIRED');
+        expect(b.queued).toEqual([]);
+    });
+
+    it('refuses a repository that was never selected, even though another is ready', async () => {
+        const b = await bootWithExecutor();
+        const response = await launch(b, { repo: 'acme/other' });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('REPO_REQUIRED');
+        expect(b.queued).toEqual([]);
+    });
+
+    it('refuses a repository deselected after the page loaded', async () => {
+        const b = await bootWithExecutor();
+        await b.repos.select(b.memberId, []);
+        const response = await launch(b, { repo: 'acme/web' });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('REPO_REQUIRED');
+        expect(b.queued).toEqual([]);
+    });
+
+    it.each(['queued', 'cloning', 'failed'] as const)('refuses a selected repository that is %s', async (status) => {
+        const b = await bootWithExecutor();
+        const target = { owner: 'acme', name: 'api' };
+        await b.repos.select(b.memberId, [READY_REPO, target]);
+        if (status === 'cloning') b.repos.strand(b.memberId, target);
+        if (status === 'failed') await b.repos.markFailed(b.memberId, target, 'boom');
+
+        const response = await launch(b, { repo: 'acme/api' });
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('REPO_NOT_READY');
+        expect(response.json().error).toContain(status);
+        expect(b.queued).toEqual([]);
+    });
+
+    it('queues a task against a selected, ready repository', async () => {
+        const b = await bootWithExecutor();
+        expect((await launch(b, { repo: 'acme/web' })).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toHaveLength(1);
     });
 });

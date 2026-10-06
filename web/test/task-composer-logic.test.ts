@@ -20,6 +20,7 @@ import {
     paramsComplete,
     preflightSentence,
     queueBody,
+    repoReadiness,
     startBlocker,
     toggleDefaultStep,
     touchAll,
@@ -308,6 +309,35 @@ describe('DefaultWorkflowSteps — the effective set, its toggle, and its summar
     });
 });
 
+describe('repoReadiness — only a selected, ready repository can run a task (issue 263)', () => {
+    const web = { owner: 'acme', name: 'web' };
+    const api = { owner: 'acme', name: 'api' };
+
+    it('is none-synced when no selected repository is ready, whatever is chosen', () => {
+        expect(repoReadiness('', [])).toBe('none-synced');
+        for (const status of ['queued', 'cloning', 'failed', 'purging'] as const) {
+            expect(repoReadiness('acme/web', [{ ...web, status }])).toBe('none-synced');
+        }
+    });
+
+    it('requires a choice when synced repositories exist but none is chosen', () => {
+        expect(repoReadiness('', [{ ...web, status: 'ready' }])).toBe('unselected');
+    });
+
+    it('never lets another ready repository satisfy a chosen one that is not ready', () => {
+        const repos = [
+            { ...web, status: 'ready' as const },
+            { ...api, status: 'cloning' as const },
+        ];
+        expect(repoReadiness('acme/api', repos)).toBe('not-ready');
+        expect(repoReadiness('acme/web', repos)).toBe('ready');
+    });
+
+    it('treats a chosen repository that is no longer selected as unselected', () => {
+        expect(repoReadiness('acme/gone', [{ ...web, status: 'ready' }])).toBe('unselected');
+    });
+});
+
 describe('startBlocker — the one reason Start is dark, in precedence order', () => {
     it('answers null only when nothing blocks the launch', () => {
         expect(
@@ -331,6 +361,17 @@ describe('startBlocker — the one reason Start is dark, in precedence order', (
         expect(startBlocker({ sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: true })).toBe(
             'invalid-params'
         );
+    });
+
+    it('judges the repository after the prompt and before the workflow list (issue 263)', () => {
+        const base = { sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: true };
+        expect(startBlocker({ ...base, promptEmpty: true, repoReadiness: 'none-synced' })).toBe('empty-prompt');
+        expect(startBlocker({ ...base, repoReadiness: 'none-synced', workflowUnresolved: true })).toBe(
+            'no-synced-repos'
+        );
+        expect(startBlocker({ ...base, repoReadiness: 'unselected' })).toBe('repo-required');
+        expect(startBlocker({ ...base, repoReadiness: 'not-ready' })).toBe('repo-not-ready');
+        expect(startBlocker({ ...base, repoReadiness: 'ready' })).toBe('invalid-params');
     });
 
     it('blocks Start while Default workflow is chosen and the saved settings have not answered yet (#208 review)', () => {

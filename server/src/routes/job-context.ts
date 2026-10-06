@@ -63,6 +63,12 @@ export async function executorsFor(orgs: OrgRegistry, request: FastifyRequest) {
     return rt?.userExecutors ?? null;
 }
 
+/** The member's selected repositories and their clone status — read at launch for the readiness check. */
+export async function userReposFor(orgs: OrgRegistry, request: FastifyRequest) {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.userRepos ?? null;
+}
+
 export type BoardScanner = <T>(
     boards: readonly JobStore[],
     log: (e: Error) => void,

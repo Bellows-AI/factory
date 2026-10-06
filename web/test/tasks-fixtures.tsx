@@ -6,7 +6,7 @@ import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
 import { TaskHeader } from '../src/panels/TaskHeader.js';
-import type { WorkflowParamChoice } from '../src/task-composer.js';
+import type { RepoOption, WorkflowParamChoice } from '../src/task-composer.js';
 import type { FollowUpViewer } from '../src/task-outcome.js';
 
 /**
@@ -55,7 +55,7 @@ export function job(overrides: Partial<Job> = {}): Job {
 }
 
 export interface ComposerArgs {
-    repos?: { owner: string; name: string }[] | null;
+    repos?: RepoOption[] | null;
     workspaceError?: string | null;
     /** The composer's combined options, scope-qualified (issue 391). */
     executors?: { name: string; type: string; scope: 'user' | 'org' }[];
@@ -79,7 +79,7 @@ export interface ComposerArgs {
 }
 
 export const renderComposer = ({
-    repos = [{ owner: 'acme', name: 'web' }],
+    repos = [{ owner: 'acme', name: 'web', status: 'ready' }],
     workspaceError = null,
     executors = [{ name: 'main', type: 'claude-code', scope: 'user' }],
     defaultExecutor,

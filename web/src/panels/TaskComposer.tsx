@@ -7,10 +7,17 @@ import type { QueueTaskInput } from '../api/useTasks.js';
 import type { ComposerDraftInput, ComposerDraftStore } from '../composer-draft.js';
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { Icon } from '../components/Icon.js';
+import {
+    NO_SYNCED_REPOS_MESSAGE,
+    NO_SYNCED_REPOS_TITLE,
+    NoSyncedReposDialog,
+    REPOSITORIES_PATH,
+} from '../components/NoSyncedReposDialog.js';
 import { UnsavedChangesDialog } from '../components/UnsavedChangesDialog.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     COMMAND_LIMIT_TEXT,
+    type RepoOption,
     type StartBlocker,
     blockerTone,
     commandCount,
@@ -19,6 +26,7 @@ import {
     markTouched,
     paramValueMatches,
     preflightSentence,
+    repoReadiness,
     startBlocker,
     touchAll,
 } from '../task-composer.js';
@@ -43,6 +51,8 @@ const PROMPT_PLACEHOLDER = `Example: ${EXAMPLE_PROMPT}`;
 const READINESS_ID = 'composer-readiness';
 const BLOCKER_ID = 'composer-blocker';
 const PROMPT_ID = 'composer-prompt';
+const NO_SYNCED_BLOCKER: StartBlocker = 'no-synced-repos';
+const REPO_PLACEHOLDER = 'Select a repository';
 
 type Update = (patch: Partial<ComposerDraftInput>) => void;
 
@@ -134,7 +144,7 @@ function RequestSection({ draft, update }: { draft: string; update: Update }) {
  * Section 2, the execution context: Repository, Executor and Workflow, three columns on a wide
  * screen and stacked below it. Each column is a visible label over its selector, and the
  * repository column carries the one remediation that is a pointer rather than a blocker — an
- * absent repository is a valid way to run. A missing executor is a blocker, said by the readiness
+ * repository must be selected and synced (issue 263). A missing executor is a blocker, said by the readiness
  * banner; its trigger only wears the stop lamp's edge.
  */
 function ComposerContextRow({
@@ -144,7 +154,7 @@ function ComposerContextRow({
     state,
     update,
 }: {
-    repos: readonly { owner: string; name: string }[];
+    repos: readonly RepoOption[];
     executors: readonly ComposerExecutorOption[];
     workflows: readonly ComposerWorkflowOption[] | null;
     state: ComposerDraftInput;
@@ -168,9 +178,9 @@ function ComposerContextRow({
                         ref={repoAnchor.setReference}
                         className="select-trigger"
                         aria-label="Repository"
-                        title={repo === '' ? 'No repository' : repo}
+                        title={repo === '' ? REPO_PLACEHOLDER : repo}
                     >
-                        <span className="composer-context-value">{repo === '' ? 'No repository' : repo}</span>
+                        <span className="composer-context-value">{repo === '' ? REPO_PLACEHOLDER : repo}</span>
                     </ListboxButton>
                     <ListboxOptions
                         ref={repoAnchor.setFloating}
@@ -178,9 +188,6 @@ function ComposerContextRow({
                         portal
                         className="popover"
                     >
-                        <ListboxOption value="" className="popover-option">
-                            No repository
-                        </ListboxOption>
                         {repos.map(({ owner, name }) => {
                             const full = `${owner}/${name}`;
                             return (
@@ -389,8 +396,34 @@ function BadBanner({ title, children }: { title: string; children: ReactNode }) 
  * must go and fix — with the way to fix it where one exists — and `banner-info` while a list or
  * the saved preferences load. One at a time, the one `startBlocker` picked.
  */
-function ReadinessBanner({ blocker, workflow }: { blocker: StartBlocker | null; workflow: string }) {
+function ReadinessBanner({
+    blocker,
+    workflow,
+    repo,
+}: {
+    blocker: StartBlocker | null;
+    workflow: string;
+    /** The chosen repository and its clone status, for the banner that waits on its sync. */
+    repo: RepoOption | null;
+}) {
     switch (blocker) {
+        case 'no-synced-repos':
+            return (
+                <BadBanner title={NO_SYNCED_REPOS_TITLE}>
+                    {NO_SYNCED_REPOS_MESSAGE} <Link to={withDraftReturn(REPOSITORIES_PATH)}>Go to Repositories</Link>
+                </BadBanner>
+            );
+        case 'repo-required':
+            return (
+                <BadBanner title="No repository selected">Choose a synced repository to run this task in.</BadBanner>
+            );
+        case 'repo-not-ready':
+            return (
+                <BadBanner title="Repository not synced">
+                    {repo?.owner}/{repo?.name} is {repo?.status}. It must finish syncing before a task can run in it.{' '}
+                    <Link to={withDraftReturn(REPOSITORIES_PATH)}>Open Repositories</Link>
+                </BadBanner>
+            );
         case 'missing-executor':
             return (
                 <BadBanner title="No executor configured">
@@ -437,6 +470,7 @@ function ReadinessBanner({ blocker, workflow }: { blocker: StartBlocker | null; 
 function ReadinessSection({
     preflight,
     workflow,
+    repo,
     blocker,
     sending,
     fresh,
@@ -446,6 +480,7 @@ function ReadinessSection({
     preflight: string;
     /** The chosen workflow's name, for the banner that waits on its list. */
     workflow: string;
+    repo: RepoOption | null;
     blocker: StartBlocker | null;
     sending: boolean;
     fresh: boolean;
@@ -459,7 +494,7 @@ function ReadinessSection({
             <p className="composer-preflight" aria-live="polite">
                 {preflight}
             </p>
-            <ReadinessBanner blocker={blocker} workflow={workflow} />
+            <ReadinessBanner blocker={blocker} workflow={workflow} repo={repo} />
             <div className="composer-start">
                 {fresh ? null : (
                     <button type="button" onClick={onDiscard}>
@@ -469,7 +504,8 @@ function ReadinessSection({
                 <button
                     type="button"
                     className="primary"
-                    disabled={blocker !== null}
+                    // The one blocker that stays clickable: its click opens the dialog (issue 263).
+                    disabled={blocker !== null && blocker !== NO_SYNCED_BLOCKER}
                     aria-busy={sending || undefined}
                     aria-describedby={describedBy}
                     onClick={onStart}
@@ -578,7 +614,7 @@ export function TaskComposer({
      * answered yet — "not known" is a different sentence from "known empty", and merging them
      * would blame the member's selection for a request that never landed.
      */
-    repos: readonly { owner: string; name: string }[] | null;
+    repos: readonly RepoOption[] | null;
     /** Why `repos` is null, when it is. */
     workspaceError: string | null;
     onRetryWorkspace: () => void;
@@ -627,6 +663,11 @@ export function TaskComposer({
     });
     const { state, update, declaredParams, paramValues, effectiveDefaultSteps: steps } = composer;
     const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+    const [noSyncedOpen, setNoSyncedOpen] = useState(false);
+    // Null while the workspace has not answered: that screen is the loading/error state, never
+    // the "no repos synced" verdict.
+    const readiness = repos === null ? undefined : repoReadiness(state.repo, repos);
+    const chosenRepo = repos?.find(({ owner, name }) => `${owner}/${name}` === state.repo) ?? null;
 
     // Launching Default workflow before the saved step settings answer would silently omit the
     // member's saved pair from the submitted JSON — only meaningful where the checkboxes
@@ -636,6 +677,7 @@ export function TaskComposer({
         executorMissing: state.executor === '',
         promptEmpty: state.draft.trim() === '',
         promptTooLong: commandTooLong(state.draft),
+        ...(readiness !== undefined ? { repoReadiness: readiness } : {}),
         workflowUnresolved: composer.workflowPending,
         defaultsUnresolved: workflows !== null && state.workflow === '' && steps === null,
         paramsInvalid: !composer.paramsReady,
@@ -647,6 +689,11 @@ export function TaskComposer({
     const attemptStart = () => {
         if (blocker === null) {
             void composer.send();
+            return;
+        }
+        // Blocked, but not silently: the member is told where to go, and nothing is submitted.
+        if (blocker === NO_SYNCED_BLOCKER) {
+            setNoSyncedOpen(true);
             return;
         }
         if (blocker === 'invalid-params') {
@@ -704,6 +751,7 @@ export function TaskComposer({
                         defaultSteps: state.workflow === '' ? steps : null,
                     })}
                     workflow={state.workflow}
+                    repo={chosenRepo}
                     blocker={blocker}
                     sending={sending}
                     fresh={composer.fresh}
@@ -714,6 +762,7 @@ export function TaskComposer({
             {/* Outside the shortcut's surface on purpose: the dialog portals, but React events still
                 bubble to their React parent, and Ctrl/⌘+Enter on "Continue editing" must never
                 launch the draft it is asking about. */}
+            {noSyncedOpen ? <NoSyncedReposDialog onClose={() => setNoSyncedOpen(false)} /> : null}
             {confirmingDiscard ? (
                 <UnsavedChangesDialog
                     labels={['this task draft']}
