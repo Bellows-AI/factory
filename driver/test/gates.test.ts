@@ -658,6 +658,206 @@ describe('the gate server: run control (issue #442)', () => {
     });
 });
 
+describe('the gate server: questions (issue #226)', () => {
+    const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
+    const report = (id: string, text = 'Which colour?') => ({
+        questionId: id,
+        questions: [
+            { question: text, header: 'Colour', multiSelect: false, options: [{ label: 'Blue' }, { label: 'Red' }] },
+        ],
+    });
+    const post = (port: number, token: string, body: unknown) =>
+        fetch(`http://127.0.0.1:${port}/question`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}` },
+            body: typeof body === 'string' ? body : JSON.stringify(body),
+        });
+    const get = (port: number, token: string, id: string) =>
+        fetch(`http://127.0.0.1:${port}/question/${id}`, { headers: { authorization: `Bearer ${token}` } });
+
+    async function opened(verdict: 'accepted' | 'refused' | 'gone' = 'accepted') {
+        const forwarded: string[] = [];
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.openControl('tok-q', {
+            ask: async (id) => {
+                forwarded.push(id);
+                return verdict;
+            },
+        });
+        return { server, forwarded, port: await server.listen() };
+    }
+
+    it('records a question, answers 202 pending and forwards it once however often it repeats', async () => {
+        const { server, forwarded, port } = await opened();
+
+        const first = await post(port, 'tok-q', report('toolu_1'));
+        expect(first.status).toBe(202);
+        await expect(first.json()).resolves.toEqual({ state: 'pending' });
+        expect((await post(port, 'tok-q', report('toolu_1'))).status).toBe(202);
+
+        expect(forwarded).toEqual(['toolu_1']);
+        expect(server.hasPendingQuestion('tok-q')).toBe(true);
+        await server.close();
+    });
+
+    it('reads each state: pending, answered, expired, cancelled — and 404 for an unknown id', async () => {
+        const { server, port } = await opened();
+        for (const id of ['toolu_1', 'toolu_2', 'toolu_3']) await post(port, 'tok-q', report(id, `Q ${id}?`));
+        server.resolveQuestion('tok-q', 'toolu_1', { state: 'answered', answers: { 'Q toolu_1?': 'Blue' } });
+        server.resolveQuestion('tok-q', 'toolu_2', { state: 'expired' });
+
+        await expect((await get(port, 'tok-q', 'toolu_1')).json()).resolves.toEqual({
+            state: 'answered',
+            answers: { 'Q toolu_1?': 'Blue' },
+        });
+        await expect((await get(port, 'tok-q', 'toolu_2')).json()).resolves.toEqual({ state: 'expired' });
+        await expect((await get(port, 'tok-q', 'toolu_3')).json()).resolves.toEqual({ state: 'pending' });
+        server.cancelQuestions('tok-q');
+        await expect((await get(port, 'tok-q', 'toolu_3')).json()).resolves.toEqual({ state: 'cancelled' });
+        // A settled question is not reopened by a later answer or cancel.
+        expect(server.resolveQuestion('tok-q', 'toolu_2', { state: 'answered', answers: {} })).toBe(false);
+        await expect((await get(port, 'tok-q', 'toolu_2')).json()).resolves.toEqual({ state: 'expired' });
+        expect((await get(port, 'tok-q', 'toolu_9')).status).toBe(NOT_FOUND_STATUS);
+        await server.close();
+    });
+
+    it('answers 400 for a body the board would refuse, and 413 past 64 KiB', async () => {
+        const { server, forwarded, port } = await opened();
+        const bad = [
+            'not json',
+            { questionId: 'has space', questions: report('x').questions },
+            { questionId: 'toolu_1', questions: [] },
+            report('toolu_1', ''),
+            {
+                questionId: 'toolu_1',
+                questions: [...report('a').questions, ...report('a').questions],
+            },
+            { questionId: 'toolu_1', questions: [{ ...report('a').questions[0], options: [{ label: 'One' }] }] },
+        ];
+        for (const body of bad) expect((await post(port, 'tok-q', body)).status).toBe(400);
+        expect((await post(port, 'tok-q', report('toolu_1', 'x'.repeat(70_000)))).status).toBe(
+            PAYLOAD_TOO_LARGE_STATUS
+        );
+        expect(forwarded).toEqual([]);
+        await server.close();
+    });
+
+    it('refuses with 429 refused when the board is at its limit, and records nothing', async () => {
+        const { server, port } = await opened('refused');
+        const response = await post(port, 'tok-q', report('toolu_1'));
+        expect(response.status).toBe(429);
+        await expect(response.json()).resolves.toEqual({ state: 'refused' });
+        expect((await get(port, 'tok-q', 'toolu_1')).status).toBe(NOT_FOUND_STATUS);
+        await server.close();
+    });
+
+    it('refuses the sixth question of an attempt with 429', async () => {
+        const { server, port } = await opened();
+        for (const n of [1, 2, 3, 4, 5]) {
+            expect((await post(port, 'tok-q', report(`toolu_${n}`, `Q${n}?`))).status).toBe(202);
+        }
+        const sixth = await post(port, 'tok-q', report('toolu_6', 'Q6?'));
+        expect(sixth.status).toBe(429);
+        await expect(sixth.json()).resolves.toEqual({ state: 'refused' });
+        await server.close();
+    });
+
+    it('answers 401 for a gate token, an unknown token, and a token closed since', async () => {
+        const { server, port } = await opened();
+        server.register('gate-tok', { key: KEY, image: 'node:24', job: JOB, gates: [] });
+        await post(port, 'tok-q', report('toolu_1'));
+
+        expect((await post(port, 'gate-tok', report('toolu_1'))).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await get(port, 'gate-tok', 'toolu_1')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await post(port, 'nope', report('toolu_1'))).status).toBe(UNAUTHORIZED_STATUS);
+        server.closeControl('tok-q');
+        expect((await post(port, 'tok-q', report('toolu_2'))).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await get(port, 'tok-q', 'toolu_1')).status).toBe(UNAUTHORIZED_STATUS);
+        await server.close();
+    });
+
+    it('counts a question POST as the runner polling, and cancels a question asked after a stop', async () => {
+        const { server, forwarded, port } = await opened();
+        expect(server.controlPolled('tok-q')).toBe(false);
+        await post(port, 'tok-q', report('toolu_1'));
+        expect(server.controlPolled('tok-q')).toBe(true);
+
+        server.raiseStop('tok-q');
+        const late = await post(port, 'tok-q', report('toolu_2', 'Q2?'));
+        await expect(late.json()).resolves.toEqual({ state: 'cancelled' });
+        expect(forwarded).toEqual(['toolu_1']);
+        await server.close();
+    });
+
+    it('drops the record when the forward fails, so the bridge retry forwards again', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        let calls = 0;
+        server.openControl('tok-q', {
+            ask: async () => {
+                calls += 1;
+                if (calls === 1) throw new Error('board unreachable');
+                return 'accepted';
+            },
+        });
+        const port = await server.listen();
+
+        expect((await post(port, 'tok-q', report('toolu_1'))).status).toBe(500);
+        expect((await get(port, 'tok-q', 'toolu_1')).status).toBe(NOT_FOUND_STATUS);
+        expect((await post(port, 'tok-q', report('toolu_1'))).status).toBe(202);
+        expect(calls).toBe(2);
+        await server.close();
+    });
+});
+
+describe('the gate server: a repeat while the forward is in flight (issue #226)', () => {
+    const manager = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, output: '' }) };
+    const body = JSON.stringify({
+        questionId: 'toolu_1',
+        questions: [
+            {
+                question: 'Which colour?',
+                header: 'Colour',
+                multiSelect: false,
+                options: [{ label: 'Blue' }, { label: 'Red' }],
+            },
+        ],
+    });
+
+    it('answers the repeat as the first, so a failed forward fails both and the bridge retries', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        let fail: (e: Error) => void = () => {};
+        let calls = 0;
+        server.openControl('tok-q', {
+            ask: () => {
+                calls += 1;
+                if (calls > 1) return Promise.resolve('accepted' as const);
+                return new Promise((_resolve, reject) => {
+                    fail = reject;
+                });
+            },
+        });
+        const port = await server.listen();
+        const post = () =>
+            fetch(`http://127.0.0.1:${port}/question`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-q' },
+                body,
+            });
+
+        const first = post();
+        while (calls === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+        const repeat = post();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        fail(new Error('board unreachable'));
+
+        expect((await first).status).toBe(500);
+        expect((await repeat).status).toBe(500);
+        expect((await post()).status).toBe(202);
+        expect(calls).toBe(2);
+        await server.close();
+    });
+});
+
 describe('the gate server: run history for the timeout note', () => {
     // A timed-out run's kill note quotes the latest ad-hoc verdicts (issue #339), so the server
     // records them as they complete: one entry per declared gate name, the latest run winning.

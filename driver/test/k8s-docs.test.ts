@@ -149,6 +149,15 @@ describe('the executor isolation record (#382)', () => {
         expect(jobsDocs).toContain('CAP_NET_RAW');
     });
 
+    // Issue #533: the question relay lands on both executors, but only docker has the real-agent
+    // round trip; the kubernetes half is a stated limit, never a silent skip.
+    it('states that the kubernetes question round trip is not run on a cluster, and what pins the relay', () => {
+        expect(kubernetesDocs).toContain('Stated limit: the kubernetes question round trip');
+        expect(kubernetesDocs).toContain('is not run on a kind cluster');
+        expect(kubernetesDocs).toContain('The relay is pinned offline');
+        expect(kubernetesDocs).toContain('activeDeadlineSeconds');
+    });
+
     it('records which test lane proves what, and that a non-enforcing CNI passes vacuously', () => {
         expect(testingDocs).toContain('vacuously');
         expect(testingDocs).toContain('--netpol');

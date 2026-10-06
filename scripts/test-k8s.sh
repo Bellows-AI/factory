@@ -181,7 +181,7 @@ rbac="$(awk '/^# Source: factory\/templates\/driver-rbac.yaml/,/^---/' "$work/re
 # collection GET needs the list verb — a rule without it makes every fence round a 403.
 expect_contains     'the driver role grants the runner calls' "$rbac" \
     "resources: ['jobs']
-      verbs: ['create', 'get', 'delete', 'list']"
+      verbs: ['create', 'get', 'delete', 'list', 'patch']"
 # The claim env's per-job Secret: create before the Job, delete with it. No `get`, no `list` —
 # the driver writes values it was handed and never reads one back.
 expect_contains     'the driver role manages the per-job env Secret' "$rbac" \

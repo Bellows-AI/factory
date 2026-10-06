@@ -60,11 +60,13 @@ import {
     setupJobServices,
     startJobServices,
     syncCheckoutArgs,
+    unreadableDockerDetail,
     type RunnerFiles,
     type Spawn,
     type ExecDocker,
 } from './docker-runner-support.js';
 import { OPENCODE } from './executors.js';
+import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
 
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
@@ -96,6 +98,7 @@ interface RunnerDeps {
      * already gone.
      */
     killed: Set<BoardJob['leaseToken']>;
+    deadlines: DeadlineRegistry;
 }
 
 /**
@@ -299,21 +302,6 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob, signal?: Abor
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
     }
-}
-
-/**
- * The unreadable-verdict detail the sync/reclaim callers fold into their reason (issue #344):
- * what the container actually did, given the verdict line never arrived — the exit code and the
- * last stdout line, preview-bounded, or the plain fact that it printed nothing. A nonzero exit
- * never reaches here: execDocker rejects on it, and that arm reports the daemon's stderr detail
- * as `container failed:` — so a RESOLVED unreadable verdict is by construction an exit-0
- * container whose stdout was not the JSON line the readout parses.
- */
-function unreadableDockerDetail(stdout: string): string {
-    const line = stdout.trim().split('\n').filter(Boolean).pop();
-    return line === undefined
-        ? 'exit 0, the container printed nothing'
-        : `exit 0, last log line ${JSON.stringify(line.slice(0, ERROR_DETAIL_MAX_CHARS))}`;
 }
 
 /*
@@ -694,10 +682,10 @@ async function dockerRun(
         child.stdout?.on('data', collect);
         child.stderr?.on('data', collect);
 
-        const timer = setTimeout(() => {
+        const deadline = deps.deadlines.start(job.leaseToken, config.jobTimeoutMs, () => {
             timedOut = true;
             void dockerKill(deps, job);
-        }, config.jobTimeoutMs);
+        });
 
         /*
          * The cache watch polls on a period while the run is live. Each tick is one
@@ -715,7 +703,7 @@ async function dockerRun(
         }
 
         const done = () => {
-            clearTimeout(timer);
+            deadline.clear();
             if (cacheTimer) clearInterval(cacheTimer);
         };
 
@@ -788,9 +776,11 @@ export function createDockerRunner(
     },
     files: RunnerFiles = { writeFile, rm }
 ): Runner {
-    const deps: RunnerDeps = { config, execDocker, files, spawnFn, killed: new Set() };
+    const deadlines = createDeadlineRegistry();
+    const deps: RunnerDeps = { config, execDocker, files, spawnFn, killed: new Set(), deadlines };
     return {
         kill: (job) => dockerKill(deps, job),
+        extendDeadline: async (job, ms) => deadlines.extend(job.leaseToken, ms),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
         syncCheckout: (job, signal) => dockerSyncCheckout(deps, job, signal),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),

@@ -1,4 +1,4 @@
-import type { BoardJob, HeartbeatVerdict, RuntimeReport, ServiceStatus } from './board.js';
+import type { AnsweredQuestion, BoardJob, HeartbeatVerdict, RuntimeReport, ServiceStatus } from './board.js';
 import { deadServiceNote } from './loop-ledger.js';
 import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from './runner.js';
 import type { DeadService } from './runner.js';
@@ -29,6 +29,12 @@ export const RUN_CONTROL_POLL_MS = 5_000;
  * current model step) gets before the hard kill lands. Not configurable (issue #442).
  */
 export const STOP_GRACE_MS = 300_000;
+/**
+ * How long one agent question waits for an answer before the driver expires it, and how far each
+ * question pushes the attempt's run deadline out (never refunded when the answer comes early).
+ * With the board's five questions per attempt that bounds a run at `jobTimeoutMs` + 5 hours.
+ */
+export const QUESTION_TIMEOUT_MS = 3_600_000;
 const MIN_HEARTBEAT_PERIOD_MS = 1_000;
 const HEARTBEAT_PERIOD_DIVISOR = 3;
 const MS_PER_SECOND = 1_000;
@@ -76,6 +82,10 @@ export interface JobState {
     draining: boolean;
     /** The grace deadline's timer while draining; cleared when the attempt settles. */
     graceTimer: ReturnType<typeof setTimeout> | null;
+    /** The expiry timer of each pending question, by question id; cleared as it is answered and when the attempt ends. */
+    questionTimers: Map<string, ReturnType<typeof setTimeout>>;
+    /** How far the run deadline has been pushed out by questions — what the timeout note adds to `jobTimeoutMs`. */
+    deadlineExtensionMs: number;
     /** Resolves the moment the run ends, so the heartbeat can stop waiting out its period. */
     woken: Promise<void>;
     wake: () => void;
@@ -108,6 +118,8 @@ export function newJobState(): JobState {
         running: false,
         draining: false,
         graceTimer: null,
+        questionTimers: new Map(),
+        deadlineExtensionMs: 0,
         woken,
         wake,
         signal: controller.signal,
@@ -117,6 +129,26 @@ export function newJobState(): JobState {
 
 /** The verdicts that end an attempt where it stands: a stop, a lost lease, a removed thread. */
 export const down = (state: JobState): boolean => state.stopped || state.lost || state.removed;
+
+/** Stops every pending question's expiry timer — the attempt ended, or a Stop cancelled the questions. */
+export function clearQuestionTimers(state: JobState): void {
+    for (const timer of state.questionTimers.values()) clearTimeout(timer);
+    state.questionTimers.clear();
+}
+
+/**
+ * Applies the board's answers (a heartbeat carries every answered question of the lease, every
+ * beat): a pending question becomes answered and its timer stops; a repeat, an id the driver never
+ * recorded and a question already settled change nothing.
+ */
+function deliverAnswers(rt: LoopRuntime, state: JobState, answered: AnsweredQuestion[]): void {
+    if (state.control === null) return;
+    for (const { questionId, answers } of answered) {
+        if (!rt.gates?.server.resolveQuestion(state.control, questionId, { state: 'answered', answers })) continue;
+        clearTimeout(state.questionTimers.get(questionId));
+        state.questionTimers.delete(questionId);
+    }
+}
 
 /** A draining attempt whose run threw was being stopped all along: it stands down as stopped. */
 export function stopIfDraining(state: JobState): void {
@@ -170,6 +202,10 @@ function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, control:
     if (state.draining) return;
     state.draining = true;
     rt.gates?.server.raiseStop(control);
+    // A pending question is cancelled with the stop, so the bridge interrupts the CLI even if it
+    // never polled `/control`; its expiry timer has nothing left to expire.
+    rt.gates?.server.cancelQuestions(control);
+    clearQuestionTimers(state);
     const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
     rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
     state.graceTimer = setTimeout(() => {
@@ -183,8 +219,14 @@ function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, control:
 }
 
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
-async function applyHeartbeatVerdict(rt: LoopRuntime, job: BoardJob, state: JobState, verdict: HeartbeatVerdict) {
+export async function applyHeartbeatVerdict(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    verdict: HeartbeatVerdict
+) {
     const { runner, log } = rt;
+    if (typeof verdict === 'object') deliverAnswers(rt, state, verdict.answeredQuestions ?? []);
     if (verdict === 'lost') {
         state.lost = true;
         log(`job ${job.id}: lease lost, killing the runner`);
@@ -196,7 +238,13 @@ async function applyHeartbeatVerdict(rt: LoopRuntime, job: BoardJob, state: JobS
         // Everywhere else (setup, the gates and later phases, a driver with no endpoint) the stop
         // is today's immediate stand-down.
         // Only when a poller has actually read the endpoint: otherwise nothing would ever hear it.
-        if (state.running && state.control !== null && rt.gates?.server.controlPolled(state.control)) {
+        // A pending question is a runner in contact however it got there: its POST counts as a poll.
+        const server = rt.gates?.server;
+        if (
+            state.running &&
+            state.control !== null &&
+            (server?.controlPolled(state.control) || server?.hasPendingQuestion(state.control))
+        ) {
             return startDraining(rt, job, state, state.control);
         }
         state.stopped = true;
