@@ -41,23 +41,28 @@ export function releaseAbandonedSync(rt: LoopRuntime, job: BoardJob, syncing: Pr
  * The ONE stand-down fence. Called the moment a phase answers, it gives the claim back, settles the
  * attempt and parks a stopped one exactly once, and answers whether the attempt stood down here —
  * so nothing below it settles, releases or parks for itself. `phase` names where it landed.
+ * `beforePark` runs once for a stopped attempt, after the settle and before the park: the work
+ * that must land while the lease still lets it (a stop after the run still reports the session
+ * and uploads the artifacts, issues #152 and #325 — the park lands the row terminal, and a call
+ * refused after it is lost).
  */
-export async function standDown(ctx: AttemptCtx, phase: string): Promise<boolean> {
+export async function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Promise<void>): Promise<boolean> {
     if (!down(ctx.state)) return false;
     await handBackFence(ctx);
     await ctx.settle();
     const { rt, job, state } = ctx;
-    if (state.stopped) {
+    if (state.lost) {
+        rt.log(`job ${job.id}: the lease was lost during ${phase}, leaving the job to its holder`);
+    } else if (state.removed) {
+        rt.log(`job ${job.id}: removed during ${phase}; the queue owns the tree`);
+    } else {
+        await beforePark?.();
         const verdict = await rt.board.suspend(job);
         rt.log(
             verdict === 'lost'
                 ? `job ${job.id}: stopped during ${phase}, but the board had already reclaimed it`
                 : `job ${job.id}: stopped during ${phase} — nothing more ran, the board has settled the turn`
         );
-    } else if (state.removed) {
-        rt.log(`job ${job.id}: removed during ${phase}; the queue owns the tree`);
-    } else {
-        rt.log(`job ${job.id}: the lease was lost during ${phase}, leaving the job to its holder`);
     }
     return true;
 }

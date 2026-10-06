@@ -597,7 +597,8 @@ export function createKubernetesRunner(
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),
         probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
-        runHelper: (job: BoardJob, plan: HelperPlan, token?: string) => runHelper(deps, job, plan, token),
+        runHelper: (job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal) =>
+            runHelper(deps, job, plan, { token, signal }),
         syncCheckout: (job: BoardJob) => syncCheckout(deps, job),
         reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
         // The loop's one hand-back of the checkout claim (`loop-fence.ts`): a terminal setup

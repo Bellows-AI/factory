@@ -43,7 +43,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
     const invokeChild = async (childPlan: HelperPlan): Promise<HelperResult | null> => {
         const token = childPlan.githubWriting ? ((await board.publishToken(job)) ?? undefined) : undefined;
         if (down(state)) return null;
-        const resultOut = await raceStep(state.signal, runner.runHelper!(job, childPlan, token));
+        const resultOut = await raceStep(state.signal, runner.runHelper!(job, childPlan, token, state.signal));
         return resultOut === null || down(state) ? null : resultOut.value;
     };
 
@@ -103,7 +103,7 @@ export async function runPostHelperPhase(
         if (down(state)) return null;
         const token = childPlan.githubWriting ? ((await board.publishToken(job)) ?? undefined) : undefined;
         if (down(state)) return null;
-        return runner.runHelper!(job, childPlan, token);
+        return runner.runHelper!(job, childPlan, token, state.signal);
     };
 
     for (const plan of plans) {

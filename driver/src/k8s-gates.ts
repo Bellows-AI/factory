@@ -232,7 +232,9 @@ export function createKubernetesGateManager({
          * previous acquire of this attempt already created it — same name, same values.
          * No container comes up here: the environment exists for exactly as long as each gate run.
          */
-        async acquire(key, image, envBody = '', job) {
+        async acquire(key, image, envBody = '', attempt) {
+            throwIfCancelled(attempt?.signal, key);
+            const job = attempt?.job;
             if (!job) {
                 throw gateHarness('the kubernetes gate manager files gate runs under their job, and no job was given');
             }

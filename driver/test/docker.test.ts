@@ -4707,6 +4707,35 @@ describe('the block-helper transport (issue #207)', () => {
         expect(rm).toEqual(['rm', '-f', run[nameIdx + 1]]);
     });
 
+    it('hands the stand-down signal to the container, and a cancelled helper is no timeout (issue #488)', async () => {
+        const controller = new AbortController();
+        const seen: (AbortSignal | undefined)[] = [];
+        const calls: string[][] = [];
+        const exec = vitest.fn(async (args: string[], options?: { signal?: AbortSignal }) => {
+            calls.push(args);
+            if (args[0] === 'run') {
+                seen.push(options?.signal);
+                controller.abort();
+                const err = new Error('the operation was aborted');
+                (err as unknown as { killed: boolean }).killed = true;
+                throw err;
+            }
+            return { stdout: '' };
+        });
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+
+        const result = await runner.runHelper!(job, plan(), undefined, controller.signal);
+
+        expect(seen).toEqual([controller.signal]);
+        expect(result).toMatchObject({ ok: false, reason: 'runner_error' });
+        const run = calls.find((a) => a[0] === 'run')!;
+        expect(calls.find((a) => a[0] === 'rm')).toEqual(['rm', '-f', run[run.indexOf('--name') + 1]]);
+    });
+
     it('writes an attempt-scoped env file, carrying a fresh token, only for a github-writing helper', async () => {
         const calls: string[][] = [];
         let capturedFile: string | null = null;

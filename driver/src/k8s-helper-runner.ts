@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { envFileBody } from './claim.js';
 import { lookupHelper, parseHelperOutput } from './helpers.js';
-import type { HelperPlan, HelperResult } from './helpers.js';
+import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import { helperEnvSecretName, helperJobName, helperJobSpec, jobPath, secretsPath } from './k8s-auxspec.js';
 import { envBodyToData, jobsPath, secretBody } from './k8s-podspec.js';
 import { trackHelperJob } from './k8s-kill.js';
@@ -17,10 +17,16 @@ import { withPublishToken } from './publish.js';
  * with — an attempt-scoped Secret only when the helper writes to GitHub (`plan.githubWriting`),
  * the bounded input as a literal pod-spec env value (never a credential), and cleanup of both on
  * every exit path. Unknown helper ids fail BEFORE any Job is created, matching the docker
- * transport's own first check. Split out of `k8s-runner.ts` purely to keep that file under
+ * transport's own first check. An aborted `signal` ends the verdict poll and the cleanup reaps the
+ * Job (issue #488). Split out of `k8s-runner.ts` purely to keep that file under
  * the linter's per-file line budget (`noExcessiveLinesPerFile` in biome.json).
  */
-export async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, token?: string): Promise<HelperResult> {
+export async function runHelper(
+    deps: K8sDeps,
+    job: BoardJob,
+    plan: HelperPlan,
+    { token, signal }: HelperCall = {}
+): Promise<HelperResult> {
     const descriptor = lookupHelper(plan.helperId);
     if (!descriptor) {
         return {
@@ -56,7 +62,7 @@ export async function runHelper(deps: K8sDeps, job: BoardJob, plan: HelperPlan, 
         );
         const refusedJob = refusal(created, 'creating the helper job');
         if (refusedJob) return { ok: false, reason: 'runner_error', message: refusedJob };
-        const verdict = await helperVerdict(deps, jobName);
+        const verdict = await helperVerdict(deps, jobName, signal);
         if (verdict.timedOut) {
             return { ok: false, reason: 'timeout', message: 'the helper job exceeded its deadline' };
         }

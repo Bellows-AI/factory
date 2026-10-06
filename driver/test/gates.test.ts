@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { createGateManager } from '../src/gates.js';
+import { createGateManager, type GateAttempt } from '../src/gates.js';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { gateEnvContainerName } from '../src/docker.js';
@@ -198,9 +198,9 @@ describe('the gate environment manager: running gates', () => {
             return { stdout: '', stderr: '' };
         });
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
-        await manager.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
         await manager.runGate(KEY, 'test', 'npm test');
-        await manager.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
         await manager.runGate(KEY, 'lint', 'npm run lint');
 
         expect(scripts).toEqual(['npm ci', 'npm test', 'npm run lint']);
@@ -218,7 +218,7 @@ describe('the gate environment manager: running gates', () => {
             return { stdout: '', stderr: '' };
         });
         const manager = createGateManager({ config, cooldownMs: 1000, execDocker: setupExec });
-        await manager.acquire(KEY, 'node:24', '', WITH_SETUP);
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
 
         await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toEqual({
             exitCode: SETUP_EXIT_CODE,
@@ -275,7 +275,7 @@ describe('the gate environment manager: running gates', () => {
             cooldownMs: 1000,
             execDocker: servicesExec,
         });
-        await manager.acquire(KEY, 'node:24', '', JOB);
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
         await manager.runGate(KEY, 'test', 'npm test');
         await manager.runGate(KEY, 'lint', 'npm run lint');
 
@@ -286,7 +286,7 @@ describe('the gate environment manager: running gates', () => {
 
         // A later attempt on the same warm environment joins ITS network.
         const next = { ...JOB, leaseToken: '33333333-3333-4333-8333-333333333333' };
-        await manager.acquire(KEY, 'node:24', '', next);
+        await manager.acquire(KEY, 'node:24', '', { job: next });
         await manager.runGate(KEY, 'test', 'npm test');
         expect(seen).toContainEqual(['network', 'connect', networkName(next), NAME]);
         await manager.stop();
@@ -303,7 +303,7 @@ describe('the gate environment manager: running gates', () => {
             cooldownMs: 1000,
             execDocker: noNetwork,
         });
-        await manager.acquire(KEY, 'node:24', '', JOB);
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
         await expect(manager.runGate(KEY, 'test', 'npm test')).resolves.toEqual({ exitCode: 0, output: 'green' });
         await manager.stop();
     });
@@ -315,7 +315,7 @@ describe('the gate environment manager: running gates', () => {
             cooldownMs: 1000,
             execDocker: recording,
         });
-        await manager.acquire(KEY, 'node:24', '', JOB);
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
         await manager.runGate(KEY, 'test', 'npm test');
         expect(logs.some((args) => args[0] === 'network')).toBe(false);
         await manager.stop();
@@ -497,8 +497,8 @@ describe('the gate server', () => {
         const manager = {
             // The job is the attempt context: the kubernetes manager refuses an acquire without
             // one, and the docker manager joins the attempt's services network by it.
-            acquire: async (_key: string, _image: string, _envBody?: string, job?: BoardJob) => {
-                acquiredFor.push(job);
+            acquire: async (_key: string, _image: string, _envBody?: string, attempt?: GateAttempt) => {
+                acquiredFor.push(attempt?.job);
             },
             runGate: async (key: string, name: string, command: string) => {
                 seen.push({ key, name, command });

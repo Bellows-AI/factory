@@ -1526,12 +1526,12 @@ describe('the poll loop', () => {
             throw new Error('the runner must not spawn');
         });
         const rawAcquire = stack.manager.acquire.bind(stack.manager);
-        stack.manager.acquire = async (key, image, envBody, acquiredJob) => {
+        stack.manager.acquire = async (key, image, envBody, attempt) => {
             // The stop lands while the gate environment is coming up — slow enough for the
             // setup poll to carry the verdict in before the attempt can launch.
             options.cancelRequested = true;
             await new Promise((resolve) => setTimeout(resolve, 30));
-            await rawAcquire(key, image, envBody, acquiredJob);
+            await rawAcquire(key, image, envBody, attempt);
         };
 
         const started = drive({ ...board, runner, gates });
@@ -4384,6 +4384,176 @@ describe('a stand-down after the gates (issue #427)', () => {
 
         expect(runner.killed).toEqual([job(1).id]);
         expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    it('#488 a lease lost after the run says so and reports nothing', async () => {
+        const board = stubBoard([job(1)]);
+        const fire = armHeartbeat(board.board, 'lost');
+        const runner = stubRunner(async () => {
+            fire();
+            while (!runner.killed.length) await tick();
+            return ok();
+        });
+        const lines: string[] = [];
+
+        await drive({ ...board, runner, log: (line) => lines.push(line) });
+
+        expect(lines.join('\n')).toContain('the lease was lost during its run, leaving the job to its holder');
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('#488 a stop after the run reports the session before it parks', async () => {
+        const board = stubBoard([job(1)]);
+        const fire = armHeartbeat(board.board, 'stop');
+        const order: string[] = [];
+        const rawSession = board.board.session.bind(board.board);
+        board.board.session = async (claimed, sessionId) => {
+            order.push(`session:${sessionId}`);
+            return rawSession(claimed, sessionId);
+        };
+        const rawSuspend = board.board.suspend.bind(board.board);
+        board.board.suspend = async (claimed) => {
+            order.push('suspend');
+            return rawSuspend(claimed);
+        };
+        const runner = stubRunner(async () => {
+            fire();
+            while (!runner.killed.length) await tick();
+            return ok({ sessionId: 'scraped' });
+        });
+
+        await drive({ ...board, runner });
+
+        expect(order).toEqual([expect.stringMatching(/^session:/), 'session:scraped', 'suspend']);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('#488 a lease lost after the push says so, and the push is not reported', async () => {
+        // The push itself is not abortable, and a stand-down after it reports nothing: the next
+        // holder re-runs the publish. Pinned here as the limit docs/jobs.md states.
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const fire = armHeartbeat(board.board, 'lost');
+        const runner = stubRunner(async () => ok(), { publish: landed });
+        const rawPublish = runner.publishGit.bind(runner);
+        runner.publishGit = async (publishedJob, token) => {
+            const answer = await rawPublish(publishedJob, token);
+            fire();
+            await ticks();
+            return answer;
+        };
+        const lines: string[] = [];
+
+        await drive({ ...board, runner, log: (line) => lines.push(line) });
+
+        expect(runner.published).toHaveLength(1);
+        expect(lines.join('\n')).toContain('the lease was lost during its publish');
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('#488 names the post-helpers, not the publish, when no publish was due', async () => {
+        const board = stubBoard([{ ...job(1), publish: false, helperPlans: [postPlan] }]);
+        const fire = armHeartbeat(board.board, 'stop');
+        const runner = stubRunner(async () => ok());
+        runner.runHelper = async () => {
+            fire();
+            await ticks();
+            return { ok: true, output: null };
+        };
+        const lines: string[] = [];
+
+        await drive({ ...board, runner, log: (line) => lines.push(line) });
+
+        expect(lines.join('\n')).toContain('stopped during its post-helpers');
+        expect(lines.join('\n')).not.toContain('during its publish');
+    });
+});
+
+describe('the slow calls are aborted by a stand-down, not only raced (issue #488)', () => {
+    /** Aborted-or-never: resolves when `signal` aborts, never when it is undefined. */
+    const aborted = (signal: AbortSignal | undefined) =>
+        new Promise<void>((resolve) => {
+            if (!signal) return;
+            if (signal.aborted) return resolve();
+            signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+    const neverRun = () => {
+        throw new Error('the runner must not spawn');
+    };
+
+    it('cancels a running pre-run helper, a github-writing one included', async () => {
+        const plan: HelperPlan = { helperId: 'noop', phase: 'pre', input: null, githubWriting: true };
+        const board = stubBoard([{ ...job(1), helperPlans: [plan] }], { publishToken: 'fresh-token' });
+        const runner = stubRunner(async () => neverRun());
+        let seen: AbortSignal | undefined;
+        runner.runHelper = async (_job, _plan, _token, signal) => {
+            seen = signal;
+            board.board.heartbeat = async () => ({ result: 'held', cancelRequested: true });
+            await aborted(signal);
+            return { ok: false, reason: 'runner_error', message: 'cancelled' };
+        };
+
+        await drive({ ...board, runner });
+
+        expect(seen?.aborted).toBe(true);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('hands the signal to the checkout sync', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const runner = stubRunner(async () => neverRun());
+        let seen: AbortSignal | undefined;
+        runner.syncCheckout = async (_job, signal) => {
+            seen = signal;
+            options.cancelRequested = true;
+            await aborted(signal);
+            return { ok: false, reason: 'cancelled' };
+        };
+
+        await drive({ ...board, runner });
+
+        expect(seen?.aborted).toBe(true);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    it('hands the signal to the gates re-read', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const runner = stubRunner(async () => neverRun());
+        let seen: AbortSignal | undefined;
+        board.board.rereadGates = async (_job, signal) => {
+            seen = signal;
+            options.cancelRequested = true;
+            await aborted(signal);
+            return null;
+        };
+
+        await drive({ ...board, runner });
+
+        expect(seen?.aborted).toBe(true);
+        expect(board.board.suspended).toEqual([job(1).id]);
+    });
+
+    it('hands the signal to the gate environment start', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const { stack, gates } = stubGateStack();
+        const runner = stubRunner(async () => neverRun());
+        let seen: AbortSignal | undefined;
+        stack.manager.acquire = async (_key, _image, _env, attempt) => {
+            seen = attempt?.signal;
+            options.cancelRequested = true;
+            await aborted(seen);
+            throw new Error('cancelled');
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(seen?.aborted).toBe(true);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
     });
 });
 

@@ -46,6 +46,24 @@ export type ExecDocker = (
     options?: { timeout?: number; signal?: AbortSignal; input?: Buffer }
 ) => Promise<{ stdout: string; stderr?: string }>;
 
+/**
+ * Starts a gate environment container (issue #488). A cancelled start may have created the
+ * container before the client died, so it goes by name on the way out.
+ */
+export async function startEnvContainer(
+    execDocker: (args: string[], options?: { signal?: AbortSignal }) => Promise<unknown>,
+    name: string,
+    args: string[],
+    signal: AbortSignal | undefined
+): Promise<void> {
+    try {
+        await execDocker(args, signal ? { signal } : undefined);
+    } catch (e) {
+        if (signal?.aborted) await execDocker(['rm', '-f', name]).catch(() => undefined);
+        throw e;
+    }
+}
+
 /** How much of a failed aux container's own error detail rides in a sync/reclaim/publish reason. */
 export const ERROR_DETAIL_MAX_CHARS = 300;
 

@@ -11,7 +11,7 @@ import {
     releaseGateSession,
     runDeclaredGates,
 } from './loop-gates.js';
-import { down, heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
+import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import type { GateRunNote } from './timeout-note.js';
 import { concludeSetup, handBackFence, releaseAbandonedSync, standDown } from './loop-fence.js';
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
@@ -83,15 +83,14 @@ async function reportScrapedSession(
 async function waitReclaimBarrier(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     const inflight = rt.reclaims.get(job.rootJobId ?? job.id);
-    if (inflight) await raceStep(state.signal, inflight);
-    return down(state) ? STOOD_DOWN : null;
+    return inflight && (await raceStep(state.signal, inflight)) === null ? STOOD_DOWN : null;
 }
 
 /** Syncs the task worktree with the remote default (or restores it), racing the stand-down. */
 async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     const { runner } = rt;
-    const syncing = runner.syncCheckout(job);
+    const syncing = runner.syncCheckout(job, state.signal);
     let syncedOut: { value: SyncResult } | null;
     try {
         syncedOut = await raceStep(state.signal, syncing);
@@ -105,41 +104,37 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
         releaseAbandonedSync(rt, job, syncing);
         return STOOD_DOWN;
     }
-    if (down(state)) {
-        // The sync had already finished when the stand-down was observed: an ok sync holds the
-        // checkout (kubernetes's claim) with no run ever to release it, so the attempt holds it
-        // now and the stand-down fence is what gives it back. A failed sync released its own.
-        if (syncedOut.value.ok) ctx.fenced = true;
-        return STOOD_DOWN;
-    }
     const synced = syncedOut.value;
-    if (!synced.ok) {
-        if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
-            /*
-             * Lock contention on the shared checkout (issue #307) is infrastructure, not a
-             * verdict: the script already waited out the checkout's sync lock and retried the
-             * fetch, so reporting `failed` here would spend the RUN on what a re-claim spends
-             * an attempt on. The claim goes back to the board — the lease expires and the job
-             * is offered again, exactly like a sync that threw — and maxAttempts governs. The
-             * kubernetes checkout claim was already released inside `syncCheckout` before it
-             * answered, the same discipline the ordinary sync-failure refusal below relies on.
-             */
-            return { halt: 'leave', log: `checkout sync was lock-blocked, leaving it to the lease: ${synced.reason}` };
-        }
-        return {
-            halt: 'fault',
-            log: `checkout sync failed: ${synced.reason}`,
-            verdict: {
-                status: 'failed',
-                exitCode: null,
-                output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
-                failureKind: 'runner_error',
-            },
-        };
+    // An ok sync holds the checkout (kubernetes's claim) with no run yet to release it, so the
+    // attempt holds it from here — even when a stand-down landed as the sync finished, in which
+    // case the stand-down fence is what gives it back. A failed sync released its own.
+    if (synced.ok) {
+        ctx.fenced = true;
+        ctx.treeBefore = synced.fingerprint ?? null;
+        return null;
     }
-    ctx.fenced = true;
-    ctx.treeBefore = synced.fingerprint ?? null;
-    return null;
+    if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
+        /*
+         * Lock contention on the shared checkout (issue #307) is infrastructure, not a
+         * verdict: the script already waited out the checkout's sync lock and retried the
+         * fetch, so reporting `failed` here would spend the RUN on what a re-claim spends
+         * an attempt on. The claim goes back to the board — the lease expires and the job
+         * is offered again, exactly like a sync that threw — and maxAttempts governs. The
+         * kubernetes checkout claim was already released inside `syncCheckout` before it
+         * answered, the same discipline the ordinary sync-failure refusal below relies on.
+         */
+        return { halt: 'leave', log: `checkout sync was lock-blocked, leaving it to the lease: ${synced.reason}` };
+    }
+    return {
+        halt: 'fault',
+        log: `checkout sync failed: ${synced.reason}`,
+        verdict: {
+            status: 'failed',
+            exitCode: null,
+            output: `The checkout could not be synced with the remote before the run: ${synced.reason}`,
+            failureKind: 'runner_error',
+        },
+    };
 }
 
 /**
@@ -150,8 +145,8 @@ async function rereadGatesStep(ctx: AttemptCtx): Promise<SetupConclusion | null>
     const { rt, job, state } = ctx;
     const { board, log } = rt;
 
-    const freshOut = await raceStep(state.signal, board.rereadGates(job));
-    if (freshOut === null || down(state)) return STOOD_DOWN;
+    const freshOut = await raceStep(state.signal, board.rereadGates(job, state.signal));
+    if (freshOut === null) return STOOD_DOWN;
     const fresh = freshOut.value;
     if (fresh) {
         job.gates = fresh.gates ?? null;
@@ -213,13 +208,7 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
     const { rt, job, state } = ctx;
     try {
         const gateOut = await raceStep(state.signal, beginGates(rt, job, state));
-        if (gateOut === null || down(state)) {
-            // A session the boot already handed back is released HERE: the caller stands the attempt
-            // down instead of running, so the cleanup that would have released it never comes.
-            if (gateOut?.value) releaseGateSession(rt, gateOut.value, job);
-            return STOOD_DOWN;
-        }
-        return gateOut.value;
+        return gateOut === null ? STOOD_DOWN : gateOut.value;
     } catch (e) {
         return {
             halt: 'fault',
@@ -245,13 +234,17 @@ const isConclusion = (answer: GateSession | null | SetupConclusion): answer is S
     answer === STOOD_DOWN || (answer !== null && 'halt' in answer);
 
 /**
- * Acts on the one conclusion an attempt reached: a stand-down settles it and parks it, a
- * `SetupHalt` hands the claim back, settles, says why and reports it. Every exit from setup goes
- * through here, which is what makes a new refusal safe (issue #472).
+ * Acts on the one conclusion an attempt reached. Every exit from setup goes through here, which is
+ * what makes a new refusal safe (issue #472): a stand-down settles the attempt and parks it, and
+ * wins over whatever the step concluded — the attempt is down whatever the step found — while a
+ * `SetupHalt` hands the claim back, settles, says why and reports it. Answers whether the attempt
+ * is finished here; a step that answers `null` with the attempt still up is not.
  */
-async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion): Promise<void> {
-    if (conclusion === STOOD_DOWN) await standDown(ctx, 'setup');
-    else await concludeSetup(ctx, conclusion);
+async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion | null): Promise<boolean> {
+    if (await standDown(ctx, 'setup')) return true;
+    if (conclusion === null) return false;
+    if (conclusion !== STOOD_DOWN) await concludeSetup(ctx, conclusion);
+    return true;
 }
 
 /**
@@ -263,15 +256,17 @@ async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion): Promise<v
  */
 async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof STOOD_DOWN> {
     for (const step of setupSteps) {
-        const answer = await step(ctx);
-        if (answer === null) continue;
-        await conclude(ctx, answer);
-        return STOOD_DOWN;
+        if (await conclude(ctx, await step(ctx))) return STOOD_DOWN;
     }
     const booted = await acquireGateSession(ctx);
-    if (!isConclusion(booted)) return booted;
-    await conclude(ctx, booted);
-    return STOOD_DOWN;
+    const session = isConclusion(booted) ? null : booted;
+    if (await conclude(ctx, isConclusion(booted) ? booted : null)) {
+        // A session the boot handed back is released HERE when the attempt ended meanwhile: the
+        // caller never runs, so the cleanup that would have released it never comes.
+        if (session) releaseGateSession(ctx.rt, session, ctx.job);
+        return STOOD_DOWN;
+    }
+    return session;
 }
 
 /** A short-circuit outcome of the run phase: settled with nothing left for the caller to do. */
@@ -296,42 +291,6 @@ type RunPhaseResult = {
     /** Whether the failed gate's tree differs from the synced one; null when unmeasured. */
     treeChanged: boolean | null;
 };
-
-/** Handles the run-ended verdicts that are not an ordinary finish: lost, removed, stopped. */
-async function settleNonFinish(
-    ctx: AttemptCtx,
-    executorType: BoardJob['executorType'],
-    outcome: RunOutcome
-): Promise<boolean> {
-    const { rt, job, state, settle } = ctx;
-    const { log } = rt;
-    if (state.lost) {
-        await settle();
-        return true;
-    }
-    if (state.removed) {
-        await settle();
-        log(`job ${job.id}: removed while it ran; the queue owns the tree`);
-        return true;
-    }
-    // A draining attempt settles as stopped even after a clean exit: the agent stopped because it
-    // was asked to, so no gates, helpers, publish or `complete` follow (issue #442).
-    if (state.stopped || state.draining) {
-        await settle();
-        await reportScrapedSession(rt, job, executorType, outcome);
-        // The artifacts ride the same pre-park window the session report does (issue #325):
-        // the park lands the row terminal, and an upload refused after it is a lost artifact.
-        await uploadRunArtifacts(rt, job, outcome);
-        const verdict = await rt.board.suspend(job);
-        log(
-            verdict === 'lost'
-                ? `job ${job.id}: stopped, but the board had already reclaimed it`
-                : `job ${job.id}: stopped, the board has settled the turn`
-        );
-        return true;
-    }
-    return false;
-}
 
 /** What one run needs beyond its `AttemptCtx`: the session, its gates, and its I/O plumbing. */
 interface RunInputs {
@@ -365,7 +324,15 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // describe the run as it ended, not as it was reported.
     const endedAt = Date.now();
 
-    if (await settleNonFinish(ctx, executorType, outcome)) return { done: true };
+    // A draining attempt settles as stopped even after a clean exit: the agent stopped because it
+    // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
+    // the run still reports the session and uploads the artifacts BEFORE the park.
+    stopIfDraining(state);
+    const lastWords = async () => {
+        await reportScrapedSession(rt, job, executorType, outcome);
+        await uploadRunArtifacts(rt, job, outcome);
+    };
+    if (await standDown(ctx, 'its run', lastWords)) return { done: true };
 
     /*
      * The runner, not this loop, knows what a refused start looks like on its platform, and
@@ -403,10 +370,10 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress.
     const treeAfter = gating ? await probeTreeNow(ctx) : null;
-    const gated =
-        gating && !down(state)
-            ? await runGatesPhase(ctx, gating, outcome)
-            : { failure: null, deadServices: [], gatesSkipped: null };
+    if (await standDown(ctx, 'its gates')) return { done: true };
+    const gated = gating
+        ? await runGatesPhase(ctx, gating, outcome)
+        : { failure: null, deadServices: [], gatesSkipped: null };
     // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
     const treeChanged =
         gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
@@ -464,8 +431,10 @@ async function runPostHelpersAndPublish(
         // recalled (issue #472).
         if (await standDown(ctx, 'its publish')) return null;
         published = await publishBranch(rt, job, publishToken);
+        // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
+        // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
+        if (await standDown(ctx, 'its publish')) return null;
     }
-    if (await standDown(ctx, 'its publish')) return null;
     return { helperFailure, published };
 }
 
