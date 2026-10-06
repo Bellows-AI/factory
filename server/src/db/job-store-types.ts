@@ -265,7 +265,62 @@ export interface Job {
      * follow.
      */
     publication: PublicationState | null;
+    /**
+     * The questions the agent asked during THIS run (050, issue #531), oldest first. Served by
+     * `get()` and `thread()`; the per-run lists answer an empty array.
+     */
+    questions: JobQuestion[];
 }
+
+/** One question the agent asked, as validated at the door (`POST /api/jobs/:id/question`). */
+export interface AskedQuestion {
+    question: string;
+    header: string;
+    multiSelect: boolean;
+    options: { label: string; description?: string }[];
+}
+
+/**
+ * One AskUserQuestion call of one attempt (050). `closed` is never stored: it is a `pending` row
+ * whose attempt no longer holds the job's running lease, or whose job has a stop requested.
+ * `answerable` is exactly the condition the answer UPDATE enforces.
+ */
+export interface JobQuestion {
+    /** The agent's `tool_use_id`. */
+    id: string;
+    attempt: number;
+    questions: AskedQuestion[];
+    status: 'pending' | 'answered' | 'expired' | 'closed';
+    answerable: boolean;
+    /** Question text → the answer; null until answered. Member content — never logged. */
+    answers: Record<string, string> | null;
+    answeredBy: UserRef | null;
+    askedAt: string;
+    answeredAt: string | null;
+}
+
+/** What a worker's question report did: a new row (`created`) or the stored one (`existing`). */
+export type AskQuestionResult =
+    | { result: 'created' | 'existing'; question: JobQuestion }
+    | { result: 'lost' | 'missing' | 'limit' };
+
+/** What a worker's expiry did; `answered` means the board decided the race for the answer. */
+export type ExpireQuestionResult =
+    | { result: 'expired' }
+    | { result: 'answered'; answers: Record<string, string> }
+    | { result: 'lost' | 'missing' | 'unknown' };
+
+/**
+ * What a member's answer did. `invalid` is a key set that does not match the stored question
+ * texts; `refused` carries the stored question for `answered` (its answer and answerer ride the
+ * 409), and nothing for `expired` or `closed`.
+ */
+export type AnswerQuestionResult =
+    | { result: 'ok'; question: JobQuestion }
+    | { result: 'refused'; reason: 'answered'; question: JobQuestion }
+    | { result: 'refused'; reason: 'expired' | 'closed' }
+    | { result: 'invalid'; message: string }
+    | { result: 'unknown' };
 
 /**
  * One stored run artifact (issue #325, 046): the full-run log or the agent transcript of one
@@ -848,7 +903,13 @@ export interface JobStore {
         id: string,
         leaseToken: string,
         leaseSeconds: number
-    ): Promise<{ result: LeaseResult; leaseExpiresAt: string | null; cancelRequested: boolean }>;
+    ): Promise<{
+        result: LeaseResult;
+        leaseExpiresAt: string | null;
+        cancelRequested: boolean;
+        /** Every `answered` question of this lease token — applied idempotently by the driver. */
+        answeredQuestions: { questionId: string; answers: Record<string, string> }[];
+    }>;
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded
      * like every other worker write: a superseded worker must not relabel the run that replaced it.
@@ -900,6 +961,33 @@ export interface JobStore {
      * A null `attempt` reads the newest stored one, which is almost always what a reader wants.
      */
     readArtifact(id: string, kind: ArtifactKind, attempt: number | null): Promise<StoredArtifact | null>;
+    /**
+     * Stores one question the agent asked (050, issue #531), pending, for the attempt holding the
+     * lease. Idempotent on `(job, questionId)` (`existing`, nothing changed); an attempt holds at
+     * most `QUESTIONS_PER_ATTEMPT` rows (`limit`). The lease guard and the cap count serialize on
+     * the job row, so concurrent asks cannot overshoot.
+     */
+    askQuestion(
+        id: string,
+        leaseToken: string,
+        ask: { questionId: string; questions: AskedQuestion[] }
+    ): Promise<AskQuestionResult>;
+    /**
+     * Moves a pending question to `expired` under the lease. An already-answered one answers with
+     * its answers instead — the board decides the race, and the driver delivers the answer.
+     */
+    expireQuestion(id: string, leaseToken: string, questionId: string): Promise<ExpireQuestionResult>;
+    /**
+     * A member's answer: ONE conditional update (pending, job running under the asking attempt's
+     * lease, no stop requested), so a retried or concurrent answer lands once. `answers` maps each
+     * stored question text to a trimmed, non-empty answer; any other key set is `invalid`.
+     */
+    answerQuestion(
+        id: string,
+        questionId: string,
+        answers: Record<string, string>,
+        answeredBy: string | null
+    ): Promise<AnswerQuestionResult>;
     /**
      * A publish credential for the run's final push. The claim mints a full-hour installation
      * token and a run can outlive it — observed 2026-09-13 (job 43379d3a): a 1h33m run published
@@ -1088,6 +1176,8 @@ export interface TaskSummary {
     waitReason: string | null;
     waitingSince: string | null;
     waitTerminalReason: string | null;
+    /** True when any run of the thread has an `answerable` question (050): a member is wanted. */
+    needsAnswer: boolean;
     /** The root's creation: when the conversation started. */
     createdAt: string;
     /** The head run's newest of created/started/finished/done — the task's sort key. */

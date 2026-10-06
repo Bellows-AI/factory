@@ -156,6 +156,9 @@ function resolveTaskThreads(jobs: readonly Job[]): ResolvedTask[] {
             waitReason: null,
             waitingSince: null,
             waitTerminalReason: null,
+            needsAnswer: jobs.some(
+                (row) => row.rootJobId === root.id && row.questions.some((question) => question.answerable)
+            ),
             createdAt: root.createdAt,
             activityAt: activityAtOf(head),
         };

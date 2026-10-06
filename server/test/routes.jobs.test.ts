@@ -9,7 +9,12 @@ import { validateWaitQuery } from '../src/routes/job-field-validation.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-types.js';
 import type {
+    AnswerQuestionResult,
     ArtifactKind,
+    AskedQuestion,
+    AskQuestionResult,
+    ExpireQuestionResult,
+    JobQuestion,
     CancelWaitResult,
     EditCommandResult,
     FollowUpRefusal,
@@ -99,7 +104,23 @@ interface StoreStub extends JobStore {
     leased: { ids: string[] }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
+    /** The question reports, expiries and answers the routes handed the store (050). */
+    asked: { id: string; questionId: string; questions: AskedQuestion[] }[];
+    expired: { id: string; questionId: string }[];
+    answered: { id: string; questionId: string; answers: Record<string, string>; answeredBy: string | null }[];
 }
+
+const QUESTION: JobQuestion = {
+    id: 'toolu_01',
+    attempt: 1,
+    questions: [],
+    status: 'pending',
+    answerable: true,
+    answers: null,
+    answeredBy: null,
+    askedAt: '2026-08-21T12:00:00.000Z',
+    answeredAt: null,
+};
 
 /**
  * Deliberately not a lease implementation. These tests are about the HTTP contract — which body is
@@ -137,6 +158,11 @@ function stubStore(
         reclaimClaim?: ReclaimClaim | null;
         ackReclaim?: 'ok' | 'lost' | 'missing';
         heartbeatCancelRequested?: boolean;
+        answeredQuestions?: { questionId: string; answers: Record<string, string> }[];
+        /** What the question store answers a report, an expiry and an answer with (050). */
+        ask?: AskQuestionResult;
+        expire?: ExpireQuestionResult;
+        answer?: AnswerQuestionResult;
         /** The lease rows the store answers a batched lookup with; absent means none. */
         leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
         /**
@@ -176,6 +202,9 @@ function stubStore(
         reclaimAcks: [],
         leased: [],
         waits: [],
+        asked: [],
+        expired: [],
+        answered: [],
         async suspend(id) {
             boom();
             stub.suspended.push(id);
@@ -226,7 +255,23 @@ function stubStore(
                 result,
                 leaseExpiresAt: result === 'ok' ? '2026-08-21T12:05:00.000Z' : null,
                 cancelRequested: result === 'ok' ? (options.heartbeatCancelRequested ?? false) : false,
+                answeredQuestions: result === 'ok' ? (options.answeredQuestions ?? []) : [],
             };
+        },
+        async askQuestion(id, _token, ask) {
+            boom();
+            stub.asked.push({ id, ...ask });
+            return options.ask ?? { result: 'created', question: QUESTION };
+        },
+        async expireQuestion(id, _token, questionId) {
+            boom();
+            stub.expired.push({ id, questionId });
+            return options.expire ?? { result: 'expired' };
+        },
+        async answerQuestion(id, questionId, answers, answeredBy) {
+            boom();
+            stub.answered.push({ id, questionId, answers, answeredBy });
+            return options.answer ?? { result: 'ok', question: QUESTION };
         },
         async stop(id, stoppedBy) {
             boom();
@@ -3271,5 +3316,236 @@ describe('POST /api/jobs/:id/publish-token', () => {
 
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_TOKEN');
+    });
+});
+
+const ASK = {
+    leaseToken: TOKEN,
+    questionId: 'toolu_01AbC-9_z',
+    questions: [
+        {
+            question: 'Which database?',
+            header: 'Database',
+            multiSelect: false,
+            options: [{ label: 'Postgres', description: 'The default' }, { label: 'SQLite' }],
+        },
+    ],
+};
+const QUESTION_URL = `/api/jobs/${ID}/question`;
+const EXPIRE_URL = `/api/jobs/${ID}/question-expire`;
+const ANSWER_URL = `/api/jobs/${ID}/questions/${ASK.questionId}/answer`;
+
+describe('heartbeat answeredQuestions (050)', () => {
+    it('is always present, empty when nothing is answered', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
+        expect(response.json().answeredQuestions).toEqual([]);
+    });
+
+    it('carries the answered questions the store lists', async () => {
+        const answered = [{ questionId: 'toolu_01', answers: { 'Which database?': 'Postgres' } }];
+        const instance = await harnessWith(stubStore({ answeredQuestions: answered }));
+        const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
+        expect(response.json().answeredQuestions).toEqual(answered);
+    });
+});
+
+describe('POST /api/jobs/:id/question', () => {
+    it('stores a new question with 201 and an existing one with 200', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const created = await post(instance, QUESTION_URL, ASK);
+        expect(created.statusCode).toBe(201);
+        expect(created.json().id).toBe(QUESTION.id);
+
+        const again = await harnessWith(stubStore({ ask: { result: 'existing', question: QUESTION } }));
+        const existing = await post(again, QUESTION_URL, ASK);
+        expect(existing.statusCode).toBe(200);
+    });
+
+    it('drops unknown keys before the store sees them', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const noisy = {
+            ...ASK,
+            extra: 1,
+            questions: [{ ...ASK.questions[0], extra: 'x', options: [{ label: 'A', extra: 1 }, { label: 'B' }] }],
+        };
+        await post(instance, QUESTION_URL, noisy);
+        expect(store.asked[0]!.questions[0]).toEqual({
+            question: 'Which database?',
+            header: 'Database',
+            multiSelect: false,
+            options: [{ label: 'A' }, { label: 'B' }],
+        });
+    });
+
+    const q = (patch: Record<string, unknown>) => ({ ...ASK.questions[0], ...patch });
+    it.each([
+        ['an empty questionId', { questionId: '' }],
+        ['a questionId with a bad character', { questionId: 'a b' }],
+        ['a questionId over 128 characters', { questionId: 'a'.repeat(129) }],
+        ['no questions', { questions: [] }],
+        ['five questions', { questions: [1, 2, 3, 4, 5].map((n) => q({ question: `Q${n}` })) }],
+        ['a blank question', { questions: [q({ question: '  ' })] }],
+        ['a question over 1000 characters', { questions: [q({ question: 'x'.repeat(1001) })] }],
+        ['a blank header', { questions: [q({ header: '' })] }],
+        ['a header over 100 characters', { questions: [q({ header: 'h'.repeat(101) })] }],
+        ['a non-boolean multiSelect', { questions: [q({ multiSelect: 'no' })] }],
+        ['one option', { questions: [q({ options: [{ label: 'A' }] })] }],
+        ['five options', { questions: [q({ options: [1, 2, 3, 4, 5].map((n) => ({ label: `L${n}` })) })] }],
+        ['a blank label', { questions: [q({ options: [{ label: '' }, { label: 'B' }] })] }],
+        ['a label over 200 characters', { questions: [q({ options: [{ label: 'l'.repeat(201) }, { label: 'B' }] })] }],
+        [
+            'a description over 1000 characters',
+            { questions: [q({ options: [{ label: 'A', description: 'd'.repeat(1001) }, { label: 'B' }] })] },
+        ],
+        ['repeated question texts', { questions: [q({}), q({})] }],
+    ])('refuses %s with 400 INVALID_QUESTION', async (_label, patch) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, QUESTION_URL, { ...ASK, ...patch });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('INVALID_QUESTION');
+        expect(store.asked).toEqual([]);
+    });
+
+    it('refuses a body over 64 KiB', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, QUESTION_URL, {
+            ...ASK,
+            questions: [q({ question: 'x'.repeat(70_000) })],
+        });
+        expect(response.statusCode).toBe(413);
+    });
+
+    it('refuses a bad lease token', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, QUESTION_URL, { ...ASK, leaseToken: 'nope' });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_TOKEN');
+    });
+
+    it.each([
+        ['lost', 409, 'LEASE_LOST'],
+        ['missing', 404, 'NOT_FOUND'],
+        ['limit', 429, 'QUESTION_LIMIT'],
+    ] as const)('maps the store verdict %s to %i', async (result, status, code) => {
+        const instance = await harnessWith(stubStore({ ask: { result } }));
+        const response = await post(instance, QUESTION_URL, ASK);
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+});
+
+describe('POST /api/jobs/:id/question-expire', () => {
+    const body = { leaseToken: TOKEN, questionId: ASK.questionId };
+
+    it('answers expired', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, EXPIRE_URL, body);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ state: 'expired' });
+        expect(store.expired).toEqual([{ id: ID, questionId: ASK.questionId }]);
+    });
+
+    it('answers the stored answers when the question was answered first', async () => {
+        const answers = { 'Which database?': 'Postgres' };
+        const instance = await harnessWith(stubStore({ expire: { result: 'answered', answers } }));
+        const response = await post(instance, EXPIRE_URL, body);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ state: 'answered', answers });
+    });
+
+    it.each([
+        ['lost', 409, 'LEASE_LOST'],
+        ['missing', 404, 'NOT_FOUND'],
+        ['unknown', 404, 'NOT_FOUND'],
+    ] as const)('maps the store verdict %s to %i', async (result, status, code) => {
+        const instance = await harnessWith(stubStore({ expire: { result } }));
+        const response = await post(instance, EXPIRE_URL, body);
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('refuses a bad lease token and a bad questionId', async () => {
+        const instance = await harnessWith(stubStore());
+        expect((await post(instance, EXPIRE_URL, { ...body, leaseToken: 'nope' })).json().code).toBe('BAD_TOKEN');
+        const response = await post(instance, EXPIRE_URL, { ...body, questionId: 'a b' });
+        expect(response.json().code).toBe('INVALID_QUESTION');
+    });
+});
+
+describe('POST /api/jobs/:id/questions/:questionId/answer', () => {
+    const answers = { 'Which database?': '  Postgres  ' };
+
+    it('lands the answer trimmed and answers the question', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, ANSWER_URL, { answers });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().id).toBe(QUESTION.id);
+        expect(store.answered).toEqual([
+            { id: ID, questionId: ASK.questionId, answers: { 'Which database?': 'Postgres' }, answeredBy: null },
+        ]);
+    });
+
+    it.each([
+        ['no answers', {}],
+        ['an array', { answers: ['Postgres'] }],
+        ['a non-string value', { answers: { 'Which database?': 3 } }],
+        ['a blank value', { answers: { 'Which database?': '   ' } }],
+        ['a value over 2000 characters', { answers: { 'Which database?': 'a'.repeat(2001) } }],
+    ])('refuses %s with 400 INVALID_ANSWER', async (_label, payload) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, ANSWER_URL, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('INVALID_ANSWER');
+        expect(store.answered).toEqual([]);
+    });
+
+    it('refuses a key set the store rejects with 400 INVALID_ANSWER', async () => {
+        const instance = await harnessWith(stubStore({ answer: { result: 'invalid', message: 'wrong keys' } }));
+        const response = await post(instance, ANSWER_URL, { answers });
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toMatchObject({ code: 'INVALID_ANSWER', error: 'wrong keys' });
+    });
+
+    it('answers 409 QUESTION_ANSWERED carrying the stored answer and answerer', async () => {
+        const answeredBy = { id: 'u1', login: 'ada', name: null, avatarUrl: null };
+        const stored = {
+            ...QUESTION,
+            status: 'answered' as const,
+            answers: { 'Which database?': 'SQLite' },
+            answeredBy,
+        };
+        const instance = await harnessWith(
+            stubStore({ answer: { result: 'refused', reason: 'answered', question: stored } })
+        );
+        const response = await post(instance, ANSWER_URL, { answers });
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toMatchObject({
+            code: 'QUESTION_ANSWERED',
+            answers: { 'Which database?': 'SQLite' },
+            answeredBy,
+        });
+    });
+
+    it.each([
+        ['expired', 'QUESTION_EXPIRED'],
+        ['closed', 'QUESTION_CLOSED'],
+    ] as const)('answers 409 for a %s question', async (reason, code) => {
+        const instance = await harnessWith(stubStore({ answer: { result: 'refused', reason } }));
+        const response = await post(instance, ANSWER_URL, { answers });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('answers 404 for an unknown question and for a malformed id', async () => {
+        const instance = await harnessWith(stubStore({ answer: { result: 'unknown' } }));
+        expect((await post(instance, ANSWER_URL, { answers })).statusCode).toBe(404);
+        expect((await post(instance, `/api/jobs/${ID}/questions/a%20b/answer`, { answers })).statusCode).toBe(404);
     });
 });

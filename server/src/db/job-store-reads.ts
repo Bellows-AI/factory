@@ -16,6 +16,7 @@ import type {
     ArtifactKind,
     StoredArtifact,
 } from './job-store-types.js';
+import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from './task-summary.js';
 
 export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] | null> {
@@ -53,7 +54,12 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
         order by job.created_at, job.id
     `;
     const [first] = rows;
-    return first ? rows.map((row) => toJobRow(ctx, row)) : null;
+    if (!first) return null;
+    const questions = await questionsOfJobs(
+        ctx,
+        rows.map((row) => row.id)
+    );
+    return rows.map((row) => ({ ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [] }));
 }
 
 export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | null> {
@@ -74,7 +80,9 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
         where org_id = ${orgId} and job.id = ${id}
     `;
     const row = rows[0];
-    return row ? toJobRow(ctx, row) : null;
+    if (!row) return null;
+    const questions = await questionsOfJobs(ctx, [row.id]);
+    return { ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [] };
 }
 
 /**
@@ -344,7 +352,16 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
                        or (wl.wait_reason is not null and wl.wait_terminal_reason is null)) as terminal,
                    cu.id as creator_id, cu.github_login as creator_login,
                    cu.display_name as creator_name, cu.avatar_url as creator_avatar_url,
-                   wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
+                   wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason,
+                   -- A member is wanted (050): any run of the thread holds a question the answer
+                   -- route would accept (the answerable condition), evaluated per thread.
+                   exists (
+                       select 1 from job_question q
+                       join job qj on qj.org_id = q.org_id and qj.id = q.job_id
+                       where q.org_id = ${orgId} and qj.root_job_id = h.root_job_id
+                         and q.state = 'pending' and qj.status = 'running'
+                         and qj.lease_token = q.lease_token and qj.cancel_requested_at is null
+                   ) as needs_answer
             from head h
             join job r on r.org_id = ${orgId} and r.id = h.root_job_id
             left join app_user cu on cu.id = r.created_by

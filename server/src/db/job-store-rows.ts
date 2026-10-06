@@ -107,6 +107,7 @@ export interface TaskRow {
     wait_reason: string | null;
     waiting_since: Date | string | null;
     wait_terminal_reason: string | null;
+    needs_answer: boolean;
 }
 
 export const iso = (value: Date | null): string | null => (value === null ? null : value.toISOString());
@@ -201,6 +202,8 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
                       headBranch: row.publication_head_branch!,
                       baseBranch: row.publication_base_branch!,
                   },
+        // The detail reads (get/thread) attach the stored questions; every other read has none.
+        questions: [],
     };
 }
 
@@ -223,6 +226,7 @@ export function toTask(row: TaskRow): TaskSummary {
         waitReason: row.wait_reason,
         waitingSince: stampOf(row.waiting_since),
         waitTerminalReason: row.wait_terminal_reason,
+        needsAnswer: row.needs_answer,
         // Both are NOT NULL in the schema — created_at by the column, activity_at through
         // greatest() with created_at in it.
         createdAt: stampOf(row.created_at)!,
@@ -403,6 +407,6 @@ export function taskPreviewColumnsFragment(sql: Sql): Fragment {
     return sql`
         id, command, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
         summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url,
-        wait_reason, waiting_since, wait_terminal_reason
+        wait_reason, waiting_since, wait_terminal_reason, needs_answer
     `;
 }

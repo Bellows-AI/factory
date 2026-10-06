@@ -67,6 +67,7 @@ const job = (overrides: Partial<Job> & { id: string }): Job => ({
     finishedAt: null,
     wallClockMs: null,
     taskWallClockMs: null,
+    questions: [],
     ...overrides,
 });
 
@@ -203,6 +204,7 @@ describe('GET /api/tasks', () => {
             waitReason: null,
             waitingSince: null,
             waitTerminalReason: null,
+            needsAnswer: false,
             createdAt: at(60),
             activityAt: at(FOLLOWUP_STARTED_MIN),
         });
@@ -220,6 +222,7 @@ describe('GET /api/tasks', () => {
             'waitReason',
             'waitingSince',
             'waitTerminalReason',
+            'needsAnswer',
             'createdAt',
             'activityAt',
         ]);

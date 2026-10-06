@@ -52,7 +52,7 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // deleting the audit rows of jobs it never held would be the thread-read hole again.
     // to stop through the heartbeat it already holds, and the board secret moving or deleting
     // the audit rows of jobs it never held would be the thread-read hole again.
-    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread|publish-token|artifact)$/,
+    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|complete|output|gates|gates-reread|publish-token|artifact|question|question-expire)$/,
 ];
 
 /** Machine-to-machine telemetry, from the collector. The branch route is NOT here — see BRANCH. */

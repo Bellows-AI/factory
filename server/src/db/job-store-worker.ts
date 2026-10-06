@@ -6,6 +6,7 @@
 
 import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import { answeredQuestionsOf } from './job-store-questions.js';
 import { exists, insertWorkflowSuccessor, runtimePatch, workspacePathFor } from './job-store-rows.js';
 import type {
     JobStore,
@@ -50,12 +51,16 @@ export async function heartbeatJob(
             result: 'ok',
             leaseExpiresAt: row.lease_expires_at.toISOString(),
             cancelRequested: row.cancel_requested_at !== null,
+            // The answers ride the beat the driver already sends (050): every answered question
+            // of THIS lease, re-listed each beat — the driver applies them idempotently.
+            answeredQuestions: await answeredQuestionsOf(ctx, id, leaseToken),
         };
     }
     return {
         result: (await exists(sql, orgId, id)) ? 'lost' : 'missing',
         leaseExpiresAt: null,
         cancelRequested: false,
+        answeredQuestions: [],
     };
 }
 
