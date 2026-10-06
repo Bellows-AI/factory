@@ -761,6 +761,30 @@ describe('the claude-executor managed settings', () => {
     });
 });
 
+// `claude plugin install` bakes context-mode without its node_modules, and the plugin's MCP boot
+// then installs them on every runner start — past Claude Code's 30s connect timeout, so the ctx_*
+// tools never connect. The image suite proves the connection offline; this pins both halves where
+// `npm test` sees them.
+describe('the claude-executor context-mode plugin', () => {
+    it("bakes the plugin's run-time dependencies, at its own declared versions, and probes the native binding", () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        const install = dockerfile.indexOf('claude plugin install context-mode@context-mode');
+        const deps = dockerfile.indexOf("['better-sqlite3', 'turndown', 'turndown-plugin-gfm', '@mixmark-io/domino']");
+        expect(install).toBeGreaterThan(-1);
+        expect(deps).toBeGreaterThan(install);
+        expect(dockerfile).toMatch(/require\('\$\{p\}package\.json'\)\.dependencies/);
+        expect(dockerfile).toMatch(/mv node_modules "\$\{p\}node_modules"/);
+        expect(dockerfile).toMatch(/new \(require\('\$\{p\}node_modules\/better-sqlite3'\)\)\(':memory:'\)\.close\(\)/);
+    });
+
+    it('is proven connected by the image suite offline, inside the connect budget', () => {
+        const suite = read('docker/claude-executor/test.sh');
+        expect(suite).toMatch(/--network none --entrypoint sh "\$IMAGE"[^\n]*timeout 10 node/);
+        expect(suite).toContain("'claude connects to context-mode offline' '✔ Connected'");
+        expect(suite).toContain('CLAUDE_CONFIG_DIR=/tmp/thread claude mcp list | grep context-mode');
+    });
+});
+
 // The opencode twin: the otel plugin's config also decides where telemetry goes and whether prompt
 // and tool bodies ride along, so it lives root-owned outside the node-owned config home.
 describe('the opencode-executor telemetry config', () => {

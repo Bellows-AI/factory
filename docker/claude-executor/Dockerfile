@@ -164,6 +164,24 @@ USER node
 RUN claude plugin marketplace add mksglu/context-mode \
     && claude plugin install context-mode@context-mode
 
+# `plugin install` copies the plugin's files but not its node_modules, and every runner starts from
+# this image, so the plugin's MCP boot ran a blocking `npm install better-sqlite3` on every session
+# start — 60s with egress, 126s without — and Claude Code's 30s MCP connect timeout failed it every
+# time: the ctx_* tools were never there while the plugin's hooks kept pointing the agent at them.
+# These four are what that boot installs at run time (better-sqlite3 synchronously, the turndown
+# trio in the background), at the versions the installed plugin's own package.json declares, so an
+# upgraded plugin cannot drift from them. Installed in a scratch directory and moved in: an install
+# inside the plugin resolves its whole package.json, dev tooling included, for 112MB more. The
+# closing probe fails the build if the native binding does not load here.
+RUN p="$(ls -d "$CLAUDE_CONFIG_DIR"/plugins/cache/context-mode/context-mode/*/)" \
+    && deps="$(node -p "const d = require('${p}package.json').dependencies; \
+        ['better-sqlite3', 'turndown', 'turndown-plugin-gfm', '@mixmark-io/domino'].map((n) => n + '@' + d[n]).join(' ')")" \
+    && mkdir /tmp/context-mode-deps && cd /tmp/context-mode-deps \
+    && npm install --no-package-lock --no-audit --no-fund $deps \
+    && mv node_modules "${p}node_modules" \
+    && cd / && rm -rf /tmp/context-mode-deps && npm cache clean --force \
+    && node -e "new (require('${p}node_modules/better-sqlite3'))(':memory:').close()"
+
 # Mark first-run onboarding done. Without this the CLI opens the theme picker and waits for a
 # keypress, which an unattended container never sends. Merged into the file the CLI just wrote rather than replacing it, since it
 # already holds a generated machineID and userID.
