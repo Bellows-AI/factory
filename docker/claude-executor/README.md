@@ -25,6 +25,10 @@ this repo's application.
 - The driver sets `FACTORY_TRANSCRIPT_DIR` to a per-thread directory on the workspaces volume; the
   entrypoint makes it `CLAUDE_CONFIG_DIR`, seeded from `/opt/claude-home`, so `--resume` finds the
   earlier sessions. `/usr/local/bin` scripts are outside that redirect.
+- A plugin's MCP server must boot from the image alone: anything it installs at start misses
+  Claude Code's 30s connect timeout on every runner, and its tools never appear. context-mode's
+  run-time dependencies are baked for that reason; `test.sh` asserts the connection offline,
+  `driver/test/executor-images.test.ts` pins the bake.
 - The git guard is a guardrail, not a security boundary — the driver-side sync refusal is the last
   line of defence.
 - The managed OTLP scope beats `-e`, a member's executor config and a checkout's

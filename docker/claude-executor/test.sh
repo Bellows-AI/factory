@@ -142,9 +142,17 @@ check 'the guard allows merging origin tracking refs' '' \
 check 'settings.json wires the guard hook' 'git-guard.cjs' \
     run --entrypoint cat "$IMAGE" /home/node/.claude/settings.json
 
-# The plugin's MCP server has to answer over stdio, not merely be installed.
+# The plugin's MCP server has to answer over stdio, not merely be installed — offline and inside
+# Claude Code's 30s connect budget. A boot that installs its own dependencies answers in 60s with
+# egress and 126s without, so a generous timeout or a networked run passes an image whose runners
+# never get the ctx_* tools.
 MCP_INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}'
-check 'context-mode responds' '"name":"context-mode"' run -i --entrypoint sh "$IMAGE" -c "p=\$(ls -d \"\$CLAUDE_CONFIG_DIR\"/plugins/cache/context-mode/context-mode/*/); echo '$MCP_INIT' | timeout 60 node \"\${p}start.mjs\""
+check 'context-mode responds offline within 10s' '"name":"context-mode"' run -i --network none --entrypoint sh "$IMAGE" -c "p=\$(ls -d \"\$CLAUDE_CONFIG_DIR\"/plugins/cache/context-mode/context-mode/*/); echo '$MCP_INIT' | timeout 10 node \"\${p}start.mjs\""
+# The same, judged by the CLI itself, through the entrypoint and a fresh per-thread config dir —
+# the seeded copy a runner actually starts from.
+check 'claude connects to context-mode offline' '✔ Connected' \
+    run --network none --entrypoint sh "$IMAGE" -c \
+    'FACTORY_TRANSCRIPT_DIR=/tmp/thread claude-executor --version >/dev/null; CLAUDE_CONFIG_DIR=/tmp/thread claude mcp list | grep context-mode'
 
 # The login refusal is an assertion in its own right, and the only one that proves no credential
 # was baked into the image. It runs whether or not a token is available, with the token withheld.
