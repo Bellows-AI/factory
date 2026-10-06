@@ -23,6 +23,7 @@ import {
     claimPath,
     deleteJob,
     deleteSecret,
+    jobPath,
     jobPodsPath,
     podLogPath,
     podsByLeasePath,
@@ -60,8 +61,10 @@ import {
     answerPreview,
     expectOk,
     HTTP_ERROR_STATUS,
+    HTTP_NOT_FOUND,
     HTTP_OK_STATUS,
     livePod,
+    MS_PER_SECOND,
     parse,
     parsePodMetrics,
     parseServicePods,
@@ -265,6 +268,44 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
     await Promise.all(helperJobsOf(job.id).map((name) => deleteJob(deps, name)));
     await deleteJob(deps, runnerName(job));
     await teardownServices(deps, job);
+}
+
+/**
+ * Pushes the runner Job's deadline out (issue #226): a merge patch of `spec.activeDeadlineSeconds`
+ * to its CURRENT value plus `ms`, read back first so two questions add up. The kubelet's
+ * `DeadlineExceeded` condition is what the poll reads for a timeout, so a patched Job reports the
+ * extended deadline with no change to the poll. A Job already gone (the run ended) is a no-op.
+ */
+function extendRunnerDeadline(deps: K8sDeps, job: BoardJob, ms: number): Promise<void> {
+    // Serialized per Job: two questions asked in one turn would otherwise both read the same
+    // deadline and both write it plus one wait, losing an hour.
+    const name = runnerName(job);
+    const next = (deadlineChains.get(name) ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() => patchRunnerDeadline(deps, job, ms));
+    deadlineChains.set(name, next);
+    void next
+        .catch(() => undefined)
+        .then(() => {
+            if (deadlineChains.get(name) === next) deadlineChains.delete(name);
+        });
+    return next;
+}
+
+/** The tail of each runner Job's deadline extensions, by Job name. */
+const deadlineChains = new Map<string, Promise<void>>();
+
+async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, ms: number): Promise<void> {
+    const path = jobPath(deps.config.k8sNamespace, runnerName(job));
+    const read = await deps.request('GET', path);
+    if (read.status === HTTP_NOT_FOUND) return;
+    expectOk(read, 'reading the runner job for its deadline');
+    const current = parse<{ spec?: { activeDeadlineSeconds?: number } }>(read.body).spec?.activeDeadlineSeconds;
+    if (typeof current !== 'number') return;
+    const patched = await deps.request('PATCH', path, {
+        spec: { activeDeadlineSeconds: current + Math.round(ms / MS_PER_SECOND) },
+    });
+    expectOk(patched, 'extending the runner job deadline');
 }
 
 /** The per-run inputs `run0` needs beyond the job itself — bundled to stay under the 4-param cap. */
@@ -591,6 +632,7 @@ export function createKubernetesRunner(
     return {
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
+        extendDeadline: (job: BoardJob, ms: number) => extendRunnerDeadline(deps, job, ms),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),
         startServices: (job: BoardJob) => startServiceFleet(deps, job),

@@ -5,18 +5,29 @@ import type {
     BoardLease,
     HeartbeatVerdict,
     LeaseState,
+    QuestionExpiry,
+    QuestionVerdict,
     Reclaim,
     RuntimeReport,
 } from '../src/board.js';
 import { loadDriverConfig, type DriverConfig } from '../src/config.js';
 import type { DeadService, RunOutcome, RunSession, Runner, RuntimeSample } from '../src/runner.js';
 import type { GateManager, GateServer } from '../src/gates.js';
+import {
+    cancelPendingQuestions,
+    hasPendingQuestion,
+    newControl,
+    readQuestion,
+    recordQuestion,
+    resolveQuestion,
+} from '../src/question-control.js';
+import type { ControlEntry, QuestionRelay, QuestionResolution } from '../src/question-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
-import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
+import { newJobState, QUESTION_TIMEOUT_MS, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -68,6 +79,9 @@ interface BoardStub extends Board {
     leaseLookups: string[][];
     /** The artifact uploads the loop made (issue #325), in the order it made them. */
     artifacts: { id: string; kind: string; attempt: number; content: string; truncated: boolean }[];
+    /** Every question report and expiry the loop sent (issue #226) — ids only, never text. */
+    questionsReported: string[];
+    expiriesReported: string[];
 }
 
 /**
@@ -96,6 +110,10 @@ function stubBoard(
         publishToken?: string | null;
         /** The board's answer to `leases` — null models a refused lookup (issue #344). */
         leaseRows?: BoardLease[] | null;
+        /** The board's answer to a question report (issue #226); held when absent. */
+        questionVerdict?: QuestionVerdict;
+        /** The board's answer to a question expiry; expired when absent. */
+        expiryVerdict?: QuestionExpiry;
     } = {}
 ): { board: BoardStub; attach: (loop: Loop) => void } {
     let loop: Loop | null = null;
@@ -117,6 +135,16 @@ function stubBoard(
         reclaimAcks: [],
         leaseLookups: [],
         artifacts: [],
+        questionsReported: [],
+        expiriesReported: [],
+        async question(_claimed, questionId) {
+            board.questionsReported.push(questionId);
+            return options.questionVerdict ?? 'held';
+        },
+        async expireQuestion(_claimed, questionId) {
+            board.expiriesReported.push(questionId);
+            return options.expiryVerdict ?? { state: 'expired' };
+        },
         async leases(ids) {
             board.leaseLookups.push([...ids]);
             if (options.leaseRows === undefined) return [];
@@ -219,6 +247,8 @@ function stubRunner(
     probed: BoardJob[];
     deadServiceProbes: number;
     startedServices: string[];
+    /** The deadline extensions the loop asked for (issue #226), by job id and milliseconds. */
+    extended: { id: string; ms: number }[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -235,6 +265,10 @@ function stubRunner(
             runner.servicesReleased.push(releasedJob.id);
         },
         killed: [] as string[],
+        extended: [] as { id: string; ms: number }[],
+        async extendDeadline(extendedJob: BoardJob, ms: number) {
+            runner.extended.push({ id: extendedJob.id, ms });
+        },
         samples: 0,
         published: [] as BoardJob[],
         publishTokens: [] as (string | undefined)[],
@@ -352,6 +386,8 @@ function stubGateStack(outcomes: Record<string, number> = {}, options: { control
         stopsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
         controlClosed: [] as string[],
+        /** The real control state per open token (issue #226): questions run through the real code. */
+        controls: new Map<string, ControlEntry>(),
         acquired: [] as string[],
         released: [] as string[],
         registered: 0,
@@ -385,16 +421,32 @@ function stubGateStack(outcomes: Record<string, number> = {}, options: { control
             },
             // The run-control channel (issue #442) is opt-in: a stack without it models a driver
             // whose endpoint could not open, where a Stop kills at once.
-            openControl: (token: string) => {
+            openControl: (token: string, relay?: QuestionRelay) => {
                 if (!options.control) throw new Error('no control endpoint in this stub');
                 stack.controlOpened.push(token);
+                stack.controls.set(token, newControl(relay ?? null));
             },
             controlPolled: () => options.polled ?? true,
             raiseStop: (token: string) => {
                 stack.stopsRaised.push(token);
+                const control = stack.controls.get(token);
+                if (control) control.stop = true;
             },
             closeControl: (token: string) => {
                 stack.controlClosed.push(token);
+                stack.controls.delete(token);
+            },
+            resolveQuestion: (token: string, id: string, resolution: QuestionResolution) => {
+                const control = stack.controls.get(token);
+                return control ? resolveQuestion(control, id, resolution) : false;
+            },
+            hasPendingQuestion: (token: string) => {
+                const control = stack.controls.get(token);
+                return control ? hasPendingQuestion(control) : false;
+            },
+            cancelQuestions: (token: string) => {
+                const control = stack.controls.get(token);
+                if (control) cancelPendingQuestions(control);
             },
             // No ad-hoc gate ran through this stub, so the timeout note's verdict history is empty.
             lastRuns: () => [],
@@ -4854,5 +4906,251 @@ describe('a cooperative stop (issue #442)', () => {
         expect(stack.controlOpened).toHaveLength(2);
         expect(new Set(stack.controlOpened).size).toBe(2);
         expect(stack.stopsRaised).toEqual([]);
+    });
+});
+
+describe('questions (issue #226)', () => {
+    const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const until = async (condition: () => boolean) => {
+        for (let i = 0; i < 2_000 && !condition(); i++) await tick();
+        expect(condition()).toBe(true);
+    };
+    const asked = (id: string) =>
+        JSON.stringify({
+            questionId: id,
+            questions: [
+                {
+                    question: 'Which colour?',
+                    header: 'Colour',
+                    multiSelect: false,
+                    options: [{ label: 'Blue' }, { label: 'Red' }],
+                },
+            ],
+        });
+    const ANSWERS = { 'Which colour?': 'Blue' };
+
+    /** Drives one attempt whose run is `body`, handed the real control entry the runner's bridge would talk to. */
+    async function driveAsking(
+        body: (ctx: {
+            control: ControlEntry;
+            board: ReturnType<typeof stubBoard>['board'];
+            runner: ReturnType<typeof stubRunner>;
+            stack: ReturnType<typeof stubGateStack>['stack'];
+            beat: { verdict: HeartbeatVerdict };
+        }) => Promise<RunOutcome>,
+        options: {
+            polled?: boolean;
+            board?: Parameters<typeof stubBoard>[1];
+            questionTimeoutMs?: number;
+        } = {}
+    ) {
+        const board = stubBoard([job(1)], options.board);
+        const beat = { verdict: { result: 'held', cancelRequested: false } as HeartbeatVerdict };
+        board.board.heartbeat = async () => {
+            board.board.beats += 1;
+            return beat.verdict;
+        };
+        const { stack, gates } = stubGateStack({}, { control: true, polled: options.polled ?? true });
+        const runner: ReturnType<typeof stubRunner> = stubRunner(async (running) => {
+            const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+            if (!control) throw new Error('no control entry');
+            return body({ control, board: board.board, runner, stack, beat });
+        });
+        const loop = createLoop({
+            board: board.board,
+            runner,
+            config: config(),
+            gates,
+            sleep,
+            ...(options.questionTimeoutMs === undefined ? {} : { questionTimeoutMs: options.questionTimeoutMs }),
+        });
+        board.attach(loop);
+        await loop.start();
+        return { board: board.board, runner, stack };
+    }
+
+    it('delivers an answer the heartbeat carries and settles the question answered', async () => {
+        let seen: unknown;
+        const { board } = await driveAsking(async ({ control, beat }) => {
+            expect((await recordQuestion(control, asked('toolu_1'))).status).toBe(202);
+            beat.verdict = {
+                result: 'held',
+                cancelRequested: false,
+                answeredQuestions: [{ questionId: 'toolu_1', answers: ANSWERS }],
+            };
+            await until(() => control.questions.get('toolu_1')?.state === 'answered');
+            seen = readQuestion(control, 'toolu_1').body;
+            return ok();
+        });
+
+        expect(seen).toEqual({ state: 'answered', answers: ANSWERS });
+        expect(board.questionsReported).toEqual(['toolu_1']);
+        expect(board.completed).toHaveLength(1);
+    });
+
+    it('applies a repeated answer as a no-op and ignores an answer for an unknown id', async () => {
+        let seen: unknown;
+        await driveAsking(async ({ control, board, beat }) => {
+            await recordQuestion(control, asked('toolu_1'));
+            beat.verdict = {
+                result: 'held',
+                cancelRequested: false,
+                answeredQuestions: [{ questionId: 'toolu_1', answers: ANSWERS }],
+            };
+            await until(() => control.questions.get('toolu_1')?.state === 'answered');
+            // The board lists the answered question on every beat: later beats say a different
+            // text for the same id, and an id that was never asked.
+            beat.verdict = {
+                result: 'held',
+                cancelRequested: false,
+                answeredQuestions: [
+                    { questionId: 'toolu_1', answers: { 'Which colour?': 'Red' } },
+                    { questionId: 'toolu_unknown', answers: ANSWERS },
+                ],
+            };
+            const target = board.beats + 3;
+            await until(() => board.beats >= target);
+            seen = { known: readQuestion(control, 'toolu_1').body, unknown: control.questions.has('toolu_unknown') };
+            return ok();
+        });
+
+        expect(seen).toEqual({ known: { state: 'answered', answers: ANSWERS }, unknown: false });
+    });
+
+    it('posts question-expire when the wait runs out and settles the question expired', async () => {
+        let seen: unknown;
+        const { board } = await driveAsking(
+            async ({ control }) => {
+                await recordQuestion(control, asked('toolu_1'));
+                await until(() => control.questions.get('toolu_1')?.state === 'expired');
+                seen = readQuestion(control, 'toolu_1').body;
+                return ok();
+            },
+            { questionTimeoutMs: 20 }
+        );
+
+        expect(board.expiriesReported).toEqual(['toolu_1']);
+        expect(seen).toEqual({ state: 'expired' });
+    });
+
+    it('delivers the answer when the board says it won the race with the expiry', async () => {
+        let seen: unknown;
+        await driveAsking(
+            async ({ control }) => {
+                await recordQuestion(control, asked('toolu_1'));
+                await until(() => control.questions.get('toolu_1')?.state === 'answered');
+                seen = readQuestion(control, 'toolu_1').body;
+                return ok();
+            },
+            { questionTimeoutMs: 20, board: { expiryVerdict: { state: 'answered', answers: ANSWERS } } }
+        );
+
+        expect(seen).toEqual({ state: 'answered', answers: ANSWERS });
+    });
+
+    it('does not expire a question that was answered first', async () => {
+        const { board } = await driveAsking(
+            async ({ control, beat }) => {
+                await recordQuestion(control, asked('toolu_1'));
+                beat.verdict = {
+                    result: 'held',
+                    cancelRequested: false,
+                    answeredQuestions: [{ questionId: 'toolu_1', answers: ANSWERS }],
+                };
+                await until(() => control.questions.get('toolu_1')?.state === 'answered');
+                await new Promise((resolve) => setTimeout(resolve, 60));
+                return ok();
+            },
+            { questionTimeoutMs: 30 }
+        );
+
+        expect(board.expiriesReported).toEqual([]);
+    });
+
+    it('cancels a pending question on a Stop and drains rather than kills, though no poll ever came', async () => {
+        const { board, runner, stack } = await driveAsking(
+            async ({ control, beat }) => {
+                await recordQuestion(control, asked('toolu_1'));
+                beat.verdict = { result: 'held', cancelRequested: true };
+                await until(() => control.questions.get('toolu_1')?.state === 'cancelled');
+                return ok();
+            },
+            { polled: false }
+        );
+
+        expect(runner.killed).toEqual([]);
+        expect(stack.stopsRaised).toHaveLength(1);
+        expect(board.suspended).toEqual([job(1).id]);
+        expect(board.completed).toEqual([]);
+    });
+
+    it('drops the question entry and its timer when the lease is lost while pending', async () => {
+        const { board, stack } = await driveAsking(
+            async ({ control, beat, runner }) => {
+                await recordQuestion(control, asked('toolu_1'));
+                beat.verdict = 'lost';
+                await until(() => runner.killed.length > 0);
+                return ok();
+            },
+            { questionTimeoutMs: 40 }
+        );
+        await new Promise((resolve) => setTimeout(resolve, 80));
+
+        expect(stack.controls.size).toBe(0);
+        expect(stack.controlClosed).toEqual(stack.controlOpened);
+        // The timer died with the attempt: nothing came back to the board after it ended.
+        expect(board.expiriesReported).toEqual([]);
+    });
+
+    it('treats a lost lease on the question report as a lease loss', async () => {
+        let status = 0;
+        const { runner } = await driveAsking(
+            async ({ control, runner: running }) => {
+                status = (await recordQuestion(control, asked('toolu_1'))).status;
+                await until(() => running.killed.length > 0);
+                return ok();
+            },
+            { board: { questionVerdict: 'lost' } }
+        );
+
+        expect(status).toBe(401);
+        expect(runner.extended).toEqual([]);
+    });
+
+    it('extends the run deadline once per question, never for a repeat or a refused one', async () => {
+        const { runner } = await driveAsking(async ({ control }) => {
+            await recordQuestion(control, asked('toolu_1'));
+            await recordQuestion(control, asked('toolu_1'));
+            await recordQuestion(control, asked('toolu_2'));
+            return ok();
+        });
+
+        expect(runner.extended).toEqual([
+            { id: job(1).id, ms: QUESTION_TIMEOUT_MS },
+            { id: job(1).id, ms: QUESTION_TIMEOUT_MS },
+        ]);
+        expect(QUESTION_TIMEOUT_MS).toBe(3_600_000);
+
+        const refused = await driveAsking(
+            async ({ control }) => {
+                expect((await recordQuestion(control, asked('toolu_1'))).status).toBe(429);
+                expect(control.questions.size).toBe(0);
+                return ok();
+            },
+            { board: { questionVerdict: 'refused' } }
+        );
+        expect(refused.runner.extended).toEqual([]);
+    });
+
+    it('reports the extended deadline in the timeout note', async () => {
+        const { board } = await driveAsking(async ({ control }) => {
+            await recordQuestion(control, asked('toolu_1'));
+            await recordQuestion(control, asked('toolu_2'));
+            return ok({ exitCode: 137, timedOut: true });
+        });
+
+        expect(board.completed[0]?.output).toContain(
+            `killed after ${config().jobTimeoutMs + 2 * QUESTION_TIMEOUT_MS}ms`
+        );
     });
 });

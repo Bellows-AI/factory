@@ -7,6 +7,7 @@ import type { GateStack, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
 import { processReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
+import { withBoardRetry } from './board-retry.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -23,10 +24,9 @@ export interface LoopDeps {
     sleep?: (ms: number) => Promise<void>;
     /** Test seam for the draining grace (`STOP_GRACE_MS`); production never sets it. */
     stopGraceMs?: number;
+    /** Test seam for a question's expiry timer (`QUESTION_TIMEOUT_MS`); production never sets it. */
+    questionTimeoutMs?: number;
 }
-
-const COMPLETE_ATTEMPTS = 5;
-const COMPLETE_BACKOFF_MS = 1_000;
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -77,6 +77,7 @@ export function createLoop({
     log = () => {},
     sleep = wait,
     stopGraceMs,
+    questionTimeoutMs,
 }: LoopDeps): Loop {
     let running = true;
     const active = new Set<Promise<void>>();
@@ -125,6 +126,7 @@ export function createLoop({
         report,
         ...(gates ? { gates } : {}),
         ...(stopGraceMs === undefined ? {} : { stopGraceMs }),
+        ...(questionTimeoutMs === undefined ? {} : { questionTimeoutMs }),
     };
 
     /**
@@ -178,17 +180,10 @@ export function createLoop({
     // A non-409 failure (a board 5xx, a dropped connection) leaves the finished run without a
     // verdict, and the lease expiry would run it again after its work already published. 409 is
     // already an answer (`lost`), so only a throw is retried; the last one propagates.
-    async function completeWithRetry(job: BoardJob, result: Parameters<Board['complete']>[1]) {
-        for (let attempt = 1; ; attempt++) {
-            try {
-                return await board.complete(job, result);
-            } catch (e) {
-                if (attempt >= COMPLETE_ATTEMPTS) throw e;
-                const delayMs = COMPLETE_BACKOFF_MS * 2 ** (attempt - 1);
-                log(`job ${job.id}: the verdict was not accepted, retrying in ${delayMs}ms: ${(e as Error).message}`);
-                await sleep(delayMs);
-            }
-        }
+    function completeWithRetry(job: BoardJob, result: Parameters<Board['complete']>[1]) {
+        return withBoardRetry({ log, sleep }, `job ${job.id}: the verdict was not accepted`, () =>
+            board.complete(job, result)
+        );
     }
 
     function track(job: BoardJob): void {

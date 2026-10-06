@@ -204,8 +204,43 @@ export const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
  * `lost` is the pre-existing 409 — the lease was reclaimed and the run must die. `removed` is the
  * board answering 404, which only a Remove can have produced (the thread's rows are gone); the
  * container dies and nothing is parked or reported — there is nobody left to park against.
+ * `held` also carries `answeredQuestions`: every question of this lease the board has an answer for,
+ * on every beat — the driver applies them idempotently.
  */
-export type HeartbeatVerdict = { result: 'held'; cancelRequested: boolean } | 'lost' | 'removed';
+export type HeartbeatVerdict =
+    | { result: 'held'; cancelRequested: boolean; answeredQuestions?: AnsweredQuestion[] }
+    | 'lost'
+    | 'removed';
+
+/** One option of a question the agent asked. Copied from the board's `AskedQuestion` — no `core` import. */
+export interface AskedQuestion {
+    question: string;
+    header: string;
+    multiSelect: boolean;
+    options: { label: string; description?: string }[];
+}
+
+/** The answer to one asked question: the question text → the member's answer. */
+export interface AnsweredQuestion {
+    questionId: string;
+    answers: Record<string, string>;
+}
+
+/**
+ * How the board took a question report: `held` (stored, or already stored), `refused` (the
+ * attempt already holds its question limit — 429), `lost` (409) or `removed` (404).
+ */
+export type QuestionVerdict = 'held' | 'refused' | 'lost' | 'removed';
+
+/**
+ * How the board settled an expiry: the question `expired`, or an answer won the race and comes back
+ * `answered` — the board decides. `lost` and `removed` are the lease verdicts, as for a heartbeat.
+ */
+export type QuestionExpiry =
+    | { state: 'expired' }
+    | { state: 'answered'; answers: Record<string, string> }
+    | 'lost'
+    | 'removed';
 
 /**
  * The structured terminal reason of a run (issue #339): what class of ending the verdict records,
@@ -264,6 +299,10 @@ export interface Board {
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
     heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
+    /** Reports one question the agent asked (`POST /api/jobs/:id/question`); a repeat of a stored id is `held`. */
+    question(job: BoardJob, questionId: string, questions: AskedQuestion[]): Promise<QuestionVerdict>;
+    /** Gives up waiting on a question (`POST /api/jobs/:id/question-expire`); the board decides the race with an answer. */
+    expireQuestion(job: BoardJob, questionId: string): Promise<QuestionExpiry>;
     /**
      * Claims one row of the removed-thread queue put there by a Remove (issue #41): the thread's
      * rows are gone and the tree is this worker's to take down. Null means the queue is empty.
@@ -401,6 +440,7 @@ type Fetch = typeof globalThis.fetch;
 const HTTP_NO_CONTENT = 204;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
+const HTTP_TOO_MANY_REQUESTS = 429;
 const ERROR_BODY_PREVIEW_LENGTH = 200;
 
 /** Whether a row of the leases answer is fully readable — every field present and well-shaped. */
@@ -494,6 +534,71 @@ const knownGatesSource = (value: unknown): Pick<BoardJob, 'gatesSource'> =>
 const knownTurnContext = (value: unknown): Pick<BoardJob, 'turnContext'> =>
     typeof value === 'string' && value.length > 0 ? { turnContext: value } : {};
 
+/** A heartbeat the board held: the stop flag, and every question of the lease the board has an answer for. */
+async function heldBeat(response: Response): Promise<HeartbeatVerdict> {
+    const body = (await response.json()) as { cancelRequested?: boolean; answeredQuestions?: unknown };
+    const answered = Array.isArray(body.answeredQuestions) ? (body.answeredQuestions as AnsweredQuestion[]) : [];
+    return { result: 'held', cancelRequested: body.cancelRequested === true, answeredQuestions: answered };
+}
+
+/** The board's answer to a question report, read as a verdict. */
+function questionVerdictOf(response: Response): QuestionVerdict {
+    if (response.status === HTTP_TOO_MANY_REQUESTS) return 'refused';
+    if (response.status === HTTP_CONFLICT) return 'lost';
+    return response.status === HTTP_NOT_FOUND ? 'removed' : 'held';
+}
+
+/** The board's answer to an expiry: the lease verdicts, an answer that won the race, or `expired`. */
+async function questionExpiryOf(response: Response): Promise<QuestionExpiry> {
+    if (response.status === HTTP_CONFLICT) return 'lost';
+    if (response.status === HTTP_NOT_FOUND) return 'removed';
+    const body = (await response.json()) as { state?: string; answers?: Record<string, string> };
+    return body.state === 'answered' && body.answers
+        ? { state: 'answered', answers: body.answers }
+        : { state: 'expired' };
+}
+
+/**
+ * The one POST every board call goes through: the JSON headers, the board secret when there is one,
+ * and the status policy. 409 is a verdict, not a failure; 404 is a verdict too for the calls that
+ * ask for one (a heartbeat against a removed thread, an ack for a row that left the queue); `allow`
+ * names any further status a call reads as an answer (a question report's 429). Everything else
+ * outside 2xx is the board being broken or the driver being wrong, and neither should be swallowed
+ * into a silent no-op.
+ */
+function createPost({ url, token, fetch }: { url: string; token: string | undefined; fetch: Fetch }) {
+    return async (
+        path: string,
+        body: unknown,
+        allow404 = false,
+        { signal, allow = [] }: { signal?: AbortSignal | undefined; allow?: readonly number[] } = {}
+    ): Promise<Response> => {
+        const response = await fetch(`${url}${path}`, {
+            method: 'POST',
+            headers: {
+                [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
+                // Omitted rather than sent empty: a board with no auth would otherwise see a Bearer
+                // header with nothing in it, which is a credential that failed rather than one that
+                // was never offered.
+                ...(token ? { authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify(body),
+            ...(signal ? { signal } : {}),
+        });
+        if (
+            !response.ok &&
+            response.status !== HTTP_CONFLICT &&
+            !(allow404 && response.status === HTTP_NOT_FOUND) &&
+            !allow.includes(response.status)
+        ) {
+            throw new Error(
+                `${path} answered ${response.status}: ${(await response.text()).slice(0, ERROR_BODY_PREVIEW_LENGTH)}`
+            );
+        }
+        return response;
+    };
+}
+
 export function createBoard({
     url,
     leaseSeconds,
@@ -513,30 +618,7 @@ export function createBoard({
     token?: string | undefined;
     fetch?: Fetch;
 }): Board {
-    const post = async (path: string, body: unknown, allow404 = false, signal?: AbortSignal): Promise<Response> => {
-        const response = await fetch(`${url}${path}`, {
-            method: 'POST',
-            headers: {
-                [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
-                // Omitted rather than sent empty: a board with no auth would otherwise see a Bearer
-                // header with nothing in it, which is a credential that failed rather than one that
-                // was never offered.
-                ...(token ? { authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify(body),
-            ...(signal ? { signal } : {}),
-        });
-        // 409 is a verdict, not a failure; 404 is a verdict too for the calls that ask for one (a
-        // heartbeat against a removed thread, an ack for a row that left the queue); everything
-        // else outside 2xx is the board being broken or the driver being wrong, and neither should
-        // be swallowed into a silent no-op.
-        if (!response.ok && response.status !== HTTP_CONFLICT && !(allow404 && response.status === HTTP_NOT_FOUND)) {
-            throw new Error(
-                `${path} answered ${response.status}: ${(await response.text()).slice(0, ERROR_BODY_PREVIEW_LENGTH)}`
-            );
-        }
-        return response;
-    };
+    const post = createPost({ url, token, fetch });
 
     return {
         async claim(worker) {
@@ -581,8 +663,18 @@ export function createBoard({
             // into a decision this side of the fence.
             if (response.status === HTTP_NOT_FOUND) return 'removed';
             if (response.status === HTTP_CONFLICT) return 'lost';
-            const body = (await response.json()) as { cancelRequested?: boolean };
-            return { result: 'held', cancelRequested: body.cancelRequested === true };
+            return heldBeat(response);
+        },
+
+        async question(job, questionId, questions) {
+            const body = { leaseToken: job.leaseToken, questionId, questions };
+            const allow = [HTTP_TOO_MANY_REQUESTS];
+            return questionVerdictOf(await post(`/api/jobs/${job.id}/question`, body, true, { allow }));
+        },
+
+        async expireQuestion(job, questionId) {
+            const body = { leaseToken: job.leaseToken, questionId };
+            return questionExpiryOf(await post(`/api/jobs/${job.id}/question-expire`, body, true));
         },
 
         async claimReclaim(worker) {
@@ -636,7 +728,7 @@ export function createBoard({
         async rereadGates(job, signal) {
             try {
                 const lease = { leaseToken: job.leaseToken };
-                const response = await post(`/api/jobs/${job.id}/gates-reread`, lease, false, signal);
+                const response = await post(`/api/jobs/${job.id}/gates-reread`, lease, false, { signal });
                 if (!response.ok) return null;
                 const body = (await response.json()) as { gates?: BoardJob['gates']; gateError?: string | null };
                 return { gates: body.gates ?? null, gateError: body.gateError ?? null };

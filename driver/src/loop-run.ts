@@ -605,6 +605,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 helperFailure,
                 published,
                 endedAt: outcome.endedAt,
+                deadlineExtensionMs: state.deadlineExtensionMs,
                 activity: outputPump.snapshot(),
                 gateRuns: gateHistory(rt, gateSession),
                 gatesSkipped: outcome.gatesSkipped,

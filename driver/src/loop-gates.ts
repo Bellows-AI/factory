@@ -3,8 +3,9 @@ import type { BoardJob } from './board.js';
 import { CONTROL_POLL_MS_ENV, CONTROL_TOKEN_ENV, CONTROL_URL_ENV, envFileBody } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import type { GateRun } from './gates.js';
-import { down, raceStep, RUN_CONTROL_POLL_MS } from './loop-attempt.js';
+import { clearQuestionTimers, down, raceStep, RUN_CONTROL_POLL_MS } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
+import { createQuestionRelay } from './loop-questions.js';
 import type { LoopRuntime } from './loop-types.js';
 import { worktreeRelDir } from './publish.js';
 
@@ -111,7 +112,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
     try {
         const port = await gates.server.listen();
         const token = randomUUID();
-        gates.server.openControl(token);
+        gates.server.openControl(token, createQuestionRelay(rt, job, state, token));
         job.gateEnv = {
             ...job.gateEnv,
             [CONTROL_URL_ENV]: gates.advertiseUrl(port),
@@ -126,8 +127,12 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
     }
 }
 
-/** Closes the attempt's control token, if one was opened. */
+/**
+ * Closes the attempt's control token, if one was opened: the token's questions go with it and the
+ * bridge gets 401 from here on, and no expiry timer outlives the attempt.
+ */
 export function closeRunControl(rt: LoopRuntime, state: JobState): void {
+    clearQuestionTimers(state);
     if (state.control !== null) rt.gates?.server.closeControl(state.control);
 }
 

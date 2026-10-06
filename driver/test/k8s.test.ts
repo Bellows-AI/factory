@@ -7748,6 +7748,101 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
     });
 });
 
+describe('the deadline extension for an agent question (issue #226)', () => {
+    const HOUR_SECONDS = 3_600;
+    const deadlinePath = jobPath(namespace, runnerJobName(job));
+
+    /** A request router over the runner Job: serves its spec's current deadline, records every PATCH. */
+    const deadlineApi = (deadline: number | undefined, getStatus = 200) => {
+        const calls: { method: K8sMethod; path: string; body: unknown }[] = [];
+        const request: K8sRequest = (method, path, body) => {
+            calls.push({ method, path, body });
+            if (method === 'GET') {
+                return Promise.resolve({
+                    status: getStatus,
+                    body: JSON.stringify({ spec: deadline === undefined ? {} : { activeDeadlineSeconds: deadline } }),
+                });
+            }
+            return Promise.resolve({ status: 200, body: '{}' });
+        };
+        return { calls, request };
+    };
+
+    it('merge-patches the runner Job to its current deadline plus the wait', async () => {
+        const api = deadlineApi(7_200);
+        await runner(api.request).extendDeadline?.(job, HOUR_SECONDS * 1_000);
+
+        expect(api.calls).toEqual([
+            { method: 'GET', path: deadlinePath, body: undefined },
+            { method: 'PATCH', path: deadlinePath, body: { spec: { activeDeadlineSeconds: 7_200 + HOUR_SECONDS } } },
+        ]);
+    });
+
+    it('adds up across questions: each patch reads the deadline the last one left', async () => {
+        let deadline = 7_200;
+        const calls: unknown[] = [];
+        const request: K8sRequest = (method, _path, body) => {
+            if (method === 'PATCH') {
+                deadline = (body as { spec: { activeDeadlineSeconds: number } }).spec.activeDeadlineSeconds;
+                calls.push(body);
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            return Promise.resolve({
+                status: 200,
+                body: JSON.stringify({ spec: { activeDeadlineSeconds: deadline } }),
+            });
+        };
+        const r = runner(request);
+        await r.extendDeadline?.(job, HOUR_SECONDS * 1_000);
+        await r.extendDeadline?.(job, HOUR_SECONDS * 1_000);
+
+        expect(deadline).toBe(7_200 + 2 * HOUR_SECONDS);
+        expect(calls).toHaveLength(2);
+    });
+
+    it('loses no wait when two questions extend at once', async () => {
+        let deadline = 7_200;
+        const request: K8sRequest = async (method, _path, body) => {
+            // Every answer takes a macrotask, so unserialized reads would interleave.
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            if (method === 'PATCH') {
+                deadline = (body as { spec: { activeDeadlineSeconds: number } }).spec.activeDeadlineSeconds;
+                return { status: 200, body: '{}' };
+            }
+            return { status: 200, body: JSON.stringify({ spec: { activeDeadlineSeconds: deadline } }) };
+        };
+        const r = runner(request);
+        await Promise.all([
+            r.extendDeadline?.(job, HOUR_SECONDS * 1_000),
+            r.extendDeadline?.(job, HOUR_SECONDS * 1_000),
+        ]);
+
+        expect(deadline).toBe(7_200 + 2 * HOUR_SECONDS);
+    });
+
+    it('does nothing for a Job that is gone or carries no deadline', async () => {
+        const gone = deadlineApi(7_200, 404);
+        await runner(gone.request).extendDeadline?.(job, HOUR_SECONDS * 1_000);
+        expect(gone.calls.map((call) => call.method)).toEqual(['GET']);
+
+        const none = deadlineApi(undefined);
+        await runner(none.request).extendDeadline?.(job, HOUR_SECONDS * 1_000);
+        expect(none.calls.map((call) => call.method)).toEqual(['GET']);
+    });
+
+    it('rejects when the API server refuses the patch, so the loop logs it and the question still stands', async () => {
+        const request: K8sRequest = (method) =>
+            Promise.resolve(
+                method === 'PATCH'
+                    ? { status: 403, body: '{"kind":"Status","reason":"Forbidden"}' }
+                    : { status: 200, body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 } }) }
+            );
+        await expect(runner(request).extendDeadline?.(job, HOUR_SECONDS * 1_000)).rejects.toThrow(
+            /extending the runner job/
+        );
+    });
+});
+
 describe('a Stop on kubernetes (issue #427)', () => {
     it('a Stop mid-run resolves run() as a killed outcome, as docker does', async () => {
         const base = fakeRequest({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });

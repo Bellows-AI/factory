@@ -531,7 +531,11 @@ describe('the heartbeat verdict', () => {
         const { calls, fetch } = recorder(() => Response.json({ cancelRequested: true }, { status: 200 }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
 
-        expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: true });
+        expect(await board.heartbeat(job)).toEqual({
+            result: 'held',
+            cancelRequested: true,
+            answeredQuestions: [],
+        });
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/heartbeat');
         expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', leaseSeconds: 300 });
     });
@@ -539,7 +543,20 @@ describe('the heartbeat verdict', () => {
     it('answers held without the stop flag when the board never set one', async () => {
         const { fetch } = recorder(() => Response.json({}, { status: 200 }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
-        expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false });
+        expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false, answeredQuestions: [] });
+    });
+
+    it('carries the answered questions the board lists on a held lease', async () => {
+        const answeredQuestions = [{ questionId: 'toolu_1', answers: { 'Which colour?': 'Blue' } }];
+        const { fetch } = recorder(() => Response.json({ cancelRequested: false, answeredQuestions }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false, answeredQuestions });
+    });
+
+    it('reads an answeredQuestions that is not a list as none', async () => {
+        const { fetch } = recorder(() => Response.json({ answeredQuestions: 'x' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect(await board.heartbeat(job)).toEqual({ result: 'held', cancelRequested: false, answeredQuestions: [] });
     });
 
     it('answers lost on a 409, which is a verdict not a failure', async () => {
@@ -554,6 +571,67 @@ describe('the heartbeat verdict', () => {
         const { fetch } = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
         expect(await board.heartbeat(job)).toBe('removed');
+    });
+});
+
+describe('the question calls', () => {
+    const job = {
+        id: 'job-1',
+        command: 'echo hi',
+        attempts: 1,
+        leaseToken: 'token-1',
+        leaseExpiresAt: '2026-08-21T12:05:00.000Z',
+        resumeSessionId: null,
+        userId: null,
+    };
+    const questions = [
+        {
+            question: 'Which colour?',
+            header: 'Colour',
+            multiSelect: false,
+            options: [{ label: 'Blue' }, { label: 'Red' }],
+        },
+    ];
+    const board = (status: number, body: unknown = {}) => {
+        const { calls, fetch } = recorder(() => Response.json(body, { status }));
+        return { calls, board: createBoard({ url: 'http://board', leaseSeconds: 300, fetch }) };
+    };
+
+    it('reports a question under the lease token and answers held for 201 and 200', async () => {
+        for (const status of [201, 200]) {
+            const { calls, board: b } = board(status);
+            expect(await b.question(job, 'toolu_1', questions)).toBe('held');
+            expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/question');
+            expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', questionId: 'toolu_1', questions });
+        }
+    });
+
+    it('reads the question limit (429) as refused, a 409 as lost and a 404 as removed', async () => {
+        expect(await board(429).board.question(job, 'toolu_1', questions)).toBe('refused');
+        expect(await board(409).board.question(job, 'toolu_1', questions)).toBe('lost');
+        expect(await board(404).board.question(job, 'toolu_1', questions)).toBe('removed');
+    });
+
+    it('throws on a 5xx so the caller retries', async () => {
+        await expect(board(503).board.question(job, 'toolu_1', questions)).rejects.toThrow(/503/);
+    });
+
+    it('expires a question and reads the board deciding the race', async () => {
+        const expired = board(200, { state: 'expired' });
+        expect(await expired.board.expireQuestion(job, 'toolu_1')).toEqual({ state: 'expired' });
+        expect(expired.calls[0]!.url).toBe('http://board/api/jobs/job-1/question-expire');
+        expect(expired.calls[0]!.body).toEqual({ leaseToken: 'token-1', questionId: 'toolu_1' });
+
+        const answers = { 'Which colour?': 'Blue' };
+        expect(await board(200, { state: 'answered', answers }).board.expireQuestion(job, 'toolu_1')).toEqual({
+            state: 'answered',
+            answers,
+        });
+    });
+
+    it('reads a 409 on expiry as lost and a 404 as removed', async () => {
+        expect(await board(409).board.expireQuestion(job, 'toolu_1')).toBe('lost');
+        expect(await board(404).board.expireQuestion(job, 'toolu_1')).toBe('removed');
     });
 });
 
