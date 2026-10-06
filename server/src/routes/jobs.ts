@@ -32,7 +32,8 @@ import {
     handleWaitCancel,
     handleWaitPoke,
 } from './job-handlers-actions.js';
-import { ARTIFACT_BODY_LIMIT, BODY_LIMIT, CONTROL_BODY_LIMIT } from './job-limits.js';
+import { handleAnswer, handleQuestion, handleQuestionExpire } from './job-handlers-questions.js';
+import { ARTIFACT_BODY_LIMIT, BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
 
 export interface JobRouteDeps {
@@ -135,6 +136,17 @@ export const jobRoutes =
         // to the cap regardless.
         app.post('/api/jobs/:id/artifact', { bodyLimit: ARTIFACT_BODY_LIMIT }, (request, reply) =>
             handleArtifact(orgs, request, reply)
+        );
+        // The agent's questions (050, issue #531): the driver's report and expiry are worker
+        // routes; the answer is a person's, and no organization token reaches it.
+        app.post('/api/jobs/:id/question', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
+            handleQuestion(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/question-expire', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleQuestionExpire(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/questions/:questionId/answer', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
+            handleAnswer(orgs, request, reply)
         );
         app.get('/api/jobs/:id', (request, reply) => handleGetJob(orgs, request, reply));
         app.get('/api/jobs/:id/thread', (request, reply) => handleThread(orgs, request, reply));

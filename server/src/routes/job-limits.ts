@@ -66,6 +66,24 @@ export const ARTIFACT_READ_LIMIT_DEFAULT = 65_536;
 export const ARTIFACT_READ_LIMIT_MAX = ARTIFACT_LIMIT;
 
 /**
+ * The agent's questions (050, issue #531). Every figure is the issue's contract, enforced HERE at
+ * the door: a question is member-visible content, so what the board stores is bounded by shape,
+ * not trusted from the driver. The per-attempt cap (`QUESTIONS_PER_ATTEMPT`) lives with the store
+ * that counts it.
+ */
+const QUESTION_BODY_LIMIT_KIB = 64;
+export const QUESTION_BODY_LIMIT = QUESTION_BODY_LIMIT_KIB * BYTES_PER_KIB;
+export const QUESTION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+export const QUESTIONS_PER_ASK_MAX = 4;
+export const QUESTION_OPTIONS_MIN = 2;
+export const QUESTION_OPTIONS_MAX = 4;
+export const QUESTION_TEXT_LIMIT = 1000;
+export const QUESTION_HEADER_LIMIT = 100;
+export const QUESTION_LABEL_LIMIT = 200;
+export const QUESTION_DESCRIPTION_LIMIT = 1000;
+export const ANSWER_LIMIT = 2000;
+
+/**
  * The runtime vitals a worker may report beside the tail. Numbers are bounded past anything a
  * real container reaches (a busy multi-core container exceeds 100% CPU; ten petabytes of RAM does
  * not exist), the activity line is capped because it is one CLI line and not a log, and the
@@ -267,6 +285,7 @@ export const HTTP_NO_CONTENT = 204;
 export const HTTP_FORBIDDEN = 403;
 export const HTTP_NOT_FOUND = 404;
 export const HTTP_CONFLICT = 409;
+export const HTTP_TOO_MANY_REQUESTS = 429;
 export const HTTP_UNAVAILABLE = 503;
 
 const NO_BOARD_MESSAGE = 'No job board for this organization';

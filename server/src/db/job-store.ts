@@ -9,6 +9,7 @@
  * - `job-store-worker.ts` — heartbeat, reports, publish token, `complete` and the workflow walk.
  * - `job-store-actions.ts` — member actions: create, follow up, done, reopen, stop, suspend,
  *   remove, and the wait-control pair (issue #328).
+ * - `job-store-questions.ts` — the agent's questions (050): ask, expire, answer, and their reads.
  * - `job-store-reads.ts` — get, thread, list, and the task list.
  * - `job-store-org-resolvers.ts` — org-of-lease/job/reclaim, and the minted-token base layer.
  *
@@ -30,6 +31,7 @@ import {
     pokeThreadWait,
 } from './job-store-actions.js';
 import { closeMergedPr } from './job-store-merge.js';
+import { answerQuestionBy, askQuestionReport, expireQuestionReport } from './job-store-questions.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
 import {
     threadOf,
@@ -80,6 +82,8 @@ function workerMethods(
     | 'rereadGates'
     | 'artifact'
     | 'readArtifact'
+    | 'askQuestion'
+    | 'expireQuestion'
     | 'publishToken'
     | 'complete'
     | 'leases'
@@ -123,6 +127,16 @@ function workerMethods(
         async readArtifact(id, kind, attempt) {
             await gate();
             return readArtifactOf(ctx, id, kind, attempt);
+        },
+
+        async askQuestion(id, leaseToken, ask) {
+            await gate();
+            return askQuestionReport(ctx, id, leaseToken, ask);
+        },
+
+        async expireQuestion(id, leaseToken, questionId) {
+            await gate();
+            return expireQuestionReport(ctx, id, leaseToken, questionId);
         },
 
         async publishToken(id, leaseToken) {
@@ -218,6 +232,11 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async closeMergedPr(repo, prNumber, deliveryId) {
             await gate();
             return closeMergedPr(ctx, repo, prNumber, deliveryId);
+        },
+
+        async answerQuestion(id, questionId, answers, answeredBy) {
+            await gate();
+            return answerQuestionBy(ctx, { id, questionId, answers, answeredBy });
         },
 
         async stop(id, stoppedBy) {

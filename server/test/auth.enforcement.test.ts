@@ -32,6 +32,7 @@ const HTTP_ACCEPTED = 202;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
+const HTTP_CONFLICT = 409;
 
 let app: FastifyInstance | null = null;
 afterEach(async () => {
@@ -39,8 +40,17 @@ afterEach(async () => {
     app = null;
 });
 
-const jobStub = (): JobStore =>
+const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
     ({
+        async askQuestion() {
+            return { result: 'lost' };
+        },
+        async expireQuestion() {
+            return { result: 'expired' };
+        },
+        async answerQuestion() {
+            return { result: 'refused', reason: 'closed' };
+        },
         async create() {
             return { id: JOB_ID };
         },
@@ -80,6 +90,7 @@ const jobStub = (): JobStore =>
         async list() {
             return [];
         },
+        ...overrides,
     }) as JobStore;
 
 const telemetryStub = (): TelemetryStore => ({
@@ -200,6 +211,12 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // the worker token 401 on every production job (#446): the upload is best-effort, so the
     // runs completed and nothing was ever stored for the read routes below to serve.
     [`/api/jobs/${JOB_ID}/artifact`, 'worker'],
+    // The agent's questions (050, issue #531): the driver reports a question and expires it under
+    // its lease; the member's answer is a person's act, so it falls through to `user` — and is
+    // outside the org-token allowlist.
+    [`/api/jobs/${JOB_ID}/question`, 'worker'],
+    [`/api/jobs/${JOB_ID}/question-expire`, 'worker'],
+    [`/api/jobs/${JOB_ID}/questions/${JOB_ID}/answer`, 'user'],
     // The thread read is a person's again: it carries commands, output and session ids of the
     // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
     // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
@@ -386,6 +403,120 @@ describe('the two credentials are disjoint: claim and job-scoped routes', () => 
         });
 
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    const ASK = {
+        leaseToken: LEASE,
+        questionId: 'toolu_01',
+        questions: [
+            {
+                question: 'Which?',
+                header: 'Pick',
+                multiSelect: false,
+                options: [{ label: 'A' }, { label: 'B' }],
+            },
+        ],
+    };
+
+    // The worker token reaches exactly the two question routes the driver owns; the answer is a
+    // person's, so the same credential is refused on it.
+    it('accepts the shared board secret on the question report and expiry only', async () => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const worker = { authorization: `Bearer ${WORKER_TOKEN}` };
+
+        const ask = await server.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/question`,
+            payload: ASK,
+            headers: worker,
+        });
+        const expire = await server.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/question-expire`,
+            payload: { leaseToken: LEASE, questionId: 'toolu_01' },
+            headers: worker,
+        });
+        const answer = await server.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/questions/toolu_01/answer`,
+            payload: { answers: { 'Which?': 'A' } },
+            headers: worker,
+        });
+
+        // The stub's lease verdicts are irrelevant: what matters is the credential got through.
+        expect(ask.statusCode).not.toBe(HTTP_UNAUTHORIZED);
+        expect(expire.statusCode).toBe(HTTP_OK);
+        expect(answer.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('refuses a session cookie on the question report', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const cookie = await signedIn(store, store.seedMember(ORG, 'octocat', 'admin'));
+
+        const response = await server.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/question`,
+            payload: ASK,
+            headers: { cookie },
+        });
+
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('lets a signed-in member answer, and refuses an organization token', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const cookie = await signedIn(store, store.seedMember(ORG, 'octocat'));
+        const url = `/api/jobs/${JOB_ID}/questions/toolu_01/answer`;
+        const payload = { answers: { 'Which?': 'A' } };
+
+        const member = await server.inject({ method: 'POST', url, payload, headers: { cookie } });
+        const orgToken = await server.inject({
+            method: 'POST',
+            url,
+            payload,
+            headers: { authorization: `Bearer ${store.seedAccessToken(ORG, 'org')}` },
+        });
+
+        // The stub answers a closed question: reaching the handler is the assertion.
+        expect(member.statusCode).toBe(HTTP_CONFLICT);
+        expect(orgToken.statusCode).toBe(HTTP_FORBIDDEN);
+    });
+
+    it("404s a member of another org on the first org's question", async () => {
+        const otherOrg = 'other-org';
+        const store = memoryAuthStore();
+        const config = testConfig({ auth: githubAuth() });
+        const board = (jobs: JobStore) => staticRegistry({ config, jobs, telemetry: stubTelemetryClient() });
+        // Each org's store only knows its own rows: the other org's holds no such question.
+        const boards = new Map([
+            [ORG, board(jobStub())],
+            [otherOrg, board(jobStub({ answerQuestion: async () => ({ result: 'unknown' }) }))],
+        ]);
+        app = await buildApp({
+            config,
+            orgs: {
+                for: async (orgId) => {
+                    const runtime = await boards.get(orgId)?.for(orgId);
+                    return runtime ? { ...runtime, orgId } : null;
+                },
+                list: async () => [...boards.keys()].map((id) => ({ id, name: id, installationId: null })),
+                warmAll: async () => {},
+            },
+            store: telemetryStub(),
+            auth: store,
+        });
+        const cookie = await signedIn(store, store.seedMember(otherOrg, 'mallory'));
+
+        const response = await app.inject({
+            method: 'POST',
+            url: `/api/jobs/${JOB_ID}/questions/toolu_01/answer`,
+            payload: { answers: { 'Which?': 'A' } },
+            headers: { cookie },
+        });
+
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
     });
 
     it('resolves a job-scoped worker call from the row its URL names', async () => {

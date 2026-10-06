@@ -46,6 +46,7 @@ const job = (overrides: Partial<Job> & { id: string }): Job => ({
     finishedAt: null,
     wallClockMs: null,
     taskWallClockMs: null,
+    questions: [],
     ...overrides,
 });
 
@@ -245,10 +246,41 @@ describe('memoryTaskList', () => {
             waitReason: null,
             waitingSince: null,
             waitTerminalReason: null,
+            needsAnswer: false,
             createdAt: at(60),
             activityAt: at(20),
         });
         expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
+    });
+
+    // 050: a member is wanted when any run of the thread holds an answerable question.
+    it('flags needsAnswer when any run of the thread has an answerable question', () => {
+        const question = (answerable: boolean) => ({
+            id: 'toolu_1',
+            attempt: 1,
+            questions: [],
+            status: answerable ? ('pending' as const) : ('closed' as const),
+            answerable,
+            answers: null,
+            answeredBy: null,
+            askedAt: at(10),
+            answeredAt: null,
+        });
+        const jobs = [
+            ...task(tid(1), {}, { id: tid(11), status: 'running' }),
+            ...task(tid(2), {}, { id: tid(21), status: 'running' }),
+        ];
+        jobs[1] = { ...jobs[1]!, questions: [question(true)] };
+        jobs[3] = { ...jobs[3]!, questions: [question(false)] };
+
+        const { page } = memoryTaskList(jobs, { state: 'attention', sort: 'newest', limit: 10 });
+
+        expect(page.items.map((item) => [item.id, item.needsAnswer])).toEqual(
+            expect.arrayContaining([
+                [tid(1), true],
+                [tid(2), false],
+            ])
+        );
     });
 
     it('takes the close-time summary from the head run', () => {

@@ -10,6 +10,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
+| Agent questions, one row per asked tool call (migration 050) | `server/migrations/050_job_question.sql`, `server/src/db/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test | `server/test-db/harness.ts` | `server/test/test-db.harness.test.ts` |
 

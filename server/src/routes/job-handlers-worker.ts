@@ -241,10 +241,13 @@ export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest
     // a job that belongs to someone else now, and it must terminate itself.
     if (beat.value.result === 'lost') return leaseLost(reply);
     // `cancelRequested` is the stop channel: the user's /stop stamped the row, and this is the
-    // worker reading that it must park. False on every ordinary beat.
-    return reply
-        .code(HTTP_OK)
-        .send({ leaseExpiresAt: beat.value.leaseExpiresAt, cancelRequested: beat.value.cancelRequested });
+    // worker reading that it must park. False on every ordinary beat. `answeredQuestions` is the
+    // answer channel (050): always present, `[]` when nothing is answered.
+    return reply.code(HTTP_OK).send({
+        leaseExpiresAt: beat.value.leaseExpiresAt,
+        cancelRequested: beat.value.cancelRequested,
+        answeredQuestions: beat.value.answeredQuestions,
+    });
 }
 
 // Reported separately from the completion, and not folded into the claim: the driver mints the
