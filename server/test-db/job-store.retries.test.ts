@@ -51,9 +51,8 @@ const queue = async (command: string, createdBy: string | null = null, target = 
 };
 
 /**
- * Takes a job the whole way to a finished run that never reported a session — the state follow-up
- * answers `409 NO_SESSION` on, and the one retry exists for: the driver died before reporting, or
- * a refused start took its minted session back. The verdict is `failed`, as those deaths are.
+ * Takes a job the whole way to a finished run that never reported a session — the driver died
+ * before reporting, or a refused start took its minted session back. The verdict is `failed`, as those deaths are.
  */
 const finishSessionless = async (
     command: string,
@@ -96,8 +95,8 @@ const mustFollowUp = (root: string, command: string, userId: string | null): Pro
     });
 
 describe.skipIf(!enabled)('retries', () => {
-    // The whole point of retry (issue #326): a finished run whose session was never reported —
-    // the exact shape follow-up refuses NO_SESSION — is recoverable in place. The new run is a
+    // The whole point of retry (issue #326): a finished run whose session was never reported is
+    // recoverable in place. The new run is a
     // member of the SAME thread (same root, so the same worktree) and carries no session of its
     // own: it starts fresh.
     it('re-queues a sessionless finished run in the same thread, without a session', async () => {

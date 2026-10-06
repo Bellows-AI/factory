@@ -118,11 +118,12 @@ npm run dev -w cli -- job follow-up <id> -- now add a test for the null branch
 
 `POST /api/jobs/<id>/follow-up` with `{ command }` alone → `201 { id, status: "queued" }`. The
 repo, the executor and the agent session are copied from the parent; sending them is a second
-opinion the board does not take. The new id is a new turn — wait on that one, not the parent.
+opinion the board does not take. With no session to resume, the turn starts a fresh one and the
+board prefixes a recap of the earlier turns. The new id is a new turn — wait on that one, not the
+parent.
 
 Refusals: `409 NOT_FINISHED` (the turn is still going — wait, or stop it), `409 TASK_DONE` (the
-thread was closed; start a new task), `409 NO_SESSION` (the parent never recorded a session, so
-there is nothing to continue), `409 PURGE_IN_PROGRESS` (the org is being purged; nothing queues),
+thread was closed; start a new task), `409 PURGE_IN_PROGRESS` (the org is being purged; nothing queues),
 `403 FORBIDDEN` (a follow-up is the author's).
 
 ## 6. Stop, done, remove

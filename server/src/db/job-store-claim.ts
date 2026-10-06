@@ -28,6 +28,7 @@ import type {
     ClaimHelperPlan,
     JobStorePrs,
 } from './job-store-types.js';
+import { claimCommand } from './follow-up-recap.js';
 import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
@@ -251,7 +252,8 @@ async function claimNextCandidate(
             const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
             const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
-            return buildClaimResult(row, rootJobId, { ...executor, ...gates, ...workflow });
+            const command = await claimCommand(tx, orgId, rootJobId, row);
+            return buildClaimResult({ ...row, command }, rootJobId, { ...executor, ...gates, ...workflow });
         }
     });
 }

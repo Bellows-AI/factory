@@ -369,6 +369,7 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
             job({ status: 'failed', author: me }),
             job({ status: 'dead', author: me }),
             job({ author: me, gates: failedGate }),
+            job({ status: 'failed', author: me, sessionId: null }),
         ];
         for (const latest of cases) {
             const html = renderHeader({ jobs: [latest], viewer });
@@ -378,10 +379,9 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
         }
     });
 
-    it('failed and not eligible: Mark done — another member, no session, or a session still loading', () => {
+    it('failed and not eligible: Mark done — another member, or a session still loading', () => {
         const refusals = [
             { jobs: [job({ status: 'failed', author: other })], viewer },
-            { jobs: [job({ status: 'failed', author: me, sessionId: null })], viewer },
             { jobs: [job({ status: 'failed', author: me })], viewer: { loading: true, id: null } },
         ];
         for (const args of refusals) {

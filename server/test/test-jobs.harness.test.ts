@@ -42,7 +42,7 @@ describe('the test-jobs harness', () => {
 
     it('the retry block exercises the no-session retry contract (issue #326)', () => {
         expect(SCRIPT).toContain('409 POST "/api/jobs/$retry_id/retry"');
-        expect(SCRIPT).toContain('409 POST "/api/jobs/$retry_id/follow-up"');
+        expect(SCRIPT).toContain('api POST "/api/jobs/$retry2_id/follow-up"');
         expect(SCRIPT).toContain('POST "/api/jobs/$retry_id/retry"');
         expect(SCRIPT).toContain('rootJobId "$retry_id"');
         expect(SCRIPT).toContain("resumeSessionId ''");

@@ -2277,7 +2277,6 @@ describe('POST /api/jobs/:id/follow-up', () => {
     it.each([
         ['a parent that is still moving', 'not_finished', 'NOT_FINISHED'],
         ['a task the user has marked done', 'task_done', 'TASK_DONE'],
-        ['a parent with no session to continue', 'no_session', 'NO_SESSION'],
         ['a checkout that is being deleted', 'purging', 'PURGE_IN_PROGRESS'],
     ])('answers 409 for %s', async (_label, verdict, code) => {
         const instance = await harnessWith(stubStore({ followUp: verdict as FollowUpRefusal }));

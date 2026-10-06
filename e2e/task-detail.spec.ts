@@ -446,13 +446,11 @@ test.describe('the task detail page', () => {
         await expect(page.getByText('Ask for a follow-up')).toBeVisible();
     });
 
-    test('a sessionless terminal run links to a new task, and a closed one renders no composer', async ({ page }) => {
-        await routeThread(page, sessionlessThread);
+    test('a sessionless terminal run offers the composer, and a closed one renders none', async ({ page }) => {
+        await routeThread(page, authoredBy(sessionlessThread, await sessionAuthor(page)));
         await page.goto(`/tasks/${sessionlessThread[0]!.id}`);
-        const link = page.getByRole('link', { name: 'Start a new task' });
-        await expect(link).toBeVisible();
-        await link.click();
-        await expect(page).toHaveURL(/\/tasks\/new$/);
+        await expect(page.getByText('Ask for a follow-up')).toBeVisible();
+        await expect(page.getByText('no agent session to continue')).not.toBeVisible();
 
         await routeThread(page, doneThread);
         await page.goto(`/tasks/${doneThread[0]!.id}`);

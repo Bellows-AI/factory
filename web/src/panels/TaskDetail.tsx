@@ -1,5 +1,4 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import type { JobActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
@@ -199,15 +198,6 @@ function FollowUp({
     let body: ReactNode = null;
     if (eligibility === 'eligible') {
         body = <FollowUpComposer error={error} sending={sending} onFollowUp={onFollowUp} />;
-    } else if (eligibility === 'no-session') {
-        // The board refuses a follow-up for a run that never reported a session (409 NO_SESSION);
-        // a composer there would be a control that can only fail.
-        body = (
-            <p className="muted">
-                This run has no agent session to continue, so it cannot take a follow-up.{' '}
-                <Link to="/tasks/new">Start a new task</Link>
-            </p>
-        );
     } else if (eligibility === 'not-author') {
         body = <p className="muted">{notAuthorMessage(latest)}</p>;
     }

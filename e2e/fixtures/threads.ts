@@ -493,7 +493,7 @@ export const missingSummaryThread = thread([
     }),
 ]);
 
-/** Terminal with no session to resume — a follow-up cannot attach to it. */
+/** Terminal with no session to resume — a follow-up starts a fresh session. */
 export const sessionlessThread = thread([
     run({
         id: 'aaaaaaaa-0000-4000-8000-000000000121',
