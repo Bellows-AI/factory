@@ -218,6 +218,16 @@ describe('the claimed job', () => {
         expect((await missingBoard.claim('driver-1'))?.executorType).toBeNull();
     });
 
+    it('carries the board’s executor refusal, and null when it sends none (issue 440)', async () => {
+        const { fetch } = recorder(() => claimed({ executorRefusal: 'The executor "main" is suspended.' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.executorRefusal).toBe('The executor "main" is suspended.');
+
+        const { fetch: missing } = recorder(() => claimed());
+        const missingBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: missing });
+        expect((await missingBoard.claim('driver-1'))?.executorRefusal).toBeNull();
+    });
+
     it('carries the account that queued it', async () => {
         const { fetch } = recorder(() => claimed({ userId: 'user-7' }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });

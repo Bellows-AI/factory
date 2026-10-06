@@ -16,11 +16,21 @@ export const MAKE_DEFAULT_LABEL = 'Make default';
 /** The row the member's preference resolves to — the composer autoselects it. */
 export const DEFAULT_CAPTION = 'Default — selected on new tasks';
 
+/** The lifecycle actions and status (issue 440), here so the e2e specs assert the strings the DOM renders. */
+export const SUSPENDED_LABEL = 'Suspended';
+export const SUSPEND_LABEL = 'Suspend';
+export const RESUME_LABEL = 'Resume';
+export const REMOVE_LABEL = 'Remove';
+/** The empty state once every profile is suspended: configured, but nothing a task can select. */
+export const ALL_SUSPENDED_NOTE = 'Every executor is suspended. Resume one, or select an organization executor.';
+
 export function WorkspaceExecutorsPanel({
     executors,
     defaultExecutor,
     onEdit,
     onMakeDefault,
+    onSuspend,
+    onRemove,
     saving,
 }: {
     executors: readonly WorkspaceExecutor[];
@@ -28,12 +38,19 @@ export function WorkspaceExecutorsPanel({
     defaultExecutor: DefaultExecutor | null;
     onEdit: (name: string) => void;
     onMakeDefault: (name: string) => void;
+    /** Suspends (true) or resumes (false) the row, by id. */
+    onSuspend: (id: string, suspended: boolean) => void;
+    /** Opens the removal confirmation for the row; nothing is deleted from the click itself. */
+    onRemove: (name: string) => void;
     saving: boolean;
 }) {
     return (
         <section className="panel">
             <h2>My workspace</h2>
             <p className="muted">{EXECUTOR_GUIDANCE}</p>
+            {executors.length > 0 && executors.every((executor) => executor.suspended) ? (
+                <p className="muted">{ALL_SUSPENDED_NOTE}</p>
+            ) : null}
             {executors.length === 0 ? (
                 <p className="muted">
                     No personal executors configured. Add one, or select an organization executor for a new task.
@@ -58,6 +75,7 @@ export function WorkspaceExecutorsPanel({
                                 <tr key={executor.name}>
                                     <td>
                                         {executor.name}
+                                        {executor.suspended ? <span className="pill">{SUSPENDED_LABEL}</span> : null}
                                         {defaultExecutor !== null &&
                                         defaultExecutor.scope === 'user' &&
                                         defaultExecutor.name === executor.name ? (
@@ -77,9 +95,11 @@ export function WorkspaceExecutorsPanel({
                                         <button type="button" onClick={() => onEdit(executor.name)}>
                                             Edit
                                         </button>
-                                        {defaultExecutor === null ||
-                                        defaultExecutor.name !== executor.name ||
-                                        defaultExecutor.scope !== 'user' ? (
+                                        {/* A suspended row cannot be a default (issue 440): resume it first. */}
+                                        {!executor.suspended &&
+                                        (defaultExecutor === null ||
+                                            defaultExecutor.name !== executor.name ||
+                                            defaultExecutor.scope !== 'user') ? (
                                             <button
                                                 type="button"
                                                 disabled={saving}
@@ -88,6 +108,16 @@ export function WorkspaceExecutorsPanel({
                                                 {MAKE_DEFAULT_LABEL}
                                             </button>
                                         ) : null}
+                                        <button
+                                            type="button"
+                                            disabled={saving}
+                                            onClick={() => onSuspend(executor.id, !executor.suspended)}
+                                        >
+                                            {executor.suspended ? RESUME_LABEL : SUSPEND_LABEL}
+                                        </button>
+                                        <button type="button" disabled={saving} onClick={() => onRemove(executor.name)}>
+                                            {REMOVE_LABEL}
+                                        </button>
                                     </td>
                                 </tr>
                             ))}

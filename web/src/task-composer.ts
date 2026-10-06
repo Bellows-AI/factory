@@ -452,6 +452,15 @@ export function draftIsFresh(state: ComposerDraftInput, lists: DraftLists): bool
 }
 
 /**
+ * What the composer says when the draft's executor stops being selectable — removed, moved or
+ * suspended (issue 440) — whether the draft was restored or was open when it happened. One
+ * sentence, so the two paths dedupe.
+ */
+export function executorUnavailableNotice(name: string, next: ExecutorChoice | null): string {
+    return `Executor ‘${name}’ is no longer available — ${next === null ? 'add one to continue' : `${next.name} selected`}.`;
+}
+
+/**
  * What a restored draft lost while the member was away, in words — one sentence per choice that
  * no longer exists. The composer's own clamps do the reselecting; this only says it happened, and
  * never touches the request text. A deselected repository resets the workflow choice anyway, so
@@ -471,12 +480,7 @@ export function restoredDraftNotices(
     const choseExecutor =
         restored.executor !== '' &&
         !selectionExists(lists.executors, { name: restored.executor, scope: restored.executorScope });
-    if (choseExecutor) {
-        const next = lists.defaultExecutor;
-        notices.push(
-            `Executor ‘${restored.executor}’ is no longer available — ${next === null ? 'add one to continue' : `${next.name} selected`}.`
-        );
-    }
+    if (choseExecutor) notices.push(executorUnavailableNotice(restored.executor, lists.defaultExecutor));
     const repoKept =
         restored.repo === '' || lists.repos.some(({ owner, name }) => `${owner}/${name}` === restored.repo);
     if (!repoKept) {

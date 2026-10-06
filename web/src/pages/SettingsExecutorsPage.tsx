@@ -5,7 +5,9 @@ import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
+import type { ConfirmRequest } from '../panels/org-executor-confirm.js';
 import { OrgExecutorsSection } from '../panels/OrgExecutorsSection.js';
+import { PersonalExecutorRemoval } from '../panels/PersonalExecutorRemoval.js';
 import { WorkspaceExecutorsPanel } from '../panels/WorkspaceExecutorsPanel.js';
 import { ADD_LABEL, EXECUTOR_SCOPE, mergeExecutors } from '../workspace/executors.js';
 import { useSettingsPage } from './SettingsLayout.js';
@@ -23,8 +25,21 @@ type ExecutorDialogState = { mode: 'add' } | { mode: 'edit'; name: string };
 
 export function SettingsExecutorsPage() {
     const { workspace, session } = useSettingsPage();
-    const { data, loading, error, saving, saveExecutors, setDefaultExecutor, listExecutorConfigs, refresh } = workspace;
+    const {
+        data,
+        loading,
+        error,
+        saving,
+        saveExecutors,
+        removeExecutor,
+        suspendExecutor,
+        setDefaultExecutor,
+        listExecutorConfigs,
+        refresh,
+    } = workspace;
     const [executorDialog, setExecutorDialog] = useState<ExecutorDialogState | null>(null);
+    /** The personal row awaiting its removal confirmation, or null: no confirmation, no delete. */
+    const [removing, setRemoving] = useState<ConfirmRequest | null>(null);
     const [executorList, setExecutorList] = useState<WorkspaceExecutorFull[]>([]);
     const [executorDialogError, setExecutorDialogError] = useState<string | null>(null);
     // The save announcement (issue 261): one always-mounted status region, so a screen reader hears the
@@ -74,6 +89,12 @@ export function SettingsExecutorsPage() {
     /** The personal panel's write, with the failure surfaced on the page's shared error line. */
     const makePersonalDefault = (name: string) =>
         void makeDefault('user', name).then((m) => m && setExecutorDialogError(m));
+
+    /** Suspend or resume one personal row; a failure leaves the row as the poll last said. */
+    const suspendPersonal = (id: string, suspended: boolean) => {
+        setExecutorDialogError(null);
+        void suspendExecutor(id, suspended).then((m) => m && setExecutorDialogError(m));
+    };
 
     // A deliberate configuration, not a failure (same posture as the workspace page): with no
     // root the personal executor routes answer 409 WORKSPACE_DISABLED, so the page refuses before
@@ -126,6 +147,8 @@ export function SettingsExecutorsPage() {
                             defaultExecutor={data.defaultExecutor ?? null}
                             onEdit={(name) => void openExecutorDialog(name)}
                             onMakeDefault={makePersonalDefault}
+                            onSuspend={suspendPersonal}
+                            onRemove={(name) => setRemoving({ action: 'remove', name })}
                             saving={saving}
                         />
                     )}
@@ -143,6 +166,13 @@ export function SettingsExecutorsPage() {
             ) : null}
 
             {executorDialogError ? <p className="status">{executorDialogError}</p> : null}
+            <PersonalExecutorRemoval
+                request={removing}
+                executors={data?.executors ?? []}
+                removeExecutor={removeExecutor}
+                onClose={() => setRemoving(null)}
+                onResult={setExecutorDialogError}
+            />
             <ExecutorDialog
                 open={executorDialog !== null}
                 existing={executorList}

@@ -5,7 +5,7 @@ import {
     confirmBusyLabel,
     confirmLabel,
     confirmTitle,
-    type OrgRowConfirm,
+    type ConfirmRequest,
 } from '../panels/org-executor-confirm.js';
 
 /**
@@ -21,7 +21,7 @@ export function OrgExecutorConfirmDialog({
     onConfirm,
 }: {
     /** The pending action and the row it names, or null when nothing is pending. */
-    confirm: OrgRowConfirm | null;
+    confirm: ConfirmRequest | null;
     /** The in-flight guard: the mutation is one request, and it cannot be dismissed. */
     busy: boolean;
     onClose: () => void;

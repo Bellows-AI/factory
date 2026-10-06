@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import {
     createUserExecutorStore,
+    ExecutorSuspendedError,
     type ExecutorDefault,
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
@@ -56,6 +57,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
             type: 'opencode',
             config,
             gateFixRounds: 3,
+            suspended: false,
         });
         expect(await store.configFor(ALICE, 'deleted')).toBeNull();
         // Another member's row is not this member's answer.
@@ -82,6 +84,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
             type: 'claude-code',
             config: {},
             gateFixRounds: 7,
+            suspended: false,
         });
     });
 
@@ -269,6 +272,71 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
     });
 });
 
+describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', () => {
+    it('removes only the caller’s own personal row; another member’s, an org row and an unknown id match nothing', async () => {
+        await store.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await store.replace(BOB, [{ name: 'main', type: 'claude-code', config: {} }]);
+        const org = await store.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
+        const alice = (await store.list(ALICE))[0]!;
+        const bob = (await store.list(BOB))[0]!;
+
+        expect(await store.removePersonal(BOB, alice.id)).toBe(false);
+        expect(await store.removePersonal(ALICE, org.id)).toBe(false);
+        expect(await store.removePersonal(ALICE, '00000000-0000-4000-8000-000000000000')).toBe(false);
+        expect(await store.removePersonal(ALICE, alice.id)).toBe(true);
+
+        expect(await store.list(ALICE)).toEqual([]);
+        expect((await store.list(BOB)).map((row) => row.id)).toEqual([bob.id]);
+        expect((await store.listOrg()).map((row) => row.id)).toEqual([org.id]);
+    });
+
+    it('suspends and resumes by id with the same ownership boundary, keeping config and ownership', async () => {
+        await store.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { model: 'x' } }]);
+        const org = await store.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
+        const mine = (await store.list(ALICE))[0]!;
+
+        expect(await store.setPersonalSuspended(BOB, mine.id, true)).toBeNull();
+        expect(await store.setPersonalSuspended(ALICE, org.id, true)).toBeNull();
+        expect(await store.setOrgSuspended(mine.id, true)).toBeNull();
+        expect((await store.list(ALICE))[0]!.suspended).toBe(false);
+
+        expect((await store.setPersonalSuspended(ALICE, mine.id, true))?.suspended).toBe(true);
+        expect((await store.setOrgSuspended(org.id, true))?.suspended).toBe(true);
+        // Same-name scope isolation: each scope's flag is its own, and the config survives.
+        expect(await store.configFor(ALICE, 'main', 'user')).toMatchObject({ config: { model: 'x' }, suspended: true });
+        expect(await store.configFor(ALICE, 'main', 'org')).toMatchObject({ suspended: true });
+        await store.setPersonalSuspended(ALICE, mine.id, false);
+        expect((await store.configFor(ALICE, 'main', 'user'))?.suspended).toBe(false);
+        expect((await store.configFor(ALICE, 'main', 'org'))?.suspended).toBe(true);
+    });
+
+    it('keeps a row suspended through a whole-list replace, and lets an entry say otherwise', async () => {
+        await store.replace(ALICE, [
+            { name: 'a', type: 'claude-code', config: {} },
+            { name: 'b', type: 'claude-code', config: {} },
+        ]);
+        await store.setPersonalSuspended(ALICE, (await store.list(ALICE))[0]!.id, true);
+
+        await store.replace(ALICE, [
+            { name: 'a', type: 'claude-code', config: {}, gateFixRounds: 2 },
+            { name: 'b', type: 'claude-code', config: {} },
+        ]);
+        expect((await store.list(ALICE)).map((row) => [row.name, row.suspended])).toEqual([
+            ['a', true],
+            ['b', false],
+        ]);
+
+        await store.replace(ALICE, [
+            { name: 'a2', type: 'claude-code', config: {}, suspended: true },
+            { name: 'b', type: 'claude-code', config: {}, suspended: false },
+        ]);
+        expect((await store.list(ALICE)).map((row) => [row.name, row.suspended])).toEqual([
+            ['a2', true],
+            ['b', false],
+        ]);
+    });
+});
+
 describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
     const pref = (scope: ExecutorDefault['scope'], name: string): ExecutorDefault => ({ scope, name });
 
@@ -320,6 +388,37 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
         const orgA = (await store.listOrg()).find((row) => row.name === 'org-a')!;
         await store.deleteOrg(orgA.id);
         expect(await store.resolvedDefault(ALICE)).toBeNull();
+    });
+
+    it('skips suspended rows in the chain but keeps the stored preference, so resuming restores it (issue 440)', async () => {
+        await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
+        await store.replace(ALICE, [
+            { name: 'first', type: 'claude-code', config: {} },
+            { name: 'second', type: 'claude-code', config: {} },
+        ]);
+        await store.setDefault(ALICE, pref('user', 'second'));
+        const byName = async (name: string) => (await store.list(ALICE)).find((row) => row.name === name)!;
+
+        await store.setPersonalSuspended(ALICE, (await byName('second')).id, true);
+        expect(await store.resolvedDefault(ALICE)).toEqual(pref('user', 'first'));
+        await store.setPersonalSuspended(ALICE, (await byName('first')).id, true);
+        expect(await store.resolvedDefault(ALICE)).toEqual(pref('org', 'org-a'));
+        const orgA = (await store.listOrg())[0]!;
+        await store.setOrgSuspended(orgA.id, true);
+        expect(await store.resolvedDefault(ALICE)).toBeNull();
+
+        // The stored preference never moved; resuming restores it.
+        expect(await store.defaultOf(ALICE)).toEqual(pref('user', 'second'));
+        await store.setPersonalSuspended(ALICE, (await byName('second')).id, false);
+        expect(await store.resolvedDefault(ALICE)).toEqual(pref('user', 'second'));
+    });
+
+    it('refuses a suspended profile as the preference and writes nothing (issue 440)', async () => {
+        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
+        await store.setPersonalSuspended(ALICE, (await store.list(ALICE))[0]!.id, true);
+
+        await expect(store.setDefault(ALICE, pref('user', 'mine'))).rejects.toBeInstanceOf(ExecutorSuspendedError);
+        expect(await store.defaultOf(ALICE)).toBeNull();
     });
 
     it('keeps the old personal default shape working: replace() no longer takes a flag', async () => {

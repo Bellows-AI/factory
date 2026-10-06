@@ -36,6 +36,11 @@ export interface BoardJob {
      */
     executorType: ExecutorType | null;
     /**
+     * Why the board refuses to launch this task's executor (a suspended profile): the loop fails
+     * the task with this sentence before any runner starts, on docker and kubernetes alike.
+     */
+    executorRefusal: string | null;
+    /**
      * The board-owned Factory execution context (issue #244) — the master-prompt.ts renderer's
      * text, delivered through the executor's own system-instruction channel, never concatenated
      * into `command`. Read defensively as `?? null`, like every board field: a board that predates
@@ -467,6 +472,9 @@ const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1
     ...completeBody(result),
 });
 
+/** A claim text field read defensively: the string the board sent, else null. */
+const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+
 export function createBoard({
     url,
     leaseSeconds,
@@ -529,13 +537,14 @@ export function createBoard({
                 ...(claimed as BoardJob),
                 ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
                 ...knownGatesSource(gatesSource),
-                masterPrompt: typeof claimed.masterPrompt === 'string' ? claimed.masterPrompt : null,
+                masterPrompt: textOrNull(claimed.masterPrompt),
                 resumeSessionId: claimed.resumeSessionId ?? null,
                 followUp: claimed.followUp ?? false,
                 userId: claimed.userId ?? null,
                 workspacePath: claimed.workspacePath ?? null,
                 rootJobId: claimed.rootJobId ?? null,
                 executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
+                executorRefusal: textOrNull(claimed.executorRefusal),
                 env: claimed.env ?? {},
             };
         },

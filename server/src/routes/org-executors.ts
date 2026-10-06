@@ -63,8 +63,9 @@ function selectionMetadata(row: {
     name: string;
     type: string;
     createdAt: string;
+    suspended: boolean;
 }): Record<string, unknown> {
-    return { id: row.id, name: row.name, type: row.type, createdAt: row.createdAt };
+    return { id: row.id, name: row.name, type: row.type, createdAt: row.createdAt, suspended: row.suspended };
 }
 
 /** The admin list's row: the metadata plus the configuration and the audit fields. */
@@ -76,6 +77,7 @@ function adminRow(row: {
     updatedAt: string;
     gateFixRounds: number;
     createdBy: string | null;
+    suspended: boolean;
     config: Record<string, unknown>;
 }): Record<string, unknown> {
     return {
@@ -84,6 +86,7 @@ function adminRow(row: {
         type: row.type,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+        suspended: row.suspended,
         gateFixRounds: row.gateFixRounds,
         createdBy: row.createdBy,
         config: row.config,
@@ -250,6 +253,35 @@ async function handleDeleteOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     return reply.code(HTTP_OK).send({ id, removed: removed.value });
 }
 
+/** Suspends or resumes an org profile for every member (issue 440): admin-gated, id-keyed. */
+async function handleSuspendOrgExecutor(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const store = await storeOf(orgs, request);
+    if (!store) return noStore(reply);
+    const caller = callerOf(request);
+    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+    if (!requireAdmin(caller)) {
+        return bad(
+            reply,
+            ERROR_CODES.FORBIDDEN,
+            'Only an organization admin can manage organization executors',
+            HTTP_FORBIDDEN
+        );
+    }
+    const { id } = request.params as { id?: string };
+    if (typeof id !== 'string' || !id) return bad(reply, ERROR_CODES.BAD_ID, 'id must be a string');
+    const { suspended } = jsonBody(request.body);
+    if (typeof suspended !== 'boolean') return bad(reply, ERROR_CODES.BAD_BODY, 'suspended must be a boolean');
+
+    const updated = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => store.setOrgSuspended(id, suspended)
+    );
+    if (!updated.ok) return reply;
+    if (!updated.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such organization executor' });
+    return reply.code(HTTP_OK).send(selectionMetadata(updated.value));
+}
+
 /**
  * The one route a profile's scope moves through: an administrator promotes their OWN personal row
  * to org scope, or demotes an org row into their own personal list. The store's WHERE clause holds
@@ -339,6 +371,7 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
  * - `POST /api/org/executors` — create, admin-gated.
  * - `PUT /api/org/executors/:id` — edit, admin-gated; `scope` in the body is a BAD_SCOPE refusal.
  * - `DELETE /api/org/executors/:id` — delete, admin-gated.
+ * - `POST /api/org/executors/:id/suspension` — suspend/resume `{suspended}`, admin-gated.
  * - `POST /api/org/executors/:id/scope` — promote/demote, admin-gated; the store only ever moves
  *   the calling admin's own personal row up.
  */
@@ -356,6 +389,9 @@ export const orgExecutorRoutes =
         );
         app.delete('/api/org/executors/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDeleteOrgExecutor(orgs, request, reply)
+        );
+        app.post('/api/org/executors/:id/suspension', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleSuspendOrgExecutor(orgs, request, reply)
         );
         app.post('/api/org/executors/:id/scope', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleChangeOrgExecutorScope(orgs, request, reply)

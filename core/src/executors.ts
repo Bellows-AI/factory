@@ -29,6 +29,14 @@ export type ExecutorScope = (typeof EXECUTOR_SCOPES)[number];
 export const [USER_SCOPE, ORG_SCOPE] = EXECUTOR_SCOPES;
 
 /**
+ * The sentence a suspended profile is refused with (issue 440) — at submission (409) and at claim
+ * (the task fails before a runner starts) — one spelling so the two cannot drift.
+ */
+export const executorSuspendedMessage = (scope: ExecutorScope, name: string): string =>
+    `The ${scope === ORG_SCOPE ? 'organization' : 'personal'} executor "${name}" is suspended. ` +
+    'Resume it or choose another executor, then start a new task.';
+
+/**
  * The default-workflow gate-repair round limit (issue #49): how many bounded gate-fix rounds an
  * ordinary task may spend repairing a failed gate before the thread rests. A value of zero turns
  * automatic gate repair off — the graph falls back to today's no-edge shape. The board reads the

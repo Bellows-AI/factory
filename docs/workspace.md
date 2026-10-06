@@ -14,6 +14,8 @@ so something can be *run* against a checkout.
 | Routes and the payload the page polls | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts` |
 | Repo selection rows and their constraints | `server/src/db/user-repo-store.ts`, `server/migrations/011_user_workspace.sql`, `044_user_repo_purge.sql` | `server/test-db/user-repo-store.test.ts` |
 | Executor profiles (user and org scope) | `server/src/db/user-executor-store.ts`, `server/src/routes/org-executors.ts`, `server/migrations/047_executor_profile_scope.sql` | `server/test-db/user-executor-store.test.ts`, `server/test/routes.org-executors.test.ts` |
+| Removing and suspending a profile; the refusal at submission | `server/src/routes/workspace.ts`, `server/src/routes/org-executors.ts`, `server/src/routes/job-handlers-worker.ts`, `server/migrations/049_executor_profile_suspended.sql` | `server/test/routes.executor-lifecycle.test.ts`, `server/test-db/user-executor-store.test.ts` |
+| The claim-time refusal, shared by both executors | `server/src/db/job-store-claim.ts`, `driver/src/loop-run.ts` | `server/test-db/job-store.executor-scope.test.ts`, `driver/test/loop.test.ts` |
 | The executor dialog's client-side validation | `web/src/workspace/executors.ts`, `web/src/panels/WorkspaceExecutorsPanel.tsx` | `web/test/executors.test.ts`, `e2e/org-executors.spec.ts` |
 | Real provisioning in a browser | `e2e/workspace.spec.ts` | the `chromium` Playwright project |
 
@@ -55,6 +57,15 @@ Mount shape and its boundary: [security.md](security.md). Task worktrees: [jobs.
 - **An executor label is resolved at claim time in the stamped scope**, never validated at queue
   time, so a renamed or deleted profile fails the task explicitly rather than guessing a runner.
   `server/test-db/job-store.executor-scope.test.ts`.
+- **A suspended profile launches nothing and is never a default.** `resolvedDefault` skips it but
+  the stored preference is kept, so resuming restores it; submission answers 409
+  `EXECUTOR_SUSPENDED`; the claim withholds its type and config and sends `executorRefusal`, which
+  the shared loop reports as a failed task before any runner starts — docker and kubernetes alike,
+  for retries and follow-ups too. A running task is untouched.
+  `server/test/routes.executor-lifecycle.test.ts`, `server/test-db/job-store.executor-scope.test.ts`.
+- **By-id writes carry their owner into the WHERE clause** (`deleteOwnedRow`, `setSuspendedRow`), so
+  another member's id, an org id through the personal door and another organization's id match
+  nothing. `server/test-db/user-executor-store.test.ts`.
 - **`node:24-alpine` ships no git**, so `docker/Dockerfile` installs it; absent, every clone is an
   ENOENT that appears only in the container.
 

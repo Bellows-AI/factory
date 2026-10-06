@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, executorSuspendedMessage, type ExecutorScope } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -41,6 +41,34 @@ import {
     runtimeVitals,
 } from './job-limits.js';
 
+/**
+ * A suspended profile launches nothing (issue 440): refused with its own code, so a client is told
+ * why instead of queueing a task the claim would fail. True when a refusal (or a failed read) has
+ * already landed on `reply`.
+ */
+async function refusedAsSuspended(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: {
+        executorsStore: Awaited<ReturnType<typeof executorsFor>>;
+        executor: string | null;
+        executorScope: ExecutorScope;
+        createdBy: string | null;
+    }
+): Promise<boolean> {
+    const { executorsStore, executor, executorScope, createdBy } = opts;
+    if (!executorsStore || !createdBy || !executor) return false;
+    const target = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'executor row read failed'),
+        () => executorsStore.configFor(createdBy, executor, executorScope)
+    );
+    if (!target.ok) return true;
+    if (!target.value?.suspended) return false;
+    bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(executorScope, executor), HTTP_CONFLICT);
+    return true;
+}
+
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
@@ -77,6 +105,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const workflowsStore = await workflowsFor(orgs, request);
     const defaultsStore = await workflowDefaultsFor(orgs, request);
     const executorsStore = await executorsFor(orgs, request);
+    if (await refusedAsSuspended(request, reply, { executorsStore, executor, executorScope, createdBy })) {
+        return reply;
+    }
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         defaultsStore,

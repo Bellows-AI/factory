@@ -35,6 +35,7 @@ function pickSession(job: BoardJob, executorType: BoardJob['executorType']): Run
 
 /** The refusal reason for an executor selection this loop cannot run, or null when it can. */
 function executorRefusalReason(_rt: LoopRuntime, job: BoardJob): string | null {
+    if (job.executorRefusal) return job.executorRefusal;
     if (job.executorType === null) {
         return 'The selected executor no longer exists. Choose a configured executor and start a new task.';
     }

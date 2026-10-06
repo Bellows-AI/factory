@@ -1,5 +1,6 @@
 import {
     ExecutorDefaultNotFoundError,
+    ExecutorSuspendedError,
     type ExecutorDefault,
     type ExecutorProfile,
     type UserExecutorStore,
@@ -19,6 +20,7 @@ export interface MemoryUserExecutorStore extends UserExecutorStore {
         config: Record<string, unknown>;
         gateFixRounds: number;
         createdBy: string | null;
+        suspended: boolean;
     }[];
     /** The stored per-member default preferences, so a test can assert what a route wrote. */
     defaults(): { userId: string; scope: ExecutorScope; name: string }[];
@@ -39,6 +41,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         config: Record<string, unknown>;
         gateFixRounds: number;
         createdBy: string | null;
+        suspended: boolean;
         position: number;
         createdAt: string;
         updatedAt: string;
@@ -75,6 +78,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         updatedAt: r.updatedAt,
         gateFixRounds: r.gateFixRounds,
         createdBy: r.createdBy,
+        suspended: r.suspended,
     });
 
     return {
@@ -87,11 +91,13 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 config: structuredClone(r.config),
                 gateFixRounds: r.gateFixRounds,
                 createdBy: r.createdBy,
+                suspended: r.suspended,
             })),
 
         defaults: () => [...preferences.entries()].map(([key, def]) => ({ userId: key, ...def })),
 
         async replace(userId, executors) {
+            const suspendedNames = new Set(rows.filter((r) => r.userId === userId && r.suspended).map((r) => r.name));
             for (let i = rows.length - 1; i >= 0; i -= 1) {
                 if (rows[i]!.userId === userId) rows.splice(i, 1);
             }
@@ -104,11 +110,35 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                     config: structuredClone(executor.config),
                     gateFixRounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
                     createdBy: null,
+                    suspended: executor.suspended ?? suspendedNames.has(executor.name),
                     position: rows.filter((r) => r.userId === userId).length,
                     createdAt: at(),
                     updatedAt: at(),
                 });
             }
+        },
+
+        async removePersonal(userId, id) {
+            const index = rows.findIndex((r) => r.id === id && r.userId === userId);
+            if (index === -1) return false;
+            rows.splice(index, 1);
+            return true;
+        },
+
+        async setPersonalSuspended(userId, id, suspended) {
+            const row = rows.find((r) => r.id === id && r.userId === userId);
+            if (!row) return null;
+            row.suspended = suspended;
+            row.updatedAt = at();
+            return toProfile(row);
+        },
+
+        async setOrgSuspended(id, suspended) {
+            const row = rows.find((r) => r.id === id && r.userId === null);
+            if (!row) return null;
+            row.suspended = suspended;
+            row.updatedAt = at();
+            return toProfile(row);
         },
 
         async list(userId) {
@@ -127,6 +157,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 type: row.type,
                 config: structuredClone(row.config),
                 gateFixRounds: row.gateFixRounds,
+                suspended: row.suspended,
             };
         },
 
@@ -148,6 +179,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 config: structuredClone(input.config),
                 gateFixRounds: input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
                 createdBy: input.createdBy,
+                suspended: false,
                 position: byScope(null).length,
                 createdAt: at(),
                 updatedAt: at(),
@@ -208,9 +240,10 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
 
         async setDefault(userId, def) {
             const owner = def.scope === USER_SCOPE ? userId : null;
-            if (!rows.some((r) => r.userId === owner && r.name === def.name)) {
-                throw new ExecutorDefaultNotFoundError(`No ${def.scope} executor named "${def.name}"`);
-            }
+            const named = rows.find((r) => r.userId === owner && r.name === def.name);
+            if (!named) throw new ExecutorDefaultNotFoundError(`No ${def.scope} executor named "${def.name}"`);
+            if (named.suspended)
+                throw new ExecutorSuspendedError(`The ${def.scope} executor "${def.name}" is suspended`);
             preferences.set(userId, { ...def });
         },
 
@@ -218,11 +251,12 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
             const stored = preferences.get(userId);
             if (stored) {
                 const owner = stored.scope === USER_SCOPE ? userId : null;
-                if (rows.some((r) => r.userId === owner && r.name === stored.name)) return { ...stored };
+                if (rows.some((r) => r.userId === owner && r.name === stored.name && !r.suspended))
+                    return { ...stored };
             }
-            const personal = byScope(userId)[0];
+            const personal = byScope(userId).find((r) => !r.suspended);
             if (personal) return { scope: USER_SCOPE, name: personal.name };
-            const orgRow = byScope(null)[0];
+            const orgRow = byScope(null).find((r) => !r.suspended);
             if (orgRow) return { scope: 'org', name: orgRow.name };
             return null;
         },

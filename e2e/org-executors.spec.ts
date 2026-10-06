@@ -6,6 +6,14 @@ import { AUTH_DATABASE_URL, E2E_LOGIN } from '../playwright.config.js';
 import { throughSignIn } from './signin.js';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
 import { DEMOTE_LABEL } from '../web/src/panels/OrgExecutorsPanel.js';
+import {
+    ALL_SUSPENDED_NOTE,
+    MAKE_DEFAULT_LABEL,
+    REMOVE_LABEL,
+    RESUME_LABEL,
+    SUSPEND_LABEL,
+    SUSPENDED_LABEL,
+} from '../web/src/panels/WorkspaceExecutorsPanel.js';
 import { confirmLabel, confirmTitle } from '../web/src/panels/org-executor-confirm.js';
 
 /**
@@ -188,8 +196,117 @@ test('Make personal asks first, naming the profile and what every other member l
     await expect(confirm).toHaveCount(0);
     await expect(row(page, name)).toBeVisible();
 
-    // Confirming the demote is not driven here: the personal list has no remove control, so the
-    // row would outlive the spec. `confirmedWrite`'s own suite pins which route each answer calls;
-    // what only a browser can show is that the gate stands between the click and the write.
+    // Confirming the demote is not driven here: `confirmedWrite`'s own suite pins which route each
+    // answer calls; what only a browser can show is that the gate stands between the click and the
+    // write.
+    await deleteProfile(page, name);
+});
+
+/** The member's own list (issue 440): the table is named "Executors", the org's "Organization executors". */
+const personalTable = (page: Page) => page.getByRole('region', { name: 'Executors', exact: true });
+const personalRow = (page: Page, name: string) => personalTable(page).getByRole('row').filter({ hasText: name });
+
+async function addPersonal(page: Page, name: string) {
+    await page.getByRole('button', { name: ADD_LABEL }).click();
+    const dialog = page.getByRole('dialog', { name: ADD_LABEL });
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await dialog.getByRole('button', { name: ADD_LABEL }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(personalRow(page, name)).toBeVisible();
+}
+
+async function removePersonal(page: Page, name: string) {
+    await personalRow(page, name).getByRole('button', { name: REMOVE_LABEL }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: confirmLabel({ action: 'remove', name }) }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(personalRow(page, name)).toHaveCount(0);
+}
+
+test('Remove on a personal profile names it, asks first, and removes only that row', async ({ page }) => {
+    const removals: string[] = [];
+    page.on('request', (request) => {
+        if (request.method() === 'DELETE' && /\/api\/workspace\/executors\//.test(request.url())) {
+            removals.push(request.url());
+        }
+    });
+    await asAdmin(page);
+    for (const name of ['Scratch', 'Keeper']) await addPersonal(page, name);
+
+    await personalRow(page, 'Scratch').getByRole('button', { name: REMOVE_LABEL }).click();
+    const confirm = page.getByRole('dialog');
+    await expect(
+        confirm.getByRole('heading', { name: confirmTitle({ action: 'remove', name: 'Scratch' }) })
+    ).toBeVisible();
+    await expect(confirm.getByText(/personal executor/)).toBeVisible();
+    await expect(confirm.getByText(/permanently deleted/)).toBeVisible();
+    await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused();
+
+    await confirm.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect(personalRow(page, 'Scratch')).toBeVisible();
+    expect(removals).toEqual([]);
+
+    await removePersonal(page, 'Scratch');
+    expect(removals).toHaveLength(1);
+    await expect(personalRow(page, 'Keeper')).toBeVisible();
+    await page.reload();
+    await expect(personalRow(page, 'Scratch')).toHaveCount(0);
+    await expect(personalRow(page, 'Keeper')).toBeVisible();
+
+    await removePersonal(page, 'Keeper');
+});
+
+test('Suspend keeps a personal profile but withholds Make default and the composer, and Resume restores it', async ({
+    page,
+}) => {
+    await asAdmin(page);
+    for (const name of ['Alpha', 'Beta']) await addPersonal(page, name);
+    await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
+
+    await personalRow(page, 'Alpha').getByRole('button', { name: SUSPEND_LABEL }).click();
+    await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toBeVisible();
+    await expect(personalRow(page, 'Alpha').getByRole('button', { name: MAKE_DEFAULT_LABEL })).toHaveCount(0);
+    // The default falls to the first ACTIVE profile; the composer selects it and never offers Alpha.
+    await expect(personalRow(page, 'Beta').getByText(/Default/)).toBeVisible();
+    await page.goto('/tasks/new');
+    await expect(page.getByLabel('Executor')).toHaveText('Beta');
+
+    // Persists across a reload, configuration and row intact.
+    await page.goto('/settings/executors');
+    await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toBeVisible();
+    await expect(personalRow(page, 'Alpha').getByRole('button', { name: 'Edit' })).toBeVisible();
+
+    // Resumed, the stored preference (Alpha, by position) is restored.
+    await personalRow(page, 'Alpha').getByRole('button', { name: RESUME_LABEL }).click();
+    await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toHaveCount(0);
+    await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
+
+    for (const name of ['Alpha', 'Beta']) await removePersonal(page, name);
+});
+
+test('suspending the last active personal profile says so, and an org profile can be suspended for everyone', async ({
+    page,
+}) => {
+    await asAdmin(page);
+    await addPersonal(page, 'Solo');
+    await personalRow(page, 'Solo').getByRole('button', { name: SUSPEND_LABEL }).click();
+    await expect(page.getByText(ALL_SUSPENDED_NOTE)).toBeVisible();
+    await personalRow(page, 'Solo').getByRole('button', { name: RESUME_LABEL }).click();
+    await expect(page.getByText(ALL_SUSPENDED_NOTE)).toHaveCount(0);
+    await removePersonal(page, 'Solo');
+
+    const name = PROFILES[0]!;
+    await addProfile(page, name);
+    await trigger(page, name).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: SUSPEND_LABEL }).click();
+    await expect(row(page, name).getByText(SUSPENDED_LABEL)).toBeVisible();
+    await page.reload();
+    await expect(row(page, name).getByText(SUSPENDED_LABEL)).toBeVisible();
+    await trigger(page, name).click();
+    await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Make default' })).toHaveCount(0);
+    await page.getByRole('menu').getByRole('menuitem', { name: RESUME_LABEL }).click();
+    await expect(row(page, name).getByText(SUSPENDED_LABEL)).toHaveCount(0);
+
     await deleteProfile(page, name);
 });

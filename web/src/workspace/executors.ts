@@ -419,6 +419,8 @@ export type ExecutorRow = {
     type: string;
     config: object;
     gateFixRounds: number;
+    /** Carried back unchanged so a whole-list save never resumes a suspended row (issue 440). */
+    suspended?: boolean;
 };
 
 /**
@@ -445,7 +447,8 @@ export function mergeExecutors(
         return { ok: false, error: `"${editing}" no longer exists — refresh and try again.` };
     }
     const value = existing.slice();
-    value[index] = { ...next };
+    // An edit changes what the row says, never whether it is suspended — a rename included.
+    value[index] = existing[index]!.suspended ? { ...next, suspended: true } : { ...next };
     return { ok: true, value };
 }
 
@@ -485,12 +488,16 @@ export interface ComposerExecutorOption extends ExecutorChoice {
  * has configured nothing personal: that is the whole point of the shared scope.
  */
 export function composerExecutorOptions(
-    personal: readonly { name: string; type: string }[],
-    org: readonly { name: string; type: string }[]
+    personal: readonly { name: string; type: string; suspended?: boolean }[],
+    org: readonly { name: string; type: string; suspended?: boolean }[]
 ): ComposerExecutorOption[] {
+    // A suspended profile (issue 440) is not offered: it cannot launch a run, and leaving it out is
+    // what makes the draft's clamp reconcile a selection that was suspended underneath it.
     return [
-        ...personal.map((row) => ({ scope: USER_SCOPE, name: row.name, type: row.type })),
-        ...org.map((row) => ({ scope: ORG_SCOPE, name: row.name, type: row.type })),
+        ...personal
+            .filter((row) => !row.suspended)
+            .map((row) => ({ scope: USER_SCOPE, name: row.name, type: row.type })),
+        ...org.filter((row) => !row.suspended).map((row) => ({ scope: ORG_SCOPE, name: row.name, type: row.type })),
     ];
 }
 

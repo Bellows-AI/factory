@@ -38,8 +38,27 @@ describe('the org executor confirmation copy', () => {
         expect(confirmBusyLabel(confirm)).toBe('Moving…');
     });
 
-    it('carries no placeholder text in either action’s copy', () => {
-        for (const action of ['delete', 'demote'] as const) {
+    it('names the personal profile, its scope and the permanent loss in the remove copy (issue 440)', () => {
+        const confirm = { action: 'remove', name: 'my-runner' } as const;
+        expect(confirmTitle(confirm)).toContain('my-runner');
+        expect(confirmBody(confirm)).toContain('my-runner');
+        expect(confirmBody(confirm)).toMatch(/personal executor/);
+        expect(confirmBody(confirm)).toMatch(/permanently deleted/);
+        expect(confirmBody(confirm)).toMatch(/cannot be undone/);
+        expect(confirmBody(confirm)).not.toMatch(/every member/);
+        expect(confirmLabel(confirm)).toBe('Remove profile');
+        expect(confirmBusyLabel(confirm)).toBe('Removing…');
+    });
+
+    it('says the org delete is organization-scoped, affects every member and is permanent', () => {
+        const body = confirmBody({ action: 'delete', name: 'team' });
+        expect(body).toMatch(/organization executor/);
+        expect(body).toMatch(/every member/);
+        expect(body).toMatch(/permanently deleted/);
+    });
+
+    it('carries no placeholder text in any action’s copy', () => {
+        for (const action of ['delete', 'demote', 'remove'] as const) {
             const confirm = { action, name: 'team-runner' };
             for (const copy of [
                 confirmTitle(confirm),

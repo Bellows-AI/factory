@@ -10,30 +10,47 @@
 
 export type OrgRowAction = 'delete' | 'demote';
 
-export interface OrgRowConfirm {
-    action: OrgRowAction;
+/**
+ * The confirmations the dialog serves: the org row's two actions, and the personal profile's
+ * Remove (issue 440), which shares the dialog but not the org write path.
+ */
+export type ConfirmAction = OrgRowAction | 'remove';
+
+export interface ConfirmRequest {
+    action: ConfirmAction;
     /** The profile's name, as the table renders it. */
     name: string;
 }
 
+/** The org section's pending action: the subset whose write goes through `confirmedWrite`. */
+export interface OrgRowConfirm extends ConfirmRequest {
+    action: OrgRowAction;
+}
+
 /** Curly quotes, matching TaskRemoveDialog's title. */
-export function confirmTitle({ action, name }: OrgRowConfirm): string {
+export function confirmTitle({ action, name }: ConfirmRequest): string {
+    if (action === 'remove') return `Remove “${name}”?`;
     return action === 'delete' ? `Delete “${name}”?` : `Make “${name}” personal?`;
 }
 
-export function confirmBody({ action, name }: OrgRowConfirm): string {
+export function confirmBody({ action, name }: ConfirmRequest): string {
+    if (action === 'remove') {
+        return `“${name}” is a personal executor. It is removed from your workspace and its configuration is permanently deleted. This cannot be undone.`;
+    }
     return action === 'delete'
-        ? `“${name}” is removed for every member of this organization and its configuration is ` +
-              'deleted. This cannot be undone.'
+        ? `“${name}” is an organization executor. It is removed for every member of this organization and its ` +
+              'configuration is permanently deleted. This cannot be undone.'
         : `“${name}” moves into your personal executors and stops being available to every ` +
               'other member of this organization.';
 }
 
-export function confirmLabel({ action }: OrgRowConfirm): string {
+export function confirmLabel({ action }: ConfirmRequest): string {
+    if (action === 'remove') return 'Remove profile';
     return action === 'delete' ? 'Delete profile' : 'Make personal';
 }
 
-export function confirmBusyLabel({ action }: OrgRowConfirm): string {
+export function confirmBusyLabel({ action }: ConfirmRequest): string {
+    if (action === 'remove') return 'Removing…';
     return action === 'delete' ? 'Deleting…' : 'Moving…';
 }
 
