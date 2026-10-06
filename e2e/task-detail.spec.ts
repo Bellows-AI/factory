@@ -379,31 +379,35 @@ test.describe('the task detail page', () => {
         await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
         await page.goto(`/tasks/${publishedThread[0]!.id}`);
 
-        // The reading order the page exists for: request, then response, then the task's work.
+        // The reading order the page exists for: the conversation and composer in the main column,
+        // every supporting panel in the sidebar.
         const conversation = page.locator('.task-conversation');
         const main = page.locator('.task-main');
+        const support = page.locator('.task-support');
         await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
-        await expect(main.getByRole('heading', { name: 'Run history' })).toBeVisible();
-        await expect(main.getByRole('heading', { name: 'Verification' })).toBeVisible();
-        await expect(main.getByRole('heading', { name: 'Published work' })).toBeVisible();
+        await expect(support.getByRole('heading', { name: 'Run history' })).toBeVisible();
+        await expect(support.getByRole('heading', { name: 'Verification' })).toBeVisible();
+        await expect(support.getByRole('heading', { name: 'Published work' })).toBeVisible();
+        for (const name of ['Run history', 'Verification', 'Published work']) {
+            await expect(main.getByRole('heading', { name })).toHaveCount(0);
+        }
         await expect(conversation.getByText('fix #177 please')).toBeVisible();
 
-        // Responses and run history start collapsed; each toggles on its own.
-        const response = conversation.locator('.run-response').first();
+        // The stored summary is the response and stays visible; the run's raw output and the run
+        // history start collapsed, and each toggles on its own.
+        const rawOutput = conversation.locator('.run-output').first();
         const history = page.locator('.run-history');
-        await expect(response).not.toHaveAttribute('open', '');
+        await expect(conversation.getByText('Rebuilt the task detail layout and outcome summary.')).toBeVisible();
+        await expect(rawOutput).not.toHaveAttribute('open', '');
         await expect(history).not.toHaveAttribute('open', '');
-        await expect(conversation.getByText('Rebuilt the task detail layout and outcome summary.')).not.toBeVisible();
+        await expect(rawOutput.locator('pre')).not.toBeVisible();
         await expect(page.locator('.task-history-item').first()).not.toBeVisible();
-        await response.getByText(/Agent response/).click();
+        await rawOutput.getByText('View raw output').click();
+        await expect(rawOutput.locator('pre')).toBeVisible();
         await expect(history).not.toHaveAttribute('open', '');
         await history.getByRole('heading', { name: 'Run history' }).click();
         await expect(page.locator('.task-history-item').first()).toBeVisible();
-        await expect(conversation.getByText('Rebuilt the task detail layout and outcome summary.')).toBeVisible();
-
-        // The stored summary is the response; the raw output stays collapsed behind it.
-        await expect(conversation.getByText('View raw output')).toBeVisible();
-        await expect(page.locator('.run-output pre')).not.toBeVisible();
+        await expect(rawOutput.locator('pre')).toBeVisible();
 
         // The outcome answers "what happened and where" without duplicating the gate output.
         await expect(page.locator('.task-outcome')).toContainText('Verification');
@@ -493,6 +497,27 @@ test.describe('the task detail page', () => {
         expect(problems).toEqual([]);
     });
 
+    test('a live run’s raw output collapses and reopens by keyboard on the tail', async ({ page }) => {
+        await routeThread(page, runningThread);
+        await page.goto(`/tasks/${runningThread[0]!.id}`);
+        const disclosure = page.locator('.task-conversation .run-output').first();
+        const output = disclosure.locator('pre.chat-output');
+        await expect(disclosure).toHaveAttribute('open', '');
+        await expect(output).toBeVisible();
+
+        await disclosure.locator('summary').focus();
+        await page.keyboard.press('Enter');
+        await expect(disclosure).not.toHaveAttribute('open', '');
+        await expect(output).not.toBeVisible();
+        // The activity line is not the raw log: it stays while the log is collapsed.
+        await expect(page.locator('.task-conversation').getByText('→ Bash npm test')).toBeVisible();
+
+        await page.keyboard.press('Enter');
+        await expect(output).toBeVisible();
+        const atTail = await output.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+        expect(atTail).toBeLessThanOrEqual(1);
+    });
+
     test('the detail renders at every target width without overflow', async ({ page }) => {
         test.setTimeout(60_000);
         await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
@@ -511,16 +536,23 @@ test.describe('the task detail page', () => {
             const railColumns = await page
                 .locator('.task-outcome-body')
                 .evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length);
+            const support = await page.locator('.task-support').boundingBox();
             if (width < 1024) {
                 // The outcome sits above the conversation, DOM order: a two-column summary, and
-                // one column on a phone, where two key/value columns cannot hold a label.
+                // one column on a phone, where two key/value columns cannot hold a label. The
+                // supporting panels follow the conversation and composer.
                 expect(outcome!.y + outcome!.height).toBeLessThanOrEqual(conversation!.y + 1);
+                const main = await page.locator('.task-main').boundingBox();
+                expect(main!.y + main!.height).toBeLessThanOrEqual(support!.y + 1);
                 expect(railColumns, `${width}px rail columns`).toBe(width < 600 ? 1 : 2);
             } else {
                 // The main column owns the left and stays the wider one; the rail is 320px.
                 expect(conversation!.x).toBeLessThan(outcome!.x);
                 expect(conversation!.width).toBeGreaterThan(outcome!.width!);
                 expect(Math.round(outcome!.width!)).toBe(320);
+                // The panels share the sidebar, under the outcome, not under the conversation.
+                expect(support!.x).toBeGreaterThan(conversation!.x + conversation!.width! - 1);
+                expect(support!.y).toBeGreaterThanOrEqual(outcome!.y + outcome!.height! - 1);
                 expect(railColumns, `${width}px rail columns`).toBe(1);
             }
             await page.screenshot({ path: `${SHOTS}/task-detail-${width}.png`, fullPage: true });

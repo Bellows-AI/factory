@@ -1,4 +1,4 @@
-import { type Ref, useEffect, useRef, useState } from 'react';
+import { type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import { Icon } from '../components/Icon.js';
 import { runDuration, timestamp } from '../format.js';
@@ -57,17 +57,57 @@ function Runtime({ runtime }: { runtime: RuntimeVitals }) {
 }
 
 /**
- * The agent response/activity body: a terminal run's summary and raw output, or a live run's
- * vitals, activity line and output tail. Split out of `TaskRun` — the nested "which branch of the
- * run's life is this" choice was the bulk of its cognitive complexity.
+ * The one raw-output disclosure every run shares, live or finished. Controlled by the run's own
+ * `open` state, so polling and the live-to-finished transition keep the reader's choice; the well
+ * stays mounted while collapsed, so a live log keeps updating. Opening a live run lands on its
+ * newest line.
+ */
+function RawOutput({
+    text,
+    open,
+    live,
+    onOpenChange,
+    liveRef,
+}: {
+    text: string;
+    open: boolean;
+    live: boolean;
+    onOpenChange: (open: boolean) => void;
+    liveRef?: Ref<HTMLPreElement> | undefined;
+}) {
+    return (
+        <details
+            className="run-output"
+            open={open}
+            onToggle={(e) => {
+                const details = e.currentTarget;
+                onOpenChange(details.open);
+                const log = details.querySelector('pre');
+                if (details.open && live && log) log.scrollTop = log.scrollHeight;
+            }}
+        >
+            <summary>View raw output</summary>
+            <OutputWell text={text} label="Raw output" liveRef={liveRef} />
+        </details>
+    );
+}
+
+/**
+ * The agent response/activity body: a terminal run's summary, or a live run's vitals and activity
+ * line, then the run's raw-output disclosure. Split out of `TaskRun` — the nested "which branch of
+ * the run's life is this" choice was the bulk of its cognitive complexity.
  */
 function RunResponseBody({
     terminal,
     job,
+    open,
+    onOpenChange,
     liveRef,
 }: {
     terminal: boolean;
     job: Job;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
     liveRef?: Ref<HTMLPreElement> | undefined;
 }) {
     const hasOutput = job.output !== null;
@@ -79,42 +119,31 @@ function RunResponseBody({
                     <p className="chat-activity">{job.runtime.activity}</p>
                 ) : null}
                 {hasOutput ? (
-                    <OutputWell text={job.output!} label="Raw output" liveRef={liveRef} />
+                    <RawOutput text={job.output!} open={open} live onOpenChange={onOpenChange} liveRef={liveRef} />
                 ) : (
                     <p className="muted">Waiting for the executor…</p>
                 )}
             </>
         );
     }
+    let lead: ReactNode;
     if (job.summary !== null) {
-        return (
-            <>
-                {/* The agent's own last words, flowing text — never a log wall. */}
-                <p className="run-summary">{job.summary}</p>
-                {hasOutput ? (
-                    <details className="run-output">
-                        <summary>View raw output</summary>
-                        <OutputWell text={job.output!} label="Raw output" />
-                    </details>
-                ) : null}
-            </>
-        );
-    }
-    if (hasOutput) {
-        return (
-            <>
-                <p className="muted">No agent summary was captured.</p>
-                <details className="run-output" open>
-                    <summary>View raw output</summary>
-                    <OutputWell text={job.output!} label="Raw output" />
-                </details>
-            </>
+        // The agent's own last words, flowing text — never a log wall.
+        lead = <p className="run-summary">{job.summary}</p>;
+    } else if (hasOutput) {
+        lead = <p className="muted">No agent summary was captured.</p>;
+    } else {
+        lead = (
+            <p className="muted">
+                This run finished without a captured agent response. Check its exit status and checks below.
+            </p>
         );
     }
     return (
-        <p className="muted">
-            This run finished without a captured agent response. Check its exit status and checks below.
-        </p>
+        <>
+            {lead}
+            {hasOutput ? <RawOutput text={job.output!} open={open} live={false} onOpenChange={onOpenChange} /> : null}
+        </>
     );
 }
 
@@ -163,8 +192,7 @@ function RunMetaFooter({ job, parked }: { job: Job; parked: boolean }) {
  * One run of the conversation, as one article with a fixed reading order: the request, the
  * agent's response (or its live activity), and a quiet metadata footer last. The stored `summary`
  * is the terminal response; raw output is untrusted text in a labelled, keyboard-scrollable well,
- * collapsed behind a finished run's summary and expanded when it is all there is — never a
- * fabricated response. `liveRef` lands on the newest non-terminal run's output pre, so the page
+ * behind one `View raw output` disclosure per run — never a fabricated response. `liveRef` lands on the newest non-terminal run's output pre, so the page
  * can follow the tail — the ref and its effect live in the page's panel, not here. Verification
  * and published work are the task's, not a run's: `TaskDetail` renders them once, below.
  */
@@ -182,26 +210,17 @@ export function TaskRun({
 }) {
     const terminal = isTerminal(job.status);
     const parked = job.status === 'queued';
-    // A run first seen live opens its response and keeps it open when it finishes, so nothing a
-    // watcher is reading is hidden; a run first seen finished starts collapsed. State is per
-    // mounted run (keyed by job id in `TaskDetail`), so polling and appended follow-ups keep it.
-    const [open, setOpen] = useState(!terminal);
+    // Live logs start expanded; a finished run's log starts collapsed behind its summary, and
+    // expanded when it is all there is. State is per mounted run (keyed by job id in
+    // `TaskDetail`), so polling, appended follow-ups and the live-to-finished transition keep it.
+    const [open, setOpen] = useState(!terminal || job.summary === null);
     return (
         <article className="chat-exchange">
             <p className="run-label">{index === 1 ? 'Request' : 'Follow-up'}</p>
             {/* The member's words are prose, not code: normal text with its line breaks kept. */}
             <p className="msg-user">{job.command}</p>
-            {terminal ? (
-                <details className="run-response" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-                    <summary className="run-label">Agent response · Run {index}</summary>
-                    <RunResponseBody terminal={terminal} job={job} liveRef={liveRef} />
-                </details>
-            ) : (
-                <>
-                    <p className="run-label">Agent activity</p>
-                    <RunResponseBody terminal={terminal} job={job} liveRef={liveRef} />
-                </>
-            )}
+            <p className="run-label">{terminal ? `Agent response · Run ${index}` : 'Agent activity'}</p>
+            <RunResponseBody terminal={terminal} job={job} open={open} onOpenChange={setOpen} liveRef={liveRef} />
             <RunMetaFooter job={job} parked={parked} />
         </article>
     );

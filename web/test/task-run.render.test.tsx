@@ -33,19 +33,55 @@ describe('TaskRun', () => {
         expect(html.match(/<article/g)?.length).toBe(2);
     });
 
-    it('collapses a finished run’s response behind a disclosure naming its run; live runs stay open', () => {
-        const html = renderDetail({ jobs: [root, child({ summary: 'second answer' })] });
-        expect(html.match(/<details class="run-response"(?! open)/g)?.length).toBe(2);
+    it('names each finished run’s response and keeps its raw output behind one disclosure per run', () => {
+        const html = renderDetail({
+            jobs: [
+                { ...root, summary: 'first answer', output: 'first log' },
+                child({ summary: 'second answer', output: 'second log' }),
+            ],
+        });
+        expect(html.match(/<details class="run-output"(?! open)/g)?.length).toBe(2);
+        expect(html.match(/View raw output/g)?.length).toBe(2);
         expect(html).toContain('Agent response · Run 1');
         expect(html).toContain('Agent response · Run 2');
         expect(html).toContain('second answer');
-        const live = renderDetail({ jobs: [job({ status: 'running', output: 'tail' })] });
-        expect(live).not.toContain('run-response');
-        expect(live).toContain('Agent activity');
     });
 
-    it('keeps status and failure metadata outside the collapsed response', () => {
-        const html = articleOf(renderDetail({ jobs: [job({ status: 'failed', exitCode: 2 })] }), '<article');
+    it('a live run offers the same disclosure, expanded, beside its activity', () => {
+        const live = articleOf(
+            renderDetail({
+                jobs: [job({ status: 'running', output: 'tail', runtime: runtime({ activity: '→ Bash npm test' }) })],
+            }),
+            'Agent activity'
+        );
+        expect(live).toMatch(/<details class="run-output" open="">/);
+        expect(live).toContain('View raw output');
+        expect(live.indexOf('→ Bash npm test')).toBeLessThan(live.indexOf('View raw output'));
+    });
+
+    it('a live follow-up collapses independently of the finished run before it', () => {
+        const html = renderDetail({
+            jobs: [
+                { ...root, summary: 'first answer', output: 'first log' },
+                child({ status: 'running', output: 'second log' }),
+            ],
+        });
+        const [first, second] = html.split('<article').slice(1);
+        expect(first).not.toMatch(/<details[^>]*open/);
+        expect(second).toMatch(/<details class="run-output" open="">/);
+    });
+
+    it('a live run without output keeps the waiting message and offers no disclosure', () => {
+        const html = articleOf(renderDetail({ jobs: [job({ status: 'queued', output: null })] }), 'Agent activity');
+        expect(html).toContain('Waiting for the executor…');
+        expect(html).not.toContain('View raw output');
+    });
+
+    it('keeps status and failure metadata after the response and its output', () => {
+        const html = articleOf(
+            renderDetail({ jobs: [job({ status: 'failed', exitCode: 2, output: 'raw lines' })] }),
+            '<article'
+        );
         expect(html.indexOf('</details>')).toBeLessThan(html.indexOf('exit 2'));
     });
 

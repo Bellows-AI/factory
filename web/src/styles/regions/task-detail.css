@@ -5,16 +5,17 @@
 
     /* The tasks pages. */
 
-    /* The task detail page: the outcome rail and the main column (conversation → run history →
-       verification → services → published work → follow-up), fed by the newest run. The DOM
-       reads the rail first; from 1024px the grid puts the main column on the left and the rail
-       in a 320px right one, and below that the rail is a two-column summary above the main
-       column — DOM order is visual order at every width, only the grid changes. */
+    /* The task detail page: the outcome rail, the main column (conversation → follow-up) and the
+       supporting panels (services → run activity → run history → verification → published work),
+       fed by the newest run. The DOM reads rail, main, panels; from 1024px the grid puts the main
+       column on the left and the rail over the panels in a 320px right one, and below that the
+       rail is a two-column summary above the main column, the panels last — DOM order is visual
+       order at every width, only the grid changes. */
     .task-layout {
         align-items: start;
         display: grid;
         gap: 24px;
-        grid-template-areas: 'outcome' 'main';
+        grid-template-areas: 'outcome' 'main' 'support';
         grid-template-columns: 1fr;
     }
 
@@ -22,17 +23,26 @@
         grid-area: outcome;
     }
 
-    .task-main {
+    .task-main,
+    .task-support {
         display: grid;
         gap: 16px;
-        grid-area: main;
         min-width: 0;
+    }
+
+    .task-main {
+        grid-area: main;
+    }
+
+    .task-support {
+        grid-area: support;
     }
 
     @media (min-width: 1024px) {
         .task-layout {
-            grid-template-areas: 'main outcome';
+            grid-template-areas: 'main outcome' 'main support';
             grid-template-columns: minmax(0, 1fr) 320px;
+            grid-template-rows: auto 1fr;
         }
     }
 
@@ -238,18 +248,12 @@
         word-break: break-word;
     }
 
-    /* The response and run-history disclosures: a labelled, keyboard-focusable summary row. */
-    .run-response > summary,
+    /* The run-history disclosure: a labelled, keyboard-focusable summary row. */
     .run-history > summary {
         cursor: pointer;
         min-height: 24px;
     }
 
-    .run-response > summary {
-        margin-bottom: 8px;
-    }
-
-    .run-response > summary:focus-visible,
     .run-history > summary:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;

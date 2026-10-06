@@ -223,10 +223,11 @@ function FollowUp({
 }
 
 /**
- * One task, whole: the outcome rail and the main column — the conversation (every run's request
- * and response, the root first), the run history, the newest run's verification, its services,
- * the published work and the follow-up. The rail leads the DOM, so a narrow screen reads it
- * first as a summary; from 1024px the grid moves it right.
+ * One task, whole: the outcome rail, the main column — the conversation (every run's request
+ * and response, the root first) and the follow-up — and the supporting panels: services, run
+ * activity, run history, the newest run's verification and the published work. The rail leads
+ * the DOM, so a narrow screen reads it first as a summary, then the conversation, then the
+ * panels; from 1024px the grid puts the rail and the panels in the right sidebar.
  *
  * Props in, markup out, like every panel: the detail poll lives in the page (`useThread`) and
  * this component owns only the follow-up draft and the live-output tail. Follow-ups are new rows
@@ -316,13 +317,6 @@ export function TaskDetail({
                             />
                         ))}
                     </section>
-                    <RunHistory jobs={jobs} />
-                    {/* The head run's progress over time (issue 339) — one chart, for the run
-                    the reader is looking at, driven by `failure_kind`'s sibling read. */}
-                    <TaskActivity payload={activity} live={live} />
-                    {gates !== null && gates.length > 0 ? <Verification gates={gates} /> : null}
-                    {services !== null && services.length > 0 ? <Services services={services} /> : null}
-                    {publish !== null ? <Publication publish={publish} /> : null}
                     <FollowUp
                         latest={latestTask}
                         viewer={viewer}
@@ -330,6 +324,15 @@ export function TaskDetail({
                         sending={sending}
                         onFollowUp={onFollowUp}
                     />
+                </div>
+                <div className="task-support">
+                    {services !== null && services.length > 0 ? <Services services={services} /> : null}
+                    {/* The head run's progress over time (issue 339) — one chart, for the run
+                    the reader is looking at, driven by `failure_kind`'s sibling read. */}
+                    <TaskActivity payload={activity} live={live} />
+                    <RunHistory jobs={jobs} />
+                    {gates !== null && gates.length > 0 ? <Verification gates={gates} /> : null}
+                    {publish !== null ? <Publication publish={publish} /> : null}
                 </div>
             </div>
         </>
