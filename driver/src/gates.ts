@@ -12,7 +12,9 @@ import { reportTail } from './runner.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRunNote } from './timeout-note.js';
 import { networkName } from './services.js';
-import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import { createControlChannel } from './control-channel.js';
+import { readBody, respondJson } from './http.js';
+import type { QuestionRelay, QuestionResolution } from './question-control.js';
 
 const run = promisify(execFile);
 
@@ -487,7 +489,17 @@ export interface GateServer {
      * `{ stop }`, false until `raiseStop`. Independent of any gate registration — every launched
      * attempt gets one, gated or not. Idempotent.
      */
-    openControl(token: string): void;
+    openControl(token: string, relay?: QuestionRelay): void;
+    /**
+     * Settles a pending question on an open control token: an answer the board recorded, or the
+     * wait expiring. False — and nothing changes — for an unknown token or id and a question
+     * already settled, so a heartbeat repeating an answer is a no-op.
+     */
+    resolveQuestion(token: string, questionId: string, resolution: QuestionResolution): boolean;
+    /** Whether a question is pending on the token — the wait a Stop must drain rather than kill. */
+    hasPendingQuestion(token: string): boolean;
+    /** Turns every pending question of the token into `cancelled`. */
+    cancelQuestions(token: string): void;
     /**
      * Whether a runner has read this control token at least once. A stop is cooperative only when
      * something is listening: an unpolled token (an old image, an unreachable endpoint) is killed
@@ -503,30 +515,14 @@ export interface GateServer {
     close(): Promise<void>;
 }
 
-/** The run-control poll route the runner's stop poller reads (docker/*-executor/stop-poller.cjs). */
-export const CONTROL_PATH = '/control';
-
 /** `{"gate":"<≤64 chars>"}` — a body many times that size is an attack, not a request. */
 const BODY_LIMIT = 4096;
-
-const readBody = async (request: IncomingMessage): Promise<string | null> => {
-    const declared = Number(request.headers['content-length'] ?? '0');
-    if (Number.isFinite(declared) && declared > BODY_LIMIT) return null;
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for await (const chunk of request) {
-        total += (chunk as Buffer).length;
-        if (total > BODY_LIMIT) return null;
-        chunks.push(chunk as Buffer);
-    }
-    return Buffer.concat(chunks).toString('utf8');
-};
 
 type GateRequest = { ok: true; gate: string } | { ok: false; status: number; error: string };
 
 /** Reads and validates the ad-hoc endpoint's request body: `{"gate": "<declared name>"}`. */
 const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
-    const raw = await readBody(request);
+    const raw = await readBody(request, BODY_LIMIT);
     if (raw === null) return { ok: false, status: HTTP_PAYLOAD_TOO_LARGE, error: 'body too large' };
     let parsed: { gate?: unknown };
     try {
@@ -612,28 +608,16 @@ export function createGateServer({
     const cancels = new Map<string, AbortController>();
     /** Per token, the latest completed run per gate name — the timeout note's raw material. */
     const history = new Map<string, Map<string, GateRunNote>>();
-    /** Per control token, whether a stop has been raised on it. */
-    const controls = new Map<string, { stop: boolean; polled: boolean }>();
+    /** The stop poll and the question routes, per control token (`control-channel.ts`). */
+    const channel = createControlChannel();
     let server: Server | null = null;
     let listening: Promise<number> | null = null;
 
-    const respond = (reply: ServerResponse, status: number, body: unknown): void => {
-        reply.statusCode = status;
-        reply.setHeader(CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE);
-        reply.end(JSON.stringify(body));
-    };
-
-    /** The runner's stop poll: `{ stop }` for an open control token, 401 for any other. */
-    const handleControl = (auth: string, reply: ServerResponse): void => {
-        const control = controls.get(auth);
-        if (control) control.polled = true;
-        if (control) respond(reply, HTTP_OK, { stop: control.stop });
-        else respond(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
-    };
+    const respond = respondJson;
 
     const handle = async (request: IncomingMessage, reply: ServerResponse): Promise<void> => {
         const auth = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
-        if (request.method === 'GET' && request.url === CONTROL_PATH) return handleControl(auth, reply);
+        if (await channel.serve(request, reply, auth)) return;
         if (request.method !== 'POST' || request.url !== '/run') {
             return respond(reply, HTTP_NOT_FOUND, { error: 'not found' });
         }
@@ -694,19 +678,13 @@ export function createGateServer({
         cancel(token) {
             this.unregister(token);
         },
-        openControl(token) {
-            if (!controls.has(token)) controls.set(token, { stop: false, polled: false });
-        },
-        controlPolled(token) {
-            return controls.get(token)?.polled ?? false;
-        },
-        raiseStop(token) {
-            const control = controls.get(token);
-            if (control) control.stop = true;
-        },
-        closeControl(token) {
-            controls.delete(token);
-        },
+        openControl: (token, relay) => channel.open(token, relay),
+        resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
+        hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
+        cancelQuestions: (token) => channel.cancelQuestions(token),
+        controlPolled: (token) => channel.polled(token),
+        raiseStop: (token) => channel.raiseStop(token),
+        closeControl: (token) => channel.close(token),
         setDeadServices: (token, note) => setDeadNote(claims.get(token), note),
         lastRuns(token) {
             return [...(history.get(token)?.values() ?? [])];
@@ -752,7 +730,7 @@ export function createGateServer({
             server = null;
             listening = null;
             claims.clear();
-            controls.clear();
+            channel.clear();
             history.clear();
             closing.closeAllConnections();
             return new Promise((resolve) => closing.close(() => resolve()));

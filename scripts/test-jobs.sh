@@ -1153,5 +1153,97 @@ ask_lane() {
 
 ask_lane
 
+# --- The question round trip: board + driver + the real claude-executor (issue #226) -------------
+#
+# The board and the driver are the real ones. The model is the scripted endpoint in `--ask` mode,
+# reached through the org env a member would configure, so the real claude CLI inside the real
+# claude-executor image asks, the bridge POSTs the question to the DRIVER's control endpoint, the
+# driver relays it to the board, and a member's answer travels back on the heartbeat. First case:
+# the job shows a pending question, a member answers, the job settles succeeded with ANSWER=Blue,
+# and a second answer is refused. Second case: stopped while pending, the job settles stopped and
+# the question reads closed.
+
+echo
+echo '# question round trip (board + driver + real claude-executor, scripted model)'
+
+pending_question() { # pending_question <job-id> -> the pending question's id, empty when none
+    node -e 'try { const j = JSON.parse(process.argv[1]); const q = (j.questions || []).find((x) => x.status === "pending"); process.stdout.write(q ? q.id : ""); } catch {}' \
+        "$(body "$(api GET "/api/jobs/$1")")"
+}
+
+await_pending_question() { # await_pending_question <job-id> [seconds] -> the question id, empty on timeout
+    local qid="" i=0
+    while [ "$i" -lt "${2:-120}" ]; do
+        qid="$(pending_question "$1")"
+        [ -n "$qid" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+    printf '%s' "$qid"
+}
+
+start_ask_endpoint() { # start_ask_endpoint <name> -> sets ask_pid and ask_port
+    node scripts/fake-model-endpoint.mjs --ask >"$work/fake-$1.port" &
+    ask_pid=$!
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-$1.port" ] && break
+        sleep 0.25
+    done
+    ask_port="$(cat "$work/fake-$1.port")"
+}
+
+point_runners_at() { # point_runners_at <port>: the org env a member would set, aimed at the scripted model
+    api PUT /api/env/org "{\"vars\":[{\"name\":\"ANTHROPIC_API_KEY\",\"value\":\"fake-key\",\"isSecret\":true},{\"name\":\"ANTHROPIC_BASE_URL\",\"value\":\"http://host.docker.internal:$1\",\"isSecret\":false}]}" >/dev/null
+}
+
+ask_roundtrip_lane() {
+    local image=claude-executor ask_pid ask_port id qid answer answered done_job
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad 'a member answers the agent through the board' "the $image image is missing — run make runners"
+        return
+    fi
+    stop_driver
+    start_driver "$image"
+
+    start_ask_endpoint answer
+    point_runners_at "$ask_port"
+    id="$(create_job 'ask which colour')"
+    qid="$(await_pending_question "$id")"
+    if [ -n "$qid" ]; then
+        ok 'the board shows the question as pending'
+    else
+        bad 'the board shows the question as pending' "$(tail -5 "$work/driver.log")"
+    fi
+    answer="{\"answers\":{\"Which colour should the report use?\":\"Blue\"}}"
+    expect_status 'a member answers the question' 200 POST "/api/jobs/$id/questions/$qid/answer" "$answer"
+    done_job="$(await_settled "$id" 180)"
+    expect_contains 'the job settles succeeded' "$done_job" succeeded
+    answered="$(body "$(api GET "/api/jobs/$id")")"
+    expect_contains 'the answer reached the same run (ANSWER=Blue)' "$(field "$answered" output)" 'ANSWER=Blue'
+    answered="$(api POST "/api/jobs/$id/questions/$qid/answer" "$answer")"
+    expect_status 'a second answer is refused' 409 POST "/api/jobs/$id/questions/$qid/answer" "$answer"
+    expect_contains 'the refusal names the answered question' "$answered" 'QUESTION_ANSWERED'
+    kill "$ask_pid" 2>/dev/null
+    wait "$ask_pid" 2>/dev/null
+
+    # Stop while pending: the question is cancelled, the CLI interrupted, the job parked stopped.
+    start_ask_endpoint stop
+    point_runners_at "$ask_port"
+    id="$(create_job 'ask which colour, then be stopped')"
+    qid="$(await_pending_question "$id")"
+    expect_status 'a pending job can be asked to stop' 202 POST "/api/jobs/$id/stop"
+    expect_contains 'the job settles stopped' "$(await_settled "$id" 180)" stopped
+    answered="$(body "$(api GET "/api/jobs/$id")")"
+    case "$(node -e 'try { const q = (JSON.parse(process.argv[1]).questions || []).find((x) => x.id === process.argv[2]); process.stdout.write(q ? q.status : ""); } catch {}' "$answered" "$qid")" in
+    closed) ok 'the stopped job'"'"'s question reads closed' ;;
+    *) bad 'the stopped job'"'"'s question reads closed' "$answered" ;;
+    esac
+    kill "$ask_pid" 2>/dev/null
+    wait "$ask_pid" 2>/dev/null
+    stop_driver
+}
+
+ask_roundtrip_lane
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

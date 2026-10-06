@@ -185,6 +185,23 @@ describe('the in-cluster kubernetes transport', () => {
         expect(tokenReads).toBe(2);
     });
 
+    it('sends a PATCH as a JSON merge patch, the media type the API server requires of one', async () => {
+        const transport = fakeTransport([{ status: 200, chunks: ['{}'] }]);
+        const request = inClusterRequest({
+            env: CLUSTER_ENV,
+            readFile: CREDENTIALS,
+            request: transport.request,
+        });
+
+        await request('PATCH', '/apis/batch/v1/namespaces/factory/jobs/runner', { spec: { activeDeadlineSeconds: 9 } });
+
+        expect(transport.calls[0]?.options).toMatchObject({
+            method: 'PATCH',
+            headers: { 'content-type': 'application/merge-patch+json' },
+        });
+        expect(transport.calls[0]?.writes).toEqual(['{"spec":{"activeDeadlineSeconds":9}}']);
+    });
+
     it('destroys a timed-out request so a half-open API connection cannot hold a lease forever', async () => {
         const transport = fakeTransport([{ timeout: true }]);
         const readFile = (() => 'credential') as typeof readFileSync;

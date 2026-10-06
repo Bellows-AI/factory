@@ -68,6 +68,21 @@ export async function startEnvContainer(
 export const ERROR_DETAIL_MAX_CHARS = 300;
 
 /**
+ * The unreadable-verdict detail the sync/reclaim callers fold into their reason (issue #344):
+ * what the container actually did, given the verdict line never arrived — the exit code and the
+ * last stdout line, preview-bounded, or the plain fact that it printed nothing. A nonzero exit
+ * never reaches here: execDocker rejects on it, and that arm reports the daemon's stderr detail
+ * as `container failed:` — so a RESOLVED unreadable verdict is by construction an exit-0
+ * container whose stdout was not the JSON line the readout parses.
+ */
+export function unreadableDockerDetail(stdout: string): string {
+    const line = stdout.trim().split('\n').filter(Boolean).pop();
+    return line === undefined
+        ? 'exit 0, the container printed nothing'
+        : `exit 0, last log line ${JSON.stringify(line.slice(0, ERROR_DETAIL_MAX_CHARS))}`;
+}
+
+/**
  * The tool's own output from a failed `execDocker` call, never the echoed command: the execFile
  * message is "Command failed: <the whole docker run argv>", which leaves no room for the one
  * line a human can act on ("remote: Permission to ... denied to bellows-ai[bot]" lives in git's

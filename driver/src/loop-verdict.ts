@@ -86,6 +86,8 @@ export interface FinishCtx {
     published: PublishResult | null;
     /** When the run ended — the stamp the timeout note's ages are measured from. */
     endedAt: number;
+    /** How far the agent's questions pushed the run deadline out — the timeout note reports the extended one. */
+    deadlineExtensionMs: number;
     /** The pump's liveness read at the moment the run ended — the timeout note's raw material. */
     activity: TimeoutActivity;
     /** The ad-hoc gate server's latest verdicts, read before the session's teardown clears them. */
@@ -101,7 +103,12 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, ledger: Ledger): string
     const { job, outcome, published } = finish;
     const { config, log } = rt;
     let output = outcome.timedOut
-        ? `${outcome.output}\n${timeoutNote(config.jobTimeoutMs, finish.activity, finish.gateRuns, finish.endedAt)}`
+        ? `${outcome.output}\n${timeoutNote(
+              config.jobTimeoutMs + finish.deadlineExtensionMs,
+              finish.activity,
+              finish.gateRuns,
+              finish.endedAt
+          )}`
         : outcome.output;
     if (published?.published) {
         output = `${output}\n[driver] published ${published.branch}${published.prUrl ? ` — ${published.prUrl}` : ''}`;
