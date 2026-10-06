@@ -14,12 +14,14 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 
 - Nothing here is inferred: run history shows recorded stamps only, a run with no stored response
   renders none, a run the pipeline holds nothing about gets one sentence, not a zero line.
-- DOM order is visual order — the outcome rail comes first at every width.
+- DOM order is visual order — the outcome rail comes first at every width, the conversation and
+  composer next, the supporting panels (`task-support`) last; from 1024px the rail and panels
+  share the right column.
 
-Classes defined here: `task-layout`, `task-main`, `task-summary`, `task-clock`, `task-actions`,
+Classes defined here: `task-layout`, `task-main`, `task-support`, `task-summary`, `task-clock`, `task-actions`,
 `task-action-help`, `task-closed`, `task-meta-line`, `task-opened-by`, `task-pill-wait`,
 `task-pill-done`, `task-outcome-body`, `task-outcome-label`, `task-history-item`, `task-branch`,
 `task-copy`, `task-verification-counts`, `task-remove-title`, `task-remove-actions`, `msg-user`,
 `msg-meta`, `chat-exchange`, `chat-exit`, `chat-runtime`, `chat-activity`, `chat-gate-list`,
 `chat-output`, `chat-resume`, `chat-done`, `chat-stop`, `chat-remove`, `run-label`, `run-summary`,
-`run-output`, `run-response`, `run-history`, `run-well`, `run-publish`, `gate-output-wrap`.
+`run-output`, `run-history`, `run-well`, `run-publish`, `gate-output-wrap`.

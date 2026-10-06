@@ -176,7 +176,8 @@ describe('TaskDetail — the follow-up composer states', () => {
     it('disables the follow-up Send until text is typed', () => {
         const html = renderDetail({ jobs: [job()] });
         const LOOKBEHIND_CHARS = 200;
-        const send = html.slice(html.lastIndexOf('>Send<') - LOOKBEHIND_CHARS, html.lastIndexOf('>Send<'));
+        const at = html.lastIndexOf('>Send follow-up<');
+        const send = html.slice(at - LOOKBEHIND_CHARS, at);
         expect(send).toContain('disabled');
     });
 
@@ -601,7 +602,7 @@ describe('TaskDetail — main column', () => {
         expect(titlesOf(renderDetail({ jobs: [job({ status: 'dead' })] }))).toContain('Run 1 lost its worker');
     });
 
-    it('reads conversation → history → verification → services → published work → follow-up', () => {
+    it('keeps only the conversation and composer in the main column; every other panel is in the sidebar', () => {
         const runtime = {
             cpuPercent: null,
             memUsedMb: null,
@@ -619,13 +620,22 @@ describe('TaskDetail — main column', () => {
                 }),
             ],
         });
-        const main = html.slice(html.indexOf('task-main'));
-        const headings = ['Conversation', 'Run history', 'Verification', 'Services', 'Published work', 'Follow up'];
-        const order = headings.map((h) => main.indexOf(`<h2>${h}</h2>`));
-        expect(order.every((at) => at >= 0)).toBe(true);
-        expect(order).toEqual([...order].sort((a, b) => a - b));
-        // The rail leads the DOM, so a narrow screen reads the summary first.
+        const layout = html.slice(html.indexOf('task-layout'));
+        const main = layout.slice(layout.indexOf('task-main'), layout.indexOf('task-support'));
+        const support = layout.slice(layout.indexOf('task-support'));
+        const orderIn = (region: string, headings: string[]) => {
+            const order = headings.map((h) => region.indexOf(`<h2>${h}</h2>`));
+            expect(order.every((at) => at >= 0)).toBe(true);
+            expect(order).toEqual([...order].sort((a, b) => a - b));
+        };
+        orderIn(main, ['Conversation', 'Follow up']);
+        orderIn(support, ['Services', 'Run history', 'Verification', 'Published work']);
+        for (const heading of ['Run history', 'Verification', 'Services', 'Published work']) {
+            expect(main).not.toContain(`<h2>${heading}</h2>`);
+        }
+        // The rail leads the DOM, so a narrow screen reads the summary first, the panels last.
         expect(html.indexOf('task-outcome')).toBeLessThan(html.indexOf('task-main'));
+        expect(html.indexOf('task-main')).toBeLessThan(html.indexOf('task-support'));
     });
 
     it('publishes the branch as a copyable chip and links only a safe PR url', () => {
