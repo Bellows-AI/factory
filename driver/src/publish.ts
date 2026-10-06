@@ -1,6 +1,7 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { containerScript as script } from './container-scripts.js';
+import { pushWithLease } from './publish-stale.js';
 
 /**
  * Publishing the work a run produced. The policy lives in the loop — a successful run, gates
@@ -616,7 +617,7 @@ export async function publishCheckout(
             await commitDirtyTree(step, state, plan.title);
         }
 
-        await step({
+        await pushWithLease(step, branch, CREDENTIAL_HELPER, {
             label: 'git push',
             entrypoint: 'git',
             args: [

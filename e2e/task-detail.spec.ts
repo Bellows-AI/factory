@@ -383,11 +383,22 @@ test.describe('the task detail page', () => {
         const conversation = page.locator('.task-conversation');
         const main = page.locator('.task-main');
         await expect(conversation.getByText('Request', { exact: true })).toBeVisible();
-        await expect(conversation.getByText('Agent response', { exact: true })).toBeVisible();
         await expect(main.getByRole('heading', { name: 'Run history' })).toBeVisible();
         await expect(main.getByRole('heading', { name: 'Verification' })).toBeVisible();
         await expect(main.getByRole('heading', { name: 'Published work' })).toBeVisible();
         await expect(conversation.getByText('fix #177 please')).toBeVisible();
+
+        // Responses and run history start collapsed; each toggles on its own.
+        const response = conversation.locator('.run-response').first();
+        const history = page.locator('.run-history');
+        await expect(response).not.toHaveAttribute('open', '');
+        await expect(history).not.toHaveAttribute('open', '');
+        await expect(conversation.getByText('Rebuilt the task detail layout and outcome summary.')).not.toBeVisible();
+        await expect(page.locator('.task-history-item').first()).not.toBeVisible();
+        await response.getByText(/Agent response/).click();
+        await expect(history).not.toHaveAttribute('open', '');
+        await history.getByRole('heading', { name: 'Run history' }).click();
+        await expect(page.locator('.task-history-item').first()).toBeVisible();
         await expect(conversation.getByText('Rebuilt the task detail layout and outcome summary.')).toBeVisible();
 
         // The stored summary is the response; the raw output stays collapsed behind it.

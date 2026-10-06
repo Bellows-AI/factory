@@ -238,6 +238,34 @@
         word-break: break-word;
     }
 
+    /* The response and run-history disclosures: a labelled, keyboard-focusable summary row. */
+    .run-response > summary,
+    .run-history > summary {
+        cursor: pointer;
+        min-height: 24px;
+    }
+
+    .run-response > summary {
+        margin-bottom: 8px;
+    }
+
+    .run-response > summary:focus-visible,
+    .run-history > summary:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
+    .run-history > summary {
+        align-items: baseline;
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+
+    .run-history > summary h2 {
+        margin: 0;
+    }
+
     /* The raw-output disclosure: collapsed behind a summary, expanded when it is all there is. */
     .run-output > summary {
         cursor: pointer;
