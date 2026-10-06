@@ -17,6 +17,19 @@ import {
 /** How a run's question is answered: the POST, already bound to the run's job id. */
 export type AnswerQuestion = (questionId: string, answers: Record<string, string>) => Promise<AnswerOutcome>;
 
+/** Runs `onAnswer`, turning a rejection into a failed outcome so the form never sticks at Sending…. */
+export async function answerOrFail(
+    onAnswer: AnswerQuestion,
+    questionId: string,
+    answers: Record<string, string>
+): Promise<AnswerOutcome> {
+    try {
+        return await onAnswer(questionId, answers);
+    } catch (e) {
+        return { state: 'failed', error: e instanceof Error ? e.message : String(e) };
+    }
+}
+
 const SUBMIT_LABEL: Partial<Record<QuestionView, string>> = {
     submitting: 'Sending…',
     failed: 'Try again',
@@ -232,7 +245,7 @@ export function TaskQuestion({ question, onAnswer }: { question: JobQuestion; on
         inFlight.current = true;
         setPhase('submitting');
         setError(null);
-        const result = await onAnswer(question.id, answers);
+        const result = await answerOrFail(onAnswer, question.id, answers);
         inFlight.current = false;
         setOutcome(result);
         setPhase(result.state === 'failed' ? 'failed' : 'idle');

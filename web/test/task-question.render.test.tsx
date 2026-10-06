@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { postAnswer } from '../src/api/answer-question.js';
 import type { AskedQuestion, JobQuestion } from '../src/api/useJobs.js';
-import { TaskQuestionView } from '../src/panels/TaskQuestion.js';
+import { answerOrFail, TaskQuestionView } from '../src/panels/TaskQuestion.js';
 import {
     answerValue,
     choose,
@@ -259,5 +259,19 @@ describe('TaskQuestion: what an answer POST settles to', () => {
             })
         );
         expect(await postAnswer('job-1', 'toolu_01', {})).toEqual({ state: 'failed', error: 'Failed to fetch' });
+    });
+});
+
+describe('TaskQuestion: an answer callback that rejects', () => {
+    it('settles to a failed outcome, so the form leaves Sending… and offers a retry', async () => {
+        const outcome = await answerOrFail(
+            async () => {
+                throw new Error('refresh exploded');
+            },
+            'toolu_01',
+            { 'Which database?': 'SQLite' }
+        );
+        expect(outcome).toEqual({ state: 'failed', error: 'refresh exploded' });
+        expect(questionView(settle(question(), outcome), 'failed')).toBe('failed');
     });
 });
