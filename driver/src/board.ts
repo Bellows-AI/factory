@@ -472,6 +472,9 @@ const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1
     ...completeBody(result),
 });
 
+/** A claim text field read defensively: the string the board sent, else null. */
+const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+
 export function createBoard({
     url,
     leaseSeconds,
@@ -515,9 +518,6 @@ export function createBoard({
         }
         return response;
     };
-
-    /** A claim text field read defensively: the string the board sent, else null. */
-    const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 
     /** The claim's `gatesSource` when it is one of the two known trees, else absent. */
     const knownGatesSource = (value: unknown): Pick<BoardJob, 'gatesSource'> =>
