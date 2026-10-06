@@ -734,6 +734,15 @@ describe('the claude-executor git guard', () => {
     });
 });
 
+// Issue #509: the CLI's bundled skills (dataviz, loop, schedule, code-review, …) are interactive
+// tools a headless run cannot use, and each one costs the skill listing on every turn. The env
+// switch, not settings.json: the per-thread settings.json persists and only its hooks are re-laid.
+describe('the claude-executor bundled skills', () => {
+    it('are disabled image-wide', () => {
+        expect(read('docker/claude-executor/Dockerfile')).toContain('ENV CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1\n');
+    });
+});
+
 /*
  * Issue #452: managed settings outrank every scope the agent can reach, so the agent (uid 1000)
  * must not own them. The image bakes them root-owned; the driver renders the endpoint override

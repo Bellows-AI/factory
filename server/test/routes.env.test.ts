@@ -287,6 +287,11 @@ describe('env var validation', () => {
             { vars: [{ name: 'FACTORY_TRANSCRIPT_DIR', value: '/etc', isSecret: false }] },
             'RESERVED_ENV_NAME',
         ],
+        [
+            'the turn context the driver passes to the claude hook',
+            { vars: [{ name: 'FACTORY_TURN_CONTEXT', value: 'spoof', isSecret: false }] },
+            'RESERVED_ENV_NAME',
+        ],
         ['a null value on a non-secret', { vars: [{ name: 'PLAIN', value: null, isSecret: false }] }, 'BAD_VALUE'],
         [
             'a value with a newline',

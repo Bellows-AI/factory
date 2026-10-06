@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import {
     claudeSystemPromptArgs,
+    claudeTurnContextEnv,
     FACTORY_OPENCODE_AGENT,
     MASTER_PROMPT_LIMIT,
     masterPromptOf,
     masterPromptRefusalReason,
     opencodeAgentArgs,
     opencodeConfigContent,
+    opencodeTurnPrompt,
 } from '../src/master-prompt.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -61,6 +63,23 @@ describe('masterPromptOf', () => {
 
     it('throws, naming the job id, when the claim carries no usable prompt', () => {
         expect(() => masterPromptOf(baseJob(null))).toThrow(/refusing to run job 11111111-1111-4111-8111-111111111111/);
+    });
+});
+
+// Issue #509: the per-node context never rides the system prompt, so it stays the same across a
+// thread's node transitions and a resumed session reads its history from the prompt cache.
+describe('the turn context', () => {
+    const turnContext = 'Factory turn context\n- Current node: gate-fix';
+
+    it('reaches claude as the hook env, and opencode as a prefix to the command', () => {
+        const job = { ...baseJob(PROMPT), turnContext };
+        expect(claudeTurnContextEnv(job)).toEqual([['FACTORY_TURN_CONTEXT', turnContext]]);
+        expect(opencodeTurnPrompt(job)).toBe(`${turnContext}\n\nfix the failing build`);
+    });
+
+    it('is nothing when the claim carries none', () => {
+        expect(claudeTurnContextEnv(baseJob(PROMPT))).toEqual([]);
+        expect(opencodeTurnPrompt(baseJob(PROMPT))).toBe('fix the failing build');
     });
 });
 

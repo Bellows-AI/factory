@@ -45,11 +45,29 @@ export function masterPromptOf(job: BoardJob): string {
     return job.masterPrompt as string;
 }
 
+/** The env the claude runner's baked UserPromptSubmit hook reads the turn context from. */
+export const TURN_CONTEXT_ENV = 'FACTORY_TURN_CONTEXT';
+
+/**
+ * The claim's per-node turn context, never in the system prompt: the system prompt precedes the
+ * conversation, so a per-node byte there would re-write a resumed session's whole history to the
+ * prompt cache on every node transition (issue #509). Claude Code takes it as env for its baked
+ * UserPromptSubmit hook, so `-p` stays the bare command and a `/skill` command still expands.
+ */
+export function claudeTurnContextEnv(job: BoardJob): [string, string][] {
+    return job.turnContext ? [[TURN_CONTEXT_ENV, job.turnContext]] : [];
+}
+
+/** OpenCode's turn prompt: its positional message is plain text, so the turn context leads it. */
+export function opencodeTurnPrompt(job: BoardJob): string {
+    return job.turnContext ? `${job.turnContext}\n\n${job.command}` : job.command;
+}
+
 /**
  * Claude Code's own delivery: the board's text through `--append-system-prompt`, snapshotting off
- * so a resumed conversation rebuilds the current claim's workflow/node context instead of
- * retaining whichever node's prompt rode the FIRST turn's snapshot. Never replaces Claude Code's
- * own built-in system prompt — this is additive, by the flag's own contract.
+ * so a resumed conversation runs the board's current contract text instead of retaining the FIRST
+ * turn's snapshot. Never replaces Claude Code's own built-in system prompt — this is additive, by
+ * the flag's own contract.
  */
 export function claudeSystemPromptArgs(job: BoardJob): string[] {
     return ['--append-system-prompt', masterPromptOf(job), '--system-prompt-snapshot', 'off'];

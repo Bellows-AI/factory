@@ -145,6 +145,8 @@ export const RESERVED_ENV_NAMES = [
     'SYNC_LOCK_WAIT_MS',
     'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',
+    // The board-rendered turn context the claude runner's UserPromptSubmit hook reads (issue #509).
+    'FACTORY_TURN_CONTEXT',
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',

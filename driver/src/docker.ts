@@ -485,8 +485,8 @@ export function dockerArgs(
     // RENDERED here in docker's own vocabulary: every env pair as a `-e NAME=value` BEFORE the
     // image name — docker stops option parsing there, and an `-e` past it would be the CLI's own
     // argv — and the plan's cliArgs after it, which is exactly what the image's ENTRYPOINT
-    // receives. The values are paths and session ids, never credentials; member-scoped values
-    // travel in the --env-file above.
+    // receives. The values are paths, session ids and the turn context, never credentials;
+    // member-scoped values travel in the --env-file above.
     const plan = runnerPlan(config, job, session);
     for (const [name, value] of plan.envPairs) args.push('-e', `${name}=${value}`);
     args.push(executorImage(config, job.executorType), ...plan.cliArgs);

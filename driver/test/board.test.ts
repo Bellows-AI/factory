@@ -335,6 +335,18 @@ describe('the claimed job', () => {
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
         expect((await board.claim('driver-1'))?.masterPrompt).toBeNull();
     });
+
+    // Issue #509: the claim's per-node context, delivered per turn (master-prompt.ts).
+    it('carries the turn context, dropping a missing, empty or non-string value', async () => {
+        const { fetch } = recorder(() => claimed({ turnContext: 'Factory turn context' }));
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.turnContext).toBe('Factory turn context');
+        for (const turnContext of [undefined, '', 42, null]) {
+            const { fetch } = recorder(() => claimed({ turnContext }));
+            const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+            expect(await board.claim('driver-1')).not.toHaveProperty('turnContext');
+        }
+    });
 });
 
 describe('rereading the gates after the startup sync', () => {

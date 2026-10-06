@@ -141,3 +141,17 @@ describe.skipIf(!enabled)('claim-time helper plans (issue #122)', () => {
         expect(claim).not.toHaveProperty('helperPlans');
     });
 });
+
+describe.skipIf(!enabled)('claim-time turn context (issue #509)', () => {
+    it('carries the node and its helper capabilities in turnContext, never in the master prompt', async () => {
+        await queueWorkflowJob(withHelper, 'turn-context');
+
+        const claim = (await store.claim(WORKER, 60)) as Claim;
+        expect(claim).not.toBeNull();
+        expect(claim.turnContext).toContain('- Current node: repair');
+        expect(claim.turnContext).toContain('pre-turn helper steps');
+        expect(claim.masterPrompt).toContain('- Workflow: turn-context');
+        expect(claim.masterPrompt).not.toContain('repair');
+        expect(claim.masterPrompt).not.toContain('pre-turn helper steps');
+    });
+});

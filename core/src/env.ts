@@ -22,11 +22,12 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the
  * transcript store lives: the driver composes it from the claim (transcriptDir in
  * driver/src/claim.ts), and a member value would steer transcripts — and, through the runner
- * entrypoint's redirect, the CLI's whole config dir — somewhere else. `OPENCODE_CONFIG_CONTENT` and
- * `CLAUDE_CODE_CONFIG_CONTENT` are not the driver's names to reserve but the BOARD's: the claim
- * synthesizes each from the author's own executor row (docs/workspace.md), and a member env var of
- * the same name would be silently shadowed by the synthesized value — refusing the PUT says so
- * instead. Reserved at the route; the driver's list deliberately does NOT carry either, because
+ * entrypoint's redirect, the CLI's whole config dir — somewhere else. `FACTORY_TURN_CONTEXT` is
+ * the board-rendered turn context the runner's hook hands the model as Factory's own.
+ * `OPENCODE_CONFIG_CONTENT` and `CLAUDE_CODE_CONFIG_CONTENT` are not the driver's names to reserve
+ * but the BOARD's: the claim synthesizes each from the author's own executor row
+ * (docs/workspace.md), and a member env var of the same name would be silently shadowed by the
+ * synthesized value — refusing the PUT says so instead. Reserved at the route; the driver's list deliberately does NOT carry either, because
  * the synthesized value must flow `claimEnv` to reach the runner.
  */
 export const RESERVED_ENV_NAMES: readonly string[] = [
@@ -41,6 +42,7 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'SYNC_LOCK_WAIT_MS',
     'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',
+    'FACTORY_TURN_CONTEXT',
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',

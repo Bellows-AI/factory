@@ -133,6 +133,24 @@ describe('the runner job spec', () => {
         ]);
     });
 
+    // Issue #509, the k8s twin of docker.test.ts ('delivers the turn context as hook env').
+    it('delivers the turn context as hook env to claude and as a prompt prefix to opencode', () => {
+        const turnContext = 'Factory turn context\n- Current node: gate-fix';
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes' });
+        const claude = runnerJobSpec(
+            config,
+            { ...job, command: '/fix 209', turnContext },
+            { id: SESSION, resume: true }
+        );
+        expect(claude.spec.template.spec.containers[0].args.slice(-2)).toEqual(['-p', '/fix 209']);
+        expect(claude.spec.template.spec.containers[0].env).toContainEqual({
+            name: 'FACTORY_TURN_CONTEXT',
+            value: turnContext,
+        });
+        const opencode = runnerJobSpec(config, { ...opencodeJob, turnContext }, null);
+        expect(opencode.spec.template.spec.containers[0].args.at(-1)).toBe(`${turnContext}\n\nfix the failing build`);
+    });
+
     // The follow-up arm of the same rule: it restores the parent conversation AND delivers the
     // adjustment into it. Identical to the resume case above now that the two agree — kept
     // separate because the follow-up flag is the one a board change could move independently.
