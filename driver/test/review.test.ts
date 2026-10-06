@@ -51,6 +51,7 @@ describe('the review collection parser', () => {
         expect(state.ref).toEqual(ref);
         expect(state.requestedReviewers).toEqual({ users: ['reviewer-a'], teams: ['qa-team'] });
         expect(state.decision).toBe('CHANGES_REQUESTED');
+        expect(state.pendingChecks).toBe(2);
     });
 
     it('surfaces a script refusal as an error, keeping empty lists', () => {

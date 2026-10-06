@@ -27,11 +27,17 @@ function writeComposedBody(id: string): string {
 }
 
 /** An empty-but-well-shaped gh-responses.json fixture: no feedback, no requested reviewers. */
-function emptyFixture(over: { decision?: string | null; users?: string[]; teams?: string[] } = {}): string {
+function emptyFixture(
+    over: { decision?: string | null; users?: string[]; teams?: string[]; checkStatuses?: string[] } = {}
+): string {
     return writeFixture({
         general: [],
         reviews: [],
         inline: [],
+        checks: {
+            total_count: (over.checkStatuses ?? []).length,
+            check_runs: (over.checkStatuses ?? []).map((status, i) => ({ name: `check-${i}`, status })),
+        },
         requested: {
             users: (over.users ?? []).map((login) => ({ login })),
             teams: (over.teams ?? []).map((name) => ({ name })),
@@ -41,6 +47,7 @@ function emptyFixture(over: { decision?: string | null; users?: string[]; teams?
                 repository: {
                     pullRequest: {
                         reviewDecision: over.decision ?? null,
+                        headRefOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                         reviewThreads: { totalCount: 0, nodes: [] },
                     },
                 },
@@ -89,6 +96,111 @@ describe('the review-collect-probe helper', () => {
         const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
         expect(verdict.output).toBe('REVIEW-WAIT');
         expect(verdict.control).toBe('conclude');
+    });
+
+    it.each(['queued', 'in_progress'])(
+        'concludes REVIEW-WAIT while a head check run is %s — a review bot may still be running',
+        async (status) => {
+            // Regression: collect ran 17s after the PR opened, while the CI run carrying the
+            // claude[bot] review job was still in progress, concluded REVIEW-CLEAN and ended the
+            // block before the review landed.
+            const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
+            const gh = emptyFixture({ checkStatuses: ['completed', status] });
+            const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
+            const run = await runSource(
+                path,
+                { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
+                { cwd }
+            );
+            const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+            expect(verdict.output).toBe('REVIEW-WAIT');
+            expect(verdict.control).toBe('conclude');
+        }
+    );
+
+    it('concludes REVIEW-CLEAN once every head check run completed', async () => {
+        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
+        const gh = emptyFixture({ checkStatuses: ['completed', 'completed'] });
+        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
+        const run = await runSource(
+            path,
+            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
+            { cwd }
+        );
+        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        expect(verdict.output).toBe('REVIEW-CLEAN');
+    });
+
+    it("surfaces a review bot's feedback — only Factory's own marked replies are skipped", async () => {
+        // Regression: every `[bot]` author was dropped, so claude[bot]'s Major inline finding
+        // never reached the digest and the block concluded REVIEW-CLEAN over it.
+        const path = writeComposedBody(REVIEW_COLLECT_PROBE_ID);
+        const cwd = mkdtempSync(join(tmpdir(), 'review-cwd-'));
+        const gh = writeFixture({
+            general: [
+                {
+                    id: 501,
+                    user: { login: 'claude[bot]' },
+                    body: '1 Major finding',
+                    created_at: '2026-09-05T00:00:00Z',
+                },
+            ],
+            reviews: [
+                {
+                    id: 61,
+                    user: { login: 'claude[bot]' },
+                    state: 'COMMENTED',
+                    body: 'see inline',
+                    submitted_at: '2026-09-05T00:00:00Z',
+                    commit_id: 'abc',
+                },
+            ],
+            inline: [],
+            requested: { users: [], teams: [] },
+            threads: {
+                data: {
+                    repository: {
+                        pullRequest: {
+                            reviewDecision: null,
+                            reviewThreads: {
+                                totalCount: 1,
+                                nodes: [
+                                    {
+                                        id: 'T_bot',
+                                        isResolved: false,
+                                        isOutdated: false,
+                                        path: 'src/request.js',
+                                        line: 124,
+                                        comments: {
+                                            totalCount: 1,
+                                            nodes: [
+                                                {
+                                                    id: 'IC_bot',
+                                                    databaseId: 701,
+                                                    author: { login: 'claude' },
+                                                    body: 'Major — the fallback also applies to email and SMS.',
+                                                    createdAt: '2026-09-05T00:00:00Z',
+                                                },
+                                            ],
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const run = await runSource(
+            path,
+            { HELPER_INPUT: JSON.stringify({ publication: PUBLICATION }), GH_FIXTURES: gh },
+            { cwd }
+        );
+        const verdict = JSON.parse(run.stdout.trim().split('\n').filter(Boolean).pop()!);
+        expect(verdict.output).toBe('REVIEW-ACTIONABLE');
+        const digest = JSON.parse(readFileSync(join(cwd, '.factory', 'review-reconcile', 'digest.json'), 'utf8'));
+        const keys = digest.items.map((i: { key: string }) => i.key).sort();
+        expect(keys).toEqual(['general:501', 'review:61', 'thread:T_bot']);
     });
 
     it('answers REVIEW-ACTIONABLE and writes a digest when unresolved feedback exists', async () => {

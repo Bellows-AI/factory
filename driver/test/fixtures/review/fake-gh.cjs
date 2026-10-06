@@ -52,13 +52,15 @@ if (/issues\/\d+\/comments/.test(joined)) key = 'general';
 if (/\/reviews(\s|$)/.test(joined)) key = 'reviews';
 if (/comments\/\d+\/replies/.test(joined)) key = 'reply';
 if (/pulls\/\d+\/comments(\s|$)/.test(joined)) key = 'inline';
+if (/commits\/[0-9a-f]{40}\/check-runs/.test(joined)) key = 'checks';
 
 if (key === null) {
     process.stderr.write(`gh: no fixture for ${joined}\n`);
     process.exit(UNKNOWN_PATH_EXIT_CODE);
 }
 
-const data = JSON.stringify(fixtures[key]);
+// A fixture predating the check-runs read answers "no check runs" rather than an unknown path.
+const data = JSON.stringify(fixtures[key] ?? (key === 'checks' ? { total_count: 0, check_runs: [] } : undefined));
 const done = () => process.exit(0);
 // A large payload (~300 KiB in the boundedness runs) outgrows the 64 KiB pipe buffer, so an
 // eager exit truncates it — wait for the drain instead.

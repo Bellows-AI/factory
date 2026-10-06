@@ -97,6 +97,8 @@ export interface ReviewCollection {
     threads: ReviewThread[];
     requestedReviewers: { users: string[]; teams: string[] };
     decision: string | null;
+    /** The head commit's check runs not yet completed. */
+    pendingChecks: number;
     truncated: ReviewTruncated;
     error: string | null;
 }
@@ -274,6 +276,7 @@ const errorCollection = (o: Record<string, unknown>, fallback: string): ReviewCo
     threads: [],
     requestedReviewers: { users: [], teams: [] },
     decision: null,
+    pendingChecks: 0,
     truncated: emptyTruncated(),
     error: str(o.error) ?? fallback,
 });
@@ -312,6 +315,7 @@ export function parseReviewCollection(stdout: string): ReviewCollection {
                 .filter((t): t is string => t !== null),
         },
         decision: str(o.decision),
+        pendingChecks: num(o.pendingChecks) ?? 0,
         truncated: truncatedOf(o.truncated),
         error: str(o.error),
     };

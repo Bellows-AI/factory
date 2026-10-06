@@ -119,6 +119,7 @@ export const collection = (over: Partial<ReviewCollection> = {}): ReviewCollecti
     ],
     requestedReviewers: { users: ['reviewer-a'], teams: ['qa-team'] },
     decision: 'CHANGES_REQUESTED',
+    pendingChecks: 2,
     truncated: { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: false },
     error: null,
     ...over,
