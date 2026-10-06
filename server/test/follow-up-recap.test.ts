@@ -47,9 +47,26 @@ describe('renderFollowUpRecap', () => {
 
         const text = renderFollowUpRecap(turns, 'again');
 
-        expect(text.length - 'again'.length).toBeLessThanOrEqual(COMMAND_LIMIT + 1_000);
+        expect(text.length).toBeLessThanOrEqual(COMMAND_LIMIT);
         expect(text).toMatch(/\(\d+ earlier turns omitted\)/);
         expect(text).toContain('turn-39 ');
         expect(text).not.toContain('turn-0 ');
+    });
+
+    it('budgets the whole delivered command, the new instruction included', () => {
+        const command = 'c'.repeat(COMMAND_LIMIT - 4_000);
+        const turns = Array.from({ length: 10 }, (_, i) => turn({ command: `turn-${i}`, output: 'r'.repeat(1_400) }));
+
+        const text = renderFollowUpRecap(turns, command);
+
+        expect(text.length).toBeLessThanOrEqual(COMMAND_LIMIT);
+        expect(text).toContain('turn-9');
+        expect(text.endsWith(`New instruction:\n\n${command}`)).toBe(true);
+    });
+
+    it('delivers the command untouched when no recap turn fits beside it', () => {
+        const command = 'c'.repeat(COMMAND_LIMIT);
+
+        expect(renderFollowUpRecap([turn()], command)).toBe(command);
     });
 });

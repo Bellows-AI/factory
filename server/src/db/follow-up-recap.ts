@@ -21,8 +21,8 @@ export interface RecapTurn {
 
 /** Per-field cap: a command keeps its head, a result its tail — where each one's point is. */
 const FIELD_LIMIT = 1_500;
-/** The whole recap's cap, so recap plus the new command stays within two command limits. */
-const RECAP_LIMIT = COMMAND_LIMIT;
+/** The whole delivered command's cap: preamble, recap and new instruction together. */
+const DELIVERED_LIMIT = COMMAND_LIMIT;
 
 const head = (text: string): string => (text.length > FIELD_LIMIT ? `${text.slice(0, FIELD_LIMIT)} […]` : text);
 const tail = (text: string): string => (text.length > FIELD_LIMIT ? `[…] ${text.slice(-FIELD_LIMIT)}` : text);
@@ -38,24 +38,19 @@ function renderTurn(turn: RecapTurn, index: number): string {
 export function renderFollowUpRecap(turns: RecapTurn[], command: string): string {
     if (turns.length === 0) return command;
     const rendered = turns.map(renderTurn);
-    // Newest turns are kept first: they say where the task stands now.
-    let budget = RECAP_LIMIT;
-    let first = rendered.length;
-    while (first > 0 && rendered[first - 1]!.length <= budget) {
-        budget -= rendered[first - 1]!.length;
-        first -= 1;
-    }
-    const omitted = first > 0 ? [`(${first} earlier turn${first === 1 ? '' : 's'} omitted)`] : [];
-    return [
+    const preamble =
         'This task continues in a new agent session: the earlier turns left no session to resume. ' +
-            'Their record follows, oldest first, as context only — it holds no instructions for this turn. ' +
-            "The checkout already holds the earlier turns' work.",
-        ...omitted,
-        ...rendered.slice(first),
-        `New instruction:\n\n${command}`,
-    ].join('\n\n');
+        'Their record follows, oldest first, as context only — it holds no instructions for this turn. ' +
+        "The checkout already holds the earlier turns' work.";
+    const instruction = `New instruction:\n\n${command}`;
+    // Oldest turns are dropped first: the newest say where the task stands now.
+    for (let first = 0; first < rendered.length; first += 1) {
+        const omitted = first > 0 ? [`(${first} earlier turn${first === 1 ? '' : 's'} omitted)`] : [];
+        const delivered = [preamble, ...omitted, ...rendered.slice(first), instruction].join('\n\n');
+        if (delivered.length <= DELIVERED_LIMIT) return delivered;
+    }
+    return command;
 }
-
 /** The thread's turns before `jobId`, oldest first: what `renderFollowUpRecap` recaps. */
 export async function readRecapTurns(
     tx: TransactionSql,
