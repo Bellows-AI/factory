@@ -77,6 +77,7 @@ Rules for this turn
 - Factory runs every capability listed above; do not emulate any of them.
 - Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
 - You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
+- The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.
 - If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop.`
         );
@@ -89,6 +90,18 @@ Rules for this turn
 
     it('never contains a brace — the opencode template-substitution vector', () => {
         expect(resolveMasterPrompt(STANDALONE)).not.toMatch(/[{}]/);
+    });
+});
+
+describe('resolveMasterPrompt: targeted-test rule', () => {
+    it('tells a gated workflow node the gates run the full suite', () => {
+        const prompt = resolveMasterPrompt({
+            workflowNode: 'task',
+            workflowName: 'default',
+            snapshot: defaultSnapshot(),
+            helperPlans: undefined,
+        });
+        expect(prompt).toContain('The declared gates run the full test suite after your turn');
     });
 });
 
@@ -164,6 +177,7 @@ describe('resolveMasterPrompt: base workflow (fix-issue)', () => {
         // The fixed rules text below always mentions "declared gates" in prose ("Factory still
         // runs its declared gates afterwards") — the capability LINE is the thing under test.
         expect(prompt).toContain('- Factory-managed capabilities: publish/reuse PR\n');
+        expect(prompt).not.toContain('run only the tests that cover what you changed');
     });
 });
 

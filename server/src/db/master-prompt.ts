@@ -43,14 +43,24 @@ const CAPABILITY_LABELS = [
 
 type CapabilityLabel = (typeof CAPABILITY_LABELS)[number];
 
-const RULES = `Rules for this turn
+/** Only for a claim whose capabilities include the gates: an ungated run has nothing behind it. */
+const GATES_RULE =
+    '- The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.';
+
+const RULES_HEAD = `Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.
 - Factory decides what happens next from this turn's verdict and final output.
 - Factory runs every capability listed above; do not emulate any of them.
 - Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
-- You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
-- If the current task defines an exact output line or marker, end with exactly that line, then stop.
+- You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.`;
+
+const RULES_TAIL = `- If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop.`;
+
+function renderRules(ctx: RenderContext): string {
+    const gated = ctx.capabilities.includes('declared gates');
+    return [RULES_HEAD, ...(gated ? [GATES_RULE] : []), RULES_TAIL].join('\n');
+}
 
 /** What one claim resolves the prompt from — trusted, already-validated board metadata only. */
 export interface MasterPromptClaimInput {
@@ -97,7 +107,7 @@ function renderContextBlock(ctx: RenderContext): string {
 
 /** Assembles and bounds the final text. */
 function renderMasterPrompt(ctx: RenderContext): string | null {
-    const text = `Factory execution contract (${MASTER_PROMPT_VERSION})\n\n${renderContextBlock(ctx)}\n\n${RULES}`;
+    const text = `Factory execution contract (${MASTER_PROMPT_VERSION})\n\n${renderContextBlock(ctx)}\n\n${renderRules(ctx)}`;
     return text.length > MASTER_PROMPT_LIMIT ? null : text;
 }
 
