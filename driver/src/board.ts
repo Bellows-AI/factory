@@ -49,6 +49,12 @@ export interface BoardJob {
      */
     masterPrompt: string | null;
     /**
+     * This claim's node and Factory-managed capabilities (issue #509), delivered per turn
+     * (master-prompt.ts) so `masterPrompt` stays the same for every claim of a thread. Absent when
+     * the board sent no non-empty string.
+     */
+    turnContext?: string;
+    /**
      * Set when this claim is a follow-up resuming its parent's session: the runner restores that
      * session rather than starting one. Read defensively as `?? null`.
      */
@@ -475,6 +481,14 @@ const completeWireBody = (job: BoardJob, result: Parameters<Board['complete']>[1
 /** A claim text field read defensively: the string the board sent, else null. */
 const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 
+/** The claim's `gatesSource` when it is one of the two known trees, else absent. */
+const knownGatesSource = (value: unknown): Pick<BoardJob, 'gatesSource'> =>
+    value === 'worktree' || value === 'clone' ? { gatesSource: value } : {};
+
+/** The claim's `turnContext` when it is a non-empty string, else absent. */
+const knownTurnContext = (value: unknown): Pick<BoardJob, 'turnContext'> =>
+    typeof value === 'string' && value.length > 0 ? { turnContext: value } : {};
+
 export function createBoard({
     url,
     leaseSeconds,
@@ -519,10 +533,6 @@ export function createBoard({
         return response;
     };
 
-    /** The claim's `gatesSource` when it is one of the two known trees, else absent. */
-    const knownGatesSource = (value: unknown): Pick<BoardJob, 'gatesSource'> =>
-        value === 'worktree' || value === 'clone' ? { gatesSource: value } : {};
-
     return {
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
@@ -531,12 +541,13 @@ export function createBoard({
             // must not survive under exactOptionalPropertyTypes, which refuses assigning
             // `undefined` to this optional property directly — the conditional spread below is
             // the only way to represent "absent".
-            const { helperPlans, gatesSource, ...rest } = (await response.json()) as Partial<BoardJob>;
+            const { helperPlans, gatesSource, turnContext, ...rest } = (await response.json()) as Partial<BoardJob>;
             const claimed = rest;
             return {
                 ...(claimed as BoardJob),
                 ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
                 ...knownGatesSource(gatesSource),
+                ...knownTurnContext(turnContext),
                 masterPrompt: textOrNull(claimed.masterPrompt),
                 resumeSessionId: claimed.resumeSessionId ?? null,
                 followUp: claimed.followUp ?? false,

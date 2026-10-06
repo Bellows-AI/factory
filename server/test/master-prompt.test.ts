@@ -4,6 +4,7 @@ import {
     MASTER_PROMPT_VERSION,
     type MasterPromptClaimInput,
     resolveMasterPrompt,
+    resolveTurnContext,
 } from '../src/db/master-prompt.js';
 import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from '../src/db/workflow-blocks/github-review-reconcile.js';
 import { PROBE_HELPER_ID } from '../src/db/workflow-blocks/merge-conflict-autofix.js';
@@ -61,23 +62,21 @@ const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): W
 };
 
 describe('resolveMasterPrompt: standalone', () => {
-    it('renders the standalone mode with gates and publish always on', () => {
+    it('renders the standalone mode with no per-turn values', () => {
         const prompt = resolveMasterPrompt(STANDALONE);
         expect(prompt).toBe(
             `Factory execution contract (${MASTER_PROMPT_VERSION})
 
 Factory execution context
 - Mode: standalone
-- Factory-managed capabilities: declared gates, publish/reuse PR
 - Your boundary: complete only the current task and return control.
 
 Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.
 - Factory decides what happens next from this turn's verdict and final output.
-- Factory runs every capability listed above; do not emulate any of them.
+- Factory runs every capability this turn's Factory turn context lists; do not emulate any of them.
 - Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
 - You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
-- The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.
 - If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop.`
         );
@@ -93,9 +92,50 @@ Rules for this turn
     });
 });
 
-describe('resolveMasterPrompt: targeted-test rule', () => {
+describe('resolveMasterPrompt: stable across a thread', () => {
+    // The prompt rides the system prompt, which precedes the conversation: any byte that differs
+    // between two claims of one thread re-writes the resumed session's whole history to cache.
+    it('is byte-identical on every claim of one workflow thread', () => {
+        const snapshot = defaultSnapshot({ review: true, merge: true });
+        const claims: MasterPromptClaimInput[] = [
+            { workflowNode: 'task', workflowName: 'default', snapshot, helperPlans: undefined },
+            {
+                workflowNode: 'merge-conflict-autofix--repair',
+                workflowName: 'default',
+                snapshot,
+                helperPlans: [{ helperId: PROBE_HELPER_ID, phase: 'pre', githubWriting: true, input: null }],
+            },
+            {
+                workflowNode: 'review-reconciliation--collect',
+                workflowName: 'default',
+                snapshot,
+                helperPlans: undefined,
+            },
+            { workflowNode: null, workflowName: 'default', snapshot, helperPlans: undefined },
+        ];
+        const prompts = claims.map(resolveMasterPrompt);
+        for (const prompt of prompts) {
+            expect(prompt).toBe(prompts[0]);
+            expect(prompt).not.toContain('Current node');
+            expect(prompt).not.toContain('Factory-managed capabilities');
+            expect(prompt).not.toContain('run only the tests');
+        }
+    });
+});
+
+describe('resolveTurnContext: standalone', () => {
+    it('renders gates and publish always on, with the targeted-test rule', () => {
+        expect(resolveTurnContext(STANDALONE)).toBe(
+            `Factory turn context
+- Factory-managed capabilities: declared gates, publish/reuse PR
+- The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.`
+        );
+    });
+});
+
+describe('resolveTurnContext: targeted-test rule', () => {
     it('tells a gated workflow node the gates run the full suite', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot(),
@@ -105,16 +145,14 @@ describe('resolveMasterPrompt: targeted-test rule', () => {
     });
 });
 
-describe('resolveMasterPrompt: default workflow', () => {
+describe('resolveTurnContext: default workflow', () => {
     it('names only the enabled optional blocks — both excluded', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
         });
-        expect(prompt).toContain('- Mode: workflow');
-        expect(prompt).toContain('- Workflow: default');
         expect(prompt).toContain('- Current node: task');
         expect(prompt).toContain('- Factory-managed capabilities: declared gates, publish/reuse PR');
         expect(prompt).not.toContain('review reconciliation');
@@ -122,7 +160,7 @@ describe('resolveMasterPrompt: default workflow', () => {
     });
 
     it('names review reconciliation only when that block is selected', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot({ review: true }),
@@ -133,7 +171,7 @@ describe('resolveMasterPrompt: default workflow', () => {
     });
 
     it('names merge-conflict repair only when that block is selected', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot({ merge: true }),
@@ -144,7 +182,7 @@ describe('resolveMasterPrompt: default workflow', () => {
     });
 
     it('names both when both are selected, and names the durable wait the review block declares', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot({ review: true, merge: true }),
@@ -156,7 +194,7 @@ describe('resolveMasterPrompt: default workflow', () => {
     });
 });
 
-describe('resolveMasterPrompt: base workflow (fix-issue)', () => {
+describe('resolveTurnContext: base workflow (fix-issue)', () => {
     it('omits declared gates on a node that opts out (fetch-issue, review both carry gates: false)', () => {
         const snapshot: WorkflowDefinition = {
             entry: 'review',
@@ -167,23 +205,21 @@ describe('resolveMasterPrompt: base workflow (fix-issue)', () => {
             edges: [],
             params: [],
         };
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'review',
             workflowName: 'fix-issue',
             snapshot,
             helperPlans: undefined,
         });
-        expect(prompt).toContain('- Current node: review');
-        // The fixed rules text below always mentions "declared gates" in prose ("Factory still
-        // runs its declared gates afterwards") — the capability LINE is the thing under test.
-        expect(prompt).toContain('- Factory-managed capabilities: publish/reuse PR\n');
-        expect(prompt).not.toContain('run only the tests that cover what you changed');
+        expect(prompt).toBe(
+            'Factory turn context\n- Current node: review\n- Factory-managed capabilities: publish/reuse PR'
+        );
     });
 });
 
-describe('resolveMasterPrompt: pre/post helper phases', () => {
+describe('resolveTurnContext: pre/post helper phases', () => {
     it('names pre-turn helper steps for this claim only', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot(),
@@ -194,7 +230,7 @@ describe('resolveMasterPrompt: pre/post helper phases', () => {
     });
 
     it('names post-turn helper steps for this claim only', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot(),
@@ -219,7 +255,7 @@ describe('resolveMasterPrompt: pre/post helper phases', () => {
             edges: [],
             params: [],
         };
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: 'task',
             workflowName: 'custom',
             snapshot,
@@ -229,25 +265,26 @@ describe('resolveMasterPrompt: pre/post helper phases', () => {
     });
 });
 
-describe('resolveMasterPrompt: member follow-up', () => {
+describe('resolveTurnContext: member follow-up', () => {
     it('names the turn as a member follow-up when off-graph inside a workflow thread', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolveTurnContext({
             workflowNode: null,
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
         });
-        expect(prompt).toContain('- Mode: workflow');
-        expect(prompt).toContain('- Workflow: default');
         expect(prompt).toContain('- Turn: member follow-up');
         expect(prompt).not.toContain('Current node');
     });
 });
 
-describe('resolveMasterPrompt: fail-closed', () => {
+describe.each([
+    ['resolveMasterPrompt', resolveMasterPrompt],
+    ['resolveTurnContext', resolveTurnContext],
+])('%s: fail-closed', (_name, resolve) => {
     it('refuses (null) when a node claim carries no snapshot at all', () => {
         expect(
-            resolveMasterPrompt({
+            resolve({
                 workflowNode: 'task',
                 workflowName: 'default',
                 snapshot: null,
@@ -258,7 +295,7 @@ describe('resolveMasterPrompt: fail-closed', () => {
 
     it('refuses (null) when the claimed node is missing from its own snapshot', () => {
         expect(
-            resolveMasterPrompt({
+            resolve({
                 workflowNode: 'ghost-node',
                 workflowName: 'default',
                 snapshot: defaultSnapshot(),
@@ -291,6 +328,17 @@ describe('resolveMasterPrompt: workflow name safety', () => {
         expect(prompt).toContain('- Workflow: (custom workflow; name not shown)');
     });
 
+    it('names the mode and workflow on a workflow claim', () => {
+        const prompt = resolveMasterPrompt({
+            workflowNode: 'task',
+            workflowName: 'default',
+            snapshot: defaultSnapshot(),
+            helperPlans: undefined,
+        });
+        expect(prompt).toContain('- Mode: workflow');
+        expect(prompt).toContain('- Workflow: default');
+    });
+
     it('renders an ordinary workflow name verbatim', () => {
         const prompt = resolveMasterPrompt({
             workflowNode: 'task',
@@ -302,9 +350,12 @@ describe('resolveMasterPrompt: workflow name safety', () => {
     });
 });
 
-describe('resolveMasterPrompt: content boundaries', () => {
+describe.each([
+    ['resolveMasterPrompt', resolveMasterPrompt],
+    ['resolveTurnContext', resolveTurnContext],
+])('%s: content boundaries', (_name, resolve) => {
     it('never contains job.command, prior output, or env-shaped content', () => {
-        const prompt = resolveMasterPrompt({
+        const prompt = resolve({
             workflowNode: 'task',
             workflowName: 'default',
             snapshot: defaultSnapshot({ review: true, merge: true }),

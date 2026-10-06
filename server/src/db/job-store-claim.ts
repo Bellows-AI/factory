@@ -28,7 +28,7 @@ import type {
     ClaimHelperPlan,
     JobStorePrs,
 } from './job-store-types.js';
-import { resolveMasterPrompt } from './master-prompt.js';
+import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
 
@@ -553,7 +553,13 @@ async function resolveClaimWorkflow(
     ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
     row: { workflow_node: string | null; workflow_name: string | null },
     gates: ClaimGatesRead
-): Promise<ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined; masterPrompt: string | null }> {
+): Promise<
+    ResolvedClaimPublish & {
+        helperPlans: ClaimHelperPlan[] | undefined;
+        masterPrompt: string | null;
+        turnContext: string | null;
+    }
+> {
     const { orgId, rootJobId, prs } = ctx;
     const snapshot =
         row.workflow_node === null && row.workflow_name === null
@@ -566,13 +572,18 @@ async function resolveClaimWorkflow(
         snapshot,
         prs,
     });
-    const masterPrompt = resolveMasterPrompt({
+    const promptInput = {
         workflowNode: row.workflow_node,
         workflowName: row.workflow_name,
         snapshot,
         helperPlans,
-    });
-    return { ...published, helperPlans, masterPrompt };
+    };
+    return {
+        ...published,
+        helperPlans,
+        masterPrompt: resolveMasterPrompt(promptInput),
+        turnContext: resolveTurnContext(promptInput),
+    };
 }
 
 /** claim()'s answer, assembled from the claimed row plus its resolved env/gates/workflow halves. */
@@ -581,7 +592,11 @@ export function buildClaimResult(
     rootJobId: string,
     resolved: ResolvedClaimExecutor &
         ResolvedClaimGates &
-        ResolvedClaimPublish & { helperPlans: ClaimHelperPlan[] | undefined; masterPrompt: string | null }
+        ResolvedClaimPublish & {
+            helperPlans: ClaimHelperPlan[] | undefined;
+            masterPrompt: string | null;
+            turnContext: string | null;
+        }
 ): Claim {
     const {
         claimEnv,
@@ -594,6 +609,7 @@ export function buildClaimResult(
         publish,
         helperPlans,
         masterPrompt,
+        turnContext,
     } = resolved;
     return {
         id: row.id,
@@ -605,6 +621,7 @@ export function buildClaimResult(
         executorRefusal,
         userId: row.created_by,
         masterPrompt,
+        turnContext,
         // Built here rather than in the route, because this is where the org is bound. Null for
         // an unattributed job — no member, so no workspace — and null when this deployment has no
         // workspace root, where no directory exists to point at.

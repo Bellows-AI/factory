@@ -2,7 +2,12 @@ import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { SESSION_ID, transcriptDir, workspacePath } from './claim.js';
 import { OPENCODE } from './executors.js';
-import { claudeSystemPromptArgs, opencodeAgentArgs } from './master-prompt.js';
+import {
+    claudeSystemPromptArgs,
+    claudeTurnContextEnv,
+    opencodeAgentArgs,
+    opencodeTurnPrompt,
+} from './master-prompt.js';
 import { worktreeDir } from './publish.js';
 import type { RunSession } from './runner.js';
 
@@ -20,7 +25,7 @@ import type { RunSession } from './runner.js';
  * container is the only remaining difference.
  */
 export interface RunnerPlan {
-    /** Executor-specific environment, in order. Every value is a path or an id — never a credential. */
+    /** Executor-specific environment, in order. Paths, ids and the board's turn context — never a credential. */
     envPairs: [string, string][];
     /** What the executor image's ENTRYPOINT is handed, in order. */
     cliArgs: string[];
@@ -78,7 +83,7 @@ function opencodePlan(config: DriverConfig, job: BoardJob, session: RunSession |
         // reporter from the session database XDG_DATA_HOME keeps.
         envPairs.push(['BELLOWS_SESSION_ID', session.id]);
     }
-    cliArgs.push(job.command);
+    cliArgs.push(opencodeTurnPrompt(job));
     return { envPairs, cliArgs };
 }
 
@@ -107,13 +112,13 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
     const envPairs: [string, string][] = [
         ['FACTORY_TRANSCRIPT_DIR', transcriptDir(config, job)],
         ['BELLOWS_SESSION_ID', session.id],
+        ...claudeTurnContextEnv(job),
     ];
     const cliArgs = [session.resume ? '--resume' : '--session-id', session.id];
     if (config.skipPermissions) cliArgs.push('--dangerously-skip-permissions');
     // The board-owned Factory execution context (issue #244), through Claude Code's own
     // system-instruction channel — additive to its built-in system prompt, never a replacement.
-    // Snapshotting off is what makes a resumed conversation rebuild THIS claim's workflow/node
-    // context rather than retaining whichever node's prompt rode the thread's first turn.
+    // It is the same text on every claim of a thread; the per-node turn context rides the env above.
     cliArgs.push(...claudeSystemPromptArgs(job));
     cliArgs.push('-p', job.command);
     return { envPairs, cliArgs };

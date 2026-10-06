@@ -1,7 +1,10 @@
 /**
  * The board-owned master prompt (issue #244): a bounded, code-rendered text every agent claim
  * carries through the executor's native system-instruction channel, telling the agent it is one
- * turn inside a Factory-run process and naming exactly what Factory itself will do around it.
+ * turn inside a Factory-run process. It holds only thread-invariant text (issue #509): the system
+ * prompt precedes the conversation, so a byte that changed between two claims of one thread would
+ * re-write the resumed session's whole history to the prompt cache. What Factory does around THIS
+ * turn — the node, its capabilities — is the turn context, which the driver delivers per turn.
  * Pure — no I/O — so the claim path (`job-store-claim.ts`) is the one caller, and every shape here
  * is trusted, already-validated metadata: a workflow name off the row, a node off the frozen
  * snapshot, helper plans off the claim's own resolver. Nothing here ever reads `job.command`, a
@@ -14,11 +17,12 @@ import { PROBE_HELPER_ID } from './workflow-blocks/merge-conflict-autofix.js';
 import { nodeOf, type WorkflowDefinition } from './workflow-schema.js';
 
 /** Versioned so tests and later migrations can name the exact behavior they expect. */
-export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v1';
+export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v2';
 
 /**
- * The character cap on the rendered prompt. Generous for the closed, fixed-shape template this
- * renders — the cap exists to fail closed on a future template mistake, not to ration space.
+ * The character cap on each rendered text, the master prompt and the turn context alike. Generous
+ * for the closed, fixed-shape templates rendered here — the cap exists to fail closed on a future
+ * template mistake, not to ration space.
  */
 export const MASTER_PROMPT_LIMIT = 4_096;
 
@@ -47,20 +51,14 @@ type CapabilityLabel = (typeof CAPABILITY_LABELS)[number];
 const GATES_RULE =
     '- The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.';
 
-const RULES_HEAD = `Rules for this turn
+const RULES = `Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.
 - Factory decides what happens next from this turn's verdict and final output.
-- Factory runs every capability listed above; do not emulate any of them.
+- Factory runs every capability this turn's Factory turn context lists; do not emulate any of them.
 - Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
-- You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.`;
-
-const RULES_TAIL = `- If the current task defines an exact output line or marker, end with exactly that line, then stop.
+- You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
+- If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop.`;
-
-function renderRules(ctx: RenderContext): string {
-    const gated = ctx.capabilities.includes('declared gates');
-    return [RULES_HEAD, ...(gated ? [GATES_RULE] : []), RULES_TAIL].join('\n');
-}
 
 /** What one claim resolves the prompt from — trusted, already-validated board metadata only. */
 export interface MasterPromptClaimInput {
@@ -88,6 +86,14 @@ function workflowNameLine(name: string): string {
 function renderContextBlock(ctx: RenderContext): string {
     const lines = ['Factory execution context', `- Mode: ${ctx.mode}`];
     if (ctx.mode === 'workflow' && ctx.workflowName !== null) lines.push(workflowNameLine(ctx.workflowName));
+    // "Current task", not "current node prompt": a standalone claim has no node at all, and the
+    // wording must read true in both modes.
+    lines.push('- Your boundary: complete only the current task and return control.');
+    return lines.join('\n');
+}
+
+function renderTurnContext(ctx: RenderContext): string {
+    const lines = ['Factory turn context'];
     if (ctx.workflowNode !== null) {
         lines.push(`- Current node: ${ctx.workflowNode}`);
     } else if (ctx.mode === 'workflow') {
@@ -99,15 +105,12 @@ function renderContextBlock(ctx: RenderContext): string {
     lines.push(
         `- Factory-managed capabilities: ${ctx.capabilities.length ? ctx.capabilities.join(', ') : '(none declared for this run)'}`
     );
-    // "Current task", not "current node prompt": a standalone claim has no node at all, and the
-    // wording must read true in both modes.
-    lines.push('- Your boundary: complete only the current task and return control.');
+    if (ctx.capabilities.includes('declared gates')) lines.push(GATES_RULE);
     return lines.join('\n');
 }
 
-/** Assembles and bounds the final text. */
-function renderMasterPrompt(ctx: RenderContext): string | null {
-    const text = `Factory execution contract (${MASTER_PROMPT_VERSION})\n\n${renderContextBlock(ctx)}\n\n${renderRules(ctx)}`;
+/** Bounds a final text. */
+function bounded(text: string): string | null {
     return text.length > MASTER_PROMPT_LIMIT ? null : text;
 }
 
@@ -149,24 +152,36 @@ function claimCapabilities(input: MasterPromptClaimInput, node: { gates?: boolea
 }
 
 /**
- * claim()'s one read of everything the renderer needs, turned into the final prompt text — or
- * null, which the claim treats as a contract violation and refuses the agent launch explicitly
- * (never a silent run with no master prompt). Null happens only when a node claim's own snapshot
- * is missing or does not contain the claimed node: neither can happen on a live thread (the same
- * fail-closed posture `resolveClaimPublish` already takes for a node with no snapshot), but a
- * future bug here must never surface as an agent quietly running unbounded.
+ * Everything both renderers need, or null, which the claim treats as a contract violation and
+ * refuses the agent launch explicitly (never a silent run with no master prompt). Null happens
+ * only when a node claim's own snapshot is missing or does not contain the claimed node: neither
+ * can happen on a live thread (the same fail-closed posture `resolveClaimPublish` already takes for
+ * a node with no snapshot), but a future bug here must never surface as an agent quietly running
+ * unbounded.
  */
-export function resolveMasterPrompt(input: MasterPromptClaimInput): string | null {
+function renderContext(input: MasterPromptClaimInput): RenderContext | null {
     const { workflowNode, workflowName, snapshot } = input;
     if (workflowNode !== null && (snapshot === null || nodeOf(snapshot, workflowNode) === undefined)) {
         return null;
     }
     const node = workflowNode !== null && snapshot !== null ? nodeOf(snapshot, workflowNode) : undefined;
-
-    return renderMasterPrompt({
+    return {
         mode: workflowName !== null ? 'workflow' : 'standalone',
         workflowName,
         workflowNode,
         capabilities: claimCapabilities(input, node),
-    });
+    };
+}
+
+/** claim()'s thread-invariant system prompt text, or null (see `renderContext`). */
+export function resolveMasterPrompt(input: MasterPromptClaimInput): string | null {
+    const ctx = renderContext(input);
+    if (ctx === null) return null;
+    return bounded(`Factory execution contract (${MASTER_PROMPT_VERSION})\n\n${renderContextBlock(ctx)}\n\n${RULES}`);
+}
+
+/** claim()'s per-turn context — this claim's node and capabilities — or null (see `renderContext`). */
+export function resolveTurnContext(input: MasterPromptClaimInput): string | null {
+    const ctx = renderContext(input);
+    return ctx === null ? null : bounded(renderTurnContext(ctx));
 }

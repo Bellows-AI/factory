@@ -92,6 +92,13 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
 
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 
+# The CLI's bundled skills (dataviz, loop, schedule, code-review, …) are interactive tools a
+# headless run cannot use, listed to the model on every turn. This drops them; docker/skills and
+# plugins stay. The env switch rather than settings.json's `disableBundledSkills`: a thread's
+# settings.json persists, and only its hooks are re-laid. The built-in `statusline-setup` agent
+# has no switch short of --safe-mode, so it stays listed.
+ENV CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1
+
 # The predefined configuration. Everything under claude-home/ lands in the config directory as-is:
 # settings.json, CLAUDE.md, agents/, commands/, hooks/. No credentials live here — those arrive at
 # runtime as environment (see README).
@@ -142,7 +149,10 @@ COPY claude-progress.cjs /usr/local/bin/claude-progress.cjs
 # settings.json reads it. Absolute paths in /usr/local/bin for the same reason as the git guard.
 COPY stop-poller.cjs /usr/local/bin/stop-poller.cjs
 COPY stop-hook.cjs /usr/local/bin/stop-hook.cjs
-RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/stop-poller.cjs /usr/local/bin/stop-hook.cjs
+# The claim's turn context (issue #509): settings.json's UserPromptSubmit hook answers it from
+# FACTORY_TURN_CONTEXT. Absolute path for the same reason as the git guard.
+COPY turn-context-hook.cjs /usr/local/bin/turn-context-hook.cjs
+RUN chmod 0755 /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/stop-poller.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
 
 USER node
 

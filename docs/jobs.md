@@ -21,8 +21,8 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Attribution, wall clock, agent turns, publication | `server/src/db/job-store-reads.ts`, `job-store-rows.ts` | `server/test-db/job-store.attribution.test.ts`, `job-store.wall-clock.test.ts`, `job-store.publication.test.ts` |
 | `.bellows.yaml` parser (gates and services) | `server/src/workspace/bellows.ts` | `server/test/bellows.test.ts` |
 | Gates, board side; the claim's `gatesSource` | `server/src/db/job-store-worker.ts`, `job-store-claim.ts`, `server/migrations/018_job_gates.sql` | `server/test-db/job-store.gates.test.ts`, `job-store.gates.rereads.test.ts`, `server/test/claim-gates-source.test.ts` |
-| Master prompt, rendered | `server/src/db/master-prompt.ts` | `server/test/master-prompt.test.ts` |
-| Master prompt, delivered (argv, OpenCode `factory` agent) | `driver/src/master-prompt.ts`, `runner-plan.ts`, `claim.ts` | `driver/test/master-prompt.test.ts` |
+| Master prompt and turn context, rendered | `server/src/db/master-prompt.ts`, `job-store-claim.ts` | `server/test/master-prompt.test.ts`, `server/test-db/job-store.helper-plans.test.ts` |
+| Master prompt, delivered (argv, OpenCode `factory` agent); turn context (claude: UserPromptSubmit hook env, opencode: prompt prefix) | `driver/src/master-prompt.ts`, `runner-plan.ts`, `claim.ts`, `board.ts`, `docker/claude-executor/turn-context-hook.cjs` | `driver/test/master-prompt.test.ts`, `docker.test.ts`, `k8s.test.ts`, `turn-context-hook.test.ts` |
 | Claim loop, verdicts, reclaim | `driver/src/loop*.ts`, `board.ts`, `claim.ts` | `driver/test/loop.test.ts`, `board.test.ts` |
 | Setup conclusion (`SetupHalt`) and the stand-down fence: the one checkout-claim release, the one settle, the one park, and the one `AbortSignal` a step is raced against | `driver/src/loop-fence.ts`, `loop-types.ts`, `loop-attempt.ts`, `loop-run.ts`, `loop-helpers.ts`, `loop-gates.ts`, `loop-verdict.ts` | `driver/test/loop-fence.test.ts` |
 | Docker runner, env, argv | `driver/src/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker.test.ts`, `config.test.ts` |
@@ -90,7 +90,8 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 - **A null `masterPrompt` on the wire is refused before any setup step runs**
   (`masterPromptRefusalReason`, read in `driver/src/loop-run.ts` beside the executor-selection
   refusal) — `driver/test/master-prompt.test.ts`. The render is pure and fails closed; it never
-  reads `job.command`, node prompt text, prior output or env values
+  reads `job.command`, node prompt text, prior output or env values, and it is byte-identical on
+  every claim of a thread; the node and capabilities ride `turnContext`
   (`server/test/master-prompt.test.ts`).
 - **`driver/` and `cli/` depend on nothing — `core` included.** They are HTTP clients; a shared
   type is copied, not imported. Enforced by `lint/no-cross-package-imports.grit`.

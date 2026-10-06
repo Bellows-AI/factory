@@ -342,8 +342,15 @@ export interface Claim {
      * channel, never concatenated into the command. Null only when the trusted metadata could not
      * produce a valid, bounded prompt (a workflow node claim whose snapshot is missing or does not
      * contain it) — the driver refuses the launch explicitly rather than running with no contract.
+     * Thread-invariant: this claim's node and capabilities ride `turnContext` instead (issue #509).
      */
     masterPrompt: string | null;
+    /**
+     * This claim's node and Factory-managed capabilities, rendered by `master-prompt.ts` like
+     * `masterPrompt` and null exactly when it is. The driver delivers it per turn (a hook's env for
+     * claude, a prompt prefix for opencode), never into `command` itself, which also names the commit.
+     */
+    turnContext: string | null;
     /**
      * Where that person's checkouts are, RELATIVE to the workspace root: `<orgId>/<userId>`.
      *

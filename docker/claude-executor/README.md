@@ -34,7 +34,10 @@ this repo's application.
 - The managed OTLP scope beats `-e`, a member's executor config and a checkout's
   `.claude/settings.json`; `OTEL_LOG_*` is `0` ([docs/security.md](../../docs/security.md)).
 - The master prompt is board-rendered and passed with `--append-system-prompt` and
-  `--system-prompt-snapshot off` — [docs/jobs.md](../../docs/jobs.md).
+  `--system-prompt-snapshot off`; the per-node turn context arrives as `FACTORY_TURN_CONTEXT`,
+  answered by the `UserPromptSubmit` hook `turn-context-hook.cjs` — [docs/jobs.md](../../docs/jobs.md).
+- `CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1` drops the CLI's bundled interactive skills from the
+  listing; the built-in `statusline-setup` agent has no switch and stays — `Dockerfile`.
 
 ## Commands
 

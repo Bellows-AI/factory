@@ -30,6 +30,17 @@
                     }
                 ]
             }
+        ],
+        "UserPromptSubmit": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node /usr/local/bin/turn-context-hook.cjs",
+                        "timeout": 10
+                    }
+                ]
+            }
         ]
     }
 }

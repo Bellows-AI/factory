@@ -135,6 +135,24 @@ describe('the docker run arguments', () => {
         ]);
     });
 
+    // Issue #509, the docker half of the pair: the per-node turn context never rides the system
+    // prompt. Claude gets it as env for the baked UserPromptSubmit hook, so `-p` stays the command
+    // and a `/skill` command still expands; opencode's positional message is plain text, so it is
+    // prefixed. The k8s twin is pinned in k8s.test.ts ('delivers the turn context').
+    it('delivers the turn context as hook env to claude and as a prompt prefix to opencode', () => {
+        const turnContext = 'Factory turn context\n- Current node: gate-fix';
+        const config = loadDriverConfig({});
+        const session = { id: SESSION, resume: true };
+        const claude = dockerArgs(config, { ...job, command: '/fix 209', turnContext }, session, {
+            envFile: '/tmp/env-file',
+        });
+        expect(claude.slice(-2)).toEqual(['-p', '/fix 209']);
+        expect(claude).toEqual(expect.arrayContaining(['-e', `FACTORY_TURN_CONTEXT=${turnContext}`]));
+        expect(dockerArgs(config, { ...opencodeJob, turnContext }, null, { envFile: '/tmp/env-file' }).at(-1)).toBe(
+            `${turnContext}\n\nfix the failing build`
+        );
+    });
+
     // The link the UI shows is built from this, so it has to be the id the runner actually uses —
     // which is why it is given to the CLI rather than read back out of it.
     it('tells the runner which session id to use', () => {
@@ -564,6 +582,14 @@ describe("the board's environment", () => {
         // would steer where headless transcripts are written — and, through the entrypoint's
         // redirect, where the CLI's whole config dir lands.
         const hijacked = { ...job, env: { FACTORY_TRANSCRIPT_DIR: '/somewhere', OTHER: 'fine' } };
+        expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
+        expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
+    });
+
+    it('drops a member FACTORY_TURN_CONTEXT from the claim env and the env file', () => {
+        // The turn context is board-rendered (runner-plan.ts); a member value would reach the
+        // model through the UserPromptSubmit hook as Factory's own context.
+        const hijacked = { ...job, env: { FACTORY_TURN_CONTEXT: 'spoof', OTHER: 'fine' } };
         expect(claimEnv(hijacked)).toEqual({ OTHER: 'fine' });
         expect(envFileBody(hijacked)).toBe('OTHER=fine\n');
     });
