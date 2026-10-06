@@ -52,6 +52,7 @@ const status = (over: Partial<TaskStatus>): TaskStatus => ({
     doneAt: over.doneAt ?? null,
     waitReason: over.waitReason ?? null,
     waitTerminalReason: over.waitTerminalReason ?? null,
+    needsAnswer: over.needsAnswer ?? false,
 });
 
 const DONE_AT = '2026-09-01T13:00:00.000Z';
@@ -60,6 +61,7 @@ describe('taskStatusLabel', () => {
     it('names the moving states, a stop request louder than the run itself', () => {
         expect(taskStatusLabel(status({ status: 'running' }))).toBe('Running');
         expect(taskStatusLabel(status({ status: 'queued' }))).toBe('Queued');
+        expect(taskStatusLabel(status({ status: 'running', needsAnswer: true }))).toBe('Needs answer');
         expect(taskStatusLabel(status({ status: 'running', cancelRequestedAt: '2026-09-01T12:00:00.000Z' }))).toBe(
             'Stopping'
         );
@@ -169,6 +171,9 @@ describe('taskTone', () => {
         [{ status: 'failed' }, 'failed'],
         [{ status: 'dead' }, 'failed'],
         [{ status: 'stopped' }, 'stopped'],
+        [{ status: 'running', needsAnswer: true }, 'answer'],
+        [{ status: 'running', cancelRequestedAt: '2026-09-01T12:00:00.000Z', needsAnswer: true }, 'answer'],
+        [{ status: 'running', needsAnswer: false }, 'running'],
     ];
 
     it.each(cases)('answers the label precedence as a tone: %o → %s', (over, tone) => {

@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useShell } from '../src/components/AppShell.js';
-import type { TaskNavigation, UseTasks } from '../src/api/useTasks.js';
+import { type TaskNavigation, type UseTasks, useTasks } from '../src/api/useTasks.js';
 import { TaskInboxPage } from '../src/pages/TaskInboxPage.js';
 import { TasksLayout, useTasksPage } from '../src/pages/TasksLayout.js';
 
@@ -108,5 +108,33 @@ describe('tasks area wiring', () => {
         );
         expect(html).toContain('the published row');
         expect(html).toContain('href="/tasks/44444444-4444-4444-8444-444444444444"');
+    });
+});
+
+describe('task actions wiring', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('answerQuestion posts the answers to the question’s own answer route', async () => {
+        let actions: UseTasks['actions'] | undefined;
+        function ActionsProbe() {
+            actions = useTasks(false).actions;
+            return null;
+        }
+        renderToStaticMarkup(
+            <MemoryRouter>
+                <ActionsProbe />
+            </MemoryRouter>
+        );
+        const fetch = vi.fn(async (_url: string, _init?: RequestInit) =>
+            Response.json({ answers: { 'Which database?': 'SQLite' }, answeredBy: null, answeredAt: null })
+        );
+        vi.stubGlobal('fetch', fetch);
+        const jobId = crypto.randomUUID();
+        const outcome = await actions!.answerQuestion(jobId, 'toolu_01', { 'Which database?': 'SQLite' });
+        const [url, init] = fetch.mock.calls[0]!;
+        expect(url).toBe(`/api/jobs/${jobId}/questions/toolu_01/answer`);
+        expect(init?.method).toBe('POST');
+        expect(JSON.parse(init?.body as string)).toEqual({ answers: { 'Which database?': 'SQLite' } });
+        expect(outcome.state).toBe('answered');
     });
 });

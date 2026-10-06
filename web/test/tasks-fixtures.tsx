@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
-import type { Job } from '../src/api/useJobs.js';
+import type { Job, JobQuestion } from '../src/api/useJobs.js';
 import type { JobActivity } from '../src/api/useJobActivity.js';
 import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
@@ -50,6 +50,30 @@ export function job(overrides: Partial<Job> = {}): Job {
         waitReason: null,
         waitingSince: null,
         waitTerminalReason: null,
+        questions: [],
+        ...overrides,
+    };
+}
+
+/** One pending, answerable AskUserQuestion call with a single single-select question. */
+export function question(overrides: Partial<JobQuestion> = {}): JobQuestion {
+    return {
+        id: 'toolu_01',
+        attempt: 1,
+        questions: [
+            {
+                question: 'Which database?',
+                header: 'Database',
+                multiSelect: false,
+                options: [{ label: 'Postgres', description: 'The board already runs it' }, { label: 'SQLite' }],
+            },
+        ],
+        status: 'pending',
+        answerable: true,
+        answers: null,
+        answeredBy: null,
+        askedAt: '2026-09-01T12:02:00.000Z',
+        answeredAt: null,
         ...overrides,
     };
 }
@@ -152,6 +176,7 @@ export const renderDetail = ({
                 followUpError={followUpError}
                 sending={sending}
                 onFollowUp={async () => null}
+                onAnswer={async () => ({ state: 'failed', error: 'not wired in this suite' })}
                 activity={activity}
                 live={live}
             />

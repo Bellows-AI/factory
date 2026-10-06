@@ -21,6 +21,7 @@ import {
     taskSummary,
     taskTitleFromCommand,
     taskTone,
+    threadNeedsAnswer,
 } from '../task-tree.js';
 
 /** The composer's field — Ask for another pass lands the caret there instead of sending anything. */
@@ -49,6 +50,7 @@ export const notAuthorMessage = (latest: Job): string =>
  */
 const TONE_PILL: Record<TaskTone, { className: string; mark: IconName | 'lamp' | null }> = {
     none: { className: 'pill', mark: null },
+    answer: { className: 'pill pill-accent', mark: 'circle-dot' },
     queued: { className: 'pill pill-done', mark: 'clock' },
     running: { className: 'pill pill-ok', mark: 'lamp' },
     stopping: { className: 'pill pill-done', mark: 'lamp' },
@@ -65,7 +67,8 @@ const TONE_PILL: Record<TaskTone, { className: string; mark: IconName | 'lamp' |
  * `live` makes it the page's one polite live region — the header's; a poll that lands the same
  * text announces nothing, and a second live copy would announce every change twice.
  */
-export function TaskStatePill({ job, live = false }: { job: Job; live?: boolean }) {
+export function TaskStatePill({ jobs, live = false }: { jobs: Job[]; live?: boolean }) {
+    const job = { ...jobs[jobs.length - 1]!, needsAnswer: threadNeedsAnswer(jobs) };
     const pill = TONE_PILL[taskTone(job)];
     return (
         <span className={pill.className} aria-live={live ? 'polite' : undefined}>
@@ -373,7 +376,7 @@ export function TaskHeader({
             }
             meta={
                 <>
-                    <TaskStatePill job={latestTask} live />
+                    <TaskStatePill jobs={jobs} live />
                     {verificationFailed ? (
                         <span className="pill pill-bad">
                             <Icon name="alert-circle" size={14} />

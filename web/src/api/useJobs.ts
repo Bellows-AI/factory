@@ -98,6 +98,32 @@ export interface AuthorRef {
     avatarUrl: string | null;
 }
 
+/** One question of an AskUserQuestion call, as the agent asked it. */
+export interface AskedQuestion {
+    question: string;
+    header: string;
+    multiSelect: boolean;
+    options: { label: string; description?: string }[];
+}
+
+/**
+ * One AskUserQuestion call of one attempt, copied from the board. `closed` is a `pending` row whose
+ * run no longer waits; `answerable` is exactly what the answer route accepts.
+ */
+export interface JobQuestion {
+    /** The agent's `tool_use_id`. */
+    id: string;
+    attempt: number;
+    questions: AskedQuestion[];
+    status: 'pending' | 'answered' | 'expired' | 'closed';
+    answerable: boolean;
+    /** Question text → the answer; null until answered. */
+    answers: Record<string, string> | null;
+    answeredBy: AuthorRef | null;
+    askedAt: string;
+    answeredAt: string | null;
+}
+
 export interface Job {
     id: string;
     command: string;
@@ -196,6 +222,8 @@ export interface Job {
     waitReason: string | null;
     waitingSince: string | null;
     waitTerminalReason: string | null;
+    /** The run's agent questions, oldest first; empty on list responses and runs that asked none. */
+    questions: JobQuestion[];
 }
 
 /**

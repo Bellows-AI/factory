@@ -48,6 +48,7 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => {
         waitTerminalReason: over.waitTerminalReason ?? null,
         createdAt: over.createdAt ?? '2026-09-02T12:00:00.000Z',
         activityAt: over.activityAt ?? '2026-09-02T12:10:00.000Z',
+        needsAnswer: over.needsAnswer ?? false,
     };
 };
 
@@ -371,6 +372,12 @@ describe('SideNav status dots and live lines', () => {
         expect(html).toContain('sidenav-dot sidenav-dot-running');
         expect(html).toContain('sidenav-task-summary');
         expect(html).toContain('→ Read src/x.ts');
+    });
+
+    it('wears the your-turn blue dot while the running task waits on an answer', () => {
+        const html = render('/tasks', navigation([summary(running({ needsAnswer: true }))], []));
+        expect(html).toContain('sidenav-dot sidenav-dot-review');
+        expect(html).not.toContain('sidenav-dot-running');
     });
 
     it('keeps the live line out of queued and finished tasks', () => {

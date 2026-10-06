@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import type { ExecutorScope } from '@factory-ai/core';
+import { type AnswerOutcome, postAnswer } from './answer-question.js';
 import { refusalOf } from './refusal.js';
 import type { DefaultWorkflowSteps } from './useDefaultWorkflowSettings.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
@@ -38,6 +39,8 @@ export interface TaskSummary {
     createdAt: string;
     /** The head's newest of created/started/finished/done — what orders and paginates. */
     activityAt: string;
+    /** Whether any run of the thread holds a question a member can still answer. */
+    needsAnswer: boolean;
 }
 
 export interface TaskNavigation {
@@ -149,6 +152,7 @@ export interface UseTasks {
         markDone: (id: string) => Promise<string | null>;
         stop: (id: string) => Promise<string | null>;
         remove: (id: string) => Promise<string | null>;
+        answerQuestion: (jobId: string, questionId: string, answers: Record<string, string>) => Promise<AnswerOutcome>;
     };
 }
 
@@ -677,6 +681,15 @@ function useTaskActions(start: () => void): UseTasks['actions'] {
                 const error = await postTaskAction(`/api/jobs/${id}/remove`, 'Could not remove the task');
                 if (error === null) start();
                 return error;
+            },
+            async answerQuestion(
+                jobId: string,
+                questionId: string,
+                answers: Record<string, string>
+            ): Promise<AnswerOutcome> {
+                const outcome = await postAnswer(jobId, questionId, answers);
+                if (outcome.state !== 'failed') start();
+                return outcome;
             },
         }),
         [start]

@@ -53,24 +53,26 @@ function NextActionSection({ latest, viewer }: { latest: Job; viewer: FollowUpVi
 /** The Result section: status pills, who started it, and how it closed. Split out of
  * `TaskOutcome` so its own ternary chain does not add to the parent's cognitive complexity. */
 function ResultSection({
-    latest,
+    jobs,
     closure,
     exit,
     resultPairs,
     waiting,
 }: {
-    latest: Job;
+    /** The whole thread: the pill reads a question on any run, the rest reads the newest. */
+    jobs: Job[];
     closure: Closure | null;
     exit: number | null;
     resultPairs: [string, ReactNode][];
     /** An open PR-review wait (206) says what it waits for; a terminal one says why it ended. */
     waiting: boolean;
 }) {
+    const latest = jobs[jobs.length - 1] as Job;
     return (
         <section>
             <h3 className="task-outcome-label">Result</h3>
             <p className="msg-meta">
-                <TaskStatePill job={latest} />
+                <TaskStatePill jobs={jobs} />
                 {closure !== null && closure.kind !== 'done' ? (
                     <span className="pill chat-stop">
                         {closure.kind === 'stopped' ? 'stopped by' : 'stop requested by'} {closure.login}
@@ -243,13 +245,7 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
                 <h2>Outcome</h2>
             </summary>
             <div className="task-outcome-body">
-                <ResultSection
-                    latest={latest}
-                    closure={closure}
-                    exit={exit}
-                    resultPairs={resultPairs}
-                    waiting={waiting}
-                />
+                <ResultSection jobs={jobs} closure={closure} exit={exit} resultPairs={resultPairs} waiting={waiting} />
                 <NextActionSection latest={latest} viewer={viewer} />
                 {executionPairs.length > 0 ? (
                     <section>
