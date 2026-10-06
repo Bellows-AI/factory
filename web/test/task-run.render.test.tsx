@@ -306,17 +306,13 @@ describe('follow-up composer', () => {
         expect(renderDetail({ jobs: [job()], sending: true })).toContain('Sending…');
     });
 
-    it('a terminal open sessionless run explains itself and links Start a new task', () => {
+    it('a terminal open sessionless run still offers the composer', () => {
         const html = renderDetail({ jobs: [job({ sessionId: null })] });
-        expect(html).toContain('no agent session to continue');
-        expect(html).toContain('href="/tasks/new"');
-        expect(html).toContain('Start a new task');
-        expect(html).not.toContain('Ask for a follow-up');
+        expect(html).toContain('Ask for a follow-up');
     });
 
-    it('a closed task renders no composer and no sessionless note', () => {
+    it('a closed task renders no composer', () => {
         const html = renderDetail({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
         expect(html).not.toContain('Ask for a follow-up');
-        expect(html).not.toContain('no agent session to continue');
     });
 });

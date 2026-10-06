@@ -14,7 +14,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Body validation and refusal codes | `server/src/routes/job-field-validation*.ts`, `job-refusals.ts`, `job-limits.ts` | `server/test/routes.jobs.test.ts` |
 | Schema | `server/migrations/006_jobs.sql` and the later `0*_job_*.sql` | `server/test-db/job-store.test.ts` |
 | Claim, lease, fencing token, settle | `server/src/db/job-store-claim.ts`, `job-store.ts` | `server/test-db/job-store.test.ts`, `job-store.thread-claim.test.ts`, `job-store.settle.test.ts` |
-| Follow-ups, done, retry, command edit | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.follow-ups.test.ts`, `job-store.retries.test.ts`, `job-store.command-edit.test.ts` |
+| Follow-ups, done, retry, command edit; a sessionless follow-up's recap | `server/src/db/job-store-actions.ts`, `follow-up-recap.ts` | `server/test-db/job-store.follow-ups.test.ts`, `job-store.retries.test.ts`, `job-store.command-edit.test.ts`, `server/test/follow-up-recap.test.ts` |
 | Stop, remove, reopen, worktree reclaim | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.stop-remove.test.ts`, `job-store.stop-remove.zombie-recovery.test.ts` |
 | A merged PR closing its threads | `server/src/db/job-store-merge.ts` | `server/test-db/job-store.merge-close.test.ts` |
 | Task summary read model (`GET /api/tasks`) | `server/src/db/task-summary.ts`, `server/src/routes/tasks.ts` | `server/test/task-summary.test.ts`, `server/test/routes.tasks.test.ts`, `server/test-db/job-store.tasks.*.test.ts` |

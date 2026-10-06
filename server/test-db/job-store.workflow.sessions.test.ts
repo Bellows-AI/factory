@@ -171,6 +171,22 @@ describe.skipIf(!enabled)('workflow execution: sessions and publish', () => {
         expect(child?.workflowNode).toBeNull();
     });
 
+    // An agent-less step (a merge-conflict probe that decided on its own) is the thread's newest
+    // row and never reports a session; the follow-up still resumes the primary conversation.
+    it('accepts a follow-up off a sessionless newest row, resuming the primary session', async () => {
+        await queueWorkflowJob(walk);
+        const first = (await store.claim(WORKER, 60))!;
+        await store.session(first.id, first.leaseToken, 'sess-primary');
+        await store.complete(first.id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const review = await runNext('succeeded', 'no marker');
+
+        const followUp = await store.createFollowUp(review.id, 'adjust', null);
+        expect(followUp).toHaveProperty('id');
+        const claim = (await store.claim(WORKER, 60))!;
+        expect(claim).toMatchObject({ id: (followUp as { id: string }).id, resumeSessionId: 'sess-primary' });
+        expect(claim.command).toBe('adjust');
+    });
+
     it('publish flag: true only on the publish node, false on every other, absent without a workflow', async () => {
         await queueWorkflowJob(walk);
         const implementClaim = (await store.claim(WORKER, 60))!;

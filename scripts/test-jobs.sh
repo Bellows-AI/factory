@@ -405,16 +405,14 @@ docker volume create "$VOLUME" >/dev/null &&
     exit 1
 }
 
-# Retry (issue #326): a finished run whose driver died before reporting a session — the state
-# follow-up refuses NO_SESSION — queues a fresh attempt of the thread head's command in the SAME
-# thread: no session resumed, the command delivered fresh, the same worktree root.
+# Retry (issue #326): a finished run whose driver died before reporting a session queues a fresh
+# attempt of the thread head's command in the SAME thread: no session resumed, the command
+# delivered fresh, the same worktree root.
 retry_id="$(create_job 'retry me')"
 expect_status 'a queued task cannot be retried' 409 POST "/api/jobs/$retry_id/retry"
 retry_claim="$(body "$(api POST /api/jobs/claim '{"worker":"sessionless","leaseSeconds":300}')")"
 api POST "/api/jobs/$retry_id/complete" \
     "{\"leaseToken\":\"$(field "$retry_claim" leaseToken)\",\"status\":\"failed\",\"exitCode\":1,\"output\":\"died\"}" >/dev/null
-expect_status 'a sessionless finished task cannot be followed up' 409 POST "/api/jobs/$retry_id/follow-up" \
-    '{"command":"continue this"}'
 retry_out="$(api POST "/api/jobs/$retry_id/retry")"
 if [ "$(status "$retry_out")" = '201' ]; then ok 'a sessionless finished task can be retried'; else
     bad 'a sessionless finished task can be retried' "wanted 201, got $(status "$retry_out"): $(body "$retry_out")"; fi
@@ -429,6 +427,20 @@ expect_field 'the retry is not a follow-up'       "$r2_claim" followUp false
 expect_field 'the retry starts at attempt 1'      "$r2_claim" attempts 1
 api POST "/api/jobs/$retry2_id/complete" \
     "{\"leaseToken\":\"$(field "$r2_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
+
+# Only done or removed closes a task: the sessionless retry still takes a follow-up, which starts a
+# fresh session and is delivered behind a recap of the earlier turns.
+fu_out="$(api POST "/api/jobs/$retry2_id/follow-up" '{"command":"continue this"}')"
+if [ "$(status "$fu_out")" = '201' ]; then ok 'a sessionless finished task can be followed up'; else
+    bad 'a sessionless finished task can be followed up' "wanted 201, got $(status "$fu_out"): $(body "$fu_out")"; fi
+fu_id="$(field "$(body "$fu_out")" id)"
+printf '%s\n' "$fu_id" >>"$work/created-jobs"
+fu_claim="$(body "$(api POST /api/jobs/claim '{"worker":"sessionless-follow-up","leaseSeconds":300}')")"
+expect_field 'the sessionless follow-up claim comes back' "$fu_claim" id "$fu_id"
+expect_field 'the sessionless follow-up resumes nothing'  "$fu_claim" resumeSessionId ''
+expect_field 'the sessionless follow-up is a follow-up'   "$fu_claim" followUp true
+api POST "/api/jobs/$fu_id/complete" \
+    "{\"leaseToken\":\"$(field "$fu_claim" leaseToken)\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"ok\"}" >/dev/null
 
 # --- The driver ------------------------------------------------------------------------------
 

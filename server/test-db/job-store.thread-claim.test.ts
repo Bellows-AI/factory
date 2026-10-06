@@ -75,18 +75,19 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
 
         // The moment the root is terminal the follow-up is claimable, carrying exactly the fields
-        // it always did — the new predicate composes with the claim, it does not reshape it.
+        // it always did — the new predicate composes with the claim, it does not reshape it. The
+        // crafted follow-up has no session, so its command is delivered behind the root's recap.
         await store.complete(root, first!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
         const second = await store.claim('w3', LEASE_SECONDS);
         expect(second).toMatchObject({
             id: followUp,
-            command: 'crafted',
             rootJobId: root,
             followUp: true,
             resumeSessionId: null,
             userId: null,
             workspacePath: null,
         });
+        expect(second?.command.endsWith('New instruction:\n\ncrafted')).toBe(true);
         expect(second?.env).toBeUndefined();
         expect(second?.gates).toBeUndefined();
     });

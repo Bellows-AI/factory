@@ -108,8 +108,9 @@ export async function createJobRow(
  * session — the first `resume`-policy run's, read off the root's snapshot (design.md Decision 3):
  * the newest row of a workflow thread is often a fresh-eyes review, whose session is a side
  * branch, and a follow-up must continue the thread, not the branch. The coalesce answers the
- * parent's session when no resume run has reported one yet, so the refusal shape below never
- * changes.
+ * parent's session when no resume run has reported one yet. A session is never a precondition —
+ * only done or removed closes a task: with none to resume the child starts a fresh session, and
+ * its claim delivers a recap of the earlier turns ahead of the command (`job-store-claim.ts`).
  */
 export interface FollowUpRowInput {
     orgId: string;
@@ -121,7 +122,7 @@ export interface FollowUpRowInput {
 export async function createFollowUpRow(
     sql: Sql,
     input: FollowUpRowInput
-): Promise<{ id: string } | 'missing' | 'task_done' | 'not_finished' | 'no_session' | 'forbidden' | 'purging'> {
+): Promise<{ id: string } | 'missing' | 'task_done' | 'not_finished' | 'forbidden' | 'purging'> {
     const { orgId, parentId, command, createdBy } = input;
     // One transaction for the checkout-row guard and the conditional insert, so a purge that
     // commits between them cannot slip a follow-up into a checkout that is being deleted — the
@@ -147,7 +148,6 @@ export async function createFollowUpRow(
                 where org_id = ${orgId} and id = ${parentId}
                   and status in ('succeeded','failed','dead','stopped')
                   and done_at is null
-                  and session_id is not null
                   and created_by is not distinct from ${createdBy}
                 for update
             ),
@@ -183,12 +183,10 @@ export async function createFollowUpRow(
             returning id
         `;
         if (rows[0]) return { id: rows[0]!.id };
-        // Nothing inserted — one of the five preconditions failed, and which one decides the answer
-        // the route turns into a status code. Forbidden is last: a sessionless parent answers the
-        // truer no_session whoever asks, and a parent with no author falls through the author check
-        // rather than refusing. The parent cannot have moved to deleted since the pre-read above —
+        // Nothing inserted — one of the four preconditions failed, and which one decides the answer
+        // the route turns into a status code. Forbidden is last. The parent cannot have moved to deleted since the pre-read above —
         // remove deletes under this same advisory lock — so missing was decided before the lock.
-        return followUpRefusalOf(tx, orgId, parentId, createdBy);
+        return followUpRefusalOf(tx, orgId, parentId);
     });
 }
 
@@ -201,13 +199,10 @@ export async function createFollowUpRow(
 async function followUpRefusalOf(
     tx: TransactionSql,
     orgId: string,
-    parentId: string,
-    createdBy: string | null
-): Promise<'task_done' | 'not_finished' | 'no_session' | 'forbidden'> {
-    const [parent] = await tx<
-        { status: JobStatus; done_at: Date | null; session_id: string | null; created_by: string | null }[]
-    >`
-        select status, done_at, session_id, created_by from job where org_id = ${orgId} and id = ${parentId}
+    parentId: string
+): Promise<'task_done' | 'not_finished' | 'forbidden'> {
+    const [parent] = await tx<{ status: JobStatus; done_at: Date | null; created_by: string | null }[]>`
+        select status, done_at, created_by from job where org_id = ${orgId} and id = ${parentId}
     `;
     if (parent!.done_at !== null) return 'task_done';
     if (
@@ -218,9 +213,7 @@ async function followUpRefusalOf(
     ) {
         return 'not_finished';
     }
-    if (parent!.session_id === null) return 'no_session';
-    if (parent!.created_by !== createdBy) return 'forbidden';
-    return 'no_session';
+    return 'forbidden';
 }
 
 /**

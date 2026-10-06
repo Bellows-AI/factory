@@ -181,16 +181,13 @@ describe('TaskDetail — the follow-up composer states', () => {
     });
 
     /**
-     * A follow-up continues the run's agent session, and the board refuses one for a run that
-     * never reported a session — every opencode task, and a claude-code run whose driver died
-     * before reporting — with 409 NO_SESSION. The composer must not be offered where it can only
-     * ever fail; the page says why instead.
+     * Only done or removed closes a task: a run that never reported a session — an opencode task,
+     * an agent-less workflow step — still takes a follow-up, which the board starts fresh.
      */
-    it('offers no follow-up composer on a run with no session to continue, and says why', () => {
+    it('offers the follow-up composer on a run with no session to continue', () => {
         const html = renderDetail({ jobs: [job({ sessionId: null })] });
-        expect(html).not.toContain('<textarea');
-        expect(html).not.toContain('>Send<');
-        expect(html).toContain('no agent session to continue');
+        expect(html).toContain('<textarea');
+        expect(html).not.toContain('no agent session to continue');
     });
 
     /**

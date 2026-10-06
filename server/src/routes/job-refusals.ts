@@ -9,7 +9,7 @@ import { HTTP_CONFLICT, HTTP_FORBIDDEN, notFoundJob } from './job-limits.js';
  * for that file's line budget. They render; they validate nothing.
  */
 
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
 
 export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
     switch (reason) {
@@ -19,10 +19,6 @@ export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
             return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
         case 'task_done':
             return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: ERROR_CODES.TASK_DONE });
-        case 'no_session':
-            return reply
-                .code(HTTP_CONFLICT)
-                .send({ error: 'The finished run has no agent session to continue', code: ERROR_CODES.NO_SESSION });
         case 'forbidden':
             return bad(
                 reply,

@@ -40,8 +40,6 @@ function NextActionSection({ latest, viewer }: { latest: Job; viewer: FollowUpVi
         );
     } else if (eligibility === 'not-author') {
         body = <p className="muted">{notAuthorMessage(latest)}</p>;
-    } else if (eligibility === 'no-session') {
-        body = <p className="muted">This run has no agent session to continue. You can still mark it done.</p>;
     }
     if (body === null) return null;
     return (

@@ -415,8 +415,10 @@ describe('followUpEligibility', () => {
         expect(followUpEligibility(job({ author: me }), viewer(null))).toBe('not-author');
     });
 
-    it('names a sessionless run before the author check', () => {
-        expect(followUpEligibility(job({ author: other, sessionId: null }), viewer(me.id))).toBe('no-session');
+    // Only done or removed closes a task: a run with no session still takes a follow-up.
+    it('offers a sessionless run to its author, and still refuses it to anyone else', () => {
+        expect(followUpEligibility(job({ author: me, sessionId: null }), viewer(me.id))).toBe('eligible');
+        expect(followUpEligibility(job({ author: other, sessionId: null }), viewer(me.id))).toBe('not-author');
     });
 
     it('names a closed task before the author check', () => {

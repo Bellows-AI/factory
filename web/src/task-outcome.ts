@@ -219,7 +219,7 @@ export interface FollowUpViewer {
 }
 
 /** Whether the viewer may continue the task, or the one reason they may not. */
-export type FollowUpEligibility = 'pending' | 'not-finished' | 'closed' | 'no-session' | 'not-author' | 'eligible';
+export type FollowUpEligibility = 'pending' | 'not-finished' | 'closed' | 'not-author' | 'eligible';
 
 /**
  * Whether the viewer may send a follow-up on `latest` — the row the follow-up is posted to. The
@@ -231,7 +231,6 @@ export function followUpEligibility(latest: Job, viewer: FollowUpViewer): Follow
     if (viewer.loading) return 'pending';
     if (!isTerminal(latest.status)) return 'not-finished';
     if (latest.doneAt !== null) return 'closed';
-    if (latest.sessionId === null) return 'no-session';
     if ((latest.author?.id ?? null) !== viewer.id) return 'not-author';
     return 'eligible';
 }

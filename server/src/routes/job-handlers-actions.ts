@@ -60,10 +60,8 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
 }
 
-// The person's action a sessionless finished task needs (issue #326): re-run the thread head's
-// command as a FRESH attempt in the same thread — no session resumed, so follow-up's
-// `409 NO_SESSION` dead end (a driver that died before reporting, a refused start) has an in-
-// place exit that keeps the thread and its worktree. Nothing is taken from the body — the
+// Retry (issue #326): re-run the thread head's command as a FRESH attempt in the same thread — no
+// session resumed — keeping the thread and its worktree. Nothing is taken from the body — the
 // command, repo, executor and thread all come from the thread head at insert — and the store
 // decides every refusal atomically with the insert, exactly as the follow-up's does. No lease
 // token: the task is finished, nobody holds it.

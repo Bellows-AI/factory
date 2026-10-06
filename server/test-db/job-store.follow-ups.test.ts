@@ -329,27 +329,40 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         expect(await done).toMatchObject({ status: 'succeeded' });
     });
 
-    // Without a session on the parent there is nothing to continue — an opencode run, for one, or a
-    // claude-code run that died before its driver could report. Running the follow-up fresh would
-    // look like a continuation while starting from nothing.
-    it('refuses a follow-up on a run the board never saw a session for', async () => {
-        const { id } = await queue('echo hi');
+    // Only done or removed closes a task. Without a session on the parent — an opencode run, or a
+    // claude-code run that died before its driver could report — the follow-up starts a fresh
+    // session, and its claim carries a recap of the earlier turns ahead of the new command.
+    it('accepts a follow-up on a run the board never saw a session for, delivering a recap', async () => {
+        const { id } = await queue('fix the login bug');
         const claim = await store.claim('w1', LEASE_SECONDS);
-        await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
+        await store.complete(id, claim!.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'tail',
+            summary: 'Found the bug in auth.ts',
+        });
 
-        expect(await store.createFollowUp(id, 'again', null)).toBe('no_session');
+        const followUp = await mustFollowUp(id, 'try again', null);
+        expect(await store.get(followUp.id)).toMatchObject({ command: 'try again', sessionId: null });
+
+        const next = await store.claim('w1', LEASE_SECONDS);
+        expect(next).toMatchObject({ id: followUp.id, resumeSessionId: null, followUp: true });
+        expect(next!.command).toContain('fix the login bug');
+        expect(next!.command).toContain('Found the bug in auth.ts');
+        expect(next!.command.endsWith('try again')).toBe(true);
     });
 
     // A refused start reported its minted session before the spawn, then took it back: the agent
-    // never ran, so resuming that id would find no conversation.
-    it('refuses a follow-up on a run whose reported session was cleared', async () => {
+    // never ran, so there is no conversation to resume — the follow-up starts fresh.
+    it('accepts a follow-up on a run whose reported session was cleared', async () => {
         const { id } = await queue('echo hi');
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, claim!.leaseToken, SESSION);
         await store.session(id, claim!.leaseToken, null);
         await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: null, output: 'refused' });
 
-        expect(await store.createFollowUp(id, 'again', null)).toBe('no_session');
+        const followUp = await mustFollowUp(id, 'again', null);
+        expect(await store.get(followUp.id)).toMatchObject({ sessionId: null, followUpTo: id });
     });
 
     // The child inherits the parent's session, and a session resumes only in the checkout tree it
@@ -458,7 +471,8 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         const claim = await store.claim('w1', LEASE_SECONDS);
 
-        expect(claim).toMatchObject({ id, resumeSessionId: SESSION, followUp: true });
+        // Resuming carries the conversation itself, so the command goes out verbatim — no recap.
+        expect(claim).toMatchObject({ id, resumeSessionId: SESSION, followUp: true, command: 'again' });
     });
 
     // A STOPPED parent's follow-up claim carries the same pair (issue #152): the stop kept the

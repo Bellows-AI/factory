@@ -478,25 +478,22 @@ export type SuspendResult = { result: 'ok'; status: JobStatus } | { result: 'los
  * - `missing`      no such job in this organization.
  * - `not_finished` the parent is still queued or running — its run is not over.
  * - `task_done`    the user has declared the task done; the conversation is closed.
- * - `no_session`   the parent has no agent session to continue — every opencode run, and a
- *                  claude-code run that died before its driver reported the session. Starting a
- *                  fresh run would look like a continuation while carrying nothing over.
  * - `forbidden`    the parent was queued by a different account. The child would inherit the
  *                  parent's session, and a session resumes only in the checkout tree it ran in —
  *                  the author's; a member's command may only ever run in their own tree.
  */
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'no_session' | 'forbidden' | 'purging';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
 
 /**
- * Why a retry was refused (issue #326). The follow-up set MINUS `no_session` — retry exists
- * exactly for the sessionless finished task, so a session is never one of its preconditions.
+ * Why a retry was refused (issue #326). The follow-up set — a session is never a precondition of
+ * either.
  *
  * - `missing`      no such job in this organization.
  * - `not_finished` the task is still queued or running — its run is not over.
  * - `task_done`    the user has declared the task done; the conversation is closed.
  * - `forbidden`    the task was queued by a different account. A retry runs in the thread's
  *                  worktree, which lives in the author's checkout tree — the author-scoped rule
- *                  follow-up takes, minus the session reason.
+ *                  follow-up takes.
  * - `purging`      the task repo's checkout row is being deleted (issue #92).
  */
 export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
@@ -702,10 +699,8 @@ export interface JobStore {
      * thread — the thread's `root_job_id`, with the head's command, repo, executor and workflow
      * name copied at insert — that resumes NOTHING: no `parent_job_id`, no session. The claim
      * delivers it like any first fresh run (`resumeSessionId: null`, `followUp: false`), and
-     * the worktree is the thread's own, keyed by the root. This is the recovery path for a
-     * finished run whose session was never reported — the shape follow-up refuses
-     * `409 NO_SESSION` — and it is deliberate that a session is never one of its
-     * preconditions.
+     * the worktree is the thread's own, keyed by the root. It re-runs the head's command as it
+     * was, where a follow-up sends a new one.
      *
      * Atomic and conditional like the follow-up insert: the preconditions (terminal, not done,
      * the caller's own task) ride the named row's select with its `for update` lock, so the
