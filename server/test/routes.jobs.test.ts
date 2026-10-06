@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { LOCAL_ORG_ID } from '../src/config.js';
@@ -3002,20 +3002,29 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
     });
 
     it('holds until the store settles', async () => {
+        // A deferred, not a wall-clock sleep: a timer may fire a millisecond early by Date.now().
+        let settle = (): void => undefined;
         const store = stubStore({
             job,
-            waitFor: async (_id, timeoutMs) => {
-                await sleep(Math.min(300, timeoutMs));
-                return { settled: true };
-            },
+            waitFor: () =>
+                new Promise((resolve) => {
+                    settle = () => resolve({ settled: true });
+                }),
         });
         const instance = await harnessWith(store);
-        const started = Date.now();
-        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=5` });
+        let answered = false;
+        const pending = instance
+            .inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=5` })
+            .finally(() => {
+                answered = true;
+            });
+        await vi.waitFor(() => expect(store.waits).toEqual([{ id: ID, timeoutMs: 5_000 }]));
+        await sleep(50);
+        expect(answered).toBe(false);
+        settle();
+        const response = await pending;
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual(job);
-        expect(Date.now() - started).toBeGreaterThanOrEqual(300);
-        expect(store.waits).toEqual([{ id: ID, timeoutMs: 5_000 }]);
     });
 
     it('answers the current job when the timeout elapses unsettled', async () => {
