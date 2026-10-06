@@ -1,4 +1,17 @@
 {
+    "checks": {
+        "total_count": 2,
+        "check_runs": [
+            {
+                "name": "lint",
+                "status": "completed"
+            },
+            {
+                "name": "claude-review",
+                "status": "completed"
+            }
+        ]
+    },
     "general": [
         {
             "id": 401,
@@ -108,6 +121,7 @@
             "repository": {
                 "pullRequest": {
                     "reviewDecision": "CHANGES_REQUESTED",
+                    "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "reviewThreads": {
                         "nodes": [
                             {

@@ -14,10 +14,12 @@
  *         prompt instead of failing).
  *
  * The verdict is ONE JSON line: {version, schema, ref, general, reviews, inline, threads,
- * requestedReviewers, decision, truncated, error}. Every section is deduped by GitHub id, capped,
- * and stable-sorted, so the same upstream state always produces the same bytes. REST carries the
- * bulk (numeric ids, full bodies, diff hunks, --paginate); GraphQL carries the three things REST
- * does not expose: review-thread node ids, their resolved state, and the PR's review decision.
+ * requestedReviewers, decision, pendingChecks, truncated, error}. Every section is deduped by
+ * GitHub id, capped, and stable-sorted, so the same upstream state always produces the same bytes.
+ * REST carries the bulk (numeric ids, full bodies, diff hunks, --paginate); GraphQL carries what REST
+ * does not expose: review-thread node ids, their resolved state, the PR's review decision and its
+ * head commit. `pendingChecks` counts the head's check runs not yet completed (a review bot is
+ * often one) from the first page of REST check-runs — `checks: read`, which the runner token holds.
  * Any gh failure is a TERMINAL refusal ({ok:false, ...}) — a partial collection is never the
  * answer, because the reply planner must trust that "absent from state" means "not on the PR".
  */
@@ -42,6 +44,7 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       reviewDecision
+      headRefOid
       reviewThreads(first: ${THREADS_LIMIT}) {
         totalCount
         nodes {
@@ -227,7 +230,7 @@ function capThreads(threads, totalThreads, ts) {
     }
 }
 
-/** Review threads + the PR's review decision, read via GraphQL. */
+/** Review threads, the PR's review decision and its head commit, read via GraphQL. */
 function fetchThreads(ref, ts, counts) {
     const gql = fetchThreadsGql(ref);
     const pr = gql && gql.data && gql.data.repository && gql.data.repository.pullRequest;
@@ -247,7 +250,17 @@ function fetchThreads(ref, ts, counts) {
     const totalThreads = pr && pr.reviewThreads ? num(pr.reviewThreads.totalCount) : null;
     capThreads(threads, totalThreads, ts);
     if (counts.threads > 0) ts.sections.push('thread-comments');
-    return { threads, decision: pr ? str(pr.reviewDecision) : null };
+    return { threads, decision: pr ? str(pr.reviewDecision) : null, headOid: pr ? str(pr.headRefOid) : null };
+}
+
+/** How many of the head commit's check runs are not yet completed; 0 without a head. */
+function fetchPendingChecks(ref, headOid) {
+    if (!headOid || !/^[0-9a-f]{40}$/.test(headOid)) return 0;
+    const runs = JSON.parse(
+        gh(['api', `repos/${ref.owner}/${ref.repo}/commits/${headOid}/check-runs?filter=latest&per_page=100`])
+    );
+    const list = present(runs) && Array.isArray(runs.check_runs) ? runs.check_runs : [];
+    return list.filter((r) => r && r.status !== 'completed').length;
 }
 
 /** Bound the serialized verdict to TOTAL_OUTPUT_BYTES, collapsing to a `total` truncation. */
@@ -275,7 +288,8 @@ function collect() {
 
     const { general, reviews, inline } = fetchRestSections(ref, ts, counts);
     const { users, teams } = fetchRequestedReviewers(ref);
-    const { threads, decision } = fetchThreads(ref, ts, counts);
+    const { threads, decision, headOid } = fetchThreads(ref, ts, counts);
+    const pendingChecks = fetchPendingChecks(ref, headOid);
     ts.bodies = counts.bodies;
     ts.diffHunks = counts.diffHunks;
     ts.threads = counts.threads;
@@ -297,6 +311,7 @@ function collect() {
         threads,
         requestedReviewers: { users, teams },
         decision,
+        pendingChecks,
         truncated: ts,
         error: null,
     };

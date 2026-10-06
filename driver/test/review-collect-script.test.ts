@@ -151,11 +151,12 @@ const EXPECTED_COLLECTION_VERDICT: ReviewCollection = {
     ],
     requestedReviewers: { users: ['reviewer-a', 'reviewer-b'], teams: ['qa-team'] },
     decision: 'CHANGES_REQUESTED',
+    pendingChecks: 0,
     truncated: { sections: [], bodies: 2, diffHunks: 1, threads: 0, total: false },
     error: null,
 };
 
-const EXPECTED_ARGS_COUNT = 5;
+const EXPECTED_ARGS_COUNT = 6;
 const HTTP_UNAUTHORIZED = '401';
 
 describe('the review collection script', () => {
@@ -183,6 +184,11 @@ describe('the review collection script', () => {
         ]);
         expect(args[4]!.join(' ')).toContain('reviewDecision');
         expect(args[4]!.join(' ')).toContain('isResolved');
+        expect(args[4]!.join(' ')).toContain('headRefOid');
+        expect(args[5]).toEqual([
+            'api',
+            'repos/octo/factory/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?filter=latest&per_page=100',
+        ]);
     });
 
     it('is byte-stable for the same upstream state', async () => {
@@ -390,7 +396,11 @@ describe('the review collection script: byte bound and server-reported truncatio
             threads: {
                 data: {
                     repository: {
-                        pullRequest: { reviewDecision: 'REVIEW_REQUIRED', reviewThreads: { nodes: threads } },
+                        pullRequest: {
+                            reviewDecision: 'REVIEW_REQUIRED',
+                            headRefOid: 'a'.repeat(40),
+                            reviewThreads: { nodes: threads },
+                        },
                     },
                 },
             },

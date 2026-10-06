@@ -14,9 +14,10 @@
  * with a digest state file already written to the worktree — the generic transport surfaces only
  * ok/fail to the loop, never a helper's own output, to the agent that follows (the same reason
  * merge-conflict-probe.cjs writes its own state file):
- *   REVIEW-CLEAN       nothing requires attention — approved, or no feedback and no reviewer.
- *   REVIEW-WAIT        a reviewer is requested, or changes were requested, but nothing actionable
- *                      exists yet to fix.
+ *   REVIEW-CLEAN       nothing requires attention — approved, or no feedback, no reviewer and no
+ *                      head check still running.
+ *   REVIEW-WAIT        a reviewer is requested, changes were requested, or a head check is still
+ *                      running (a review bot is often a CI job), but nothing actionable exists yet.
  *   REVIEW-ACTIONABLE  unresolved feedback exists; .factory/review-reconcile/digest.json is
  *                      written for the repair agent to read, and any stale intents.json from an
  *                      earlier round is removed so it can never be replayed against a new digest.
@@ -61,8 +62,10 @@ function __rcpAddressedMarker(key) {
 function __rcpBodyHasMarker(body, key) {
     return typeof body === 'string' && body.includes(__rcpAddressedMarker(key));
 }
-function __rcpIsBot(author) {
-    return typeof author === 'string' && author.endsWith('[bot]');
+/** Factory's own reply — review-reply-probe-middle.cjs marks every comment it posts. Any other
+ *  author, a review bot included, is feedback. */
+function __rcpIsOwnReply(body) {
+    return typeof body === 'string' && body.includes(__rcpAddressedPrefix);
 }
 
 /**
@@ -90,7 +93,7 @@ function __rcpGeneralItems(collection) {
     const items = [];
     for (const c of general) {
         const key = 'general:' + c.id;
-        if (__rcpIsBot(c.author) || __rcpIsAddressedIn(general, key)) continue;
+        if (__rcpIsOwnReply(c.body) || __rcpIsAddressedIn(general, key)) continue;
         items.push({ key, kind: 'general', body: c.body, path: null });
     }
     return items;
@@ -108,7 +111,7 @@ function __rcpInlineItems(collection, threadedDatabaseIds) {
     const items = [];
     for (const c of inline) {
         const key = 'inline:' + c.id;
-        if (threadedDatabaseIds.has(c.id) || __rcpIsBot(c.author) || __rcpIsAddressedIn(inline, key)) continue;
+        if (threadedDatabaseIds.has(c.id) || __rcpIsOwnReply(c.body) || __rcpIsAddressedIn(inline, key)) continue;
         items.push({ key, kind: 'inline', body: c.body, path: c.path });
     }
     return items;
@@ -125,7 +128,7 @@ function __rcpReviewItems(collection) {
     for (const r of collection.reviews || []) {
         if (r.state !== 'CHANGES_REQUESTED' && r.state !== 'COMMENTED') continue;
         const key = 'review:' + r.id;
-        if (!r.body || !r.body.trim() || __rcpIsBot(r.author) || __rcpIsAddressedIn(general, key)) continue;
+        if (!r.body || !r.body.trim() || __rcpIsOwnReply(r.body) || __rcpIsAddressedIn(general, key)) continue;
         items.push({ key, kind: 'review', body: r.body, path: null });
     }
     return items;
@@ -137,7 +140,7 @@ function __rcpThreadItems(collection) {
         if (t.isResolved) continue;
         if (__rcpIsAddressedIn(t.comments, 'thread:' + t.id)) continue;
         const last = t.comments[t.comments.length - 1];
-        if (!last || __rcpIsBot(last.author)) continue;
+        if (!last || __rcpIsOwnReply(last.body)) continue;
         items.push({ key: 'thread:' + t.id, kind: 'thread', body: last.body, path: t.path });
     }
     return items;
@@ -183,7 +186,7 @@ function __rcpWriteDigest(items) {
 function __rcpDecideWait(collection) {
     const reviewers = collection.requestedReviewers || { users: [], teams: [] };
     const reviewerRequested = (reviewers.users || []).length > 0 || (reviewers.teams || []).length > 0;
-    return collection.decision === 'CHANGES_REQUESTED' || reviewerRequested;
+    return collection.decision === 'CHANGES_REQUESTED' || reviewerRequested || collection.pendingChecks > 0;
 }
 
 (function __reviewProbeDecide() {

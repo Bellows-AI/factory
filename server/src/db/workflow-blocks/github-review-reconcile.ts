@@ -10,8 +10,10 @@
  *   `review-collect-probe` (driver/src/review-helpers.ts, wrapping issue #201's unmodified
  *   `review-collect.cjs`): a deterministic fetch-and-decide step that answers, as a PRE-helper
  *   `conclude` (issue #230, so neither node ever launches an agent turn):
- *     - `REVIEW-CLEAN`      nothing requires attention (approved, or no feedback/no reviewer);
- *     - `REVIEW-WAIT`       a reviewer is requested or changes were requested, nothing actionable
+ *     - `REVIEW-CLEAN`      nothing requires attention (approved, or no feedback/no reviewer/no
+ *                           head check still running);
+ *     - `REVIEW-WAIT`       a reviewer is requested, changes were requested, or a head check (a
+ *                           review bot's CI job included) is still running, nothing actionable
  *                           yet;
  *   or, when unresolved feedback exists, writes `.factory/review-reconcile/digest.json` and lets
  *   the next node's agent turn launch with `output: 'REVIEW-ACTIONABLE'` (no `control`, so
