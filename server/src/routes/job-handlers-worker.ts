@@ -7,6 +7,7 @@ import {
     boardsFor,
     executorsFor,
     storeFor,
+    userReposFor,
     workflowDefaultsFor,
     workflowsFor,
 } from './job-context.js';
@@ -22,7 +23,7 @@ import {
 } from './job-field-validation.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
-import { UUID } from '../config.js';
+import { fullName, UUID } from '../config.js';
 import {
     ARTIFACT_LIMIT,
     HTTP_CONFLICT,
@@ -69,6 +70,45 @@ async function refusedAsSuspended(
     return true;
 }
 
+/**
+ * A task runs against a checkout (issue 263): the repository must be in the caller's own selection
+ * AND `ready`. Revalidated here, whatever the browser believed — a deselection or a failed clone
+ * between page load and submit is refused, never queued. True when a refusal (or a failed read) has
+ * already landed on `reply`. Skipped where no member or repo store exists: the route tests'
+ * configuration, as for the suspension check above.
+ */
+async function refusedAsNotSynced(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    opts: { userRepos: Awaited<ReturnType<typeof userReposFor>>; repo: string | null; createdBy: string | null }
+): Promise<boolean> {
+    const { userRepos, repo, createdBy } = opts;
+    if (!userRepos || !createdBy) return false;
+    if (repo === null) {
+        bad(reply, ERROR_CODES.REPO_REQUIRED, 'Select a synced repository to run this task against.');
+        return true;
+    }
+    const selected = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'repo selection read failed'),
+        () => userRepos.list(createdBy)
+    );
+    if (!selected.ok) return true;
+    const row = selected.value.find((candidate) => fullName(candidate) === repo);
+    if (row?.status === 'ready') return false;
+    if (!row) {
+        bad(reply, ERROR_CODES.REPO_REQUIRED, `${repo} is not in your selected repositories.`);
+    } else {
+        bad(
+            reply,
+            ERROR_CODES.REPO_NOT_READY,
+            `${repo} is ${row.status}, not synced yet. Wait for it to finish syncing, then start the task.`,
+            HTTP_CONFLICT
+        );
+    }
+    return true;
+}
+
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
@@ -108,6 +148,8 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     if (await refusedAsSuspended(request, reply, { executorsStore, executor, executorScope, createdBy })) {
         return reply;
     }
+    const userRepos = await userReposFor(orgs, request);
+    if (await refusedAsNotSynced(request, reply, { userRepos, repo, createdBy })) return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         defaultsStore,

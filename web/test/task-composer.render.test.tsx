@@ -96,15 +96,15 @@ describe('TaskComposer', () => {
         expect(html).toContain('Retry');
     });
 
-    it('offers one repository option per selection plus none, first repository selected by default', () => {
-        // The tabs are gone; the composer stamps the task with a repo instead. The default is the
-        // FIRST selected repository — a member who picked repositories means their tasks to be
-        // stamped with one, not with nothing — and `none` stays available for a deliberate
-        // unlabelled run, in product words. Same rule, and same default, as the executor select.
+    it('offers one repository option per selection, first repository selected by default', () => {
+        // The composer stamps the task with a repo. The default is the FIRST selected repository —
+        // a member who picked repositories means their tasks to be stamped with one, not with
+        // nothing; with none selected the trigger asks for a selection (issue 263), as the
+        // executor select does for its own empty list.
         const html = renderComposer({
             repos: [
-                { owner: 'acme', name: 'web' },
-                { owner: 'acme', name: 'api' },
+                { owner: 'acme', name: 'web', status: 'ready' },
+                { owner: 'acme', name: 'api', status: 'ready' },
             ],
         });
         // The Listbox server-renders the trigger only — the options are client-side — so the
@@ -114,7 +114,7 @@ describe('TaskComposer', () => {
         expect(repoTrigger).not.toContain('acme/api');
         const none = renderComposer({ repos: [] });
         const noneTrigger = none.slice(none.indexOf('Repository'), none.indexOf('Executor'));
-        expect(noneTrigger).toContain('>No repository</span></button>');
+        expect(noneTrigger).toContain('>Select a repository</span></button>');
     });
 
     // A task always runs through a configured profile. The first is selected initially; with no
@@ -157,9 +157,9 @@ describe('TaskComposer', () => {
     });
 
     it('keeps the composer reachable when no repository is selected, and says where to fix that', () => {
-        // A member with nothing picked can still queue: the task simply carries no repo. The
-        // remediation is a pointer at Settings, never a blocker — an absent repository is a
-        // valid way to run.
+        // A member with nothing picked still reaches the composer: the pointer at Settings sits
+        // under the repository select, and the launch itself is blocked by the no-synced-repos
+        // verdict (issue 263), tested below.
         const html = renderComposer({ repos: [] });
         expect(html).toContain('<textarea');
         expect(html).toContain('>Start task<');
@@ -194,12 +194,13 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('says what will run before anything runs', () => {
         // The preflight sentence, from the ACTUAL choices — this render knows no repository, one
-        // executor, no workflow, and it says exactly that much and no more.
+        // executor, no workflow, and it says exactly that much and no more (a launch needs a
+        // repository, but the sentence only reports the choice).
         const html = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
         expect(html).toContain('Will run without a repository using main executor. Your prompt will run as written.');
 
         const chosen = renderComposer({
-            repos: [{ owner: 'acme', name: 'web' }],
+            repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
             executors: [{ name: 'main', type: 'claude' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
@@ -234,7 +235,7 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('never emits a placeholder value', () => {
         const html = renderComposer({
-            repos: [{ owner: 'acme', name: 'web' }],
+            repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
             executors: [{ name: 'main', type: 'claude' }],
             actionError: null,
         });
@@ -291,7 +292,7 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('gathers repository, executor and workflow as the three columns of the execution context', () => {
         const html = renderComposer({
-            repos: [{ owner: 'acme', name: 'web' }],
+            repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
             executors: [{ name: 'main', type: 'claude' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
@@ -578,6 +579,65 @@ describe('the redesigned composer (#280)', () => {
         expect(html).not.toMatch(/attach|mention|template/i);
     });
 
+    describe('the repository must be selected and synced (issue 263)', () => {
+        const draft = (patch: Partial<ComposerDraftInput> = {}) => restoredDraft({ draft: 'fix it', ...patch });
+
+        it('keeps Start clickable when nothing is synced, so it can open the dialog, and says why', () => {
+            for (const status of ['queued', 'cloning', 'failed', 'purging'] as const) {
+                const html = renderComposer({
+                    repos: [{ owner: 'acme', name: 'web', status }],
+                    restored: draft(),
+                });
+                expect(startButton(html), status).not.toContain('disabled=""');
+                expect(html).toContain('No repos synced');
+                expect(html).toContain(
+                    'Go to the Repositories page to select and sync a repository before running a task.'
+                );
+                expect(html).toContain('href="/settings/repos?return=/tasks/new"');
+            }
+            const none = renderComposer({ repos: [], restored: draft() });
+            expect(startButton(none)).not.toContain('disabled=""');
+            expect(none).toContain('No repos synced');
+        });
+
+        it('does not claim "no repos synced" while the workspace is loading or failed', () => {
+            for (const html of [
+                renderComposer({ repos: null, restored: draft() }),
+                renderComposer({ repos: null, workspaceError: 'Request failed (503)', restored: draft() }),
+            ]) {
+                expect(html).not.toContain('No repos synced');
+                expect(html).not.toContain('>Start task<');
+            }
+        });
+
+        it('requires a selection when another repository is synced', () => {
+            const html = renderComposer({
+                repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
+                restored: draft({ repo: '', repoTouched: true }),
+            });
+            expect(startButton(html)).toContain('disabled=""');
+            expect(html).toContain('No repository selected');
+            expect(html).not.toContain('No repos synced');
+        });
+
+        it('holds a chosen repository that is not ready, even though another is ready', () => {
+            const html = renderComposer({
+                repos: [
+                    { owner: 'acme', name: 'web', status: 'ready' },
+                    { owner: 'acme', name: 'api', status: 'cloning' },
+                ],
+                restored: draft({ repo: 'acme/api', workflowRepo: 'acme/api' }),
+            });
+            expect(startButton(html)).toContain('disabled=""');
+            expect(html).toContain('Repository not synced');
+            expect(html).toContain('acme/api is cloning');
+        });
+
+        it('starts against a selected, ready repository', () => {
+            expect(startButton(renderComposer({ restored: draft() }))).not.toContain('disabled=""');
+        });
+    });
+
     it('offers an example only while the request is empty', () => {
         const empty = renderComposer({});
         expect(empty).toMatch(/<button type="button" class="composer-example">.*Try an example<\/button>/);
@@ -669,8 +729,8 @@ describe('the redesigned composer (#280)', () => {
     it('restores a held draft exactly: request, workflow, params and step overrides', () => {
         const html = renderComposer({
             repos: [
-                { owner: 'acme', name: 'web' },
-                { owner: 'acme', name: 'api' },
+                { owner: 'acme', name: 'web', status: 'ready' },
+                { owner: 'acme', name: 'api', status: 'ready' },
             ],
             executors: [
                 { name: 'main', type: 'claude-code' },
