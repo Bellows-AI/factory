@@ -815,6 +815,24 @@ describe('the poll loop', () => {
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
 
+    // Issue #503: an agent-less node (`agent: false`, the merge-conflict block's verify) is the
+    // driver's own gates + publish — never a runner session, a reported session or a scraped one.
+    it('runs no agent for a claim with agent: false, yet still publishes and succeeds', async () => {
+        const board = stubBoard([{ ...job(1), agent: false }]);
+        let runs = 0;
+        const runner = stubRunner(async () => {
+            runs += 1;
+            return ok();
+        });
+
+        await drive({ ...board, runner });
+
+        expect(runs).toBe(0);
+        expect(board.board.sessions).toEqual([]);
+        expect(runner.published).toHaveLength(1);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
     // A runner with no publishGit at all — publishing is an optional capability the loop asks
     // for, not one it assumes; both shipped runners carry it, a third platform need not.
     it('reports a clean run succeeded from a runner that cannot publish', async () => {
@@ -3382,6 +3400,20 @@ describe('block-helper steps (issue #207)', () => {
                     output: JSON.stringify({ decided: 'up-to-date' }),
                 },
             ]);
+        });
+
+        // Issue #503: a fresh-session node that concludes started no conversation, so none is reported.
+        it('reports no session for a fresh-session claim a pre-helper concludes', async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+            const { runner } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: true, output: 'MERGE-REBASED', control: 'conclude' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(board.board.sessions).toEqual([]);
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', output: 'MERGE-REBASED' });
         });
 
         it('a pre-helper answering control: "continue" explicitly runs the agent, same as answering none at all', async () => {

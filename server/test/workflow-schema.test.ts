@@ -96,6 +96,13 @@ describe('validateDefinition — block nodes', () => {
         ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_KEY' } });
     });
 
+    it('accepts a boolean `agent` and refuses any other value (issue #503)', () => {
+        const withAgent = (value: unknown) =>
+            validateDefinition({ entry: 'p', nodes: [agent('p', { publish: true, agent: value })], edges: [] });
+        expect(withAgent(false)).toMatchObject({ ok: true });
+        expect(withAgent('no')).toMatchObject({ ok: false, refusal: { code: 'BAD_NODE' } });
+    });
+
     it('refuses a missing or malformed `uses`', () => {
         for (const uses of [undefined, '', 'nope', 'builtin/', '/nope', 'Builtin/Nope', 42, 'a'.repeat(200)]) {
             const nodes = uses === undefined ? [{ name: 'a', kind: 'block' as const }] : [block('a', { uses })];

@@ -30,6 +30,20 @@ describe('resolveClaimPublish: the gates source', () => {
         });
     });
 
+    // Issue #503: only an agent-less node's claim carries `agent: false`; the gates still ride it.
+    it('flags an agent-less node and leaves every other claim without the field', () => {
+        const agentless: WorkflowDefinition = {
+            ...definition,
+            nodes: [
+                { name: 'verify', kind: 'agent', session: 'resume', agent: false, publish: true, prompt: 'verify' },
+            ],
+        };
+        expect(resolveClaimPublish(agentless, 'verify', read)).toMatchObject({ agent: false, publish: true });
+        expect(resolveClaimPublish(agentless, 'verify', read).gatesSource).toBe('clone');
+        expect(resolveClaimPublish(definition, 'fix', read)).not.toHaveProperty('agent');
+        expect(resolveClaimPublish(null, null, read)).not.toHaveProperty('agent');
+    });
+
     it('keeps the source on a gated node and on a workflow-less claim', () => {
         expect(resolveClaimPublish(definition, 'fix', read).gatesSource).toBe('clone');
         expect(resolveClaimPublish(null, null, read).gatesSource).toBe('clone');

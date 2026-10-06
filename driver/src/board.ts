@@ -140,6 +140,11 @@ export interface BoardJob {
      */
     publish?: boolean;
     /**
+     * `false` when the claimed workflow node launches no agent (issue #503): the loop runs the
+     * node's helpers, gates and publish without a runner session. Absent means an agent node.
+     */
+    agent?: false;
+    /**
      * Declared pre/post block-helper steps for this row's node (issue #207) — an expanded
      * workflow `block` node's runtime plan, when its compiler produced one. Read defensively like
      * every board field added after launch: absent on a board that predates the field, and on
