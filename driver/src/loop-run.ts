@@ -332,8 +332,10 @@ async function launchRun(
     // the stand-down fence releases a claim the runner never took.
     if (await standDown(ctx, 'setup')) return null;
     if (agentless) {
+        // The services the gates test against start under the checkout claim, as run() starts them.
+        const refused = await rt.runner.startServices(job);
         await handBackFence(ctx);
-        return AGENTLESS_OUTCOME;
+        return refused ?? AGENTLESS_OUTCOME;
     }
     // Reported here, not at attempt start: a setup that concludes the job starts no session, and a
     // session id reported for one would name a conversation that never existed.

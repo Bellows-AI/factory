@@ -187,6 +187,13 @@ export interface Runner {
      * that fails throws, and the loop runs the gates as if it had answered empty.
      */
     deadServices(job: BoardJob): Promise<DeadService[]>;
+    /**
+     * Starts the attempt's `.bellows.yaml` services without any agent run (issue #503): what an
+     * agent-less node's gates test against, since run() is what normally starts them. Answers a
+     * refused outcome for an author's refusal (a bad `.bellows.yaml`), null otherwise; torn down
+     * by `releaseServices` like run()'s fleet.
+     */
+    startServices(job: BoardJob): Promise<RunOutcome | null>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
     /**

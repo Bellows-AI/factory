@@ -593,6 +593,7 @@ export function createKubernetesRunner(
         kill: (job: BoardJob) => killRunner(deps, job),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),
+        startServices: (job: BoardJob) => startServiceFleet(deps, job),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
         publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),

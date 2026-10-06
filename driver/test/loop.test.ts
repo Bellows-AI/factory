@@ -218,6 +218,7 @@ function stubRunner(
     reapAttempts: BoardJob[];
     probed: BoardJob[];
     deadServiceProbes: number;
+    startedServices: string[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -240,6 +241,11 @@ function stubRunner(
         synced: [] as BoardJob[],
         reclaimed: [] as BoardJob[],
         run: outcome,
+        startedServices: [] as string[],
+        async startServices(startedJob: BoardJob) {
+            runner.startedServices.push(startedJob.id);
+            return null;
+        },
         async sampleRuntime() {
             runner.samples += 1;
             return sample;
@@ -824,10 +830,18 @@ describe('the poll loop', () => {
             runs += 1;
             return ok();
         });
+        const released: string[] = [];
+        runner.releaseFence = async (fencedJob) => {
+            released.push(fencedJob.id);
+        };
 
         await drive({ ...board, runner });
 
         expect(runs).toBe(0);
+        // run() is what starts the declared services, so the agent-less path starts them itself —
+        // and hands the checkout claim back exactly once.
+        expect(runner.startedServices).toEqual([job(1).id]);
+        expect(released).toEqual([job(1).id]);
         expect(board.board.sessions).toEqual([]);
         expect(runner.published).toHaveLength(1);
         expect(board.board.completed[0]?.status).toBe('succeeded');
