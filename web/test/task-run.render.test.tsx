@@ -33,6 +33,22 @@ describe('TaskRun', () => {
         expect(html.match(/<article/g)?.length).toBe(2);
     });
 
+    it('collapses a finished run’s response behind a disclosure naming its run; live runs stay open', () => {
+        const html = renderDetail({ jobs: [root, child({ summary: 'second answer' })] });
+        expect(html.match(/<details class="run-response"(?! open)/g)?.length).toBe(2);
+        expect(html).toContain('Agent response · Run 1');
+        expect(html).toContain('Agent response · Run 2');
+        expect(html).toContain('second answer');
+        const live = renderDetail({ jobs: [job({ status: 'running', output: 'tail' })] });
+        expect(live).not.toContain('run-response');
+        expect(live).toContain('Agent activity');
+    });
+
+    it('keeps status and failure metadata outside the collapsed response', () => {
+        const html = articleOf(renderDetail({ jobs: [job({ status: 'failed', exitCode: 2 })] }), '<article');
+        expect(html.indexOf('</details>')).toBeLessThan(html.indexOf('exit 2'));
+    });
+
     it('a running run with activity reads the activity sentence, not a verdict', () => {
         const html = articleOf(
             renderDetail({ jobs: [job({ status: 'running', runtime: runtime({ activity: '→ Bash npm test' }) })] }),

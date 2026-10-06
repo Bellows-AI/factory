@@ -585,6 +585,12 @@ describe('TaskDetail — main column', () => {
         expect(html).not.toMatch(/Implemented|Published PR|Published pull request/);
     });
 
+    it('collapses the run history behind a disclosure counting the runs', () => {
+        const html = renderDetail({ jobs: [job()] });
+        expect(html).toMatch(/<details class="run-history"><summary><h2>Run history<\/h2>.*?1 run</);
+        expect(html).not.toContain('<details class="run-history" open');
+    });
+
     it('a queued run has only its queued fact; a stop names who asked', () => {
         const queued = renderDetail({
             jobs: [job({ status: 'queued', startedAt: null, finishedAt: null, exitCode: null })],

@@ -182,13 +182,26 @@ export function TaskRun({
 }) {
     const terminal = isTerminal(job.status);
     const parked = job.status === 'queued';
+    // A run first seen live opens its response and keeps it open when it finishes, so nothing a
+    // watcher is reading is hidden; a run first seen finished starts collapsed. State is per
+    // mounted run (keyed by job id in `TaskDetail`), so polling and appended follow-ups keep it.
+    const [open, setOpen] = useState(!terminal);
     return (
         <article className="chat-exchange">
             <p className="run-label">{index === 1 ? 'Request' : 'Follow-up'}</p>
             {/* The member's words are prose, not code: normal text with its line breaks kept. */}
             <p className="msg-user">{job.command}</p>
-            <p className="run-label">{terminal ? 'Agent response' : 'Agent activity'}</p>
-            <RunResponseBody terminal={terminal} job={job} liveRef={liveRef} />
+            {terminal ? (
+                <details className="run-response" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+                    <summary className="run-label">Agent response · Run {index}</summary>
+                    <RunResponseBody terminal={terminal} job={job} liveRef={liveRef} />
+                </details>
+            ) : (
+                <>
+                    <p className="run-label">Agent activity</p>
+                    <RunResponseBody terminal={terminal} job={job} liveRef={liveRef} />
+                </>
+            )}
             <RunMetaFooter job={job} parked={parked} />
         </article>
     );

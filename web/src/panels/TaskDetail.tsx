@@ -60,17 +60,22 @@ function runHistory(jobs: Job[]): HistoryItem[] {
 function RunHistory({ jobs }: { jobs: Job[] }) {
     return (
         <section className="panel">
-            <div className="panel-head">
-                <h2>Run history</h2>
-            </div>
-            <ol className="task-history">
-                {runHistory(jobs).map((item) => (
-                    <li key={item.key} className="task-history-item">
-                        <span>{item.title}</span>
-                        <RelativeTime at={item.at} />
-                    </li>
-                ))}
-            </ol>
+            <details className="run-history">
+                <summary>
+                    <h2>Run history</h2>
+                    <span className="muted">
+                        {jobs.length} {jobs.length === 1 ? 'run' : 'runs'}
+                    </span>
+                </summary>
+                <ol className="task-history">
+                    {runHistory(jobs).map((item) => (
+                        <li key={item.key} className="task-history-item">
+                            <span>{item.title}</span>
+                            <RelativeTime at={item.at} />
+                        </li>
+                    ))}
+                </ol>
+            </details>
         </section>
     );
 }
