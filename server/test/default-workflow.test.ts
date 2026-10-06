@@ -109,9 +109,11 @@ describe('default workflow — compilation', () => {
             for (const selection of PAIRS) {
                 const definition = compileDefaultWorkflow(selection, rounds);
                 const into = definition.edges.filter((e) => e.to === DEFAULT_GATE_FIX_NODE);
-                // Exactly two: task's gate-failed edge and gate-fix's own retry edge.
-                expect(into).toHaveLength(2);
-                expect(into.map((e) => e.from).sort()).toEqual([DEFAULT_ENTRY_NODE, DEFAULT_GATE_FIX_NODE].sort());
+                // task's gate-failed edge, gate-fix's own retry edge, and — when the merge block is
+                // on — its verify node's (the block's exit runs the gates and publishes too).
+                const sources = [DEFAULT_ENTRY_NODE, DEFAULT_GATE_FIX_NODE];
+                if (selection.mergeConflictAutofix) sources.push(`${MERGE_BLOCK_NODE}--verify`);
+                expect(into.map((e) => e.from).sort()).toEqual(sources.sort());
                 for (const edge of into) {
                     expect(edge.when).toBe('gate-failed');
                     expect(edge.max).toBe(rounds);
@@ -602,6 +604,31 @@ describe('default workflow — pure orchestration walk (real nextTransition)', (
             },
         });
         expect(transition).toEqual({ action: 'rest', reason: 'no_edge' });
+    });
+
+    it('merge verify gate-failed over a changed tree inserts a gate-fix repair round', () => {
+        const definition = compileDefaultWorkflow({ reviewReconciliation: false, mergeConflictAutofix: true }, 3);
+        const node = `${MERGE_BLOCK_NODE}--verify`;
+        const rows: EngineRow[] = [
+            { id: 'a', node: DEFAULT_ENTRY_NODE, status: 'succeeded', output: 'done', gates: null, sessionId: 's' },
+            { id: 'b', node, status: 'failed', output: null, gates: null, sessionId: 's' },
+        ];
+        const transition = nextTransition({
+            snapshot: definition,
+            params: {},
+            command: 'do the thing',
+            rows,
+            completed: {
+                id: 'b',
+                node,
+                status: 'failed',
+                output: null,
+                gates: failedGate('1 test failed'),
+                failureKind: 'gate',
+                treeChanged: true,
+            },
+        });
+        expect(transition).toMatchObject({ action: 'insert', node: { name: DEFAULT_GATE_FIX_NODE } });
     });
 
     it("merge verify succeeded rests — the block's own exit has no outer edge", () => {

@@ -146,6 +146,11 @@ export function authorDefaultWorkflow(
         }
         edges.push({ from: DEFAULT_ENTRY_NODE, to: DEFAULT_GATE_FIX_NODE, when: 'gate-failed', max: gateFixRounds });
         edges.push({ from: DEFAULT_GATE_FIX_NODE, to: DEFAULT_GATE_FIX_NODE, when: 'gate-failed', max: gateFixRounds });
+        // The merge block's exit (`--verify`) runs the gates and publishes; compile rewrites an
+        // edge from the block to that exit, so a post-rebase gate break is repaired too.
+        if (selection.mergeConflictAutofix) {
+            edges.push({ from: MERGE_BLOCK_NODE, to: DEFAULT_GATE_FIX_NODE, when: 'gate-failed', max: gateFixRounds });
+        }
     }
 
     return { entry: DEFAULT_ENTRY_NODE, nodes, edges, params: [] };
