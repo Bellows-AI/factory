@@ -349,9 +349,7 @@ export function createGateManager({
                 // because that one is gone.
                 await execDocker(['rm', '-f', gateEnvContainerName(key)]).catch(() => undefined);
                 const name = gateEnvContainerName(key);
-                if (envBody) {
-                    await writeFile(envFileFor(key), envBody, { mode: 0o600 });
-                }
+                if (envBody) await writeFile(envFileFor(key), envBody, { mode: 0o600 });
                 const args = gateEnvArgs(config, key, image, envBody ? envFileFor(key) : undefined);
                 await startEnvContainer(execDocker, name, args, attempt?.signal);
                 entries.set(key, newEntry(name, image, envBody, job ?? null));
