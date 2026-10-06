@@ -22,4 +22,4 @@ Classes defined here: `task-layout`, `task-main`, `task-summary`, `task-clock`, 
 `task-copy`, `task-verification-counts`, `task-remove-title`, `task-remove-actions`, `msg-user`,
 `msg-meta`, `chat-exchange`, `chat-exit`, `chat-runtime`, `chat-activity`, `chat-gate-list`,
 `chat-output`, `chat-resume`, `chat-done`, `chat-stop`, `chat-remove`, `run-label`, `run-summary`,
-`run-output`, `run-well`, `run-publish`, `gate-output-wrap`.
+`run-output`, `run-response`, `run-history`, `run-well`, `run-publish`, `gate-output-wrap`.
