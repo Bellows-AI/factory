@@ -51,7 +51,17 @@ function stepRefuse<T>(code: DefinitionRefusal['code'], message: string): StepRe
     return { ok: false, refusal: { code, message } };
 }
 
-const KNOWN_AGENT_NODE_KEYS = new Set(['name', 'kind', 'session', 'prompt', 'gates', 'publish', 'helperPlans']);
+const KNOWN_AGENT_NODE_KEYS = new Set([
+    'name',
+    'kind',
+    'session',
+    'prompt',
+    'gates',
+    'publish',
+    'agent',
+    'helperPlans',
+]);
+const AGENT_NODE_BOOLEAN_KEYS = ['gates', 'publish', 'agent'] as const;
 const KNOWN_BLOCK_NODE_KEYS = new Set(['name', 'kind', 'uses', 'with']);
 const KNOWN_EDGE_KEYS = new Set(['from', 'to', 'when', 'max']);
 const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges', 'params']);
@@ -302,11 +312,10 @@ function parseAgentNode(node: Record<string, unknown>, i: number, name: string):
     if (typeof node.prompt !== 'string' || !node.prompt.trim()) {
         return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].prompt must be a non-empty string`);
     }
-    if (node.gates !== undefined && typeof node.gates !== 'boolean') {
-        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].gates must be a boolean`);
-    }
-    if (node.publish !== undefined && typeof node.publish !== 'boolean') {
-        return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].publish must be a boolean`);
+    for (const flag of AGENT_NODE_BOOLEAN_KEYS) {
+        if (node[flag] !== undefined && typeof node[flag] !== 'boolean') {
+            return stepRefuse(ERROR_CODES.BAD_NODE, `nodes[${i}].${flag} must be a boolean`);
+        }
     }
     const helperPlans = resolveHelperPlans(node, i);
     if (!helperPlans.ok) return helperPlans;
@@ -319,6 +328,7 @@ function parseAgentNode(node: Record<string, unknown>, i: number, name: string):
             prompt: node.prompt,
             ...(node.gates !== undefined ? { gates: node.gates as boolean } : {}),
             ...(node.publish !== undefined ? { publish: node.publish as boolean } : {}),
+            ...(node.agent !== undefined ? { agent: node.agent as boolean } : {}),
             ...(helperPlans.value !== undefined ? { helperPlans: helperPlans.value } : {}),
         },
     };

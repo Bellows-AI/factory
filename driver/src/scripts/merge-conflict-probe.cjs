@@ -21,14 +21,18 @@
 // content-passed into a container cannot require() a sibling file, so every consumer of this
 // pattern (this file, publish.ts's own CREDENTIAL_HELPER) carries its own copy.
 //
-// Verdict output.verdict, three shapes only — a "stale/refused" checkout state (wrong branch, no
-// publication) is instead an ok:false helper FAILURE: the row fails without ever spawning the
-// agent, and the next trigger of this block re-probes fresh, which is what the issue's "abort
-// safely and re-probe" asks for.
-//   "up-to-date"  — the branch already contains its base branch's tip. No rebase attempted.
-//   "rebased"     — the base moved; the preflight rebased onto it with no conflicts.
-//   "conflicted"  — the rebase hit conflicts; the tree is left mid-rebase, output.conflictingPaths
-//                   bounded and listed, for the repair agent's `git rebase --continue`/`--abort`.
+// Verdicts, three shapes only — a "stale/refused" checkout state (wrong branch, no publication)
+// is instead an ok:false helper FAILURE: the row fails without ever spawning the agent, and the
+// next trigger of this block re-probes fresh, which is what the issue's "abort safely and
+// re-probe" asks for. The first two need no agent (issue #503): the probe answers
+// control:"conclude" with the workflow marker as the last line of its output.
+//   up-to-date  — the branch already contains its base branch's tip. No rebase attempted.
+//                 Concludes MERGE-UP-TO-DATE.
+//   rebased     — the base moved; the preflight rebased onto it with no conflicts. Concludes
+//                 MERGE-REBASED.
+//   conflicted  — the rebase hit conflicts; the tree is left mid-rebase and the job continues to
+//                 the repair agent: output.verdict "conflicted", output.conflictingPaths bounded
+//                 and listed, for the agent's `git rebase --continue`/`--abort`.
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -38,6 +42,10 @@ const VERSION = 1;
 const CONFLICTING_PATHS_MAX = 50;
 const STATE_PATH = '.factory/merge-conflict-probe.json';
 const ERROR_MAX_LENGTH = 200;
+// Literal copies of the block's markers (server/src/db/workflow-blocks/merge-conflict-autofix.ts):
+// a script content-passed into a container cannot import them.
+const UP_TO_DATE_MARKER = 'MERGE-UP-TO-DATE';
+const REBASED_MARKER = 'MERGE-REBASED';
 
 // The exact snippet driver/src/scripts/credential-helper.sh carries, trimmed the same way
 // publish.ts's CREDENTIAL_HELPER is: git appends the credential operation to this value verbatim.
@@ -55,6 +63,11 @@ const emit = (line) => {
 };
 
 const ok = (output) => emit({ schema: SCHEMA, version: VERSION, ok: true, output });
+// The two outcomes the probe already decided leave no judgment for an agent: the job concludes
+// here, the workflow marker the last line of its output so the board's marker edges read it
+// exactly as they read an agent's.
+const conclude = (summary, marker) =>
+    emit({ schema: SCHEMA, version: VERSION, ok: true, output: summary + '\n' + marker, control: 'conclude' });
 const fail = (reason, error) => emit({ schema: SCHEMA, version: VERSION, ok: false, reason, error });
 
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8' }).trim();
@@ -223,7 +236,7 @@ function reconcile(base) {
         return;
     }
     if (mergeBase === baseSha) {
-        ok({ verdict: 'up-to-date', baseSha, headSha, conflictingPaths: [] });
+        conclude('the branch already contains ' + base + ' at ' + baseSha, UP_TO_DATE_MARKER);
         return;
     }
 
@@ -244,7 +257,7 @@ function reconcile(base) {
     }
 
     const rebasedHeadSha = git('rev-parse', 'HEAD');
-    ok({ verdict: 'rebased', baseSha, headSha: rebasedHeadSha, conflictingPaths: [] });
+    conclude('rebased onto ' + base + ' at ' + baseSha + ', now ' + rebasedHeadSha, REBASED_MARKER);
 }
 
 function main() {

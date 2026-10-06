@@ -32,12 +32,29 @@ describe('builtin/merge-conflict-autofix', () => {
         expect(result.definition.entry).toBe('reconcile--repair');
     });
 
-    it('resumes the thread session on both nodes — restore mode requires it', () => {
+    it('gives the conflict-resolving agent a fresh session, not the whole task history (issue #503)', () => {
         const result = compileDefinition(graphUsing('reconcile'), BLOCK_REGISTRY);
         if (!result.ok) throw new Error('expected compile to succeed');
-        for (const node of result.definition.nodes) {
-            expect(node.session).toBe('resume');
-        }
+        const repair = result.definition.nodes.find((n) => n.name === 'reconcile--repair');
+        expect(repair?.session).toBe('fresh');
+    });
+
+    it('launches no agent on verify — gates and publish only (issue #503)', () => {
+        const result = compileDefinition(graphUsing('reconcile'), BLOCK_REGISTRY);
+        if (!result.ok) throw new Error('expected compile to succeed');
+        const verify = result.definition.nodes.find((n) => n.name === 'reconcile--verify');
+        const repair = result.definition.nodes.find((n) => n.name === 'reconcile--repair');
+        expect(verify?.agent).toBe(false);
+        expect(repair?.agent).toBeUndefined();
+    });
+
+    it('prompts the repair agent for the conflicted case only — the probe concludes the other verdicts', () => {
+        const result = compileDefinition(graphUsing('reconcile'), BLOCK_REGISTRY);
+        if (!result.ok) throw new Error('expected compile to succeed');
+        const repair = result.definition.nodes.find((n) => n.name === 'reconcile--repair');
+        expect(repair?.prompt).not.toContain('MERGE-UP-TO-DATE');
+        expect(repair?.prompt).not.toContain('MERGE-REBASED');
+        expect(repair?.prompt).toContain('conflictingPaths');
     });
 
     it('declares the repair node a pre block-helper of the merge-conflict-probe, github-writing', () => {

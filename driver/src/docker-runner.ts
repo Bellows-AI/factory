@@ -58,6 +58,7 @@ import {
     removeEachTolerantly,
     run,
     setupJobServices,
+    startJobServices,
     syncCheckoutArgs,
     type RunnerFiles,
     type Spawn,
@@ -801,6 +802,7 @@ export function createDockerRunner(
         runHelper: (job, plan, token, signal) => dockerRunHelper(deps, job, plan, { token, signal }),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
+        startServices: (job) => startJobServices(job, config, deps, (j) => dockerServiceTeardown(deps, j)),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
     };
 }

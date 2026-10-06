@@ -30,7 +30,7 @@ import type {
 } from './job-store-types.js';
 import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
-import { type WorkflowDefinition, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
+import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
 
 export interface ClaimCandidateRow {
     id: string;
@@ -454,6 +454,8 @@ export async function resolveClaimGates(
 
 export interface ResolvedClaimPublish {
     publish: boolean | undefined;
+    /** `false` only for an agent-less workflow node; absent otherwise. */
+    agent?: false;
     claimGates: BellowsConfig | null;
     gateError: string | null;
     gatesSource: ClaimGatesSource | null;
@@ -500,10 +502,11 @@ export function resolveClaimPublish(
         return { publish: false, ...gates };
     }
     const publish = isPublishNode(snapshot, workflowNode);
+    const agent = isAgentlessNode(snapshot, workflowNode) ? { agent: false as const } : {};
     if (nodeSkipsGates(snapshot, workflowNode)) {
-        return { publish, claimGates: null, gateError: null, gatesSource: null };
+        return { publish, ...agent, claimGates: null, gateError: null, gatesSource: null };
     }
-    return { publish, ...gates };
+    return { publish, ...agent, ...gates };
 }
 
 /**
@@ -607,6 +610,7 @@ export function buildClaimResult(
         gateError,
         gatesSource,
         publish,
+        agent,
         helperPlans,
         masterPrompt,
         turnContext,
@@ -636,6 +640,7 @@ export function buildClaimResult(
         ...(claimGates || gateError ? { gates: claimGates, gateError } : {}),
         ...(gatesSource ? { gatesSource } : {}),
         ...(publish !== undefined ? { publish } : {}),
+        ...(agent === false ? { agent } : {}),
         ...(helperPlans !== undefined ? { helperPlans } : {}),
     };
 }

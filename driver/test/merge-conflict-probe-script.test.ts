@@ -14,7 +14,7 @@ import { SCRIPT_IDENTITY, git, hasGit, setupWorktreeFixture } from './fixtures/g
 const SCRIPT_PATH = join(import.meta.dirname, '..', 'src', 'scripts', 'merge-conflict-probe.cjs');
 
 interface ProbeOutput {
-    verdict: 'up-to-date' | 'rebased' | 'conflicted';
+    verdict: 'conflicted';
     baseSha: string;
     headSha: string;
     conflictingPaths: string[];
@@ -24,10 +24,19 @@ interface ProbeVerdict {
     schema: string;
     version: number;
     ok: boolean;
-    output?: ProbeOutput;
+    /** An object for a conflict the agent resolves; a string — the marker last — for a concluded job. */
+    output?: ProbeOutput | string;
+    control?: string;
     reason?: string;
     error?: string;
 }
+
+/** The conflict a probe left for the agent, or a failure naming what the verdict was instead. */
+const conflictOf = (verdict: ProbeVerdict): ProbeOutput => {
+    if (typeof verdict.output !== 'object')
+        throw new Error(`expected a conflicted verdict, got ${JSON.stringify(verdict)}`);
+    return verdict.output;
+};
 
 describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     const fx = setupWorktreeFixture();
@@ -66,8 +75,8 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
 
         const result = probe({ publication: publication() });
 
-        expect(result.ok).toBe(true);
-        expect(result.output).toMatchObject({ verdict: 'up-to-date', conflictingPaths: [] });
+        expect(result).toMatchObject({ ok: true, control: 'conclude' });
+        expect(String(result.output).split('\n').pop()).toBe('MERGE-UP-TO-DATE');
         expect(git(fx.worktree(), 'rev-parse', 'HEAD')).toBe(before);
     });
 
@@ -78,9 +87,8 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
 
         const result = probe({ publication: publication() });
 
-        expect(result.ok).toBe(true);
-        expect(result.output?.verdict).toBe('rebased');
-        expect(result.output?.conflictingPaths).toEqual([]);
+        expect(result).toMatchObject({ ok: true, control: 'conclude' });
+        expect(String(result.output).split('\n').pop()).toBe('MERGE-REBASED');
         expect(existsSync(join(fx.worktree(), 'NEWS.md'))).toBe(true);
         expect(git(fx.worktree(), 'log', '--format=%s')).toContain('the task commit');
         const gitDir = git(fx.worktree(), 'rev-parse', '--git-dir');
@@ -123,7 +131,8 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
 
         const result = probeWithoutIdentity({ publication: publication() });
 
-        expect(result).toMatchObject({ ok: true, output: { verdict: 'rebased' } });
+        expect(result).toMatchObject({ ok: true, control: 'conclude' });
+        expect(String(result.output).split('\n').pop()).toBe('MERGE-REBASED');
         expect(git(fx.worktree(), 'log', '-1', '--format=%cn <%ce>')).toBe(FALLBACK_IDENTITY);
     });
 
@@ -133,7 +142,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
 
         const result = probeWithoutIdentity({ publication: publication() });
-        expect(result.output?.verdict).toBe('conflicted');
+        expect(conflictOf(result).verdict).toBe('conflicted');
 
         // What the repair prompt asks of the agent, which carries no identity either — and the
         // opencode policy allows only the bare `git rebase --continue`, never a `-c` form.
@@ -157,7 +166,11 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         fx.commitIn(fx.worktree(), 'TASK.md', 'task work\n', 'the task commit');
         fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
-        expect(probe({ publication: publication() }).output?.verdict).toBe('rebased');
+        expect(
+            String(probe({ publication: publication() }).output)
+                .split('\n')
+                .pop()
+        ).toBe('MERGE-REBASED');
 
         expect(git(fx.worktree(), 'log', '-1', '--format=%cn <%ce>')).toBe('Test <test@example.com>');
         expect(() => git(fx.worktree(), 'config', '--local', 'user.email')).toThrow();
@@ -171,22 +184,25 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         const result = probe({ publication: publication() });
 
         expect(result.ok).toBe(true);
-        expect(result.output?.verdict).toBe('conflicted');
-        expect(result.output?.conflictingPaths).toEqual(['README.md']);
+        expect(result.control).toBeUndefined();
+        expect(conflictOf(result).verdict).toBe('conflicted');
+        expect(conflictOf(result).conflictingPaths).toEqual(['README.md']);
         const gitDir = git(fx.worktree(), 'rev-parse', '--git-dir');
         expect(existsSync(join(gitDir, 'rebase-merge')) || existsSync(join(gitDir, 'rebase-apply'))).toBe(true);
     });
 
     it('writes the same verdict to the state file the repair agent reads', () => {
         expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+        fx.commitIn(fx.worktree(), 'README.md', 'task rewrites the readme\n', 'conflicting task commit');
+        fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
 
-        probe({ publication: publication() });
+        const result = probe({ publication: publication() });
 
         const state = JSON.parse(
             readFileSync(join(fx.worktree(), '.factory', 'merge-conflict-probe.json'), 'utf8')
         ) as ProbeVerdict;
-        expect(state).toMatchObject({ schema: 'merge-conflict-probe/v1', version: 1, ok: true });
-        expect(state.output?.verdict).toBe('up-to-date');
+        expect(state).toEqual(result);
+        expect(conflictOf(state).conflictingPaths).toEqual(['README.md']);
     });
 
     it('fails as a precondition, naming it, when the thread recorded no publication', () => {
@@ -213,13 +229,13 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         fx.pushToOrigin('README.md', 'upstream rewrites the readme\n', 'conflicting upstream commit');
         // First probe leaves a real conflicted rebase mid-flight, exactly as a crashed repair
         // agent would leave it for the next attempt to find.
-        expect(probe({ publication: publication() }).output?.verdict).toBe('conflicted');
+        expect(conflictOf(probe({ publication: publication() })).verdict).toBe('conflicted');
 
         const result = probe({ publication: publication() });
 
         expect(result.ok).toBe(true);
-        expect(result.output?.verdict).toBe('conflicted');
-        expect(result.output?.conflictingPaths).toEqual(['README.md']);
+        expect(conflictOf(result).verdict).toBe('conflicted');
+        expect(conflictOf(result).conflictingPaths).toEqual(['README.md']);
     });
 
     it('fails, never disguising it as a conflict, when the autostash reapply leaves conflict markers', () => {

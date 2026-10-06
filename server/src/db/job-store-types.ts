@@ -440,6 +440,11 @@ export interface Claim {
      */
     publish?: boolean;
     /**
+     * False when the claimed workflow node launches no agent turn: the driver runs the node's
+     * helpers, gates and publish and never starts a runner session. ABSENT means an agent node.
+     */
+    agent?: false;
+    /**
      * Declared pre/post block-helper steps for this node's claim (issue #207/#122), resolved from
      * the snapshot node's own `helperPlans` — absent on every claim outside a block's expansion,
      * which is the ordinary case for every workflow-less and plain `agent`-node task today.

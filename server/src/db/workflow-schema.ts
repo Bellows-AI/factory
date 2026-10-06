@@ -125,6 +125,12 @@ export interface WorkflowNode {
      */
     publish?: boolean;
     /**
+     * Whether the node launches an agent turn. Default true; `false` is a driver-only node: the
+     * claim carries `agent: false` and the driver runs its pre-helpers, gates and publish without
+     * ever starting a runner session.
+     */
+    agent?: boolean;
+    /**
      * Declared pre/post block-helper steps for this node's claim (issue #207/#122). Absent on
      * every node that declares none, which is every node outside a block's own expansion today.
      */
@@ -289,6 +295,11 @@ export function nodeOf(definition: WorkflowDefinition, name: string): WorkflowNo
 /** Whether the named node is a publish node — the claim's flag reads this, per row. */
 export function isPublishNode(definition: WorkflowDefinition, name: string): boolean {
     return nodeOf(definition, name)?.publish === true;
+}
+
+/** Whether the named node launches no agent turn — the claim's `agent` flag reads this, per row. */
+export function isAgentlessNode(definition: WorkflowDefinition, name: string): boolean {
+    return nodeOf(definition, name)?.agent === false;
 }
 
 /** Whether the named node opts its run out of the gates — the claim and the gates re-read both ask this. */

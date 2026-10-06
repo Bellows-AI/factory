@@ -23,6 +23,7 @@ import { askPublishToken, publishBranch, publishDue, report, reportFinish } from
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
+import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -300,25 +301,62 @@ interface RunInputs {
     onOutput: (tail: string) => void;
 }
 
-/** The run itself: spawn, and resolve to what to report (or nothing). */
-async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
-    const { rt, job, state, settle } = ctx;
-    const { runner, log } = rt;
-    const { session, gateSession, executorType, onOutput } = inputs;
+/** What an agent run leaves behind: its scraped session and its artifacts. An agent-less node leaves neither. */
+async function reportRunTail(
+    rt: LoopRuntime,
+    job: BoardJob,
+    executorType: BoardJob['executorType'],
+    outcome: RunOutcome
+): Promise<void> {
+    if (isAgentless(job)) return;
+    await reportScrapedSession(rt, job, executorType, outcome);
+    await uploadRunArtifacts(rt, job, outcome);
+}
+
+/**
+ * The spawn: answers the run's outcome, or null when a stand-down landed first (already settled).
+ * An agent-less node (issue #503) launches nothing — it answers a clean run for the gates and the
+ * publish to follow, after handing back the claim the sync took, since no runner comes to release it.
+ */
+async function launchRun(
+    ctx: AttemptCtx,
+    session: RunSession | null,
+    onOutput: (tail: string) => void
+): Promise<RunOutcome | null> {
+    const { rt, job, state } = ctx;
+    const agentless = isAgentless(job);
     // Every launched attempt gets a control endpoint (issue #442), minted before the stand-down
     // check so the env the runner is launched with already names it.
-    await openRunControl(rt, job, state);
+    if (!agentless) await openRunControl(rt, job, state);
     // A Stop, lost lease or Remove that landed during setup, before the spawn: nothing runs, and
     // the stand-down fence releases a claim the runner never took.
-    if (await standDown(ctx, 'setup')) return { done: true };
+    if (await standDown(ctx, 'setup')) return null;
+    if (agentless) {
+        // The services the gates test against start under the checkout claim, as run() starts them.
+        const refused = await rt.runner.startServices(job);
+        await handBackFence(ctx);
+        return refused ?? AGENTLESS_OUTCOME;
+    }
+    // Reported here, not at attempt start: a setup that concludes the job starts no session, and a
+    // session id reported for one would name a conversation that never existed.
+    await reportNewSession(rt, job, session);
     state.launched = true;
     // The launch hands the checkout claim to the runner, which releases it when the run ends.
     ctx.fenced = false;
 
     state.running = true;
-    const outcome = await runner.run(job, session, onOutput).finally(() => {
+    return rt.runner.run(job, session, onOutput).finally(() => {
         state.running = false;
     });
+}
+
+/** The run itself: spawn, and resolve to what to report (or nothing). */
+async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseDone | RunPhaseResult> {
+    const { rt, job, state, settle } = ctx;
+    const { log } = rt;
+    const { session, gateSession, executorType, onOutput } = inputs;
+    const outcome = await launchRun(ctx, session, onOutput);
+    if (outcome === null) return { done: true };
     // The run's end, stamped HERE — not at verdict time: the gates, helpers and session scrape
     // below can run minutes after a kill, and the timeout note's active/idle verdict must
     // describe the run as it ended, not as it was reported.
@@ -328,10 +366,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
     // the run still reports the session and uploads the artifacts BEFORE the park.
     stopIfDraining(state);
-    const lastWords = async () => {
-        await reportScrapedSession(rt, job, executorType, outcome);
-        await uploadRunArtifacts(rt, job, outcome);
-    };
+    const lastWords = () => reportRunTail(rt, job, executorType, outcome);
     if (await standDown(ctx, 'its run', lastWords)) return { done: true };
 
     /*
@@ -345,12 +380,11 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
         return { done: true };
     }
 
-    await reportScrapedSession(rt, job, executorType, outcome);
     // The artifacts upload HERE (issue #325): while the lease is still live — settle() has
     // deliberately not been called — and before the gates, so a gate suite that runs minutes
     // cannot push the upload past a reclaim. Best-effort throughout; a failed upload costs
     // retention, never the run.
-    await uploadRunArtifacts(rt, job, outcome);
+    await reportRunTail(rt, job, executorType, outcome);
     // The session minted and reported before the spawn never ran — no transcript exists under it,
     // so a follow-up resuming it would find no conversation. A resumed session is the parent's
     // and stays.
@@ -543,7 +577,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                     ? `${session.resume ? 'resuming' : 'starting as'} session ${session.id}`
                     : 'starting (headless opencode run: no session id)')
         );
-        await reportNewSession(rt, job, session);
 
         const gateSession = await runPhases(ctx);
         if (gateSession === STOOD_DOWN) return;

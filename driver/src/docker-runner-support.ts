@@ -368,3 +368,17 @@ export async function createRunnerContainer(
         });
     }
 }
+
+/**
+ * The declared services alone, for an agent-less node (issue #503) whose gates test against them:
+ * run()'s own setup, answering the author's refusal as a refused outcome and null otherwise.
+ */
+export async function startJobServices(
+    job: BoardJob,
+    config: DriverConfig,
+    deps: { execDocker: ExecDocker; killed: Set<BoardJob['leaseToken']> },
+    serviceTeardown: (job: BoardJob) => Promise<void>
+): Promise<RunOutcome | null> {
+    const { refusal } = await setupJobServices(job, config, { ...deps, serviceTeardown });
+    return refusal === null ? null : { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
+}

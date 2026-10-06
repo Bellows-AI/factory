@@ -218,6 +218,7 @@ function stubRunner(
     reapAttempts: BoardJob[];
     probed: BoardJob[];
     deadServiceProbes: number;
+    startedServices: string[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -240,6 +241,11 @@ function stubRunner(
         synced: [] as BoardJob[],
         reclaimed: [] as BoardJob[],
         run: outcome,
+        startedServices: [] as string[],
+        async startServices(startedJob: BoardJob) {
+            runner.startedServices.push(startedJob.id);
+            return null;
+        },
         async sampleRuntime() {
             runner.samples += 1;
             return sample;
@@ -811,6 +817,32 @@ describe('the poll loop', () => {
 
         await drive({ ...board, runner });
 
+        expect(runner.published).toHaveLength(1);
+        expect(board.board.completed[0]?.status).toBe('succeeded');
+    });
+
+    // Issue #503: an agent-less node (`agent: false`, the merge-conflict block's verify) is the
+    // driver's own gates + publish — never a runner session, a reported session or a scraped one.
+    it('runs no agent for a claim with agent: false, yet still publishes and succeeds', async () => {
+        const board = stubBoard([{ ...job(1), agent: false }]);
+        let runs = 0;
+        const runner = stubRunner(async () => {
+            runs += 1;
+            return ok();
+        });
+        const released: string[] = [];
+        runner.releaseFence = async (fencedJob) => {
+            released.push(fencedJob.id);
+        };
+
+        await drive({ ...board, runner });
+
+        expect(runs).toBe(0);
+        // run() is what starts the declared services, so the agent-less path starts them itself —
+        // and hands the checkout claim back exactly once.
+        expect(runner.startedServices).toEqual([job(1).id]);
+        expect(released).toEqual([job(1).id]);
+        expect(board.board.sessions).toEqual([]);
         expect(runner.published).toHaveLength(1);
         expect(board.board.completed[0]?.status).toBe('succeeded');
     });
@@ -3382,6 +3414,20 @@ describe('block-helper steps (issue #207)', () => {
                     output: JSON.stringify({ decided: 'up-to-date' }),
                 },
             ]);
+        });
+
+        // Issue #503: a fresh-session node that concludes started no conversation, so none is reported.
+        it('reports no session for a fresh-session claim a pre-helper concludes', async () => {
+            const board = stubBoard([{ ...job(1), helperPlans: [helperPlan()] }]);
+            const { runner } = runnerWithHelper(
+                async () => ok(),
+                [{ ok: true, output: 'MERGE-REBASED', control: 'conclude' }]
+            );
+
+            await drive({ ...board, runner });
+
+            expect(board.board.sessions).toEqual([]);
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', output: 'MERGE-REBASED' });
         });
 
         it('a pre-helper answering control: "continue" explicitly runs the agent, same as answering none at all', async () => {
