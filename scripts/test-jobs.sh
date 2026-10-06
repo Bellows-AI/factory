@@ -1101,5 +1101,57 @@ stop_lane() { # stop_lane <claude|opencode>
 stop_lane claude
 stop_lane opencode
 
+# --- AskUserQuestion answered inside the same Claude run (issue #226) ----------------------------
+#
+# The real claude-executor image against the same scripted endpoint in `--ask` mode. The model's
+# first reply is an AskUserQuestion tool call; the bridge POSTs it to the endpoint's /question,
+# polls until it answers "Blue", and hands the answer back into the SAME CLI process, whose next
+# model request carries it. The run ends 0 with `ANSWER=Blue` in the progress output and exactly
+# one question POST recorded.
+
+echo
+echo '# AskUserQuestion (real claude CLI, answered through the bridge)'
+
+ask_lane() {
+    local image=claude-executor dir="$work/ask-claude" fake_pid port posts
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad 'claude asks and receives an answer' "the $image image is missing — run make runners"
+        return
+    fi
+    mkdir -p "$dir"
+    chmod 777 "$dir"
+    node scripts/fake-model-endpoint.mjs --ask >"$work/fake-ask.port" &
+    fake_pid=$!
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-ask.port" ] && break
+        sleep 0.25
+    done
+    port="$(cat "$work/fake-ask.port")"
+    local host="http://host.docker.internal:$port"
+    if timeout 180 docker run --rm --add-host host.docker.internal:host-gateway -v "$dir:/workspace" -e WORKDIR=/workspace \
+        -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=$host" -e "BELLOWS_CONTROL_URL=$host" \
+        -e BELLOWS_CONTROL_TOKEN=lane -e BELLOWS_CONTROL_POLL_MS=200 \
+        "$image" -p 'ask which colour' --dangerously-skip-permissions --model fake-model >"$work/ask-claude.log" 2>&1; then
+        ok 'claude exits 0 after the question is answered'
+    else
+        bad 'claude exits 0 after the question is answered' "$(tail -5 "$work/ask-claude.log")"
+    fi
+    posts="$(node -e 'fetch(process.argv[1] + "/questions").then((r) => r.json()).then((j) => console.log(j.questionPosts))' "http://127.0.0.1:$port")"
+    kill "$fake_pid" 2>/dev/null
+    wait "$fake_pid" 2>/dev/null
+    if grep -q 'ANSWER=Blue' "$work/ask-claude.log"; then
+        ok 'the answer reaches the same run (ANSWER=Blue in the progress output)'
+    else
+        bad 'the answer reaches the same run (ANSWER=Blue in the progress output)' "$(tail -5 "$work/ask-claude.log")"
+    fi
+    if [ "$posts" = 1 ]; then
+        ok 'exactly one question was posted'
+    else
+        bad 'exactly one question was posted' "question POSTs: $posts"
+    fi
+}
+
+ask_lane
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

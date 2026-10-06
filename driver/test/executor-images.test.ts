@@ -62,6 +62,13 @@ describe('the executor branch reporter', () => {
         expect(dockerfile).not.toMatch(/claude-progress[^\n]*claude-home\//);
     });
 
+    it('ships the AskUserQuestion bridge beside the entrypoint, outside the mutable config home', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toMatch(/COPY[^\n]*claude-bridge\.cjs \/usr\/local\/bin\/claude-bridge\.cjs/);
+        expect(dockerfile).toMatch(/chmod 0755[^\n]*claude-bridge\.cjs/);
+        expect(dockerfile).not.toMatch(/claude-bridge[^\n]*claude-home\//);
+    });
+
     // The entrypoint shape: launched beside the CLI (never as its child, so a CLI crash cannot
     // take it down mid-run), stdio discarded (the run's output stream is the CLI's), a close-time
     // `--once` sample, and the CLI's exit status preserved through the `exec` it replaced. The
@@ -88,7 +95,7 @@ describe('the executor branch reporter', () => {
         // the handler themselves, which is why the images never showed it and the host suite could.
         if (cli === 'claude') {
             expect(entry).toMatch(
-                /\(\n {4}trap - TERM INT\n {4}exec claude --output-format stream-json --verbose "\$@"\n\) > "\$PROGRESS_FIFO" &$/m
+                /\(\n {4}trap - TERM INT\n {4}exec node "\$\(dirname "\$0"\)\/claude-bridge\.cjs" "\$@"\n\) > "\$PROGRESS_FIFO" &$/m
             );
             expect(entry).toMatch(/node "\$\(dirname "\$0"\)\/claude-progress\.cjs" < "\$PROGRESS_FIFO" &/);
             expect(entry).toMatch(/^PROGRESS_PID=\$!$/m);
@@ -169,6 +176,30 @@ describe('the executor branch reporter', () => {
             })
         ).toEqual(['Running Bash.', 'I am running the test suite.']);
         expect(linesFor({ type: 'stream_event', event: { type: 'content_block_delta' } })).toEqual([]);
+        // The bridge's protocol lines share the stream; they are not progress.
+        expect(
+            linesFor({
+                type: 'control_request',
+                request_id: 'r',
+                request: { subtype: 'can_use_tool', tool_name: 'Bash' },
+            })
+        ).toEqual([]);
+        expect(linesFor({ type: 'control_response', response: { subtype: 'success' } })).toEqual([]);
+        // A question's text never reaches the tail, only that one was asked.
+        expect(
+            linesFor({
+                type: 'assistant',
+                message: {
+                    content: [
+                        {
+                            type: 'tool_use',
+                            name: 'AskUserQuestion',
+                            input: { questions: [{ question: 'Which secret?' }] },
+                        },
+                    ],
+                },
+            })
+        ).toEqual(['Asked a question — waiting for an answer on the task page.']);
         expect(linesFor(null)).toEqual([]);
     });
 

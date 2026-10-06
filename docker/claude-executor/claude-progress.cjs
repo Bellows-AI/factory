@@ -3,6 +3,8 @@
 const readline = require('node:readline');
 
 const TEXT_LIMIT = 4_096;
+const ASK_TOOL = 'AskUserQuestion';
+const ASKED_LINE = 'Asked a question — waiting for an answer on the task page.';
 
 function text(value) {
     return typeof value === 'string' ? value.trim().slice(0, TEXT_LIMIT) : '';
@@ -22,8 +24,10 @@ function linesFor(event) {
             const value = text(block.text);
             if (value) lines.push(value);
         } else if (block.type === 'tool_use' && typeof block.name === 'string' && block.name.trim()) {
-            // Tool input can contain credentials. The tool name answers whether Claude is working.
-            lines.push(`Running ${block.name.trim()}.`);
+            // Tool input can contain credentials, and a question's text is the task page's to show.
+            // The tool name answers whether Claude is working.
+            const name = block.name.trim();
+            lines.push(name === ASK_TOOL ? ASKED_LINE : `Running ${name}.`);
         }
     }
     return lines;

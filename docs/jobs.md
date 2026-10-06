@@ -45,6 +45,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Orphan reaper | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
 | Failure kind, timeout note, branch attribution | `driver/src/loop-ledger.ts`, `loop-verdict.ts`, `exec-codes.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/loop-ledger.test.ts`, `loop.test.ts`, `timeout-note.test.ts`, `branch-reporter.test.ts` |
 | CLI (`factory job …`) | `cli/src/index.ts`, `run.ts`, `board.ts`, `config.ts`, `render.ts` | `cli/test/commands.test.ts`, `board-client.test.ts`, `config.test.ts` |
+| The runner end of questions: the bridge answers `AskUserQuestion` through the control endpoint inside the same Claude run | `docker/claude-executor/claude-bridge.cjs` | `driver/test/claude-bridge.test.ts`, `scripts/test-jobs.sh` (`ask_lane`) |
 | Board + driver end to end | `scripts/test-jobs.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/compose.test.ts` |
 
 ## Invariants

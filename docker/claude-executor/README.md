@@ -9,6 +9,7 @@ this repo's application.
 | `ENTRYPOINT` (`/usr/local/bin/claude-executor`): `$WORKDIR`, `safe.directory`, `JIRA_API` export, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Git/gh guard, wired as the `PreToolUse` hook | `git-guard.cjs`, `claude-home/settings.json` | `driver/test/executor-images.test.ts`, `git-guard.cjs --selftest` |
 | Sidecars: branch reporting (`session → repo, branch`) to `/api/sessions/branch`; progress over the CLI's `stream-json` | `branch-reporter.cjs`, `claude-progress.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
+| The CLI launcher: `-p <prompt>` rewritten to stream-json, `AskUserQuestion` answered through the control endpoint in the same run, other tools denied | `claude-bridge.cjs` | `driver/test/claude-bridge.test.ts`, `driver/test/executor-images.test.ts` |
 | Baked global instructions and config dir (`CLAUDE_CONFIG_DIR`) | `claude-home/` | `driver/test/executor-images.test.ts` |
 | OTLP exporter config, root-owned, unoverridable by a checkout or the agent; the driver renders its endpoint | `managed-settings.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts` |
 | Skills, shared with opencode-executor | `../skills/` | `driver/test/executor-images.test.ts` |
