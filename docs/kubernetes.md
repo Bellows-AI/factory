@@ -21,6 +21,7 @@ there is no CRD and no second control loop.
 | The admission policies that fence the driver | `charts/factory/templates/driver-admission.yaml` | `driver/test/k8s-admission.test.ts` |
 | Runner cpu/memory limits (`runner.resources`) and the namespace `LimitRange` defaults | `charts/factory/values.yaml`, `charts/factory/templates/limitrange.yaml` | `scripts/test-k8s.sh` |
 | Runner network confinement | `charts/factory/templates/runner-networkpolicy.yaml` | `scripts/test-k8s.sh --netpol` |
+| The runner end of AskUserQuestion needs no pod change: the pod runs the same image entrypoint and argv, so the bridge runs unchanged | `driver/src/k8s-podspec.ts`, `docker/claude-executor/claude-bridge.cjs` | `driver/test/claude-bridge.test.ts` |
 | Local Postgres, the workspaces claim, and the `.env`-fed local values | `charts/factory-local-state/`, `charts/factory/values-local.yaml`, `scripts/k8s-local-values.mjs` | `scripts/test-k8s.sh` |
 
 Object list, kind walkthrough and registry push: [chart README](../charts/factory/README.md). What a run does once

@@ -21,7 +21,7 @@ afterEach(async () => {
     for (const endpoint of open.splice(0)) await endpoint.close();
 });
 
-async function start(options: { firstDelayMs?: number; toolSteps?: number } = {}) {
+async function start(options: { firstDelayMs?: number; toolSteps?: number; ask?: boolean } = {}) {
     const { createFakeModelEndpoint } = (await import(pathToFileURL(ENDPOINT).href)) as {
         createFakeModelEndpoint: (options: object) => Endpoint;
     };
@@ -83,6 +83,67 @@ describe('the scripted model endpoint', () => {
         await pending;
         expect(endpoint.agentRequests).toBe(1);
         await expect((await fetch(`${url}/requests`)).json()).resolves.toEqual({ agentRequests: 1 });
+    });
+});
+
+describe('the scripted model endpoint in ask mode (issue #226)', () => {
+    const askRequest = (url: string, messages: unknown[]) =>
+        fetch(`${url}/v1/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ stream: false, tools: [{ name: 'AskUserQuestion' }, { name: 'Bash' }], messages }),
+        }).then((response) => response.json() as Promise<{ stop_reason: string; content: Record<string, any>[] }>);
+
+    it('asks one Red-or-Blue question first, then reports the answer the tool_result carries', async () => {
+        const { url } = await start({ ask: true });
+
+        const first = await askRequest(url, []);
+        expect(first.stop_reason).toBe('tool_use');
+        expect(first.content[0]).toMatchObject({ type: 'tool_use', name: 'AskUserQuestion' });
+        const [question] = first.content[0].input.questions;
+        expect(question.options.map((option: { label: string }) => option.label)).toEqual(['Red', 'Blue']);
+
+        const answered = await askRequest(url, [
+            {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: 'User answered: "Blue"' }],
+            },
+        ]);
+        expect(answered.content[0].text).toBe('ANSWER=Blue');
+
+        const unanswered = await askRequest(url, [
+            {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: 'denied', is_error: true }],
+            },
+        ]);
+        expect(unanswered.content[0].text).toBe('ANSWER=missing');
+    });
+
+    it('plays the board: pending on the first poll, then answered, with the POSTs counted', async () => {
+        const { url } = await start({ ask: true });
+        const poll = async () =>
+            (await fetch(`${url}/question/toolu_ask`)).json() as Promise<{ state: string; answers?: object }>;
+        const posts = async () =>
+            ((await (await fetch(`${url}/questions`)).json()) as { questionPosts: number }).questionPosts;
+
+        expect(await posts()).toBe(0);
+        await fetch(`${url}/question`, { method: 'POST', body: '{}' });
+        expect(await posts()).toBe(1);
+        expect(await poll()).toEqual({ state: 'pending' });
+        expect(await poll()).toEqual({
+            state: 'answered',
+            answers: { 'Which colour should the report use?': 'Blue' },
+        });
+    });
+});
+
+describe('the test-jobs ask lane', () => {
+    const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
+
+    it('runs the real claude image against the endpoint in ask mode', () => {
+        expect(script).toContain('ask_lane');
+        expect(script).toContain('fake-model-endpoint.mjs --ask');
+        expect(script).toContain('ANSWER=Blue');
     });
 });
 

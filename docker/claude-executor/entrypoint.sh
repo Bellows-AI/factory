@@ -193,13 +193,18 @@ PROGRESS_PID=$!
 # the wait loop and the `kill -0` probe below are unchanged, and the FIFO redirect stays on the
 # subshell, which is the same file descriptor the CLI inherits.
 #
+# What is exec'd is the bridge (issue #226), not the CLI: it launches `claude` in stream-json mode,
+# answers AskUserQuestion through the driver's control endpoint inside the same run, forwards
+# TERM/INT to the CLI and exits with the CLI's status. Its stdout is the CLI's, unchanged, so the
+# FIFO contract holds and $! is still the process the runtime's signal has to reach.
+#
 # ash and dash — what these images ship — reset the handler themselves and never showed this;
 # bash-as-/bin/sh does not, and dropped the signal in 3 of 12 runs of a reduction of this script.
 # The entrypoints are run under the host's sh by the offline suite, so "correct only under ash"
 # is not good enough for a file whose whole job is to pass a signal on.
 (
     trap - TERM INT
-    exec claude --output-format stream-json --verbose "$@"
+    exec node "$(dirname "$0")/claude-bridge.cjs" "$@"
 ) > "$PROGRESS_FIFO" &
 CLI_PID=$!
 
