@@ -432,7 +432,14 @@ try {
     let def = 'main';
     try {
         def = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
-    } catch {}
+    } catch {
+        // A clone of an empty remote never got origin/HEAD; once the remote has a first branch,
+        // learn its name rather than keep assuming main.
+        try {
+            git('remote', 'set-head', 'origin', '--auto');
+            def = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
+        } catch {}
+    }
     // An empty remote (a scaffolding task's repository has no commits yet) has no origin/<def>:
     // nothing to fast-forward, branch from or rebase onto.
     const hasBase = hasRemoteBase(def);
