@@ -11,13 +11,14 @@
  * node's own prompt text, prior output, env values, or credentials — the whole point is that a
  * workflow or task author cannot supply, append, or interpolate a single byte of this text.
  */
+import { WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
 import type { ClaimHelperPlan } from './job-store-types.js';
 import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from './workflow-blocks/github-review-reconcile.js';
 import { PROBE_HELPER_ID } from './workflow-blocks/merge-conflict-autofix.js';
 import { nodeOf, type WorkflowDefinition } from './workflow-schema.js';
 
 /** Versioned so tests and later migrations can name the exact behavior they expect. */
-export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v2';
+export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v3';
 
 /**
  * The character cap on each rendered text, the master prompt and the turn context alike. Generous
@@ -62,7 +63,9 @@ const RULES = `Rules for this turn
 
 /** What one claim resolves the prompt from — trusted, already-validated board metadata only. */
 export interface MasterPromptClaimInput {
-    /** The row's own graph position; null on a standalone task or an off-graph member follow-up. */
+    /** The thread's stored execution mode (051): what the context block's `Mode:` line renders. */
+    mode: JobMode;
+    /** The row's own graph position; null on an objective task or an off-graph member follow-up. */
     workflowNode: string | null;
     /** The thread's frozen workflow name; null on a task that never ran a workflow. */
     workflowName: string | null;
@@ -73,7 +76,7 @@ export interface MasterPromptClaimInput {
 }
 
 interface RenderContext {
-    mode: 'standalone' | 'workflow';
+    mode: JobMode;
     workflowName: string | null;
     workflowNode: string | null;
     capabilities: readonly CapabilityLabel[];
@@ -85,8 +88,8 @@ function workflowNameLine(name: string): string {
 
 function renderContextBlock(ctx: RenderContext): string {
     const lines = ['Factory execution context', `- Mode: ${ctx.mode}`];
-    if (ctx.mode === 'workflow' && ctx.workflowName !== null) lines.push(workflowNameLine(ctx.workflowName));
-    // "Current task", not "current node prompt": a standalone claim has no node at all, and the
+    if (ctx.mode === WORKFLOW_MODE && ctx.workflowName !== null) lines.push(workflowNameLine(ctx.workflowName));
+    // "Current task", not "current node prompt": an objective claim has no node at all, and the
     // wording must read true in both modes.
     lines.push('- Your boundary: complete only the current task and return control.');
     return lines.join('\n');
@@ -96,7 +99,7 @@ function renderTurnContext(ctx: RenderContext): string {
     const lines = ['Factory turn context'];
     if (ctx.workflowNode !== null) {
         lines.push(`- Current node: ${ctx.workflowNode}`);
-    } else if (ctx.mode === 'workflow') {
+    } else if (ctx.mode === WORKFLOW_MODE) {
         // An off-graph row of a workflow thread: a member's follow-up. Its completion re-fires
         // the halted node's edges (docs/workflows.md), so it is still Factory-managed, just not
         // itself a graph position.
@@ -135,7 +138,7 @@ function snapshotCapabilities(snapshot: WorkflowDefinition): CapabilityLabel[] {
 /**
  * The full capability set for one claim: this node's own gates/helper policy, plus the graph-wide
  * facts (a publish path, the two builtin blocks, a durable wait) `snapshotCapabilities` finds. A
- * standalone or off-graph claim has no node to opt out of gates/publish — both are always on,
+ * objective or off-graph claim has no node to opt out of gates/publish — both are always on,
  * matching resolveClaimGates/resolveClaimPublish's own "absent means publish" contract.
  */
 function claimCapabilities(input: MasterPromptClaimInput, node: { gates?: boolean } | undefined): CapabilityLabel[] {
@@ -160,13 +163,13 @@ function claimCapabilities(input: MasterPromptClaimInput, node: { gates?: boolea
  * unbounded.
  */
 function renderContext(input: MasterPromptClaimInput): RenderContext | null {
-    const { workflowNode, workflowName, snapshot } = input;
+    const { mode, workflowNode, workflowName, snapshot } = input;
     if (workflowNode !== null && (snapshot === null || nodeOf(snapshot, workflowNode) === undefined)) {
         return null;
     }
     const node = workflowNode !== null && snapshot !== null ? nodeOf(snapshot, workflowNode) : undefined;
     return {
-        mode: workflowName !== null ? 'workflow' : 'standalone',
+        mode,
         workflowName,
         workflowNode,
         capabilities: claimCapabilities(input, node),

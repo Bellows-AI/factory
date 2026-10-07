@@ -2,7 +2,6 @@ import { type ReactNode, useState } from 'react';
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
-import type { DefaultWorkflowSteps } from '../api/useDefaultWorkflowSettings.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
 import type { ComposerDraftInput, ComposerDraftStore } from '../composer-draft.js';
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
@@ -56,11 +55,8 @@ const REPO_PLACEHOLDER = 'Select a repository';
 
 type Update = (patch: Partial<ComposerDraftInput>) => void;
 
-/** How many of the two default-workflow steps are effectively on — the closed disclosure's
- * one-line summary, so the enabled count reads without opening it. */
-function enabledStepCount(steps: DefaultWorkflowSteps): number {
-    return Number(steps.reviewReconciliation) + Number(steps.mergeConflictAutofix);
-}
+/** The empty workflow option: objective mode, the prompt runs as written. */
+const NO_WORKFLOW_LABEL = 'No workflow';
 
 /**
  * One numbered section of the composer (plan §2.3): the accent step disc — decoration, hidden
@@ -271,7 +267,7 @@ function ComposerWorkflowTrigger({
     // board's workflow feature.
     const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
     if (workflows === null) return null;
-    const label = workflow === '' ? 'Default workflow' : workflow;
+    const label = workflow === '' ? NO_WORKFLOW_LABEL : workflow;
     return (
         <div className="composer-context-item">
             <span className="composer-label">
@@ -292,7 +288,7 @@ function ComposerWorkflowTrigger({
                 </ListboxButton>
                 <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
                     <ListboxOption value="" className="popover-option">
-                        Default workflow
+                        {NO_WORKFLOW_LABEL}
                     </ListboxOption>
                     {effectiveWorkflows(workflows).map((choice) => (
                         <ListboxOption key={choice.id} value={choice.name} className="popover-option">
@@ -306,19 +302,11 @@ function ComposerWorkflowTrigger({
 }
 
 /**
- * Section 3, the workflow details: a named workflow's declared launch parameters; or, beside
- * Default workflow, the mandatory spine in words and the two optional steps behind their
- * closed-by-default disclosure (issue 228) once the saved settings have answered.
+ * Section 3, the workflow details: a named workflow's declared launch parameters, or — with no
+ * workflow chosen, objective mode — one line saying the prompt runs as written.
  */
-function ComposerWorkflowDetails({
-    workflows,
-    composer,
-}: {
-    workflows: readonly ComposerWorkflowOption[] | null;
-    composer: ComposerDraft;
-}) {
-    const { state, update, declaredParams, paramValues, chosenWorkflowId, onToggleDefaultStep } = composer;
-    const steps = composer.effectiveDefaultSteps;
+function ComposerWorkflowDetails({ composer }: { composer: ComposerDraft }) {
+    const { state, update, declaredParams, paramValues, chosenWorkflowId } = composer;
     if (declaredParams.length > 0) {
         return (
             <WorkflowParameterFields
@@ -338,32 +326,7 @@ function ComposerWorkflowDetails({
     if (state.workflow !== '') {
         return <p className="composer-helper">The {state.workflow} workflow needs no launch details.</p>;
     }
-    return (
-        <>
-            <p className="composer-helper">Every task runs: prompt → gates → publish.</p>
-            {workflows !== null && steps !== null ? (
-                <details className="composer-steps">
-                    <summary>Optional steps ({enabledStepCount(steps)} of 2 on)</summary>
-                    <label className="settings-toggle">
-                        <input
-                            type="checkbox"
-                            checked={steps.reviewReconciliation}
-                            onChange={() => onToggleDefaultStep('reviewReconciliation')}
-                        />
-                        Iterate on PR review comments
-                    </label>
-                    <label className="settings-toggle">
-                        <input
-                            type="checkbox"
-                            checked={steps.mergeConflictAutofix}
-                            onChange={() => onToggleDefaultStep('mergeConflictAutofix')}
-                        />
-                        Repair merge conflicts
-                    </label>
-                </details>
-            ) : null}
-        </>
-    );
+    return <p className="composer-helper">Without a workflow, your prompt runs as written.</p>;
 }
 
 /** The quiet status line beside Start — only for the blockers that never raise a banner. */
@@ -449,13 +412,6 @@ function ReadinessBanner({
                 <BadBanner title="Workflow details incomplete">
                     Complete the required workflow details to continue.
                 </BadBanner>
-            );
-        case 'defaults-unresolved':
-            return (
-                <div className="banner-info" id={READINESS_ID}>
-                    <Icon name="info" size={24} />
-                    <p>Loading your saved workflow defaults…</p>
-                </div>
             );
         default:
             return null;
@@ -602,7 +558,6 @@ export function TaskComposer({
     executors,
     defaultExecutor,
     workflows,
-    defaultWorkflowSettings,
     actionError,
     sending,
     onSend,
@@ -630,17 +585,10 @@ export function TaskComposer({
      * no workflow, no parameters.
      */
     workflows: readonly ComposerWorkflowOption[] | null;
-    /**
-     * The member's saved default-workflow step settings (issues 203/208), or null while they have
-     * not answered yet — the two optional-step checkboxes stay hidden for exactly that duration,
-     * the same "not known yet" posture the workspace poll gets.
-     */
-    defaultWorkflowSettings: DefaultWorkflowSteps | null;
     /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
     actionError: string | null;
     sending: boolean;
-    /** `workflow` is a chosen name, or null for Default workflow — the raw prompt runs either way
-     * today; `defaultWorkflow` travels inside `input` when Default workflow is chosen. */
+    /** `workflow` is a chosen name, or null for no workflow (objective mode). */
     onSend: (input: QueueTaskInput) => Promise<string | null>;
     /**
      * Reports the chosen repository upward, so the page can re-fetch the workflow list for that
@@ -655,13 +603,12 @@ export function TaskComposer({
         executors,
         defaultExecutor,
         workflows,
-        defaultWorkflowSettings,
         onRepoChange,
         sending,
         onSend,
         draftStore,
     });
-    const { state, update, declaredParams, paramValues, effectiveDefaultSteps: steps } = composer;
+    const { state, update, declaredParams, paramValues } = composer;
     const [confirmingDiscard, setConfirmingDiscard] = useState(false);
     const [noSyncedOpen, setNoSyncedOpen] = useState(false);
     // Null while the workspace has not answered: that screen is the loading/error state, never
@@ -669,9 +616,6 @@ export function TaskComposer({
     const readiness = repos === null ? undefined : repoReadiness(state.repo, repos);
     const chosenRepo = repos?.find(({ owner, name }) => `${owner}/${name}` === state.repo) ?? null;
 
-    // Launching Default workflow before the saved step settings answer would silently omit the
-    // member's saved pair from the submitted JSON — only meaningful where the checkboxes
-    // themselves would render (the workflow list is known, and no custom workflow is chosen).
     const blocker = startBlocker({
         sending,
         executorMissing: state.executor === '',
@@ -679,7 +623,6 @@ export function TaskComposer({
         promptTooLong: commandTooLong(state.draft),
         ...(readiness !== undefined ? { repoReadiness: readiness } : {}),
         workflowUnresolved: composer.workflowPending,
-        defaultsUnresolved: workflows !== null && state.workflow === '' && steps === null,
         paramsInvalid: !composer.paramsReady,
     });
     // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
@@ -741,14 +684,13 @@ export function TaskComposer({
                     />
                 </ComposerSection>
                 <ComposerSection step={3} title="Workflow details">
-                    <ComposerWorkflowDetails workflows={workflows} composer={composer} />
+                    <ComposerWorkflowDetails composer={composer} />
                 </ComposerSection>
                 <ReadinessSection
                     preflight={preflightSentence({
                         repo: state.repo === '' ? null : state.repo,
                         executor: state.executor === '' ? null : state.executor,
                         workflow: state.workflow === '' ? null : state.workflow,
-                        defaultSteps: state.workflow === '' ? steps : null,
                     })}
                     workflow={state.workflow}
                     repo={chosenRepo}

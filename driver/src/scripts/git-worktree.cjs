@@ -49,7 +49,9 @@
 // existing branch when the thread already has one (a lost directory must not cost its
 // commits), else -b at origin/<default>. A path that holds a git tree this sync did not
 // create is REFUSED, never deleted: whatever uncommitted work sits there belongs to an agent
-// session, and destroying it is the one outcome worse than a burned attempt.
+// session, and destroying it is the one outcome worse than a burned attempt. A remote with NO
+// commits (a scaffolding task) has no origin/<default>: the worktree starts empty on an unborn
+// task branch, nothing is fast-forwarded, and an existing tree is not rebased.
 //
 // The clone's own working tree is touched in exactly one way: after a STARTING sync's fetch, its
 // default branch is fast-forwarded to origin/<default> when it is checked out, clean and behind —
@@ -320,6 +322,29 @@ const excludeFactoryState = () => {
     );
 };
 
+/** Whether the fetched remote has a default branch to build on; false for a repository with no commits. */
+const hasRemoteBase = (def) => {
+    try {
+        git('rev-parse', '--verify', '--quiet', 'refs/remotes/origin/' + def);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * The worktree of a repository with no commits: `worktree add --orphan` needs git 2.42 and the
+ * runner images ship 2.39, so it is built by hand — a throwaway commit over the empty tree
+ * anchors a detached worktree, and `checkout --orphan` then leaves it standing on the unborn task
+ * branch with nothing in it. The anchor commit is never referenced again.
+ */
+const addUnbornWorktree = () => {
+    const tree = execFileSync('git', ['mktree'], { cwd: repo, input: '', encoding: 'utf8' }).trim();
+    const base = git('-c', 'user.name=factory', '-c', 'user.email=factory@invalid', 'commit-tree', tree, '-m', 'base');
+    git('worktree', 'add', '--detach', wt, base);
+    inw('checkout', '--orphan', branch);
+};
+
 try {
     acquireSyncLock();
     excludeFactoryState();
@@ -408,13 +433,17 @@ try {
     try {
         def = git('symbolic-ref', 'refs/remotes/origin/HEAD').replace('refs/remotes/origin/', '');
     } catch {}
-    fastForwardClone(def);
+    // An empty remote (a scaffolding task's repository has no commits yet) has no origin/<def>:
+    // nothing to fast-forward, branch from or rebase onto.
+    const hasBase = hasRemoteBase(def);
+    if (hasBase) fastForwardClone(def);
     let existing = false;
     try {
         inw('rev-parse', '--is-inside-work-tree');
         existing = true;
     } catch {}
-    if (existing) {
+    // An existing tree over an empty remote has no new base to rebase onto: it is left as it is.
+    if (existing && hasBase) {
         try {
             inw('rebase', '--autostash', 'origin/' + def);
         } catch (e) {
@@ -436,7 +465,7 @@ try {
             );
             process.exit(0);
         }
-    } else {
+    } else if (!existing) {
         if (fs.existsSync(wt + '/.git')) {
             fail(
                 'the worktree path exists and holds a git tree this sync did not create; remove it by hand if it is truly stale: ' +
@@ -449,7 +478,8 @@ try {
         try {
             git('worktree', 'add', wt, branch);
         } catch {
-            git('worktree', 'add', '-b', branch, wt, 'origin/' + def);
+            if (hasBase) git('worktree', 'add', '-b', branch, wt, 'origin/' + def);
+            else addUnbornWorktree();
         }
     }
     synced();

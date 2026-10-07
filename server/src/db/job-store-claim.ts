@@ -8,9 +8,11 @@ import {
     CLAUDE_CODE,
     EXECUTOR_TYPES,
     executorSuspendedMessage,
+    OBJECTIVE_MODE,
     USER_SCOPE,
     type ExecutorScope,
     type ExecutorType,
+    type JobMode,
     OPENCODE,
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
@@ -47,6 +49,7 @@ export interface ClaimCandidateRow {
     follow_up: boolean;
     workflow_node: string | null;
     workflow_name: string | null;
+    mode: JobMode;
     root_command: string;
 }
 
@@ -154,6 +157,7 @@ async function claimNextCandidate(
                     follow_up: boolean;
                     workflow_node: string | null;
                     workflow_name: string | null;
+                    mode: JobMode;
                     root_command: string;
                 }[]
             >`
@@ -205,7 +209,7 @@ async function claimNextCandidate(
                 -- never been parked, so its command still has to go out; a suspended one settles
                 -- stopped, and is never claimed again.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                          session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name,
+                          session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
@@ -547,7 +551,7 @@ export async function resolveClaimHelperPlans(
  * claim()'s one bundle of every workflow-shaped decision: the snapshot read, the publish flag, the
  * declared helper plans, and the master prompt they all feed (issue #244) — pulled out of
  * `claimNextCandidate` purely to keep that function's own complexity readable, no behavior change.
- * Reads the snapshot for a member follow-up too (workflow_node null, workflow_name not): the
+ * Reads the snapshot for a workflow-mode member follow-up too (workflow_node null, workflow_name not): the
  * master prompt's graph-wide capabilities (publish path, review/merge-conflict blocks) still apply
  * to that turn, even though it carries no node of its own — `resolveClaimPublish` and
  * `resolveClaimHelperPlans` both branch on workflowNode first, so this widening changes neither of
@@ -556,7 +560,7 @@ export async function resolveClaimHelperPlans(
 async function resolveClaimWorkflow(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
-    row: { workflow_node: string | null; workflow_name: string | null },
+    row: { workflow_node: string | null; workflow_name: string | null; mode: JobMode },
     gates: ClaimGatesRead
 ): Promise<
     ResolvedClaimPublish & {
@@ -566,10 +570,9 @@ async function resolveClaimWorkflow(
     }
 > {
     const { orgId, rootJobId, prs } = ctx;
-    const snapshot =
-        row.workflow_node === null && row.workflow_name === null
-            ? null
-            : await readWorkflowSnapshot(tx, orgId, rootJobId);
+    // The stored mode decides (051): an objective row never reads a snapshot, so it resolves no
+    // publish, no helper plans and an objective master prompt.
+    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
     const published = resolveClaimPublish(snapshot, row.workflow_node, gates);
     const helperPlans = await resolveClaimHelperPlans(tx, {
         rootJobId,
@@ -578,6 +581,7 @@ async function resolveClaimWorkflow(
         prs,
     });
     const promptInput = {
+        mode: row.mode,
         workflowNode: row.workflow_node,
         workflowName: row.workflow_name,
         snapshot,

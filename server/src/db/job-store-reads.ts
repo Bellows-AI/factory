@@ -29,17 +29,12 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, repo, executor, executor_scope,
-               parent_job_id, root_job_id, workflow_node, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The task's overall wall clock, summed over the thread the WHERE already
                -- scoped: every member carries the total, so the view reads it off any of
                -- them. A sum over all-null banks is null — nothing measurable, never zero.
                sum(wall_clock_ms) over () as task_wall_clock_ms,
                wall_clock_ms, summary, failure_kind,
-               -- The root's frozen gate-repair round limit (043, issue #49): root-only on the
-               -- row, read here through the root pointer so every member of the thread hands
-               -- the task view the same budget.
-               (select root.default_gate_fix_rounds from job root where root.id = job.root_job_id)
-                   as default_gate_fix_rounds,
                wl.wait_reason, wl.waiting_since, wl.wait_terminal_reason
                ${publicationColumns}
                ${authorColumns}
@@ -67,7 +62,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, repo, executor, executor_scope,
-               parent_job_id, root_job_id, workflow_node, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                summary, wall_clock_ms, failure_kind,
                -- The thread's wait (036) and publication (#324), served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.
@@ -244,6 +239,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                    job.repo as repo, job.executor as executor, job.executor_scope as executor_scope,
                    job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
                    job.workflow_node as workflow_node, job.workflow_name as workflow_name,
+                   job.mode as mode,
                    picked.done_at as done_at, head.cancel_requested_at as cancel_requested_at,
                    job.created_at as created_at, head.started_at as started_at,
                    picked.finished_at as finished_at,
@@ -280,7 +276,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, runtime, repo, executor, executor_scope,
-               parent_job_id, root_job_id, workflow_name, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               parent_job_id, root_job_id, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The close-time summary and the run's own banked clock ride beside the
                -- vitals, both bounded where output is not (#109); the structured failure
                -- kind (044) is what a list badge or a query reads.

@@ -21,21 +21,20 @@ built-in block list is `workflow-blocks/index.ts`'s registry. Read those, not a 
 | The PR-lifecycle primitives a wait is built on | `server/src/db/pr-lifecycle-store.ts`, `server/migrations/036_job_pr_lifecycle.sql` | `server/test-db/job-store.block-wait.test.ts` |
 | CRUD, scope visibility, block compilation at create, base-workflow seeding | `server/src/db/workflow-store.ts` | `server/test-db/workflow-store.test.ts`, `workflow-store.seeding.test.ts` |
 | Board-owned prompt templates and the seeded `fix-issue` workflow | `server/src/db/workflow-templates.ts` | `server/test/workflow-engine.walkthrough.test.ts` |
-| The code-owned default workflow, its selected blocks and its gate-fix round | `server/src/db/default-workflow.ts`, `server/src/routes/job-workflow-resolution.ts` | `server/test/default-workflow.test.ts`, `routes.jobs.default-workflow.test.ts`, `server/test-db/job-store.workflow.default.test.ts` |
-| A member's saved default-step switches | `server/src/db/default-workflow-settings-store.ts`, `server/src/routes/workflow-settings.ts`, `server/migrations/035_default_workflow_settings.sql` | `server/test/routes.workflow-settings.test.ts`, `server/test-db/default-workflow-settings-store.test.ts` |
+| Objective mode: an omitted `workflow` is an ordinary claimable job; the stored mode, inherited by follow-ups, retries and successors | `core/src/job-mode.ts`, `server/migrations/051_job_mode.sql`, `052_drop_default_workflow.sql`, `server/src/routes/job-workflow-resolution.ts`, `server/src/db/job-store-actions.ts` | `server/test-db/job-store.objective.test.ts`, `server/test/routes.jobs.test.ts` |
 | CRUD routes and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
-| Launch resolution and the `wait/cancel`, `wait/poke` verbs | `server/src/routes/jobs.ts`, `job-workflow-resolution.ts` | `server/test/routes.jobs.test.ts`, `routes.jobs.default-workflow.test.ts` |
+| Launch resolution and the `wait/cancel`, `wait/poke` verbs | `server/src/routes/jobs.ts`, `job-workflow-resolution.ts` | `server/test/routes.jobs.test.ts` |
 | The transition, inside the verdict's transaction | `server/src/db/job-store-worker.ts` (`runWorkflowTransition`) | `server/test-db/job-store.workflow.test.ts` |
-| Rests no edge overrides: `blocked`, `services`, `publish`, `config` (a refused `.bellows.yaml`, `driver/src/loop-run.ts`) (`REST_BY_KIND`, the run's failure kind), `no_progress` (`gate-failed` over `treeChanged: false`) | `server/src/db/workflow-engine.ts`, `job-store-worker.ts` (`transitionContextOf`) | `server/test/workflow-engine.next-transition.test.ts`, `default-workflow.test.ts` |
+| Rests no edge overrides: `blocked`, `services`, `publish`, `config` (a refused `.bellows.yaml`, `driver/src/loop-run.ts`) (`REST_BY_KIND`, the run's failure kind), `no_progress` (`gate-failed` over `treeChanged: false`) | `server/src/db/workflow-engine.ts`, `job-store-worker.ts` (`transitionContextOf`) | `server/test/workflow-engine.next-transition.test.ts`, `workflow-engine.evidence.test.ts` |
 | The claim's `publish` flag, the gates opt-out, helper-plan resolution, the cancellation fence | `server/src/db/job-store-claim.ts` | `server/test-db/job-store.workflow.test.ts`, `job-store.block-wait.test.ts` |
 | Session policy and the follow-up's primary-session copy | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.sessions.test.ts` |
-| Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql`, `039_default_workflow_snapshot.sql`, `043_job_default_gate_fix_rounds.sql` | `server/test-db/job-store.workflow.frozen-name.test.ts`, `job-store.workflow.params.test.ts` |
+| Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql`, `051_job_mode.sql` | `server/test-db/job-store.workflow.frozen-name.test.ts`, `job-store.workflow.params.test.ts` |
 | Stop/done/remove against a workflow thread | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.control.test.ts` |
 | The driver's one publish gate | `driver/src/loop-verdict.ts` | `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | An agent-less node (`agent: false`): the claim flag, and the loop running pre-helpers, gates and publish with no runner session on both executors; the merge-conflict block's probe concludes `up-to-date`/`rebased` itself and only a conflict reaches an agent | `server/src/db/workflow-schema.ts` (`isAgentlessNode`), `job-store-claim.ts`, `driver/src/loop-agentless.ts`, `loop-run.ts` (`launchRun`), `driver/src/scripts/merge-conflict-probe.cjs` | `server/test/claim-gates-source.test.ts`, `workflow-block-merge-conflict-autofix.test.ts`, `driver/test/loop.test.ts`, `merge-conflict-probe-script.test.ts` |
 | The blocks' driver-side helper scripts | `driver/src/review-helpers.ts`, `driver/src/scripts/merge-conflict-probe.cjs`, `review-collect.cjs`, `review-reply.cjs` | `driver/test/review-helpers.test.ts`, `merge-conflict-probe-script.test.ts`, `scripts.test.ts` |
 | Composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/components/WorkflowParameterFields.tsx`, `web/src/api/useWorkflows.ts` | `web/test/use-workflows.test.ts` |
-| Management panel and the default-step settings page | `web/src/panels/WorkflowsPanel.tsx`, `DefaultWorkflowPanel.tsx`, `web/src/pages/SettingsWorkflowsPage.tsx` | `web/test/workflows-panel.render.test.tsx`, `default-workflow.render.test.tsx`, `default-workflow-draft.test.ts` |
+| Management panel and its settings page | `web/src/panels/WorkflowsPanel.tsx`, `web/src/pages/SettingsWorkflowsPage.tsx` | `web/test/workflows-panel.render.test.tsx`, `settings-pages.render.test.tsx` |
 | A stub workflow walked on a real board and driver | `scripts/test-jobs.sh` (`# workflows`) | — |
 
 The helper transport a block's declared helpers run through, and the master prompt a claim carries,
@@ -54,10 +53,13 @@ are [jobs.md](jobs.md) ("Block-helper steps", "The master prompt").
   runs, so any authored or pasted definition carrying it refuses `UNKNOWN_KEY` —
   `server/test/workflow-schema.test.ts`. Deleting the key to get a round trip past that refusal
   turns a durable wait into an ordinary claimable node.
-- **The resolved definition, its name, the selected default blocks and the gate-fix round limit
-  freeze on the thread's root row at create.** Editing or deleting a workflow changes later tasks,
-  never a running thread; `job.workflow_id` carries no foreign key, because `job` is an audit
-  record. `server/test-db/job-store.workflow.frozen-name.test.ts`, `job-store.workflow.default.test.ts`.
+- **The resolved definition and its name freeze on the thread's root row at create.** Editing or
+  deleting a workflow changes later tasks, never a running thread; `job.workflow_id` carries no
+  foreign key, because `job` is an audit record.
+  `server/test-db/job-store.workflow.frozen-name.test.ts`.
+- **A task's mode is stored on every row and decided by the root: no `workflow` is `objective`.**
+  An objective thread has no snapshot, node, successor or wait — its verdict is the whole story
+  (`job_mode_node_ck` refuses a node on an objective row). `server/test-db/job-store.objective.test.ts`.
 - **Marker absence is a first-class outcome.** A completed node no rule matches rests the thread
   loudly, output intact — never failed, never silently continued; a bound-exhausted edge rests too
   rather than falling through. `server/test/workflow-engine.next-transition.test.ts`.
@@ -66,7 +68,7 @@ are [jobs.md](jobs.md) ("Block-helper steps", "The master prompt").
   same `max`. Same test.
 - **The publish decision rides the claim and is enforced in exactly one place**, `driver/src/loop.ts`;
   neither transport grew a gate of its own, pinned by `driver/test/docker.test.ts` and `k8s.test.ts`.
-  Absent on a workflow-less claim, which the driver reads as "publish".
+  Absent on an objective-mode claim, which the driver reads as "publish".
 - **A parked durable wait holds no `job` row and no executor lease.** The per-root advisory lock is
   the only thing preventing two claimers double-waking one round, and the claim-time cancellation
   fence is what makes a cancel or a PR close win the race against a wake — both asserted directly on

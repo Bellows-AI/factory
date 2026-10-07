@@ -9,9 +9,6 @@ import {
     draftIsFresh,
     initialComposerState,
     restoredDraftNotices,
-    defaultWorkflowPayload,
-    defaultWorkflowStepSummary,
-    effectiveDefaultSteps,
     effectiveWorkflows,
     freshWorkflowDraft,
     humanizeParamName,
@@ -19,13 +16,12 @@ import {
     paramFieldVerdict,
     paramsComplete,
     preflightSentence,
-    queueBody,
     repoReadiness,
     startBlocker,
-    toggleDefaultStep,
     touchAll,
     valuesForWorkflow,
 } from '../src/task-composer.js';
+import { queuedTask } from '../src/use-composer-draft.js';
 
 describe('composer params are scoped to the chosen workflow identity', () => {
     // The review's leak: `#12` typed for one workflow stays valid when a repo switch refetches
@@ -62,12 +58,11 @@ describe('composer workflow draft resets on a repository change', () => {
     // list's default still effective, which is exactly what is effective while the window is open.
     const issue: WorkflowParamChoice = { name: 'issue', pattern: '#\\d+' };
 
-    it('resets to the mount shape — unchosen workflow, no stored values, no touched fields, no default-step overrides — so the mount run is a no-op', () => {
+    it('resets to the mount shape — unchosen workflow, no stored values, no touched fields — so the mount run is a no-op', () => {
         expect(freshWorkflowDraft()).toEqual({
             workflow: '',
             storedParams: { workflowId: null, values: {} },
             paramTouched: {},
-            defaultStepOverrides: {},
         });
     });
 
@@ -228,83 +223,9 @@ describe('preflightSentence — what will actually run, before it runs', () => {
         );
     });
 
-    it('lists the final default-workflow step set once the saved settings have answered (#208)', () => {
-        expect(
-            preflightSentence({
-                repo: 'acme/web',
-                executor: 'main',
-                workflow: null,
-                defaultSteps: { reviewReconciliation: true, mergeConflictAutofix: false },
-            })
-        ).toBe(
-            'Will run in acme/web using main executor. Default workflow selected: prompt, gates, publish, plus iterate on PR review comments.'
-        );
-    });
-
-    it('keeps the old raw-prompt sentence while the default-workflow settings have not answered yet', () => {
-        // defaultSteps omitted entirely — the option existed before #208 and stays true today:
-        // an unresolved default-workflow choice still runs the raw prompt at the wire.
+    it('says the prompt runs as written when no workflow is chosen (objective mode)', () => {
         expect(preflightSentence({ repo: 'acme/web', executor: 'main', workflow: null })).toBe(
             'Will run in acme/web using main executor. Your prompt will run as written.'
-        );
-    });
-});
-
-describe('DefaultWorkflowSteps — the effective set, its toggle, and its summary (#208)', () => {
-    const bothOn = { reviewReconciliation: true, mergeConflictAutofix: true };
-    const bothOff = { reviewReconciliation: false, mergeConflictAutofix: false };
-
-    it('answers null before the saved settings have loaded', () => {
-        expect(effectiveDefaultSteps(null, {})).toBeNull();
-    });
-
-    it('reads the saved value straight through with no override', () => {
-        expect(effectiveDefaultSteps(bothOn, {})).toEqual(bothOn);
-        expect(effectiveDefaultSteps(bothOff, {})).toEqual(bothOff);
-    });
-
-    it('lets an explicit override invert either field independently, in either direction', () => {
-        expect(effectiveDefaultSteps(bothOn, { reviewReconciliation: false })).toEqual({
-            reviewReconciliation: false,
-            mergeConflictAutofix: true,
-        });
-        expect(effectiveDefaultSteps(bothOff, { mergeConflictAutofix: true })).toEqual({
-            reviewReconciliation: false,
-            mergeConflictAutofix: true,
-        });
-    });
-
-    it('toggles one field from its EFFECTIVE value, landing back on an explicit choice, not absence', () => {
-        let overrides = toggleDefaultStep({}, 'reviewReconciliation', bothOn);
-        expect(effectiveDefaultSteps(bothOn, overrides)).toEqual({
-            reviewReconciliation: false,
-            mergeConflictAutofix: true,
-        });
-        overrides = toggleDefaultStep(overrides, 'reviewReconciliation', bothOn);
-        expect(effectiveDefaultSteps(bothOn, overrides)).toEqual(bothOn);
-    });
-
-    it('leaves the untouched field alone when the other toggles', () => {
-        const overrides = toggleDefaultStep({}, 'mergeConflictAutofix', bothOn);
-        expect(overrides).toEqual({ mergeConflictAutofix: false });
-    });
-
-    it('sends the default-workflow pair only when Default workflow is chosen', () => {
-        expect(defaultWorkflowPayload('', bothOn)).toEqual(bothOn);
-        expect(defaultWorkflowPayload('fix-issue', bothOn)).toBeNull();
-        expect(defaultWorkflowPayload('', null)).toBeNull();
-    });
-
-    it('summarizes the final step set, omitting steps that are off', () => {
-        expect(defaultWorkflowStepSummary(bothOn)).toBe(
-            'prompt, gates, publish, plus iterate on PR review comments and repair merge conflicts'
-        );
-        expect(defaultWorkflowStepSummary(bothOff)).toBe('prompt, gates, publish');
-        expect(defaultWorkflowStepSummary({ reviewReconciliation: true, mergeConflictAutofix: false })).toBe(
-            'prompt, gates, publish, plus iterate on PR review comments'
-        );
-        expect(defaultWorkflowStepSummary({ reviewReconciliation: false, mergeConflictAutofix: true })).toBe(
-            'prompt, gates, publish, plus repair merge conflicts'
         );
     });
 });
@@ -373,39 +294,6 @@ describe('startBlocker — the one reason Start is dark, in precedence order', (
         expect(startBlocker({ ...base, repoReadiness: 'not-ready' })).toBe('repo-not-ready');
         expect(startBlocker({ ...base, repoReadiness: 'ready' })).toBe('invalid-params');
     });
-
-    it('blocks Start while Default workflow is chosen and the saved settings have not answered yet (#208 review)', () => {
-        // A member must not be able to launch a Default-workflow task before the saved step
-        // settings load — that silently omits the member's saved pair from the submitted JSON,
-        // a real report from the PR review, not a hypothetical.
-        expect(
-            startBlocker({
-                sending: false,
-                executorMissing: false,
-                promptEmpty: false,
-                defaultsUnresolved: true,
-                paramsInvalid: false,
-            })
-        ).toBe('defaults-unresolved');
-        // Ranks after the prompt (an empty prompt is the missing task itself) and before a named
-        // workflow's own field validation — the two can never actually co-occur (one requires the
-        // unchosen '' workflow, the other a chosen one), but the order is still deterministic.
-        expect(
-            startBlocker({
-                sending: false,
-                executorMissing: false,
-                promptEmpty: true,
-                defaultsUnresolved: true,
-                paramsInvalid: false,
-            })
-        ).toBe('empty-prompt');
-    });
-
-    it('omitting defaultsUnresolved answers exactly as before (#208 review) — no change for a named workflow', () => {
-        expect(startBlocker({ sending: false, executorMissing: false, promptEmpty: false, paramsInvalid: true })).toBe(
-            'invalid-params'
-        );
-    });
 });
 
 describe('the parameter touched-state model', () => {
@@ -420,21 +308,35 @@ describe('the parameter touched-state model', () => {
     });
 });
 
-describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
-    // The wire contract the issue's acceptance criteria name: "Preflight and submitted JSON
-    // agree" and "Custom workflow selection sends no defaultWorkflow object" — pinned here so the
-    // omission is a property of the body builder, not something a fetch mock has to observe.
-    it('carries no defaultWorkflow key beside a named custom workflow, and the stamped scope', () => {
-        const body = queueBody(
-            {
-                command: 'fix the bug',
-                repo: 'acme/web',
-                executor: 'team-runner',
-                executorScope: 'org',
-                workflow: 'fix-issue',
-                workflowParams: { issue: '#12' },
-            },
-            null
+describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
+    const held: ComposerDraftInput = {
+        draft: 'fix the bug',
+        executor: 'main',
+        executorScope: 'user',
+        repo: 'acme/web',
+        repoTouched: false,
+        workflowRepo: 'acme/web',
+        ...freshWorkflowDraft(),
+    };
+
+    it('names no workflow and no params in objective mode, and carries no defaultWorkflow key', () => {
+        const body = queuedTask(held, [], {});
+        expect(body).toEqual({
+            command: 'fix the bug',
+            repo: 'acme/web',
+            executor: 'main',
+            executorScope: 'user',
+            workflow: null,
+            workflowParams: null,
+        });
+        expect('defaultWorkflow' in body).toBe(false);
+    });
+
+    it('carries the named workflow, its trimmed params and the stamped scope', () => {
+        const body = queuedTask(
+            { ...held, executor: 'team-runner', executorScope: 'org', workflow: 'fix-issue' },
+            [{ name: 'issue' }],
+            { issue: ' #12 ' }
         );
         expect(body).toEqual({
             command: 'fix the bug',
@@ -446,29 +348,6 @@ describe('queueBody — the POST /api/jobs body, pure (#208)', () => {
         });
         expect('defaultWorkflow' in body).toBe(false);
     });
-
-    it('carries the effective step pair beside Default workflow', () => {
-        const body = queueBody(
-            {
-                command: 'fix the bug',
-                repo: 'acme/web',
-                executor: 'main',
-                executorScope: 'user',
-                workflow: null,
-                workflowParams: null,
-            },
-            { reviewReconciliation: true, mergeConflictAutofix: false }
-        );
-        expect(body).toEqual({
-            command: 'fix the bug',
-            repo: 'acme/web',
-            executor: 'main',
-            executorScope: 'user',
-            workflow: null,
-            workflowParams: null,
-            defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: false },
-        });
-    });
 });
 
 describe('startBlocker — the over-limit request (#280)', () => {
@@ -476,9 +355,7 @@ describe('startBlocker — the over-limit request (#280)', () => {
 
     it('blocks a request over the command limit, after the prompt and before the workflow checks', () => {
         expect(startBlocker({ ...base, promptTooLong: true })).toBe('too-long');
-        expect(startBlocker({ ...base, promptTooLong: true, defaultsUnresolved: true, paramsInvalid: true })).toBe(
-            'too-long'
-        );
+        expect(startBlocker({ ...base, promptTooLong: true, paramsInvalid: true })).toBe('too-long');
         expect(startBlocker({ ...base, promptTooLong: true, executorMissing: true })).toBe('missing-executor');
     });
 
@@ -493,7 +370,6 @@ describe('startBlocker — the over-limit request (#280)', () => {
         expect(blockerTone('missing-executor')).toBe('bad');
         expect(blockerTone('invalid-params')).toBe('bad');
         expect(blockerTone('too-long')).toBe('bad');
-        expect(blockerTone('defaults-unresolved')).toBe('info');
         expect(blockerTone('empty-prompt')).toBe('quiet');
         expect(blockerTone('in-flight')).toBe('quiet');
         expect(blockerTone(null)).toBeNull();
@@ -533,7 +409,6 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: { issue: true },
-        defaultStepOverrides: { reviewReconciliation: false },
     };
 
     it('starts fresh from the lists: the resolved default executor, first repository, no workflow', () => {
@@ -571,7 +446,6 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
         expect(draftIsFresh({ ...fresh, executor: 'main' }, lists)).toBe(false);
         expect(draftIsFresh({ ...fresh, repo: '', repoTouched: true, workflowRepo: '' }, lists)).toBe(false);
         expect(draftIsFresh({ ...fresh, workflow: 'fix-issue' }, lists)).toBe(false);
-        expect(draftIsFresh({ ...fresh, defaultStepOverrides: { mergeConflictAutofix: false } }, lists)).toBe(false);
         expect(draftIsFresh(restored, lists)).toBe(false);
     });
 });
@@ -587,7 +461,6 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: {},
-        defaultStepOverrides: {},
     };
     const repos = [{ owner: 'acme', name: 'web' }];
     const executors: readonly (ExecutorChoice & { type: string })[] = [
@@ -665,7 +538,7 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
 
     it('names a workflow the repository no longer offers', () => {
         expect(restoredDraftNotices(restored, { repos, executors, workflows: [{ name: 'triage' }] })).toEqual([
-            'Workflow ‘fix-issue’ is no longer offered — Default workflow selected.',
+            'Workflow ‘fix-issue’ is no longer offered — no workflow selected.',
         ]);
     });
 

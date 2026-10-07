@@ -21,7 +21,6 @@ import { tokenRoutes } from './routes/tokens.js';
 import { versionRoutes } from './routes/version.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
-import { workflowSettingsRoutes } from './routes/workflow-settings.js';
 import type { TelemetryStore } from './telemetry/store.js';
 import { readVersion } from './version.js';
 
@@ -155,10 +154,6 @@ export async function buildApp({
     await app.register(jobRoutes({ orgs }));
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
-    // A member's own settings, not a workflow definition — its own route module (#203) so it
-    // lands without editing generic workflow CRUD, registered next to it because it is the same
-    // area of the API.
-    await app.register(workflowSettingsRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
     await app.register(workspaceRoutes({ config, orgs }));
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal

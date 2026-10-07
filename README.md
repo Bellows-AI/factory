@@ -95,8 +95,8 @@ services:                   # containers started beside the task
 ```
 
 - **Gates run after the agent, in `image`, on the same worktree the agent edited.** A failed gate
-  fails the task — and under the default workflow queues a bounded repair round instead of
-  publishing.
+  fails the task — and under a workflow with a gate-repair loop queues a bounded repair round
+  instead of publishing.
 - **A service's `name` is its hostname for that task**: `postgres://db:5432` resolves from the
   agent's turn and from the gates, and from nothing once the task ends. `RUNNER_SERVICES=0` opts
   out; duplicate names across a workspace fail the job, ten services is the cap.

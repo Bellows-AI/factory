@@ -3,7 +3,6 @@ import { useLocation } from 'react-router-dom';
 import type { ExecutorScope } from '@factory-ai/core';
 import { type AnswerOutcome, postAnswer } from './answer-question.js';
 import { refusalOf } from './refusal.js';
-import type { DefaultWorkflowSteps } from './useDefaultWorkflowSettings.js';
 import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import { JSON_HEADERS } from '@factory-ai/core';
@@ -157,8 +156,7 @@ export interface UseTasks {
 }
 
 /** What starting a task takes — bundled so the queueing call stays under the param-count limit.
- * `defaultWorkflow` is present only beside Default workflow; `queueBody` (task-composer.ts) is
- * what builds this with the omission contract, since only the composer knows which is which. */
+ * A null `workflow` is objective mode: the prompt runs as written. */
 export interface QueueTaskInput {
     command: string;
     repo: string | null;
@@ -167,7 +165,6 @@ export interface QueueTaskInput {
     executorScope: ExecutorScope;
     workflow: string | null;
     workflowParams: Record<string, string> | null;
-    defaultWorkflow?: DefaultWorkflowSteps;
 }
 
 /** The first-page failure: the retained refresh error with nothing beside it. Exported pure so

@@ -115,6 +115,21 @@ describe.skipIf(!enabled)('workflow execution', () => {
         expect(bare!.snapshot).toBeNull();
     });
 
+    it('stamps workflow mode on a named root, its successor and a member follow-up (issue 543)', async () => {
+        const root = await queueWorkflowJob(walk);
+        const claim = (await store.claim(WORKER, 60))!;
+        await store.complete(claim.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const followUp = await store.createFollowUp(root, 'one more thing', null);
+        if (typeof followUp === 'string') throw new Error(`follow-up refused: ${followUp}`);
+
+        const rows = await sql<{ mode: string; workflow_node: string | null }[]>`
+            select mode, workflow_node from job where root_job_id = ${root} order by created_at, id
+        `;
+        expect(rows.length).toBe(3);
+        for (const row of rows) expect(row.mode).toBe('workflow');
+        expect((await store.get(root))?.mode).toBe('workflow');
+    });
+
     it('inserts the next row in the verdict transaction: review follows implement', async () => {
         const root = await queueWorkflowJob(walk);
         const claim = (await store.claim(WORKER, 60))!;

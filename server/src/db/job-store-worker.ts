@@ -5,7 +5,7 @@
  */
 
 import type { TransactionSql } from 'postgres';
-import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { exists, insertWorkflowSuccessor, runtimePatch, workspacePathFor } from './job-store-rows.js';
 import type {
@@ -330,7 +330,7 @@ export async function completeJob(
         // snapshot on its root and skips it: its completes behave byte-identically to
         // before 027.
         const [root] = await tx<WorkflowTransitionRoot[]>`
-            select workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
+            select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
             from job
             where org_id = ${orgId} and id = ${rootJobId}
         `;
@@ -431,6 +431,7 @@ async function maybeRecordPublicationAndClose(
 }
 
 export interface WorkflowTransitionRoot {
+    mode: JobMode;
     workflow_id: string | null;
     workflow_name: string | null;
     workflow_snapshot: WorkflowDefinition | null;
@@ -505,7 +506,8 @@ function transitionContextOf(
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
     const { orgId, rootJobId, root, completedId, prs } = input;
-    if (!root.workflow_snapshot) return;
+    // An objective-mode thread (051) has no graph: its verdict is the whole story.
+    if (root.mode !== WORKFLOW_MODE || !root.workflow_snapshot) return;
     // The same per-root advisory lock the claim takes: a transition insert must not interleave
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up
     // claimed against the one-worktree guarantee.

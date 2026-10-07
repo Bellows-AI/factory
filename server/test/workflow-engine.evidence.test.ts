@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { compileDefaultWorkflow, DEFAULT_ENTRY_NODE } from '../src/db/default-workflow.js';
 import { nextTransition, type EngineRow } from '../src/db/workflow-engine.js';
+import {
+    BOTH_BLOCKS as BOTH,
+    compileGateFixWorkflow as compileDefaultWorkflow,
+    GATE_FIX_ENTRY_NODE as DEFAULT_ENTRY_NODE,
+} from '../test-db/gate-fix-workflow.js';
 
 /** Edges fire on the run's own verdict, never on stale gates, a failed run's marker, or a dead service (#428). */
-const BOTH = { reviewReconciliation: true, mergeConflictAutofix: true };
 const failedGate = (output: string): EngineRow['gates'] => [{ name: 'test', status: 'failed', exitCode: 1, output }];
 const REPAIR = 'review-reconciliation--repair';
 const MERGE_REPAIR = 'merge-conflict-autofix--repair';
@@ -23,7 +26,7 @@ describe('nextTransition: edge evidence', () => {
                 },
             ];
             const transition = nextTransition({
-                snapshot: compileDefaultWorkflow(BOTH, 3),
+                snapshot: compileDefaultWorkflow(3, BOTH),
                 params: {},
                 command: 'do it',
                 rows,
@@ -57,7 +60,7 @@ describe('nextTransition: edge evidence', () => {
                 { id: 'c', node: REPAIR, status: 'failed', output: null, gates: null, sessionId: 's' },
             ];
             const transition = nextTransition({
-                snapshot: compileDefaultWorkflow(BOTH, 3),
+                snapshot: compileDefaultWorkflow(3, BOTH),
                 params: {},
                 command: 'do it',
                 rows,
@@ -73,7 +76,7 @@ describe('nextTransition: edge evidence', () => {
             { id: 'b', node: MERGE_REPAIR, status: 'failed', output: null, gates: null, sessionId: 's' },
         ];
         const transition = nextTransition({
-            snapshot: compileDefaultWorkflow({ reviewReconciliation: false, mergeConflictAutofix: true }, 3),
+            snapshot: compileDefaultWorkflow(3, { reviewReconciliation: false, mergeConflictAutofix: true }),
             params: {},
             command: 'do it',
             rows,

@@ -23,7 +23,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 Classes defined here: `composer-row`, `composer-input`, `composer-label`, `composer-fields`,
 `composer-helper`, `composer-param-input`, `composer-param-error`, `composer-param-details`,
 `composer-preflight`, `composer-start`, `composer-blocker`, `composer-section-head`,
-`composer-section-title`, `composer-steps`, `composer-example`, `composer-counter`, `is-over`,
+`composer-section-title`, `composer-step`, `composer-example`, `composer-counter`, `is-over`,
 `composer-context-item`, `composer-context-value`, `composer-trigger-missing`,
 `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton-block`,
 `composer-skeleton-line`, `task-compose`.

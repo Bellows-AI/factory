@@ -1,9 +1,5 @@
 import type { Sql } from 'postgres';
 import type { AppConfig } from './config.js';
-import {
-    createDefaultWorkflowSettingsStore,
-    type DefaultWorkflowSettingsStore,
-} from './db/default-workflow-settings-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
 import { createJobStore } from './db/job-store.js';
 import type { JobStore } from './db/job-store-types.js';
@@ -52,8 +48,6 @@ export interface OrgRuntime {
     envVars?: EnvVarStore | undefined;
     userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
-    /** A member's saved default-workflow switches (035). Present with the other stores. */
-    workflowDefaults?: DefaultWorkflowSettingsStore | undefined;
     cloneQueue?: CloneQueue | undefined;
     /** The manual purge (issue #92): one member's orphaned checkout, deleted deliberately. */
     purger?: Purger | undefined;
@@ -106,7 +100,6 @@ function buildOrgStores({
     envVars: EnvVarStore;
     userExecutors: UserExecutorStore;
     userRepos: UserRepoStore;
-    workflowDefaults: DefaultWorkflowSettingsStore;
     prs: PrLifecycleStore;
     cloneQueue: CloneQueue | undefined;
     purger: Purger | undefined;
@@ -117,7 +110,6 @@ function buildOrgStores({
     const envVars = createEnvVarStore({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
     const userRepos = createUserRepoStore({ sql, orgId, ready });
-    const workflowDefaults = createDefaultWorkflowSettingsStore({ sql, orgId, ready });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
     // transaction records the thread's publication identity through it.
     const prs = createPrLifecycleStore({ sql, orgId, ready });
@@ -166,7 +158,7 @@ function buildOrgStores({
     });
     // Workflow definitions (027): the process a task walks, stored per scope inside this org.
     const workflows = createWorkflowStore({ sql, orgId, ready });
-    return { facts, envVars, userExecutors, userRepos, workflowDefaults, prs, cloneQueue, purger, jobs, workflows };
+    return { facts, envVars, userExecutors, userRepos, prs, cloneQueue, purger, jobs, workflows };
 }
 
 /**
@@ -185,7 +177,6 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.envVars = stores.envVars;
     runtime.userExecutors = stores.userExecutors;
     runtime.userRepos = stores.userRepos;
-    runtime.workflowDefaults = stores.workflowDefaults;
     runtime.cloneQueue = stores.cloneQueue;
     runtime.purger = stores.purger;
     runtime.jobs = stores.jobs;

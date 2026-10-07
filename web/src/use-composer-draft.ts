@@ -1,23 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { DefaultWorkflowSteps } from './api/useDefaultWorkflowSettings.js';
 import type { QueueTaskInput } from './api/useTasks.js';
 import type { ComposerDraftInput, ComposerDraftStore } from './composer-draft.js';
 import {
     type WorkflowParamChoice,
     clampedWorkflow,
     commandTooLong,
-    defaultWorkflowPayload,
     draftIsFresh,
-    effectiveDefaultSteps,
     firstRepo,
     freshWorkflowDraft,
     initialComposerState,
     executorUnavailableNotice,
     paramsComplete,
-    queueBody,
     resolveWorkflowChoice,
     restoredDraftNotices,
-    toggleDefaultStep,
     valuesForWorkflow,
 } from './task-composer.js';
 import { selectionExists, type ComposerExecutorOption, type ExecutorChoice } from './workspace/executors.js';
@@ -53,11 +48,6 @@ export interface ComposerDraft {
     /** A workflow is chosen — a restored draft can hold one — but its list has not answered, so
      * what it declares is not known yet and `paramsReady` would pass vacuously. */
     workflowPending: boolean;
-    /** The default workflow's effective step set for THIS task — null until the saved settings
-     * have answered. Only meaningful beside the unchosen ('') workflow value. */
-    effectiveDefaultSteps: DefaultWorkflowSteps | null;
-    /** One checkbox click: flips its effective value into an explicit override for this task. */
-    onToggleDefaultStep: (key: keyof DefaultWorkflowSteps) => void;
     /** Whether this composer holds nothing a fresh one would not — Discard is offered otherwise. */
     fresh: boolean;
     /** Back to the fresh composer, and the held draft with it. */
@@ -198,11 +188,10 @@ function useRestoredNotices(
 }
 
 /** The `POST /api/jobs` body for the draft as it stands. */
-function queuedTask(
+export function queuedTask(
     state: ComposerDraftInput,
     declaredParams: readonly WorkflowParamChoice[],
-    paramValues: Record<string, string>,
-    effectiveSteps: DefaultWorkflowSteps | null
+    paramValues: Record<string, string>
 ): QueueTaskInput {
     // Values travel trimmed, and only beside an explicit choice — a task with no workflow carries
     // no parameters at all.
@@ -210,17 +199,14 @@ function queuedTask(
         declaredParams.length > 0
             ? Object.fromEntries(declaredParams.map((param) => [param.name, (paramValues[param.name] ?? '').trim()]))
             : null;
-    return queueBody(
-        {
-            command: state.draft,
-            repo: state.repo === '' ? null : state.repo,
-            executor: state.executor,
-            executorScope: state.executorScope,
-            workflow: state.workflow === '' ? null : state.workflow,
-            workflowParams: chosenParams,
-        },
-        defaultWorkflowPayload(state.workflow, effectiveSteps)
-    );
+    return {
+        command: state.draft,
+        repo: state.repo === '' ? null : state.repo,
+        executor: state.executor,
+        executorScope: state.executorScope,
+        workflow: state.workflow === '' ? null : state.workflow,
+        workflowParams: chosenParams,
+    };
 }
 
 export function useComposerDraft(input: {
@@ -232,29 +218,13 @@ export function useComposerDraft(input: {
      */
     defaultExecutor: ExecutorChoice | null;
     workflows: Workflows;
-    /**
-     * The member's saved default-workflow step settings (issues 203/208), or null while they have
-     * not answered yet — the two optional-step checkboxes stay hidden for exactly that duration,
-     * the same "not known yet" posture the workspace poll gets.
-     */
-    defaultWorkflowSettings: DefaultWorkflowSteps | null;
     onRepoChange: ((repo: string | null) => void) | undefined;
     sending: boolean;
     onSend: (queued: QueueTaskInput) => Promise<string | null>;
     /** The shell's held draft (F1): read once at mount, then kept in step with the state. */
     draftStore: ComposerDraftStore;
 }): ComposerDraft {
-    const {
-        repos,
-        executors,
-        defaultExecutor,
-        workflows,
-        defaultWorkflowSettings,
-        onRepoChange,
-        sending,
-        onSend,
-        draftStore,
-    } = input;
+    const { repos, executors, defaultExecutor, workflows, onRepoChange, sending, onSend, draftStore } = input;
     const { save, clear } = draftStore;
     // The draft held for this member when the composer mounted — a return from Settings — read
     // exactly once: the state starts from it, and the store follows the state after that.
@@ -267,9 +237,7 @@ export function useComposerDraft(input: {
     // raw prompt runs — and nothing autoselects one. `storedParams` holds the declared params'
     // values against the identity of the workflow they were typed for, so values typed for one
     // process never stamp another; `paramTouched` says which fields the member has left, so an
-    // untouched empty field is a hint, not a painted failure; `defaultStepOverrides` holds the
-    // member's explicit inversions of the saved default-workflow steps for THIS task, so an
-    // untouched checkbox keeps tracking a settings refresh live.
+    // untouched empty field is a hint, not a painted failure.
     const [state, setState] = useState(() => initialComposerState(restored, { repos, executors, defaultExecutor }));
     const update = useCallback<Update>((patch) => setState((held) => ({ ...held, ...patch })), []);
 
@@ -282,7 +250,6 @@ export function useComposerDraft(input: {
     const paramValues = valuesForWorkflow(state.storedParams, chosenWorkflowId);
     const paramsReady = paramsComplete(declaredParams, paramValues);
     const workflowPending = state.workflow !== '' && workflows === null;
-    const effectiveSteps = effectiveDefaultSteps(defaultWorkflowSettings, state.defaultStepOverrides);
 
     const [clampNotices, setClampNotices] = useState<string[]>([]);
     const announceClamp = useCallback(
@@ -323,7 +290,7 @@ export function useComposerDraft(input: {
             return;
         }
         // A launched task is no longer a draft; a refusal keeps every field for the retry.
-        if ((await onSend(queuedTask(state, declaredParams, paramValues, effectiveSteps))) === null) discard();
+        if ((await onSend(queuedTask(state, declaredParams, paramValues))) === null) discard();
     };
 
     return {
@@ -334,11 +301,6 @@ export function useComposerDraft(input: {
         paramValues,
         paramsReady,
         workflowPending,
-        effectiveDefaultSteps: effectiveSteps,
-        onToggleDefaultStep: (key) =>
-            update({
-                defaultStepOverrides: toggleDefaultStep(state.defaultStepOverrides, key, defaultWorkflowSettings),
-            }),
         fresh,
         discard,
         notices,

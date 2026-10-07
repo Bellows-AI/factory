@@ -148,31 +148,10 @@ test.describe('the guided task composer', () => {
         expect(boxes[0]!.x).toBeLessThan(boxes[1]!.x);
         expect(boxes[1]!.x).toBeLessThan(boxes[2]!.x);
 
-        // The two default-workflow steps (#208) are collapsed behind a summary that names how
-        // many are on, not two persistent rows.
-        const steps = composer.locator('.composer-steps');
-        const summary = steps.locator('summary');
-        await expect(summary).toHaveText(/Optional steps \(\d of 2 on\)/);
-        const reviewToggle = composer.getByRole('checkbox', { name: 'Iterate on PR review comments' });
-        await expect(reviewToggle).toBeHidden();
+        // No workflow step controls exist (issue 543): objective mode has nothing to configure.
+        await expect(composer.locator('.composer-steps')).toHaveCount(0);
+        await expect(composer.getByRole('checkbox')).toHaveCount(0);
 
-        // Opening it reveals both switches; toggling one updates the summary's count and the
-        // preflight sentence together.
-        await summary.click();
-        await expect(reviewToggle).toBeVisible();
-        const beforeText = await summary.textContent();
-        await reviewToggle.click();
-        await expect(summary).not.toHaveText(beforeText ?? '');
-        await expect(composer.getByText(/Default workflow selected:/)).toBeVisible();
-
-        // The keyboard path opens it too: a focused summary responds to Enter like any disclosure.
-        await summary.click();
-        await expect(reviewToggle).toBeHidden();
-        await summary.focus();
-        await page.keyboard.press('Enter');
-        await expect(reviewToggle).toBeVisible();
-
-        await page.screenshot({ path: `${SHOTS}/composer-steps-open.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
 
@@ -207,7 +186,7 @@ test.describe('the guided task composer', () => {
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
-        await expect(page.getByLabel('Reusable workflow')).toHaveText('Default workflow');
+        await expect(page.getByLabel('Reusable workflow')).toHaveText('No workflow');
 
         // Fresh page, empty prompt: Start is dark by design and says so.
         const start = page.getByRole('button', { name: 'Start task' });
@@ -219,7 +198,7 @@ test.describe('the guided task composer', () => {
         // whole command, and the preflight says exactly that.
         await page.getByLabel('What should the agent do?').fill('fix the login crash');
         await expect(start).toBeEnabled();
-        await expect(composer.getByText(/Default workflow selected: prompt, gates, publish/)).toBeVisible();
+        await expect(composer.getByText(/Your prompt will run as written\./)).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/composer-unchosen-raw-prompt.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
@@ -448,7 +427,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('Cancel in Settings comes back to the same draft, optional-step override included', async ({ page }) => {
+    test('Cancel in Settings comes back to the same draft', async ({ page }) => {
         await mockExecutors(page, []);
         const launches = countLaunches(page);
         await awaitSeedRefresh(page);
@@ -456,10 +435,6 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
         const composer = page.locator('.composer');
         await prompt(page).fill('tidy the changelog');
-        const summary = composer.locator('.composer-steps summary');
-        await summary.click();
-        await composer.getByRole('checkbox', { name: 'Repair merge conflicts' }).click();
-        const count = await summary.textContent();
 
         await composer.getByRole('link', { name: 'Add an executor in Settings' }).click();
         await page.getByRole('button', { name: 'Add executor' }).click();
@@ -467,7 +442,6 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.getByRole('link', { name: 'Back to new task' }).click();
 
         await expect(prompt(page)).toHaveValue('tidy the changelog');
-        await expect(composer.locator('.composer-steps summary')).toHaveText(count ?? '');
         await expect(composer.locator('.banner-bad')).toContainText('No executor configured');
         expect(launches.bodies).toHaveLength(0);
     });
