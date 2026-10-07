@@ -7,6 +7,7 @@ Two workflows and no configured secret — the only credential either uses is `g
 | --- | --- | --- |
 | Validation and the browser lane | `.github/workflows/ci.yml` | `core/test/ci-workflows.test.ts` |
 | Tag fold, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
+| Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | The images a release builds | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
 
@@ -19,6 +20,9 @@ Two workflows and no configured secret — the only credential either uses is `g
 - **The `e2e` job runs only on a push to `main`.** It provisions what `npm run verify:ui` cannot: a
   `postgres:17` service matching the image `docker-compose.yml` pins, `factory_e2e` and
   `factory_auth_e2e` created by hand (`e2e/reset-db.mjs` truncates but never creates), and chromium.
+- **A push to `main` that changes only `VERSION` skips CI; its tag still validates** — `ci.yml`'s
+  `push.paths-ignore` never reaches the `workflow_call` that `release-image.yml` makes. No release
+  commit carries `[skip ci]`, which would skip the tag's workflow too.
 - **Node is `24`, matching `docker/Dockerfile`'s runtime base** — `engines` says `>=22` and there
   is no `.nvmrc`, so the test comparing the two is the only pin.
 - **Every `uses:` on a job holding `packages: write` is GitHub-owned** — which is why Trivy runs as

@@ -5,6 +5,9 @@ on:
         branches: [main]
     push:
         branches: [main]
+        # `npm run release` pushes a VERSION-only commit with its v* tag; the tag's release workflow
+        # validates that commit through workflow_call, which path filters never reach.
+        paths-ignore: [VERSION]
     # Called by release-image.yml so a v* tag runs exactly these gates, once, with no copy.
     workflow_call:
 

@@ -18,10 +18,12 @@ import { repoRoutes } from './routes/repos.js';
 import { statsRoutes } from './routes/stats.js';
 import { taskRoutes } from './routes/tasks.js';
 import { tokenRoutes } from './routes/tokens.js';
+import { versionRoutes } from './routes/version.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
 import { workflowSettingsRoutes } from './routes/workflow-settings.js';
 import type { TelemetryStore } from './telemetry/store.js';
+import { readVersion } from './version.js';
 
 const HTTP_NOT_FOUND = 404;
 
@@ -71,6 +73,8 @@ export interface AppDeps {
     installationListing?: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined;
     /** The migration run main.ts started — what `/api/ready` reports. Absent in the route tests. */
     ready?: Promise<unknown> | undefined;
+    /** What `/api/version` serves. Defaults to `readVersion()`, so a missing or invalid file fails boot. */
+    version?: string;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
     logger?: boolean;
@@ -107,6 +111,7 @@ export async function buildApp({
     appSlug,
     installationListing,
     ready,
+    version = readVersion(),
     now = Date.now,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
@@ -126,6 +131,7 @@ export async function buildApp({
     else app.decorateRequest('auth', null);
 
     await app.register(healthRoutes(ready));
+    await app.register(versionRoutes(version));
     if (auth) {
         await app.register(authRoutes({ config, store: auth, orgs, identity, appSlug, installationListing }));
         // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
