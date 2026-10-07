@@ -537,7 +537,7 @@ describe('TaskDetail — who may follow up', () => {
 
     it("tells another member the task's author can reply (issue #226)", () => {
         const html = renderDetail({ jobs: [job({ author: other, summary: 'Which one: Red or Blue?' })], viewer });
-        expect(html).toContain("Claude ended with a question. The task&#x27;s author can reply with a follow-up.");
+        expect(html).toContain('Claude ended with a question. The task&#x27;s author can reply with a follow-up.');
         expect(html).not.toContain('Reply below');
         expect(html).not.toContain('<textarea');
     });

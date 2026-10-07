@@ -142,9 +142,12 @@ describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
         fetch(`${url}/v1/messages`, { method: 'POST', body: JSON.stringify({ stream: false, ...body }) }).then(
             (response) => response.json() as Promise<{ stop_reason: string; content: Record<string, any>[] }>
         );
-    const agent = (url: string) => request(url, { tools: [{ name: 'AskUserQuestion' }, { name: 'Bash' }], messages: [] });
+    const agent = (url: string) =>
+        request(url, { tools: [{ name: 'AskUserQuestion' }, { name: 'Bash' }], messages: [] });
     const hook = (url: string) =>
-        request(url, { messages: [{ role: 'user', content: 'You decide whether an autonomous coding agent may stop.' }] });
+        request(url, {
+            messages: [{ role: 'user', content: 'You decide whether an autonomous coding agent may stop.' }],
+        });
     const hooks = async (url: string) =>
         ((await (await fetch(`${url}/hooks`)).json()) as { hookRequests: number }).hookRequests;
 

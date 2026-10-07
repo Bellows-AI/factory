@@ -1199,13 +1199,17 @@ describe('the claude entrypoint Stop-hook model', () => {
     type Settings = { hooks: { Stop: { hooks: { type: string; model?: string }[] }[] } };
     const baked = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as Settings;
 
-    const stopHookAfterRun = async (stubEnv: Record<string, string>) => {
+    // Only the substitution block runs, not the whole entrypoint: the entrypoint's re-seed lays the
+    // image's own /opt/claude-home hooks over the file first, and that copy exists on any runner.
+    const entry = read(ENTRYPOINT);
+    const block = entry.slice(entry.indexOf('# The baked Stop hook'), entry.indexOf('# The branch reporter'));
+
+    const stopHookAfterRun = (merged: object, env: Record<string, string>) => {
         const sandbox = makeSandbox();
         try {
             const file = join(sandbox.env.CLAUDE_CONFIG_DIR!, 'settings.json');
-            writeFileSync(file, JSON.stringify({ hooks: baked.hooks }));
-            const child = runEntrypoint(ENTRYPOINT, sandbox, stubEnv);
-            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            writeFileSync(file, JSON.stringify({ ...merged, hooks: baked.hooks }));
+            execFileSync('/bin/sh', ['-c', block], { env: { ...sandbox.env, ...env } });
             const raw = readFileSync(file, 'utf8');
             expect(raw).not.toContain(PLACEHOLDER);
             return (JSON.parse(raw) as Settings).hooks.Stop[0]!.hooks[0]!;
@@ -1218,35 +1222,15 @@ describe('the claude entrypoint Stop-hook model', () => {
         expect(baked.hooks.Stop[0]!.hooks[0]).toMatchObject({ type: 'prompt', model: PLACEHOLDER });
     });
 
-    it(
-        'uses ANTHROPIC_MODEL when it is set, over the member settings',
-        async () => {
-            const hook = await stopHookAfterRun({
-                ANTHROPIC_MODEL: 'env-model',
-                CLAUDE_CODE_CONFIG_CONTENT: JSON.stringify({ model: 'member-model' }),
-            });
-            expect(hook.model).toBe('env-model');
-        },
-        CASE_TIMEOUT_MS
-    );
+    it('uses ANTHROPIC_MODEL when it is set, over the merged settings model', () => {
+        expect(stopHookAfterRun({ model: 'member-model' }, { ANTHROPIC_MODEL: 'env-model' }).model).toBe('env-model');
+    });
 
-    it(
-        'falls back to the merged member settings model',
-        async () => {
-            const hook = await stopHookAfterRun({
-                CLAUDE_CODE_CONFIG_CONTENT: JSON.stringify({ model: 'member-model' }),
-            });
-            expect(hook.model).toBe('member-model');
-        },
-        CASE_TIMEOUT_MS
-    );
+    it('falls back to the merged member settings model', () => {
+        expect(stopHookAfterRun({ model: 'member-model' }, {}).model).toBe('member-model');
+    });
 
-    it(
-        'drops the model key when neither names one',
-        async () => {
-            const hook = await stopHookAfterRun({});
-            expect(hook).not.toHaveProperty('model');
-        },
-        CASE_TIMEOUT_MS
-    );
+    it('drops the model key when neither names one', () => {
+        expect(stopHookAfterRun({}, {})).not.toHaveProperty('model');
+    });
 });
