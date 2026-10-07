@@ -25,7 +25,7 @@ interface Job {
 }
 
 interface Workflow {
-    on: Record<string, { branches?: string[]; tags?: string[] }>;
+    on: Record<string, { branches?: string[]; tags?: string[]; paths?: string[]; 'paths-ignore'?: string[] } | null>;
     permissions?: unknown;
     concurrency?: { group: string; 'cancel-in-progress': unknown };
     jobs: Record<string, Job>;
@@ -53,6 +53,33 @@ describe('ci workflows', () => {
         const on = triggers(workflow(CI));
         expect(on.pull_request!.branches).toContain('main');
         expect(on.push!.branches).toContain('main');
+    });
+
+    // `npm run release` pushes one commit touching only VERSION alongside its tag; the tag's
+    // release workflow validates that exact commit, so the branch push need not run it twice.
+    it('skips main-branch CI for a VERSION-only push, and nothing else', () => {
+        const on = triggers(workflow(CI));
+        expect(on.push!['paths-ignore']).toEqual(['VERSION']);
+        expect(on.push!.paths).toBeUndefined();
+        expect(on.pull_request!['paths-ignore']).toBeUndefined();
+        expect(on.pull_request!.paths).toBeUndefined();
+        expect('workflow_call' in on).toBe(true);
+    });
+
+    // Path filters never reach a `workflow_call`, but `[skip ci]` on the tagged commit would skip
+    // the tag's push workflow outright.
+    it('still validates the release tag through the called workflow', () => {
+        const doc = workflow(RELEASE);
+        const push = triggers(doc).push!;
+        expect(push.tags).toContain('v*');
+        expect(push.paths).toBeUndefined();
+        expect(push['paths-ignore']).toBeUndefined();
+        expect(push.branches).toBeUndefined();
+        const called = Object.entries(doc.jobs).find(([, job]) => job.uses === './.github/workflows/ci.yml');
+        expect(needs(doc.jobs.build!)).toContain(called![0]);
+        for (const path of [CI, RELEASE, 'scripts/release.sh']) {
+            expect(read(path)).not.toMatch(/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]/i);
+        }
     });
 
     it('installs dependencies from the lockfile, never loosely', () => {

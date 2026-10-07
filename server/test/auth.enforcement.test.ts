@@ -11,6 +11,7 @@ import type { TelemetryStore } from '../src/telemetry/store.js';
 import type { AppDeps } from '../src/app.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { jobRoutes } from '../src/routes/jobs.js';
+import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
 import {
     githubAuth,
@@ -136,6 +137,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/health', 'open'],
     // The kubelet's startup probe carries no credential.
     ['/api/ready', 'open'],
+    // Public build metadata, read by a probe or support person with no credential.
+    ['/api/version', 'open'],
     ['/api/auth/github', 'open'],
     // The installation webhook answers to the HMAC signature over its body — a credential the
     // route verifies itself — so the session hook must not demand a cookie of it.
@@ -275,6 +278,13 @@ describe('with github auth configured', () => {
         const server = await build(githubAuth(), memoryAuthStore());
         const response = await server.inject({ method: 'GET', url: '/api/health' });
         expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it('answers /api/version with the packaged version and no credential at all', async () => {
+        const server = await build(githubAuth(), memoryAuthStore());
+        const response = await server.inject({ method: 'GET', url: '/api/version' });
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual({ version: readVersion() });
     });
 
     it('401s the dashboard for an anonymous caller', async () => {

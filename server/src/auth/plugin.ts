@@ -107,6 +107,8 @@ const orgTokenAllowed = (method: string, path: string): boolean =>
 const OPEN_ROUTES: readonly RegExp[] = [
     /^\/api\/health$/,
     /^\/api\/ready$/,
+    // Public build metadata, read by a probe or support person with no credential.
+    /^\/api\/version$/,
     /^\/api\/auth\//,
     // The installation webhook answers to the HMAC signature over its body — a credential the
     // route verifies itself — so the session hook must not demand a cookie of it.

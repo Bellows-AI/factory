@@ -105,6 +105,7 @@ DATABASE_URL=…/factory_test  npm run test:db    # resets every table
 DATABASE_URL=…/factory_dev   npm run backfill   # import ~/.claude/projects/*/*.jsonl, idempotent
 npm run test:jobs               # board + driver + real containers on 8129, no Claude
 npm run test:k8s                # helm assertions; --cluster installs into kind
+npm run release                 # patch-bump VERSION, commit, tag vX.Y.Z, atomic push to main
 
 docker compose up               # the same npm run dev against the bind-mounted tree
 docker compose up -d driver     # mounts the docker socket — see docs/security.md
