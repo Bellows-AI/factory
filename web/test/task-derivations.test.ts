@@ -3,6 +3,7 @@ import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js'
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import {
     closureOf,
+    endedOnQuestion,
     FAILURE_KIND_LABEL,
     followUpEligibility,
     gateCounts,
@@ -15,7 +16,34 @@ import {
     threadIssue,
     threadPublish,
 } from '../src/task-outcome.js';
-import { job } from './tasks-fixtures.js';
+import { job, question } from './tasks-fixtures.js';
+
+describe('endedOnQuestion (issue #226)', () => {
+    it('is true for a settled run whose summary ends with a question mark, trailing whitespace included', () => {
+        expect(endedOnQuestion(job({ summary: 'Which one should I use: Red or Blue?' }))).toBe(true);
+        expect(endedOnQuestion(job({ summary: 'Red or Blue?  \n' }))).toBe(true);
+    });
+
+    it('is false when the summary does not end with a question mark, or there is none', () => {
+        expect(endedOnQuestion(job({ summary: 'Which one? I picked Red.' }))).toBe(false);
+        expect(endedOnQuestion(job({ summary: null }))).toBe(false);
+    });
+
+    it('is false while the run can still move', () => {
+        expect(endedOnQuestion(job({ status: 'running', summary: 'Red or Blue?' }))).toBe(false);
+    });
+
+    it('is false when the run asked a question the channel handled', () => {
+        for (const status of ['pending', 'answered'] as const) {
+            expect(endedOnQuestion(job({ summary: 'Red or Blue?', questions: [question({ status })] })), status).toBe(
+                false
+            );
+        }
+        expect(endedOnQuestion(job({ summary: 'Red or Blue?', questions: [question({ status: 'expired' })] }))).toBe(
+            true
+        );
+    });
+});
 
 describe('FAILURE_KIND_LABEL (issue #339)', () => {
     // The badge's one glance: the structured kind in the reader's words, every kind named.

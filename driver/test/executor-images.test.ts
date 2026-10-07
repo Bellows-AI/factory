@@ -314,6 +314,7 @@ exit "\${CURL_STATUS:-0}"
 `;
 const ATLASSIAN_NAMES = ['ATLASSIAN_SITE', 'ATLASSIAN_EMAIL', 'ATLASSIAN_API_TOKEN', 'JIRA_API'];
 const CONTAINER_GUARD_NAMES = [
+    'ANTHROPIC_MODEL',
     'FACTORY_TRANSCRIPT_DIR',
     'CLAUDE_CODE_CONFIG_CONTENT',
     'OTEL_EXPORTER_OTLP_ENDPOINT',
@@ -1184,4 +1185,68 @@ describe('the executor infrastructure-access guide', () => {
         expect(text).toContain('127.0.0.1');
         expect(text).toContain('DNS');
     });
+});
+
+/*
+ * The baked Stop hook is a prompt hook, and one without a usable model fails open (issue #226), so
+ * the entrypoint turns its placeholder into the run's model: $ANTHROPIC_MODEL, else the merged
+ * settings' `model`, else no `model` key at all. Run for real under /bin/sh against a sandbox
+ * settings.json that carries the baked hook.
+ */
+describe('the claude entrypoint Stop-hook model', () => {
+    const ENTRYPOINT = 'docker/claude-executor/entrypoint.sh';
+    const PLACEHOLDER = '__FACTORY_RUN_MODEL__';
+    type Settings = { hooks: { Stop: { hooks: { type: string; model?: string }[] }[] } };
+    const baked = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as Settings;
+
+    const stopHookAfterRun = async (stubEnv: Record<string, string>) => {
+        const sandbox = makeSandbox();
+        try {
+            const file = join(sandbox.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+            writeFileSync(file, JSON.stringify({ hooks: baked.hooks }));
+            const child = runEntrypoint(ENTRYPOINT, sandbox, stubEnv);
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            const raw = readFileSync(file, 'utf8');
+            expect(raw).not.toContain(PLACEHOLDER);
+            return (JSON.parse(raw) as Settings).hooks.Stop[0]!.hooks[0]!;
+        } finally {
+            sandbox.cleanup();
+        }
+    };
+
+    it('ships the placeholder, so the substitution is what the cases below exercise', () => {
+        expect(baked.hooks.Stop[0]!.hooks[0]).toMatchObject({ type: 'prompt', model: PLACEHOLDER });
+    });
+
+    it(
+        'uses ANTHROPIC_MODEL when it is set, over the member settings',
+        async () => {
+            const hook = await stopHookAfterRun({
+                ANTHROPIC_MODEL: 'env-model',
+                CLAUDE_CODE_CONFIG_CONTENT: JSON.stringify({ model: 'member-model' }),
+            });
+            expect(hook.model).toBe('env-model');
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'falls back to the merged member settings model',
+        async () => {
+            const hook = await stopHookAfterRun({
+                CLAUDE_CODE_CONFIG_CONTENT: JSON.stringify({ model: 'member-model' }),
+            });
+            expect(hook.model).toBe('member-model');
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'drops the model key when neither names one',
+        async () => {
+            const hook = await stopHookAfterRun({});
+            expect(hook).not.toHaveProperty('model');
+        },
+        CASE_TIMEOUT_MS
+    );
 });

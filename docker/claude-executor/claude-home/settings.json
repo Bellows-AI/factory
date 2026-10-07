@@ -31,6 +31,17 @@
                 ]
             }
         ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "prompt",
+                        "model": "__FACTORY_RUN_MODEL__",
+                        "prompt": "You decide whether an autonomous coding agent may stop. Hook input: $ARGUMENTS\nThe person who started the task cannot reply to plain text; this run ends when the agent stops.\nIf stop_hook_active is true, respond {\"ok\": true}.\nIf last_assistant_message asks the person to choose between options, confirm something, or answer a question before the work can continue, respond {\"ok\": false, \"reason\": \"The person cannot reply to plain text and this run ends when you stop. Call the AskUserQuestion tool now with the question and its options.\"}.\nOtherwise respond {\"ok\": true}."
+                    }
+                ]
+            }
+        ],
         "UserPromptSubmit": [
             {
                 "hooks": [

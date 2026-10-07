@@ -1,6 +1,6 @@
 // A scripted, Anthropic-compatible model endpoint for the real agent CLIs (issue #442).
 //
-//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask]
+//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose]
 //
 // Offline and deterministic, no credential: `claude` and `opencode` point their Anthropic base URL
 // at it and run a real agent loop against canned answers. The first `--tool-steps` model requests
@@ -16,6 +16,12 @@
 // `GET /question/<id>` plays the board — pending on the first poll, then answered "Blue". The
 // request after the tool call must carry a tool_result containing "Blue"; the model then says
 // `ANSWER=Blue`, otherwise `ANSWER=missing`. `GET /questions` is the number of POSTs received.
+//
+// `--ask-prose` is the plain-text variant: the first agent reply is prose ending "Which one should
+// I use: Red or Blue?" with `end_turn`, so the baked Stop hook runs. The endpoint plays the hook's
+// evaluator too: a request carrying the hook's prompt text is answered `{"ok": false, …}` the
+// first time and `{"ok": true}` after, and is not an agent request. The next agent request then
+// calls AskUserQuestion, and the run goes on as in `--ask`. `GET /hooks` counts the evaluations.
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
@@ -25,10 +31,18 @@ const REQUESTS_PATH = '/requests';
 const CONTROL_PATH = '/control';
 const QUESTION_PATH = '/question';
 const QUESTIONS_PATH = '/questions';
+const HOOKS_PATH = '/hooks';
 const BASH_TOOL = /^bash$/i;
 const ASK_TOOL = 'AskUserQuestion';
 const ASK_QUESTION = 'Which colour should the report use?';
 const ASK_ANSWER = 'Blue';
+const PROSE_QUESTION = 'Which one should I use: Red or Blue?';
+/** The opening of the baked Stop hook's prompt (docker/claude-executor/claude-home/settings.json). */
+const STOP_HOOK_PROMPT = 'You decide whether an autonomous coding agent may stop.';
+const STOP_HOOK_BLOCK = {
+    ok: false,
+    reason: 'The person cannot reply to plain text and this run ends when you stop. Call the AskUserQuestion tool now with the question and its options.',
+};
 
 const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
@@ -81,14 +95,18 @@ function streamOf(reply) {
     return out + sse('message_stop', { type: 'message_stop' });
 }
 
-export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false } = {}) {
+export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false } = {}) {
     let agentRequests = 0;
+    let hookRequests = 0;
     let questionPosts = 0;
     let questionPolls = 0;
     /** True from the moment the first agent request arrives — what `GET /control` raises a Stop on. */
     let firstInFlight = false;
     const askReply = (step, tools, messages) => {
-        if (step === 1 && tools.some((tool) => tool.name === ASK_TOOL)) {
+        if (askProse && step === 1) {
+            return message('msg_prose', [{ type: 'text', text: PROSE_QUESTION }], 'end_turn');
+        }
+        if (step === (askProse ? 2 : 1) && tools.some((tool) => tool.name === ASK_TOOL)) {
             const questions = [
                 {
                     question: ASK_QUESTION,
@@ -107,7 +125,7 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
     };
     const agentReply = (tools, messages) => {
         const step = ++agentRequests;
-        if (ask) return askReply(step, tools, messages);
+        if (ask || askProse) return askReply(step, tools, messages);
         const bash = tools.find((tool) => BASH_TOOL.test(tool.name));
         if (step <= toolSteps && bash) {
             return message(
@@ -133,6 +151,10 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 // agent request arrives, so it always lands INSIDE the first model step.
                 reply.setHeader('content-type', 'application/json');
                 return reply.end(JSON.stringify({ stop: agentRequests > 0 || firstInFlight }));
+            }
+            if (url === HOOKS_PATH) {
+                reply.setHeader('content-type', 'application/json');
+                return reply.end(JSON.stringify({ hookRequests }));
             }
             if (url === QUESTIONS_PATH) {
                 reply.setHeader('content-type', 'application/json');
@@ -165,14 +187,21 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 // An unparseable body is answered like a tool-less request.
             }
             const tools = Array.isArray(body.tools) ? body.tools : [];
-            const isAgentStep = tools.length > 0;
+            // The Stop hook's evaluation, whatever shape the CLI sends it in: recognised by its prompt.
+            const isHookRequest = askProse && JSON.stringify(body).includes(STOP_HOOK_PROMPT);
+            const isAgentStep = tools.length > 0 && !isHookRequest;
             // The delay is the "stop during a model step" window: the answer to the FIRST agent
             // request is held, so a Stop raised meanwhile lands inside the step.
             if (isAgentStep && !firstInFlight) {
                 firstInFlight = true;
                 if (firstDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, firstDelayMs));
             }
-            const answer = isAgentStep ? agentReply(tools, Array.isArray(body.messages) ? body.messages : []) : message('msg_aux', [{ type: 'text', text: 'ok' }], 'end_turn');
+            const hookAnswer = () => {
+                hookRequests += 1;
+                const verdict = hookRequests === 1 ? STOP_HOOK_BLOCK : { ok: true };
+                return message('msg_hook', [{ type: 'text', text: JSON.stringify(verdict) }], 'end_turn');
+            };
+            const answer = isHookRequest ? hookAnswer() : isAgentStep ? agentReply(tools, Array.isArray(body.messages) ? body.messages : []) : message('msg_aux', [{ type: 'text', text: 'ok' }], 'end_turn');
             if (body.stream) {
                 reply.setHeader('content-type', 'text/event-stream');
                 return reply.end(streamOf(answer));
@@ -201,6 +230,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         firstDelayMs: flag('--first-delay-ms', 0),
         toolSteps: flag('--tool-steps', 3),
         ask: process.argv.includes('--ask'),
+        askProse: process.argv.includes('--ask-prose'),
     });
     const port = await endpoint.listen(flag('--port', 0));
     process.stdout.write(`${port}\n`);
