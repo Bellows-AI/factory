@@ -176,7 +176,7 @@ function FollowUpComposer({
     );
 }
 
-/** The fallback notice (issue #226): the run ended on a question and nothing could ask it in place. */
+/** The fallback notice (issue 226): the run ended on a question and nothing could ask it in place. */
 const ENDED_ON_QUESTION_REPLY = 'Claude ended with a question. Reply below to continue the same conversation.';
 const ENDED_ON_QUESTION_AUTHOR = "Claude ended with a question. The task's author can reply with a follow-up.";
 
