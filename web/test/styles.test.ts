@@ -204,6 +204,8 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.task-outcome > summary',
         '.run-output > summary',
         '.chat-gate-list summary',
+        '.question-option',
+        '.question button',
     ],
     'styles/regions/settings.css': [
         '.env-tab',

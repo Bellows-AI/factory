@@ -7,7 +7,7 @@ import { type FollowUpViewer, followUpEligibility, threadPublish } from '../task
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
-import { Publication, TaskRun, Verification } from './TaskRun.js';
+import { type OnAnswer, Publication, TaskRun, Verification } from './TaskRun.js';
 
 /** One recorded fact of the task's life: what happened, and the stamp the board holds for it. */
 interface HistoryItem {
@@ -232,6 +232,7 @@ export function TaskDetail({
     followUpError,
     sending,
     onFollowUp,
+    onAnswer,
     activity = null,
     live = false,
 }: {
@@ -247,6 +248,8 @@ export function TaskDetail({
     followUpError: string | null;
     sending: boolean;
     onFollowUp: (command: string) => Promise<string | null>;
+    /** Answers a run's question; the page refreshes the thread once it settles. */
+    onAnswer: OnAnswer;
     /**
      * The head run's activity payload (issue 339), fetched by the page's hook — the panel
      * draws what it is handed, and null is "nothing (yet) to chart", drawn as a quiet sentence.
@@ -304,6 +307,7 @@ export function TaskDetail({
                                 job={task}
                                 index={index + 1}
                                 liveRef={task.id === latestTask.id && !isTerminal(task.status) ? outputRef : undefined}
+                                onAnswer={onAnswer}
                             />
                         ))}
                     </section>

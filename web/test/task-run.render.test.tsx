@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Job, RuntimeVitals } from '../src/api/useJobs.js';
-import { job, renderDetail } from './tasks-fixtures.js';
+import { job, question, renderDetail } from './tasks-fixtures.js';
 
 describe('TaskRun', () => {
     const root = job({ command: 'first command' });
@@ -323,6 +323,60 @@ describe('TaskRun — failure kind (issue #339)', () => {
     it('a run without a kind renders no failure pill', () => {
         const html = articleOf(renderDetail({ jobs: [job()] }), 'fix the flaky login test');
         expect(html).not.toContain('pill-bad');
+    });
+});
+
+describe('TaskRun — questions (issue #534)', () => {
+    const articleOf = (html: string, marker: string): string => {
+        const start = html.indexOf(marker);
+        return html.slice(start, html.indexOf('</article>', start));
+    };
+
+    it('renders a run’s questions after its response and before its raw output, in askedAt order', () => {
+        const later = question({
+            id: 'toolu_02',
+            askedAt: '2026-09-01T12:03:00.000Z',
+            questions: [{ question: 'Second ask?', header: 'Two', multiSelect: false, options: [{ label: 'Yes' }] }],
+        });
+        const earlier = question({ status: 'answered', answerable: false, answers: { 'Which database?': 'SQLite' } });
+        const html = articleOf(
+            renderDetail({
+                jobs: [job({ summary: 'the answer', output: 'the log', questions: [later, earlier] })],
+            }),
+            'fix the flaky login test'
+        );
+        const order = ['the answer', 'Which database?', 'Second ask?', 'View raw output'].map((text) =>
+            html.indexOf(text)
+        );
+        expect(order.every((at) => at > -1)).toBe(true);
+        expect(order).toEqual([...order].sort((a, b) => a - b));
+    });
+
+    it('a live run’s question sits after its activity line and before its raw output', () => {
+        const html = articleOf(
+            renderDetail({
+                jobs: [
+                    job({
+                        status: 'running',
+                        finishedAt: null,
+                        exitCode: null,
+                        output: 'tail',
+                        runtime: {
+                            cpuPercent: null,
+                            memUsedMb: null,
+                            memPercent: null,
+                            activity: 'asking a question',
+                            sampledAt: '2026-09-01T12:02:00.000Z',
+                        },
+                        questions: [question()],
+                    }),
+                ],
+            }),
+            'fix the flaky login test'
+        );
+        expect(html.indexOf('asking a question')).toBeLessThan(html.indexOf('Which database?'));
+        expect(html.indexOf('Which database?')).toBeLessThan(html.indexOf('View raw output'));
+        expect(html).toContain('Claude is waiting for your answer');
     });
 });
 

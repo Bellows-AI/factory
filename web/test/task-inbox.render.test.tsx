@@ -29,6 +29,7 @@ const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary>
     waitTerminalReason: null,
     createdAt: '2026-09-01T12:00:00.000Z',
     activityAt: '2026-09-01T12:10:00.000Z',
+    needsAnswer: false,
     ...over,
 });
 
@@ -225,6 +226,18 @@ describe('TaskInboxPage rows', () => {
         expect(html).toContain('Failed · Needs review');
         expect(html).toContain('Stopped · Needs review');
         expect(html).toContain('Done');
+    });
+
+    it('renders a task holding an answerable question as Needs answer, ahead of Running', () => {
+        const html = renderInbox({
+            navigation: navigation({ running: 1 }),
+            items: [taskSummary({ status: 'running', needsAnswer: true })],
+            nextCursor: null,
+            initial: false,
+        });
+        const [row] = rowsOf(html);
+        expect(row).toMatch(/<span class="pill pill-accent"><svg[\s\S]*?<\/svg>Needs answer<\/span>/);
+        expect(row).not.toContain('Running');
     });
 
     it('renders an open PR-review wait as Waiting for review, with the grey paused dot', () => {

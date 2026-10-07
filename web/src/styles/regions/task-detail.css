@@ -459,6 +459,95 @@
         margin-top: 16px;
     }
 
+    /* An agent question inside its run's exchange: a form while the run waits, the asked
+       questions with their answers once it settled. The accent edge is "your turn", the same blue
+       the Needs answer pill wears. */
+    .question {
+        border: 1px solid var(--accent-border);
+        border-radius: var(--radius-lg);
+        display: grid;
+        gap: 12px;
+        margin: 8px 0;
+        padding: 12px;
+    }
+
+    .question form {
+        display: grid;
+        gap: 12px;
+        justify-items: start;
+    }
+
+    .question-set {
+        border: 0;
+        display: grid;
+        gap: 6px;
+        margin: 0;
+        min-width: 0;
+        padding: 0;
+    }
+
+    .question-set legend,
+    .question-answers dt {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        font-weight: 600;
+        gap: 8px;
+        margin-bottom: 4px;
+        padding: 0;
+    }
+
+    .question-chip {
+        font-weight: 400;
+    }
+
+    .question-option {
+        align-items: baseline;
+        cursor: pointer;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+    }
+
+    .question-hint {
+        color: var(--ink-muted);
+        flex-basis: 100%;
+        font-size: 12px;
+        padding-left: 24px;
+    }
+
+    .question-other {
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-md);
+        font: inherit;
+        max-width: 480px;
+        padding: 4px 8px;
+        width: 100%;
+    }
+
+    .question-error {
+        color: var(--lamp-stop);
+        margin: 0;
+    }
+
+    .question-status {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 0;
+    }
+
+    .question-answers {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+    }
+
+    .question-answers dd {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
     /* ── task-detail touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .chat-resume,
@@ -466,7 +555,9 @@
         .task-remove-actions button,
         .task-outcome > summary,
         .run-output > summary,
-        .chat-gate-list summary {
+        .chat-gate-list summary,
+        .question-option,
+        .question button {
             align-items: center;
             display: inline-flex;
             min-height: 44px;

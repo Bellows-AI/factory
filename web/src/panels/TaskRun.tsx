@@ -1,8 +1,10 @@
 import { type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
+import type { AnswerOutcome } from '../api/answer-question.js';
 import { Icon } from '../components/Icon.js';
 import { runDuration, timestamp } from '../format.js';
 import { FAILURE_KIND_LABEL, GATE_PILL, gateCounts, isHttpUrl, prNumber, type ThreadPublish } from '../task-outcome.js';
+import { TaskQuestion } from './TaskQuestion.js';
 
 /**
  * One output well: a clipped log a keyboard user can actually reach. The wrapping section names
@@ -92,9 +94,28 @@ function RawOutput({
     );
 }
 
+/** How the page answers a question: the board's answer POST, settled to the state it shows. */
+export type OnAnswer = (jobId: string, questionId: string, answers: Record<string, string>) => Promise<AnswerOutcome>;
+
+/** The run's AskUserQuestion calls, oldest first — each one its own form or its settled record. */
+function RunQuestions({ job, onAnswer }: { job: Job; onAnswer: OnAnswer }) {
+    const asked = [...job.questions].sort((a, b) => a.askedAt.localeCompare(b.askedAt));
+    return (
+        <>
+            {asked.map((question) => (
+                <TaskQuestion
+                    key={question.id}
+                    question={question}
+                    onAnswer={(questionId, answers) => onAnswer(job.id, questionId, answers)}
+                />
+            ))}
+        </>
+    );
+}
+
 /**
  * The agent response/activity body: a terminal run's summary, or a live run's vitals and activity
- * line, then the run's raw-output disclosure. Split out of `TaskRun` — the nested "which branch of
+ * line, then the run's questions, then the run's raw-output disclosure. Split out of `TaskRun` — the nested "which branch of
  * the run's life is this" choice was the bulk of its cognitive complexity.
  */
 function RunResponseBody({
@@ -103,12 +124,14 @@ function RunResponseBody({
     open,
     onOpenChange,
     liveRef,
+    questions,
 }: {
     terminal: boolean;
     job: Job;
     open: boolean;
     onOpenChange: (open: boolean) => void;
     liveRef?: Ref<HTMLPreElement> | undefined;
+    questions: ReactNode;
 }) {
     const hasOutput = job.output !== null;
     if (!terminal) {
@@ -118,6 +141,7 @@ function RunResponseBody({
                 {job.status === 'running' && job.runtime?.activity != null ? (
                     <p className="chat-activity">{job.runtime.activity}</p>
                 ) : null}
+                {questions}
                 {hasOutput ? (
                     <RawOutput text={job.output!} open={open} live onOpenChange={onOpenChange} liveRef={liveRef} />
                 ) : (
@@ -142,6 +166,7 @@ function RunResponseBody({
     return (
         <>
             {lead}
+            {questions}
             {hasOutput ? <RawOutput text={job.output!} open={open} live={false} onOpenChange={onOpenChange} /> : null}
         </>
     );
@@ -200,6 +225,7 @@ export function TaskRun({
     job,
     index,
     liveRef,
+    onAnswer,
 }: {
     /** The run's row. */
     job: Job;
@@ -207,6 +233,7 @@ export function TaskRun({
     index: number;
     /** Ref for the newest non-terminal run's output pre; absent everywhere else. */
     liveRef?: Ref<HTMLPreElement> | undefined;
+    onAnswer: OnAnswer;
 }) {
     const terminal = isTerminal(job.status);
     const parked = job.status === 'queued';
@@ -220,7 +247,14 @@ export function TaskRun({
             {/* The member's words are prose, not code: normal text with its line breaks kept. */}
             <p className="msg-user">{job.command}</p>
             <p className="run-label">{terminal ? `Agent response · Run ${index}` : 'Agent activity'}</p>
-            <RunResponseBody terminal={terminal} job={job} open={open} onOpenChange={setOpen} liveRef={liveRef} />
+            <RunResponseBody
+                terminal={terminal}
+                job={job}
+                open={open}
+                onOpenChange={setOpen}
+                liveRef={liveRef}
+                questions={<RunQuestions job={job} onAnswer={onAnswer} />}
+            />
             <RunMetaFooter job={job} parked={parked} />
         </article>
     );

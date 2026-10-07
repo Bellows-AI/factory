@@ -10,6 +10,7 @@ import { type TaskTone, taskStatusLabel, taskTone } from '../task-tree.js';
  * done parked or finished — the label carries the meaning, the tone only reinforces it. */
 const STATUS_PILL: Record<TaskTone, string> = {
     none: 'pill',
+    answer: 'pill pill-accent',
     queued: 'pill pill-done',
     running: 'pill pill-ok',
     stopping: 'pill pill-done',

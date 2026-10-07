@@ -8,6 +8,7 @@ import type { UseTasks } from '../api/useTasks.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
 import { TaskDetail } from '../panels/TaskDetail.js';
+import type { OnAnswer } from '../panels/TaskRun.js';
 import { useTasksPage } from './TasksLayout.js';
 
 /**
@@ -215,6 +216,13 @@ export function TaskDetailPage() {
         latest,
         navigate
     );
+    // A settled answer — ours, or the 409 that says what the board already holds — re-arms the
+    // thread poll, so the stored answer, its author and its time replace the local overlay.
+    const answerQuestion: OnAnswer = async (jobId, questionId, answers) => {
+        const outcome = await tasks.actions.answerQuestion(jobId, questionId, answers);
+        if (outcome.state !== 'failed') detail.refresh();
+        return outcome;
+    };
 
     return (
         <>
@@ -237,6 +245,7 @@ export function TaskDetailPage() {
                 followUpError={followUpError}
                 sending={sending}
                 onFollowUp={followUp}
+                onAnswer={answerQuestion}
                 activity={activity}
                 live={live}
             />

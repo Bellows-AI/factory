@@ -50,6 +50,24 @@ export interface ThreadPublication {
     baseBranch: string;
 }
 
+/** One AskUserQuestion call of a run (`JobQuestion` in server/src/db/job-store-types.ts). */
+export interface ThreadQuestion {
+    id: string;
+    attempt: number;
+    questions: {
+        question: string;
+        header: string;
+        multiSelect: boolean;
+        options: { label: string; description?: string }[];
+    }[];
+    status: 'pending' | 'answered' | 'expired' | 'closed';
+    answerable: boolean;
+    answers: Record<string, string> | null;
+    answeredBy: ThreadUser | null;
+    askedAt: string;
+    answeredAt: string | null;
+}
+
 export interface ThreadJob {
     id: string;
     command: string;
@@ -94,6 +112,8 @@ export interface ThreadJob {
     waitTerminalReason: string | null;
     /** The matched `job_pr` row (036), null unless the run published one. */
     publication: ThreadPublication | null;
+    /** The run's agent questions, `asked_at` order; empty on every fixture that asked none. */
+    questions: ThreadQuestion[];
 }
 
 type Wait = Pick<ThreadJob, 'waitReason' | 'waitingSince' | 'waitTerminalReason'>;
@@ -186,6 +206,7 @@ function run(fields: RunFields): ThreadJob {
         wallClockMs: 1_799_000,
         taskWallClockMs: null,
         publication: null,
+        questions: [],
         ...NO_WAIT,
         ...fields,
         author,
@@ -639,6 +660,7 @@ export function taskSummaryOf(jobs: readonly ThreadJob[]) {
         waitTerminalReason: head.waitTerminalReason,
         createdAt: root.createdAt,
         activityAt: head.doneAt ?? head.finishedAt ?? head.createdAt,
+        needsAnswer: jobs.some((job) => job.questions.some((question) => question.answerable)),
     };
 }
 

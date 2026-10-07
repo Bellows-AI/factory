@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { removeDialogBody, removeDialogTitle, TaskRemoveDialog } from '../src/components/TaskRemoveDialog.js';
-import { FORBIDDEN, job, renderHeader } from './tasks-fixtures.js';
+import { FORBIDDEN, job, question, renderHeader } from './tasks-fixtures.js';
 
 describe('the task page header', () => {
     /**
@@ -44,6 +44,19 @@ describe('the task page header', () => {
         expect(running).toMatch(
             /<span class="pill pill-ok" aria-live="polite"><span class="sidenav-dot sidenav-dot-running"/
         );
+    });
+
+    it('shows Needs answer ahead of Running while any question in the thread is answerable', () => {
+        const live = { status: 'running' as const, finishedAt: null, exitCode: null };
+        const asking = renderHeader({ jobs: [job(), job({ ...live, id: 'head', questions: [question()] })] });
+        expect(asking).toMatch(
+            /<span class="pill pill-accent" aria-live="polite"><svg[\s\S]*?<\/svg>Needs answer<\/span>/
+        );
+        expect(asking).not.toContain('Running');
+        const answered = question({ status: 'answered', answerable: false, answers: { 'Which database?': 'SQLite' } });
+        const after = renderHeader({ jobs: [job({ ...live, questions: [answered] })] });
+        expect(after).toContain('Running');
+        expect(after).not.toContain('Needs answer');
     });
 
     it('reads Done — not Waiting for review — once a parked wait is marked done', () => {

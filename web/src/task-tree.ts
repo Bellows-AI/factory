@@ -25,6 +25,8 @@ export interface TaskStatus {
      */
     waitReason: string | null;
     waitTerminalReason: string | null;
+    /** Whether any run of the thread holds a question a member can still answer. */
+    needsAnswer?: boolean;
 }
 
 /**
@@ -42,6 +44,7 @@ const withWaitReason = (status: TaskStatus, label: string): string =>
 
 /** A task's state as one word — the precedence the label and the dot share. */
 export type TaskTone =
+    | 'answer'
     | 'queued'
     | 'running'
     | 'stopping'
@@ -53,7 +56,8 @@ export type TaskTone =
     | 'none';
 
 /**
- * The ONE status precedence, first match wins: no run → `none`; a live run → `running` /
+ * The ONE status precedence, first match wins: no run → `none`; a question the agent is blocked
+ * on → `answer`, ahead of the run it holds; a live run → `running` /
  * `stopping`; a task the user closed → `done`; an OPEN PR-review wait (206) → `waiting`; `queued`;
  * then the terminal verdicts the user has not closed yet (`review` for a success, `failed` for
  * failed/dead, `stopped`).
@@ -65,6 +69,7 @@ export type TaskTone =
  */
 export function taskTone(status: TaskStatus): TaskTone {
     if (status.status === null) return 'none';
+    if (status.needsAnswer === true) return 'answer';
     if (status.status === 'running') return status.cancelRequestedAt !== null ? 'stopping' : 'running';
     if (status.doneAt !== null) return 'done';
     if (status.waitReason !== null && status.waitTerminalReason === null) return 'waiting';
@@ -93,6 +98,8 @@ export function taskStatusLabel(status: TaskStatus): string {
     switch (taskTone(status)) {
         case 'none':
             return '—';
+        case 'answer':
+            return 'Needs answer';
         case 'running':
             return 'Running';
         case 'stopping':
@@ -142,9 +149,14 @@ export function taskSummary(id: string, jobs: readonly Job[] | null): string | n
     return activity !== null && activity.trim() !== '' ? activity : null;
 }
 
+/** Whether the detail page's thread holds a question a member can still answer. */
+export const threadNeedsAnswer = (jobs: readonly Job[]): boolean =>
+    jobs.some((job) => job.questions.some((question) => question.answerable));
+
 /** Each tone's dot class; `''` is the plain dot. */
 const DOT_CLASS: Record<TaskTone, string> = {
     none: '',
+    answer: 'sidenav-dot-review',
     running: 'sidenav-dot-running',
     stopping: 'sidenav-dot-stopping',
     done: 'sidenav-dot-done',

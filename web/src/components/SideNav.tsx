@@ -59,6 +59,7 @@ function TaskRow({ task, onNavigate }: { task: TaskSummary; onNavigate?: (() => 
         doneAt: task.doneAt,
         waitReason: task.waitReason,
         waitTerminalReason: task.waitTerminalReason,
+        needsAnswer: task.needsAnswer,
     });
     const live = task.status === 'running' && task.activity !== null && task.activity.trim() !== '';
     return (

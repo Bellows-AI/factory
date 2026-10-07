@@ -61,6 +61,7 @@ const CHIPS: readonly { key: 'q' | 'repo' | 'author'; label: string }[] = [
  */
 const STATE_PILL: Record<TaskTone, { className: string; mark: IconName | 'lamp' | null }> = {
     none: { className: 'pill', mark: null },
+    answer: { className: 'pill pill-accent', mark: 'circle-dot' },
     queued: { className: 'pill pill-done', mark: 'clock' },
     running: { className: 'pill pill-ok', mark: 'lamp' },
     stopping: { className: 'pill pill-done', mark: 'lamp' },
@@ -298,6 +299,7 @@ function Row({ task }: { task: TaskSummary }) {
         doneAt: task.doneAt,
         waitReason: task.waitReason,
         waitTerminalReason: task.waitTerminalReason,
+        needsAnswer: task.needsAnswer,
     };
     const dot = taskDotClass(status);
     const summary = rowSummary(task);
