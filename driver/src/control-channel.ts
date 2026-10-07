@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readBody, respondJson } from './http.js';
+import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish-control.js';
 import {
     cancelPendingQuestions,
     type ControlEntry,
@@ -22,6 +23,8 @@ import {
 
 /** The run-control poll route the runner's stop poller reads (docker/*-executor/stop-poller.cjs). */
 export const CONTROL_PATH = '/control';
+/** The draft-publication route beside it: `POST /publish`. */
+export const PUBLISH_PATH = '/publish';
 /** The question routes beside it: `POST /question`, `GET /question/:questionId`. */
 export const QUESTION_PATH = '/question';
 
@@ -30,8 +33,8 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 
 export interface ControlChannel {
-    /** Opens the token (idempotent); `relay` carries its questions to the board. */
-    open(token: string, relay?: QuestionRelay): void;
+    /** Opens the token (idempotent); `relay` carries its questions to the board, `publisher` its draft publishes. */
+    open(token: string, relay?: QuestionRelay, publisher?: PublishRelay): void;
     /** Whether a runner has contacted this token — its stop poll, or a question POST. */
     polled(token: string): boolean;
     /** Raises the stop; repeated calls and unknown tokens do nothing. */
@@ -63,9 +66,19 @@ export function createControlChannel(): ControlChannel {
         return recordQuestion(control, raw);
     };
 
+    /** `POST /publish`: the body names nothing and is only drained, bounded. */
+    const serveDraftPublish = async (control: ControlEntry, request: IncomingMessage, auth: string) => {
+        if ((await readBody(request, PUBLISH_BODY_LIMIT)) === null) {
+            return { status: HTTP_PAYLOAD_TOO_LARGE, body: { error: 'body too large' } };
+        }
+        // Closed while the body arrived: the entry read before is the dead attempt's.
+        if (controls.get(auth) !== control) return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
+        return servePublish(control.publishing, control.publisher);
+    };
+
     return {
-        open(token, relay) {
-            if (!controls.has(token)) controls.set(token, newControl(relay ?? null));
+        open(token, relay, publisher) {
+            if (!controls.has(token)) controls.set(token, newControl(relay ?? null, publisher ?? null));
         },
         polled: (token) => controls.get(token)?.polled ?? false,
         raiseStop(token) {
@@ -90,9 +103,10 @@ export function createControlChannel(): ControlChannel {
             const url = request.url ?? '';
             const isGet = request.method === 'GET';
             const isControl = isGet && url === CONTROL_PATH;
+            const isPublish = request.method === 'POST' && url === PUBLISH_PATH;
             const isQuestion =
                 url === QUESTION_PATH ? request.method === 'POST' : isGet && url.startsWith(`${QUESTION_PATH}/`);
-            if (!isControl && !isQuestion) return false;
+            if (!isControl && !isQuestion && !isPublish) return false;
             const control = controls.get(auth);
             if (!control) {
                 respondJson(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });
@@ -103,7 +117,9 @@ export function createControlChannel(): ControlChannel {
                 respondJson(reply, HTTP_OK, { stop: control.stop });
                 return true;
             }
-            const answer = await serveQuestion(control, request, auth);
+            const answer = isPublish
+                ? await serveDraftPublish(control, request, auth)
+                : await serveQuestion(control, request, auth);
             respondJson(reply, answer.status, answer.body);
             return true;
         },
