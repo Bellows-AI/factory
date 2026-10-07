@@ -234,3 +234,15 @@ export function followUpEligibility(latest: Job, viewer: FollowUpViewer): Follow
     if ((latest.author?.id ?? null) !== viewer.id) return 'not-author';
     return 'eligible';
 }
+
+/**
+ * Whether the run ended on a question nobody can answer in place (issue 226): the newest run,
+ * settled, with no question of its own to answer or record, whose final response — the `summary`
+ * `RunResponseBody` renders — ends in `?`. The caller hands over the thread's latest job. This also
+ * covers OpenCode, which has no question channel.
+ */
+export function endedOnQuestion(job: Job): boolean {
+    if (!isTerminal(job.status)) return false;
+    if (job.questions.some((question) => question.status === 'pending' || question.status === 'answered')) return false;
+    return job.summary !== null && job.summary.trimEnd().endsWith('?');
+}

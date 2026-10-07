@@ -1112,46 +1112,61 @@ stop_lane opencode
 echo
 echo '# AskUserQuestion (real claude CLI, answered through the bridge)'
 
+#
+# The prose mode (`--ask-prose`) starts from a plain-text question ending the turn: the baked Stop
+# hook must turn it into the same AskUserQuestion, inside the same run.
+
 ask_lane() {
-    local image=claude-executor dir="$work/ask-claude" fake_pid port posts
+    local mode="$1" flag="$2" image=claude-executor fake_pid port posts hooks
+    local dir="$work/ask-claude-$mode" log="$work/ask-claude-$mode.log" portfile="$work/fake-ask-$mode.port"
     if ! docker image inspect "$image" >/dev/null 2>&1; then
-        bad 'claude asks and receives an answer' "the $image image is missing — run make runners"
+        bad "claude asks and receives an answer ($mode)" "the $image image is missing — run make runners"
         return
     fi
     mkdir -p "$dir"
     chmod 777 "$dir"
-    node scripts/fake-model-endpoint.mjs --ask >"$work/fake-ask.port" &
+    node scripts/fake-model-endpoint.mjs "$flag" >"$portfile" &
     fake_pid=$!
     for _ in $(seq 1 20); do
-        [ -s "$work/fake-ask.port" ] && break
+        [ -s "$portfile" ] && break
         sleep 0.25
     done
-    port="$(cat "$work/fake-ask.port")"
+    port="$(cat "$portfile")"
     local host="http://host.docker.internal:$port"
     if timeout 180 docker run --rm --add-host host.docker.internal:host-gateway -v "$dir:/workspace" -e WORKDIR=/workspace \
         -e ANTHROPIC_API_KEY=fake-key -e "ANTHROPIC_BASE_URL=$host" -e "BELLOWS_CONTROL_URL=$host" \
         -e BELLOWS_CONTROL_TOKEN=lane -e BELLOWS_CONTROL_POLL_MS=200 \
-        "$image" -p 'ask which colour' --dangerously-skip-permissions --model fake-model >"$work/ask-claude.log" 2>&1; then
-        ok 'claude exits 0 after the question is answered'
+        "$image" -p 'ask which colour' --dangerously-skip-permissions --model fake-model >"$log" 2>&1; then
+        ok "claude exits 0 after the question is answered ($mode)"
     else
-        bad 'claude exits 0 after the question is answered' "$(tail -5 "$work/ask-claude.log")"
+        bad "claude exits 0 after the question is answered ($mode)" "$(tail -5 "$log")"
     fi
     posts="$(node -e 'fetch(process.argv[1] + "/questions").then((r) => r.json()).then((j) => console.log(j.questionPosts))' "http://127.0.0.1:$port")"
+    hooks="$(node -e 'fetch(process.argv[1] + "/hooks").then((r) => r.json()).then((j) => console.log(j.hookRequests))' "http://127.0.0.1:$port")"
     kill "$fake_pid" 2>/dev/null
     wait "$fake_pid" 2>/dev/null
-    if grep -q 'ANSWER=Blue' "$work/ask-claude.log"; then
-        ok 'the answer reaches the same run (ANSWER=Blue in the progress output)'
+    if grep -q 'ANSWER=Blue' "$log"; then
+        ok "the answer reaches the same run (ANSWER=Blue in the progress output, $mode)"
     else
-        bad 'the answer reaches the same run (ANSWER=Blue in the progress output)' "$(tail -5 "$work/ask-claude.log")"
+        bad "the answer reaches the same run (ANSWER=Blue in the progress output, $mode)" "$(tail -5 "$log")"
     fi
     if [ "$posts" = 1 ]; then
-        ok 'exactly one question was posted'
+        ok "exactly one question was posted ($mode)"
     else
-        bad 'exactly one question was posted' "question POSTs: $posts"
+        bad "exactly one question was posted ($mode)" "question POSTs: $posts"
+    fi
+    if [ "$mode" = prose ]; then
+        # The block, then the allowed stop after the answer (stop_hook_active): two evaluations.
+        if [ "$hooks" = 2 ]; then
+            ok 'the Stop hook turned the prose question into AskUserQuestion (prose)'
+        else
+            bad 'the Stop hook turned the prose question into AskUserQuestion (prose)' "Stop-hook evaluations: $hooks"
+        fi
     fi
 }
 
-ask_lane
+ask_lane tool --ask
+ask_lane prose --ask-prose
 
 # --- The question round trip: board + driver + the real claude-executor (issue #226) -------------
 #

@@ -527,6 +527,26 @@ describe('TaskDetail — who may follow up', () => {
         }
     });
 
+    it('says the run ended with a question directly above the composer, for the author (issue #226)', () => {
+        const html = renderDetail({ jobs: [job({ author: me, summary: 'Which one: Red or Blue?' })], viewer });
+        const notice = 'Claude ended with a question. Reply below to continue the same conversation.';
+        expect(html).toContain(notice);
+        expect(html.indexOf(notice)).toBeLessThan(html.indexOf('class="composer"'));
+        expect(html).not.toContain("The task's author can reply");
+    });
+
+    it("tells another member the task's author can reply (issue #226)", () => {
+        const html = renderDetail({ jobs: [job({ author: other, summary: 'Which one: Red or Blue?' })], viewer });
+        expect(html).toContain('Claude ended with a question. The task&#x27;s author can reply with a follow-up.');
+        expect(html).not.toContain('Reply below');
+        expect(html).not.toContain('<textarea');
+    });
+
+    it('shows no question notice when the summary is not a question', () => {
+        const html = renderDetail({ jobs: [job({ author: me, summary: 'Done.' })], viewer });
+        expect(html).not.toContain('Claude ended with a question');
+    });
+
     it('renders nothing on a closed task, even for another member', () => {
         const html = renderDetail({ jobs: [job({ author: other, doneAt: '2026-09-01T13:00:00.000Z' })], viewer });
         expect(html).not.toContain('can continue this session');

@@ -132,6 +132,26 @@ if [ -n "${CLAUDE_CODE_CONFIG_CONTENT:-}" ]; then
     fi
 fi
 
+# The baked Stop hook (issue #226) is a prompt hook, and one without a usable model fails OPEN —
+# the stop is allowed, silently. So the placeholder it ships with becomes the run's model, after
+# the merge above has settled which one that is: $ANTHROPIC_MODEL, else the merged settings' own
+# top-level `model`. With neither, the key is deleted and the CLI uses its default.
+if [ -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then
+    SETTINGS="$CLAUDE_CONFIG_DIR/settings.json" node -e "
+        const fs = require('fs');
+        const f = process.env.SETTINGS;
+        const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+        const model = process.env.ANTHROPIC_MODEL || c.model;
+        for (const entry of (c.hooks && c.hooks.Stop) || []) {
+            for (const hook of entry.hooks || []) {
+                if (hook.model !== '__FACTORY_RUN_MODEL__') continue;
+                if (model) hook.model = model; else delete hook.model;
+            }
+        }
+        fs.writeFileSync(f, JSON.stringify(c, null, 4) + '\n');
+    " || echo "claude-executor: could not resolve the Stop hook's model in settings.json" >&2
+fi
+
 # The branch reporter samples session -> (repo, branch) beside the run, so the board can
 # attribute the session's tokens to a PR. A background SIBLING of the CLI, never its child — a
 # CLI crash must not take the reporter down mid-run — with stdio discarded: the output stream

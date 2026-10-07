@@ -21,7 +21,7 @@ afterEach(async () => {
     for (const endpoint of open.splice(0)) await endpoint.close();
 });
 
-async function start(options: { firstDelayMs?: number; toolSteps?: number; ask?: boolean } = {}) {
+async function start(options: { firstDelayMs?: number; toolSteps?: number; ask?: boolean; askProse?: boolean } = {}) {
     const { createFakeModelEndpoint } = (await import(pathToFileURL(ENDPOINT).href)) as {
         createFakeModelEndpoint: (options: object) => Endpoint;
     };
@@ -137,13 +137,53 @@ describe('the scripted model endpoint in ask mode (issue #226)', () => {
     });
 });
 
+describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
+    const request = (url: string, body: object) =>
+        fetch(`${url}/v1/messages`, { method: 'POST', body: JSON.stringify({ stream: false, ...body }) }).then(
+            (response) => response.json() as Promise<{ stop_reason: string; content: Record<string, any>[] }>
+        );
+    const agent = (url: string) =>
+        request(url, { tools: [{ name: 'AskUserQuestion' }, { name: 'Bash' }], messages: [] });
+    const hook = (url: string) =>
+        request(url, {
+            messages: [{ role: 'user', content: 'You decide whether an autonomous coding agent may stop.' }],
+        });
+    const hooks = async (url: string) =>
+        ((await (await fetch(`${url}/hooks`)).json()) as { hookRequests: number }).hookRequests;
+
+    it('ends the first turn on the prose question, then asks AskUserQuestion after the hook blocks', async () => {
+        const { endpoint, url } = await start({ askProse: true });
+
+        const first = await agent(url);
+        expect(first.stop_reason).toBe('end_turn');
+        expect(first.content[0].text).toBe('Which one should I use: Red or Blue?');
+
+        const verdict = await hook(url);
+        expect(JSON.parse(verdict.content[0].text)).toMatchObject({ ok: false });
+        expect(await hooks(url)).toBe(1);
+
+        const second = await agent(url);
+        expect(second.content[0]).toMatchObject({ type: 'tool_use', name: 'AskUserQuestion' });
+
+        // The evaluation after the answer is stop_hook_active territory: allowed, not an agent request.
+        expect(JSON.parse((await hook(url)).content[0].text)).toEqual({ ok: true });
+        expect(endpoint.agentRequests).toBe(2);
+    });
+});
+
 describe('the test-jobs ask lane', () => {
     const script = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
 
     it('runs the real claude image against the endpoint in ask mode', () => {
         expect(script).toContain('ask_lane');
-        expect(script).toContain('fake-model-endpoint.mjs --ask');
+        expect(script).toContain('ask_lane tool --ask');
+        expect(script).toContain('fake-model-endpoint.mjs "$flag"');
         expect(script).toContain('ANSWER=Blue');
+    });
+
+    it('runs the prose mode through the Stop hook', () => {
+        expect(script).toContain('ask_lane prose --ask-prose');
+        expect(script).toContain('the Stop hook turned the prose question into AskUserQuestion');
     });
 });
 

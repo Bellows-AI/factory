@@ -314,6 +314,7 @@ exit "\${CURL_STATUS:-0}"
 `;
 const ATLASSIAN_NAMES = ['ATLASSIAN_SITE', 'ATLASSIAN_EMAIL', 'ATLASSIAN_API_TOKEN', 'JIRA_API'];
 const CONTAINER_GUARD_NAMES = [
+    'ANTHROPIC_MODEL',
     'FACTORY_TRANSCRIPT_DIR',
     'CLAUDE_CODE_CONFIG_CONTENT',
     'OTEL_EXPORTER_OTLP_ENDPOINT',
@@ -1183,5 +1184,53 @@ describe('the executor infrastructure-access guide', () => {
         expect(text).toContain('`services:`');
         expect(text).toContain('127.0.0.1');
         expect(text).toContain('DNS');
+    });
+});
+
+/*
+ * The baked Stop hook is a prompt hook, and one without a usable model fails open (issue #226), so
+ * the entrypoint turns its placeholder into the run's model: $ANTHROPIC_MODEL, else the merged
+ * settings' `model`, else no `model` key at all. Run for real under /bin/sh against a sandbox
+ * settings.json that carries the baked hook.
+ */
+describe('the claude entrypoint Stop-hook model', () => {
+    const ENTRYPOINT = 'docker/claude-executor/entrypoint.sh';
+    const PLACEHOLDER = '__FACTORY_RUN_MODEL__';
+    type Settings = { hooks: { Stop: { hooks: { type: string; model?: string }[] }[] } };
+    const baked = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as Settings;
+
+    // Only the substitution block runs, not the whole entrypoint: the entrypoint's re-seed lays the
+    // image's own /opt/claude-home hooks over the file first, and that copy exists on any runner.
+    const entry = read(ENTRYPOINT);
+    const block = entry.slice(entry.indexOf('# The baked Stop hook'), entry.indexOf('# The branch reporter'));
+
+    const stopHookAfterRun = (merged: object, env: Record<string, string>) => {
+        const sandbox = makeSandbox();
+        try {
+            const file = join(sandbox.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+            writeFileSync(file, JSON.stringify({ ...merged, hooks: baked.hooks }));
+            execFileSync('/bin/sh', ['-c', block], { env: { ...sandbox.env, ...env } });
+            const raw = readFileSync(file, 'utf8');
+            expect(raw).not.toContain(PLACEHOLDER);
+            return (JSON.parse(raw) as Settings).hooks.Stop[0]!.hooks[0]!;
+        } finally {
+            sandbox.cleanup();
+        }
+    };
+
+    it('ships the placeholder, so the substitution is what the cases below exercise', () => {
+        expect(baked.hooks.Stop[0]!.hooks[0]).toMatchObject({ type: 'prompt', model: PLACEHOLDER });
+    });
+
+    it('uses ANTHROPIC_MODEL when it is set, over the merged settings model', () => {
+        expect(stopHookAfterRun({ model: 'member-model' }, { ANTHROPIC_MODEL: 'env-model' }).model).toBe('env-model');
+    });
+
+    it('falls back to the merged member settings model', () => {
+        expect(stopHookAfterRun({ model: 'member-model' }, {}).model).toBe('member-model');
+    });
+
+    it('drops the model key when neither names one', () => {
+        expect(stopHookAfterRun({}, {})).not.toHaveProperty('model');
     });
 });

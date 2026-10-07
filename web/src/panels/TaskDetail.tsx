@@ -3,7 +3,7 @@ import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import type { JobActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
-import { type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
+import { endedOnQuestion, type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
@@ -176,6 +176,10 @@ function FollowUpComposer({
     );
 }
 
+/** The fallback notice (issue 226): the run ended on a question and nothing could ask it in place. */
+const ENDED_ON_QUESTION_REPLY = 'Claude ended with a question. Reply below to continue the same conversation.';
+const ENDED_ON_QUESTION_AUTHOR = "Claude ended with a question. The task's author can reply with a follow-up.";
+
 /**
  * The follow-up slot, by `followUpEligibility`: the composer for the task's author; a sentence
  * for a sessionless run or another member's task; nothing while the session loads (so the
@@ -195,11 +199,22 @@ function FollowUp({
     onFollowUp: (command: string) => Promise<string | null>;
 }) {
     const eligibility = followUpEligibility(latest, viewer);
+    const asked = endedOnQuestion(latest);
     let body: ReactNode = null;
     if (eligibility === 'eligible') {
-        body = <FollowUpComposer error={error} sending={sending} onFollowUp={onFollowUp} />;
+        body = (
+            <>
+                {asked ? <p className="status">{ENDED_ON_QUESTION_REPLY}</p> : null}
+                <FollowUpComposer error={error} sending={sending} onFollowUp={onFollowUp} />
+            </>
+        );
     } else if (eligibility === 'not-author') {
-        body = <p className="muted">{notAuthorMessage(latest)}</p>;
+        body = (
+            <>
+                {asked ? <p className="status">{ENDED_ON_QUESTION_AUTHOR}</p> : null}
+                <p className="muted">{notAuthorMessage(latest)}</p>
+            </>
+        );
     }
     if (body === null) return null;
     return (

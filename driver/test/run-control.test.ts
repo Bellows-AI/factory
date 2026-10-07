@@ -21,6 +21,14 @@ const OPENCODE_POLLER = 'docker/opencode-executor/stop-poller.cjs';
 const CLAUDE_HOOK = 'docker/claude-executor/stop-hook.cjs';
 const OPENCODE_PLUGIN = 'docker/opencode-executor/stop-plugin/index.js';
 
+const STOP_PROMPT = [
+    'You decide whether an autonomous coding agent may stop. Hook input: $ARGUMENTS',
+    'The person who started the task cannot reply to plain text; this run ends when the agent stops.',
+    'If stop_hook_active is true, respond {"ok": true}.',
+    'If last_assistant_message asks the person to choose between options, confirm something, or answer a question before the work can continue, respond {"ok": false, "reason": "The person cannot reply to plain text and this run ends when you stop. Call the AskUserQuestion tool now with the question and its options."}.',
+    'Otherwise respond {"ok": true}.',
+].join('\n');
+
 const dirs: string[] = [];
 const servers: Server[] = [];
 afterEach(() => {
@@ -143,9 +151,18 @@ describe("Claude Code's PostToolUse stop hook", () => {
         const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
             hooks: Record<string, { hooks: { command: string }[] }[]>;
         };
-        expect(Object.keys(settings.hooks).sort()).toEqual(['PostToolUse', 'PreToolUse', 'UserPromptSubmit']);
+        expect(Object.keys(settings.hooks).sort()).toEqual(['PostToolUse', 'PreToolUse', 'Stop', 'UserPromptSubmit']);
         expect(settings.hooks.PostToolUse.flatMap((entry) => entry.hooks.map((hook) => hook.command))).toEqual([
             'node /usr/local/bin/stop-hook.cjs',
+        ]);
+    });
+
+    it('registers the prose-question Stop hook as a prompt hook with the exact prompt (issue #226)', () => {
+        const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
+            hooks: { Stop: unknown[] };
+        };
+        expect(settings.hooks.Stop).toEqual([
+            { hooks: [{ type: 'prompt', model: '__FACTORY_RUN_MODEL__', prompt: STOP_PROMPT }] },
         ]);
     });
 });
