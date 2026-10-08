@@ -2,12 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, GateReport, JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
-import {
-    compileDefaultWorkflow,
-    DEFAULT_ENTRY_NODE,
-    DEFAULT_GATE_FIX_NODE,
-    DEFAULT_WORKFLOW_NAME,
-} from '../src/db/default-workflow.js';
+import { GATE_FIX_NODE, gateFixTarget } from './gate-fix-workflow.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -22,22 +17,13 @@ beforeAll(() => {
     store = createJobStore({ sql: db.sql, orgId: ORG, prs: createPrLifecycleStore({ sql: db.sql, orgId: ORG }) });
 });
 
-const NEITHER = { reviewReconciliation: false, mergeConflictAutofix: false };
 const failedGate = (output: string): GateReport[] => [{ name: 'test', status: 'failed', exitCode: 1, output }];
 
 async function queueDefault(rounds: number): Promise<string> {
-    const snapshot = compileDefaultWorkflow(NEITHER, rounds);
     const job = await store.create('do the thing', null, {
         repo: null,
         executor: null,
-        workflow: {
-            id: null,
-            name: DEFAULT_WORKFLOW_NAME,
-            node: DEFAULT_ENTRY_NODE,
-            snapshot,
-            params: {},
-            defaultOptions: { ...NEITHER, gateFixRounds: rounds },
-        },
+        workflow: gateFixTarget(rounds),
     });
     if (typeof job === 'string') throw new Error(job);
     return job.id;
@@ -49,7 +35,7 @@ const claim = async (): Promise<Claim> => {
     return c;
 };
 const queuedGateFix = async (root: string) =>
-    (await store.thread(root))!.filter((r) => r.workflowNode === DEFAULT_GATE_FIX_NODE && r.status === 'queued');
+    (await store.thread(root))!.filter((r) => r.workflowNode === GATE_FIX_NODE && r.status === 'queued');
 const failGates = async (c: Claim, output: string) => {
     await store.gates(c.id, c.leaseToken, failedGate(output));
     await store.complete(c.id, c.leaseToken, {

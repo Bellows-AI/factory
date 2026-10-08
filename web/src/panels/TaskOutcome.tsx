@@ -226,15 +226,8 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
         ['Executor', latest.executor ?? 'No executor selected'],
         ['Workflow', latest.workflowName],
         ['Workflow node', latest.workflowNode],
-        // The default workflow's gate-repair budget (issue #49): the frozen limit beside the
-        // rounds the thread has already spent, so a rested thread shows why. Null (any
-        // non-default workflow) and zero (repair off) render no row at all.
-        [
-            'Gate repair',
-            latest.defaultGateFixRounds != null && latest.defaultGateFixRounds > 0
-                ? `${jobs.filter((row) => row.workflowNode === 'gate-fix').length}/${latest.defaultGateFixRounds}`
-                : null,
-        ],
+        // The thread's stored execution mode (issue 543): objective, or a workflow's graph.
+        ['Mode', latest.mode],
         ['Context', context !== null ? `${tokenCount.format(context)} tok` : null],
         ['Cost', cost !== null ? `$${cost.toFixed(COST_DECIMAL_PLACES)}` : null],
     ]);

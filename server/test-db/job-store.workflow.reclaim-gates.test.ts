@@ -3,12 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, GateReport, JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
-import {
-    compileDefaultWorkflow,
-    DEFAULT_ENTRY_NODE,
-    DEFAULT_GATE_FIX_NODE,
-    DEFAULT_WORKFLOW_NAME,
-} from '../src/db/default-workflow.js';
+import { GATE_FIX_NODE, gateFixTarget } from './gate-fix-workflow.js';
 import { useTestDb } from './harness.js';
 
 /** A reclaimed attempt never inherits the previous attempt's gate report (#428). */
@@ -26,7 +21,6 @@ beforeAll(() => {
     store = createJobStore({ sql, orgId: ORG, prs: createPrLifecycleStore({ sql, orgId: ORG }) });
 });
 
-const NEITHER = { reviewReconciliation: false, mergeConflictAutofix: false };
 const redGate: GateReport[] = [{ name: 'test', status: 'failed', exitCode: 1, output: 'attempt 1 red' }];
 
 describe.skipIf(!enabled)('claim: a reclaimed attempt starts without gates', () => {
@@ -35,14 +29,7 @@ describe.skipIf(!enabled)('claim: a reclaimed attempt starts without gates', () 
         const created = await store.create('do the thing', null, {
             repo: null,
             executor: null,
-            workflow: {
-                id: null,
-                name: DEFAULT_WORKFLOW_NAME,
-                node: DEFAULT_ENTRY_NODE,
-                snapshot: compileDefaultWorkflow(NEITHER, rounds),
-                params: {},
-                defaultOptions: { ...NEITHER, gateFixRounds: rounds },
-            },
+            workflow: gateFixTarget(rounds),
         });
         if (typeof created === 'string') throw new Error(created);
 
@@ -59,7 +46,7 @@ describe.skipIf(!enabled)('claim: a reclaimed attempt starts without gates', () 
             output: 'timed out',
             failureKind: 'timeout',
         });
-        const gateFixes = (await store.thread(created.id))!.filter((r) => r.workflowNode === DEFAULT_GATE_FIX_NODE);
+        const gateFixes = (await store.thread(created.id))!.filter((r) => r.workflowNode === GATE_FIX_NODE);
         expect(gateFixes).toHaveLength(0);
     });
 });

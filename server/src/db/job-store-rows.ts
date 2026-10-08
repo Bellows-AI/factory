@@ -4,7 +4,7 @@
  * `exists` probe, the running-member check and the workspace-path rule.
  */
 
-import { USER_SCOPE, type ExecutorScope, type UserRef } from '@factory-ai/core';
+import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode, type UserRef } from '@factory-ai/core';
 import type { Sql, Fragment, TransactionSql } from 'postgres';
 import type { JobStatus, GateReport, RuntimeVitals, Job, TaskSummary, JobStoreContext } from './job-store-types.js';
 
@@ -57,8 +57,8 @@ export interface JobRow {
     workflow_node: string | null;
     /** The thread's frozen workflow name (033); null on workflow-less rows. */
     workflow_name: string | null;
-    /** Only thread() selects it — the root's frozen gate-repair round limit (043), root-only. */
-    default_gate_fix_rounds?: number | null;
+    /** The row's execution mode (051), inherited from the thread root. */
+    mode: JobMode;
     done_at: Date | null;
     cancel_requested_at: Date | null;
     command_delivered_at: Date | null;
@@ -176,7 +176,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         rootJobId: row.root_job_id,
         workflowNode: row.workflow_node ?? null,
         workflowName: row.workflow_name ?? null,
-        defaultGateFixRounds: row.default_gate_fix_rounds ?? null,
+        mode: row.mode,
         doneAt: iso(row.done_at),
         cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,
@@ -255,10 +255,10 @@ export interface WorkflowSuccessorInput {
 
 export async function insertWorkflowSuccessor(tx: TransactionSql, input: WorkflowSuccessorInput): Promise<string> {
     const rows = await tx<{ id: string }[]>`
-        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node)
+        insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode)
         values (${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
                 ${input.executor}, ${input.executorScope}, ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
-                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode})
+                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE})
         returning id
     `;
     return rows[0]!.id;

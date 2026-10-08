@@ -2,15 +2,7 @@ import { ERROR_CODES, executorSuspendedMessage, type ExecutorScope } from '@fact
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import {
-    type BoardScanner,
-    boardsFor,
-    executorsFor,
-    storeFor,
-    userReposFor,
-    workflowDefaultsFor,
-    workflowsFor,
-} from './job-context.js';
+import { type BoardScanner, boardsFor, executorsFor, storeFor, userReposFor, workflowsFor } from './job-context.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { validateArtifactBody } from './job-field-validation-artifacts.js';
 import {
@@ -135,15 +127,11 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const createdBy = callerOf(request)?.user.id ?? null;
 
     /*
-     * The workflow the task walks (issue #209's launch contract): an explicit `workflow` name
-     * resolves the caller's visible scopes exactly as before; an unnamed task now resolves the
-     * code-owned DEFAULT workflow instead of none at all — the mandatory `{{command}}` spine plus
-     * whichever optional blocks the caller selected. Naming one, named or default, is what freezes
-     * the snapshot: the store's create stamps the resolved definition onto the root row, and a
-     * later edit (a custom workflow, or the caller's saved settings) never moves a running thread.
+     * The workflow the task walks (issue #543's launch contract): an explicit `workflow` name
+     * resolves the caller's visible scopes and freezes its snapshot onto the root row; an omitted
+     * one is objective mode — nothing resolves and the raw command is the job.
      */
     const workflowsStore = await workflowsFor(orgs, request);
-    const defaultsStore = await workflowDefaultsFor(orgs, request);
     const executorsStore = await executorsFor(orgs, request);
     if (await refusedAsSuspended(request, reply, { executorsStore, executor, executorScope, createdBy })) {
         return reply;
@@ -152,10 +140,6 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     if (await refusedAsNotSynced(request, reply, { userRepos, repo, createdBy })) return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
-        defaultsStore,
-        executorsStore,
-        executor,
-        executorScope,
         fields,
         repo,
         createdBy,
@@ -164,10 +148,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     if (resolved.handled) return reply;
     const workflow: ResolvedWorkflow | null = resolved.workflow;
     command = resolved.command;
-    // Parameters are workflow-bound: sent beside a task that resolves no workflow at all (the
-    // degenerate no-workflows-store branch `resolveLaunchWorkflow` preserves), they are a client
-    // bug — refused, never silently dropped. Every OTHER path (named, or the default) already
-    // validated `workflowParams` against its own definition's declarations before returning here.
+    // Parameters are workflow-bound: sent beside an objective-mode task they are a client bug —
+    // refused, never silently dropped. A named workflow already validated `workflowParams`
+    // against its own definition's declarations before returning here.
     if (fields.workflowParams !== undefined && fields.workflowParams !== null && workflow === null) {
         return bad(reply, ERROR_CODES.BAD_WORKFLOW_PARAMS, 'workflowParams requires a resolved workflow');
     }

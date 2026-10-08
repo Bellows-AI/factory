@@ -48,6 +48,8 @@ export interface BoardJobRecord {
     executor: string | null;
     /** The scope `executor` names (issue 391), as the board's read model normalizes it. */
     executorScope?: string | null;
+    /** The task's stored execution mode (issue 543): `objective`, or `workflow`. */
+    mode: string;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;

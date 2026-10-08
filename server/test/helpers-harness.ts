@@ -32,7 +32,6 @@ export function staticRegistry(
         envVars?: OrgRuntime['envVars'];
         userRepos?: OrgRuntime['userRepos'];
         userExecutors?: OrgRuntime['userExecutors'];
-        workflowDefaults?: OrgRuntime['workflowDefaults'];
         cloneQueue?: OrgRuntime['cloneQueue'];
         purger?: OrgRuntime['purger'];
         facts?: OrgRuntime['facts'];
@@ -54,7 +53,6 @@ export function staticRegistry(
         envVars: parts.envVars,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
-        workflowDefaults: parts.workflowDefaults,
         cloneQueue: parts.cloneQueue,
         purger: parts.purger,
         // Default, not undefined: a runtime with stores but no cache would 503 every GET, and a

@@ -188,31 +188,6 @@ test('the repositories page carries the selection surface, and its draft meets t
     await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
 });
 
-test('the default-workflow footer shows Unsaved changes, and Cancel restores the stored switches', async ({ page }) => {
-    await signedIn(page);
-    await page.goto('/settings/workflows');
-    const panel = page.locator('section.panel', { has: page.getByRole('heading', { name: 'Default workflow' }) });
-    const footer = panel.locator('.settings-actions');
-    const toggle = panel.getByRole('checkbox', { name: 'Repair merge conflicts' });
-    await expect(toggle).toBeVisible({ timeout: 60_000 });
-    const stored = await toggle.isChecked();
-    await expect(footer.getByText('Unsaved changes')).toHaveCount(0);
-
-    await toggle.click();
-    await expect(footer.getByText('Unsaved changes')).toBeVisible();
-    await expect(footer.getByRole('button', { name: 'Save changes' })).toBeEnabled();
-
-    await footer.getByRole('button', { name: 'Cancel' }).click();
-    await expect(toggle).toBeChecked({ checked: stored });
-    await expect(footer.getByText('Unsaved changes')).toHaveCount(0);
-    await expect(footer.getByRole('button', { name: 'Save changes' })).toBeDisabled();
-
-    // Clean again: leaving asks nothing.
-    await page.getByRole('link', { name: 'Dashboard' }).click();
-    await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByText('Discard unsaved changes?')).toHaveCount(0);
-});
-
 test('no settings action word wraps at 1024px', async ({ page }) => {
     // The acceptance (issue 282, PLAN §7.4): at a 1024px window, every button in the page region
     // keeps its label on one line — a wrapped "Config / ure" reads as two words and a broken row.
@@ -237,10 +212,10 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
         ['/settings/organization', 'Core (organization)'],
         ['/settings/workspace', 'My workspace'],
         ['/settings/executors', 'My workspace'],
-        ['/settings/workflows', 'Default workflow'],
+        ['/settings/workflows', 'Workflows'],
     ] as const) {
         await page.goto(path);
-        await expect(page.getByRole('heading', { name: ready })).toBeVisible({ timeout: 60_000 });
+        await expect(page.getByRole('heading', { name: ready }).first()).toBeVisible({ timeout: 60_000 });
         expect(await wrapped(), path).toEqual([]);
     }
 

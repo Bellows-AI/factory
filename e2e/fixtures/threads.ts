@@ -13,6 +13,7 @@
  *
  * Append-only after #278: lanes add fixtures, they never change an existing one.
  */
+import { OBJECTIVE_MODE, WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
 import type { Page } from '@playwright/test';
 
 export type ThreadStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
@@ -97,8 +98,8 @@ export interface ThreadJob {
     rootJobId: string;
     workflowNode: string | null;
     workflowName: string | null;
-    /** The default workflow's bounded gate-repair round limit (#49), null unless the task set one. */
-    defaultGateFixRounds: number | null;
+    /** The task's stored execution mode (issue 543): workflow on every row of a named workflow's thread. */
+    mode: JobMode;
     doneAt: string | null;
     cancelRequestedAt: string | null;
     workspacePath: string | null;
@@ -196,7 +197,7 @@ function run(fields: RunFields): ThreadJob {
         rootJobId: fields.id,
         workflowNode: null,
         workflowName: null,
-        defaultGateFixRounds: null,
+        mode: fields.workflowName != null ? WORKFLOW_MODE : OBJECTIVE_MODE,
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,

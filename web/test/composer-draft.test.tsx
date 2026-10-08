@@ -38,7 +38,6 @@ const next: ComposerDraftInput = {
     workflow: 'w1',
     storedParams: { workflowId: 'w1', values: { issue: '#12' } },
     paramTouched: { issue: true },
-    defaultStepOverrides: {},
 };
 
 const OWNER = 'org-1:user-1';

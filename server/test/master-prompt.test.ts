@@ -1,3 +1,4 @@
+import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import {
     MASTER_PROMPT_LIMIT,
@@ -10,7 +11,8 @@ import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from '../src/db/workflow-blocks/gi
 import { PROBE_HELPER_ID } from '../src/db/workflow-blocks/merge-conflict-autofix.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 
-const STANDALONE: MasterPromptClaimInput = {
+const OBJECTIVE: MasterPromptClaimInput = {
+    mode: OBJECTIVE_MODE,
     workflowNode: null,
     workflowName: null,
     snapshot: null,
@@ -61,14 +63,15 @@ const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): W
     return { entry: 'task', nodes, edges: [], params: [] };
 };
 
-describe('resolveMasterPrompt: standalone', () => {
-    it('renders the standalone mode with no per-turn values', () => {
-        const prompt = resolveMasterPrompt(STANDALONE);
+describe('resolveMasterPrompt: objective', () => {
+    it('renders the objective mode with no per-turn values', () => {
+        const prompt = resolveMasterPrompt(OBJECTIVE);
+        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v3');
         expect(prompt).toBe(
             `Factory execution contract (${MASTER_PROMPT_VERSION})
 
 Factory execution context
-- Mode: standalone
+- Mode: objective
 - Your boundary: complete only the current task and return control.
 
 Rules for this turn
@@ -82,13 +85,8 @@ Rules for this turn
         );
     });
 
-    // A standalone thread's follow-up carries no signal that distinguishes it from the thread's
-    // first run at all — workflow_name stays null on every row of a non-workflow thread, which is
-    // the only thing MasterPromptClaimInput has to go on. There is nothing left to assert here
-    // beyond what the render test above already pins.
-
     it('never contains a brace — the opencode template-substitution vector', () => {
-        expect(resolveMasterPrompt(STANDALONE)).not.toMatch(/[{}]/);
+        expect(resolveMasterPrompt(OBJECTIVE)).not.toMatch(/[{}]/);
     });
 });
 
@@ -98,20 +96,22 @@ describe('resolveMasterPrompt: stable across a thread', () => {
     it('is byte-identical on every claim of one workflow thread', () => {
         const snapshot = defaultSnapshot({ review: true, merge: true });
         const claims: MasterPromptClaimInput[] = [
-            { workflowNode: 'task', workflowName: 'default', snapshot, helperPlans: undefined },
+            { workflowNode: 'task', mode: WORKFLOW_MODE, workflowName: 'default', snapshot, helperPlans: undefined },
             {
                 workflowNode: 'merge-conflict-autofix--repair',
+                mode: WORKFLOW_MODE,
                 workflowName: 'default',
                 snapshot,
                 helperPlans: [{ helperId: PROBE_HELPER_ID, phase: 'pre', githubWriting: true, input: null }],
             },
             {
                 workflowNode: 'review-reconciliation--collect',
+                mode: WORKFLOW_MODE,
                 workflowName: 'default',
                 snapshot,
                 helperPlans: undefined,
             },
-            { workflowNode: null, workflowName: 'default', snapshot, helperPlans: undefined },
+            { workflowNode: null, mode: WORKFLOW_MODE, workflowName: 'default', snapshot, helperPlans: undefined },
         ];
         const prompts = claims.map(resolveMasterPrompt);
         for (const prompt of prompts) {
@@ -123,9 +123,9 @@ describe('resolveMasterPrompt: stable across a thread', () => {
     });
 });
 
-describe('resolveTurnContext: standalone', () => {
+describe('resolveTurnContext: objective', () => {
     it('renders gates and publish always on, with the targeted-test rule', () => {
-        expect(resolveTurnContext(STANDALONE)).toBe(
+        expect(resolveTurnContext(OBJECTIVE)).toBe(
             `Factory turn context
 - Factory-managed capabilities: declared gates, publish/reuse PR
 - The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.`
@@ -137,6 +137,7 @@ describe('resolveTurnContext: targeted-test rule', () => {
     it('tells a gated workflow node the gates run the full suite', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
@@ -149,6 +150,7 @@ describe('resolveTurnContext: default workflow', () => {
     it('names only the enabled optional blocks — both excluded', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
@@ -162,6 +164,7 @@ describe('resolveTurnContext: default workflow', () => {
     it('names review reconciliation only when that block is selected', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot({ review: true }),
             helperPlans: undefined,
@@ -173,6 +176,7 @@ describe('resolveTurnContext: default workflow', () => {
     it('names merge-conflict repair only when that block is selected', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot({ merge: true }),
             helperPlans: undefined,
@@ -184,6 +188,7 @@ describe('resolveTurnContext: default workflow', () => {
     it('names both when both are selected, and names the durable wait the review block declares', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot({ review: true, merge: true }),
             helperPlans: undefined,
@@ -207,6 +212,7 @@ describe('resolveTurnContext: base workflow (fix-issue)', () => {
         };
         const prompt = resolveTurnContext({
             workflowNode: 'review',
+            mode: WORKFLOW_MODE,
             workflowName: 'fix-issue',
             snapshot,
             helperPlans: undefined,
@@ -221,6 +227,7 @@ describe('resolveTurnContext: pre/post helper phases', () => {
     it('names pre-turn helper steps for this claim only', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: [{ helperId: 'some-helper', phase: 'pre', githubWriting: false, input: null }],
@@ -232,6 +239,7 @@ describe('resolveTurnContext: pre/post helper phases', () => {
     it('names post-turn helper steps for this claim only', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: [{ helperId: 'some-helper', phase: 'post', githubWriting: false, input: null }],
@@ -257,6 +265,7 @@ describe('resolveTurnContext: pre/post helper phases', () => {
         };
         const prompt = resolveTurnContext({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'custom',
             snapshot,
             helperPlans: undefined,
@@ -269,6 +278,7 @@ describe('resolveTurnContext: member follow-up', () => {
     it('names the turn as a member follow-up when off-graph inside a workflow thread', () => {
         const prompt = resolveTurnContext({
             workflowNode: null,
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
@@ -286,6 +296,7 @@ describe.each([
         expect(
             resolve({
                 workflowNode: 'task',
+                mode: WORKFLOW_MODE,
                 workflowName: 'default',
                 snapshot: null,
                 helperPlans: undefined,
@@ -297,6 +308,7 @@ describe.each([
         expect(
             resolve({
                 workflowNode: 'ghost-node',
+                mode: WORKFLOW_MODE,
                 workflowName: 'default',
                 snapshot: defaultSnapshot(),
                 helperPlans: undefined,
@@ -309,6 +321,7 @@ describe('resolveMasterPrompt: workflow name safety', () => {
     it('withholds a workflow name that could inject opencode template syntax', () => {
         const prompt = resolveMasterPrompt({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: '{env:GITHUB_TOKEN}',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
@@ -321,6 +334,7 @@ describe('resolveMasterPrompt: workflow name safety', () => {
         const junk = `ok-but-then-${'*'.repeat(90)}`;
         const prompt = resolveMasterPrompt({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: junk,
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
@@ -331,6 +345,7 @@ describe('resolveMasterPrompt: workflow name safety', () => {
     it('names the mode and workflow on a workflow claim', () => {
         const prompt = resolveMasterPrompt({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
@@ -342,6 +357,7 @@ describe('resolveMasterPrompt: workflow name safety', () => {
     it('renders an ordinary workflow name verbatim', () => {
         const prompt = resolveMasterPrompt({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'fix-issue (v2) #9',
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
@@ -357,6 +373,7 @@ describe.each([
     it('never contains job.command, prior output, or env-shaped content', () => {
         const prompt = resolve({
             workflowNode: 'task',
+            mode: WORKFLOW_MODE,
             workflowName: 'default',
             snapshot: defaultSnapshot({ review: true, merge: true }),
             helperPlans: [{ helperId: 'x', phase: 'pre', githubWriting: false, input: { secret: 'nope' } }],

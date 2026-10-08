@@ -107,31 +107,21 @@ export function validateExecutorScopeField(
 }
 
 export interface ResolvedWorkflow {
-    /** Null for the code-owned default (issue #209): never a row in `workflow`, so no id to freeze. */
-    id: string | null;
+    id: string;
     name: string;
     node: string;
     snapshot: WorkflowDefinition;
     params: ParamValues;
-    /**
-     * The default workflow's launch-time options, only for the code-owned default. Absent on a
-     * named workflow. `gateFixRounds` is the selected executor's configured repair-round limit
-     * (issue #49) — resolved here, frozen with the snapshot, never re-read from settings later.
-     */
-    defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean; gateFixRounds: number };
 }
 
 /**
  * The root row runs the ENTRY node's prompt, interpolated now with the member's own words — the
  * graph's first run IS the task. `{{command}}` carries the chat line; `{{param.*}}` the validated
  * values; `{{node.*}}` is empty HERE by definition (no run of this thread exists yet). The same
- * cap applies to the built command as to a raw one. Also the code-owned default's own resolution
- * step (issue #209): its assembled definition declares no params, so `checkWorkflowParams` already
- * refuses any `workflowParams` sent beside it with the same `BAD_WORKFLOW_PARAMS` code a named
- * workflow's own unknown-parameter refusal uses — no separate check is needed here.
+ * cap applies to the built command as to a raw one.
  */
 export function buildWorkflowSelection(
-    found: { id: string | null; name: string; definition: WorkflowDefinition },
+    found: { id: string; name: string; definition: WorkflowDefinition },
     workflowParams: unknown,
     command: string
 ): { ok: true; value: ResolvedWorkflow; command: string } | { ok: false; code: string; message: string } {
