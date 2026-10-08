@@ -8,6 +8,7 @@
 import type { BoardJob, ServiceStatus } from './board.js';
 import type { HelperPlan, HelperResult } from './helpers.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
+import type { SnapshotResult } from './review-snapshot.js';
 
 /** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
 export interface RunOutcome {
@@ -229,6 +230,14 @@ export interface Runner {
      * is the attempt's stand-down: an aborted probe tears its container or aux Job down.
      */
     probeTree?(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
+    /**
+     * Freezes the task tree's current state under a snapshot ref of the shared clone, for a named
+     * reviewer to start from (issue #549) — over the same transport `probeTree` uses, so both
+     * executors do it identically. Writes only a ref, never overwrites one (a repeated request
+     * finds the first snapshot), and moves nothing the agent has. Optional, like `probeTree`: a
+     * runner without it cannot offer a reviewer, which the loop answers as unsupported.
+     */
+    snapshotTree?(job: BoardJob, key: string, signal?: AbortSignal): Promise<SnapshotResult>;
     /**
      * Prepares the job's task worktree before the run. A STARTING claim syncs it with the
      * remote default: fetch, create the worktree branched off `origin/<default>` (first attempt

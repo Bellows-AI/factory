@@ -456,8 +456,9 @@ function applyPreamble(content: string): { seenServices: boolean; inGatesBlock: 
     refuseTopLevel(content);
 }
 
-/** The board-read halves of the file, skipped wholesale here: the gates `environment:` and the evidence `policy:`. */
-const isBoardBlock = (content: string): boolean => content.startsWith('environment:') || content.startsWith('policy:');
+/** The board-read halves of the file, skipped wholesale here: the gates `environment:`, the evidence `policy:` and the `reviewers:`. */
+const isBoardBlock = (content: string): boolean =>
+    content.startsWith('environment:') || content.startsWith('policy:') || content.startsWith('reviewers:');
 
 /**
  * Advances the gates-block state for one line, and whether the main loop should skip it: every

@@ -32,6 +32,7 @@ import {
 } from './job-store-actions.js';
 import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport, expireQuestionReport } from './job-store-questions.js';
+import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob, claimReclaimRow, ackReclaimRow } from './job-store-claim.js';
 import {
     threadOf,
@@ -84,6 +85,8 @@ function workerMethods(
     | 'readArtifact'
     | 'askQuestion'
     | 'expireQuestion'
+    | 'requestReview'
+    | 'readReview'
     | 'publishToken'
     | 'complete'
     | 'leases'
@@ -137,6 +140,16 @@ function workerMethods(
         async expireQuestion(id, leaseToken, questionId) {
             await gate();
             return expireQuestionReport(ctx, id, leaseToken, questionId);
+        },
+
+        async requestReview(id, leaseToken, request) {
+            await gate();
+            return requestReviewFor(ctx, id, leaseToken, request);
+        },
+
+        async readReview(id, leaseToken, key) {
+            await gate();
+            return readReviewFor(ctx, id, leaseToken, key);
         },
 
         async publishToken(id, leaseToken) {

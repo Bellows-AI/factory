@@ -8,6 +8,7 @@ import {
     GATE_UID,
     opencodeDbPath,
     runnerClaimEnv,
+    runTimeoutMs,
     runWorkingDir,
     transcriptDir,
     workspacePath,
@@ -246,7 +247,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             parallelism: 1,
             // DRIVER_JOB_TIMEOUT_MS maps onto the kubelet-enforced deadline, so a runner that
             // outlives its driver still dies — the k8s form of `docker kill` after the timeout.
-            activeDeadlineSeconds: Math.max(1, Math.round(config.jobTimeoutMs / MS_PER_SECOND)),
+            activeDeadlineSeconds: Math.max(1, Math.round(runTimeoutMs(config, job) / MS_PER_SECOND)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
                 metadata: {

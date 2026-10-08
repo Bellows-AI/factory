@@ -142,6 +142,7 @@ export const RESERVED_ENV_NAMES = [
     CONTROL_POLL_MS_ENV,
     'CRED_HELPER',
     'RESTORE',
+    'REVIEW_REF',
     'SYNC_LOCK_WAIT_MS',
     'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',
@@ -210,6 +211,24 @@ export const claimCarriesGithubToken = (job: BoardJob): boolean => Boolean(claim
  * fresh. Shared with the kubernetes runner, which must restore identically.
  */
 export const claimContinuesSession = (job: BoardJob): boolean => job.followUp || job.resumeSessionId !== null;
+
+const MS_PER_MINUTE = 60_000;
+
+/**
+ * How long this run may last. The operator's `DRIVER_JOB_TIMEOUT_MS`, except for a named reviewer
+ * (issue #549), whose profile grants its own budget — never more than the operator's ceiling. The
+ * docker kill timer, the kubernetes `activeDeadlineSeconds` and the timeout note all read it here,
+ * so the two executors cannot disagree about a reviewer's budget.
+ */
+export const runTimeoutMs = (config: { jobTimeoutMs: number }, job: BoardJob): number =>
+    job.reviewRun ? Math.min(config.jobTimeoutMs, job.reviewRun.timeoutMinutes * MS_PER_MINUTE) : config.jobTimeoutMs;
+
+/**
+ * Whether the startup git work RESTORES (no fetch, no rebase) rather than syncs with the remote: a
+ * continuation, or a named reviewer's start (issue #549), whose tree is created at the snapshot ref
+ * the caller's run froze — nothing it needs is on the remote, and it holds no credential to fetch with.
+ */
+export const claimRestoresTree = (job: BoardJob): boolean => claimContinuesSession(job) || job.reviewRun !== undefined;
 
 /**
  * One `NAME=value` line, refusing a newline in either half: the file is line-structured and docker

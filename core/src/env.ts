@@ -16,7 +16,9 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * container's git; RESTORE is the sync's restore-mode switch — a member value there would flip
  * starting claims into restore mode, silently skipping the fetch and rebase (issue #58); and the
  * two SYNC_LOCK_* names are the startup sync lock's bounds (issue #307) — a member value there
- * would shrink the wait to nothing or make every sync steal its neighbour's live lock. The
+ * would shrink the wait to nothing or make every sync steal its neighbour's live lock; REVIEW_REF
+ * is the ref a named reviewer's worktree is created at (issue #549) — a member value would point it
+ * at any commit of the clone. The
  * three reporter names steer the branch reporter — where it posts, which
  * attempt it speaks for, and which session it claims — and a member value in any of them is a
  * cross-tenant write into the telemetry store. `FACTORY_TRANSCRIPT_DIR` is where the
@@ -39,6 +41,7 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'BELLOWS_CONTROL_POLL_MS',
     'CRED_HELPER',
     'RESTORE',
+    'REVIEW_REF',
     'SYNC_LOCK_WAIT_MS',
     'SYNC_LOCK_STALE_MS',
     'FACTORY_TRANSCRIPT_DIR',

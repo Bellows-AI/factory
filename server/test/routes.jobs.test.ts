@@ -22,10 +22,14 @@ import type {
     JobStore,
     LeaseResult,
     PokeWaitResult,
+    ReadReviewResult,
     ReclaimClaim,
     RemoveResult,
     ReopenResult,
+    RequestReviewResult,
     RetryRefusal,
+    ReviewRequest,
+    ReviewView,
     StopResult,
     StoredArtifact,
 } from '../src/db/job-store-types.js';
@@ -110,6 +114,9 @@ interface StoreStub extends JobStore {
     asked: { id: string; questionId: string; questions: AskedQuestion[] }[];
     expired: { id: string; questionId: string }[];
     answered: { id: string; questionId: string; answers: Record<string, string>; answeredBy: string | null }[];
+    /** The named-reviewer requests and reads the routes handed the store (056, issue #549). */
+    reviewRequests: { id: string; request: ReviewRequest }[];
+    reviewReads: { id: string; key: string }[];
 }
 
 const QUESTION: JobQuestion = {
@@ -122,6 +129,18 @@ const QUESTION: JobQuestion = {
     answeredBy: null,
     askedAt: '2026-08-21T12:00:00.000Z',
     answeredAt: null,
+};
+
+const REVIEW: ReviewView = {
+    id: '99999999-9999-4999-8999-999999999999',
+    key: 'security-1',
+    profile: 'security',
+    status: 'queued',
+    verdict: 'none',
+    revision: 'abc:def',
+    findings: null,
+    failureKind: null,
+    evidence: { state: 'incomplete' },
 };
 
 /**
@@ -165,6 +184,8 @@ function stubStore(
         ask?: AskQuestionResult;
         expire?: ExpireQuestionResult;
         answer?: AnswerQuestionResult;
+        reviewRequest?: RequestReviewResult;
+        reviewRead?: ReadReviewResult;
         /** The lease rows the store answers a batched lookup with; absent means none. */
         leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
         /**
@@ -208,6 +229,8 @@ function stubStore(
         asked: [],
         expired: [],
         answered: [],
+        reviewRequests: [],
+        reviewReads: [],
         async suspend(id) {
             boom();
             stub.suspended.push(id);
@@ -271,6 +294,16 @@ function stubStore(
             boom();
             stub.expired.push({ id, questionId });
             return options.expire ?? { result: 'expired' };
+        },
+        async requestReview(id, _token, request) {
+            boom();
+            stub.reviewRequests.push({ id, request });
+            return options.reviewRequest ?? { result: 'created', review: REVIEW };
+        },
+        async readReview(id, _token, key) {
+            boom();
+            stub.reviewReads.push({ id, key });
+            return options.reviewRead ?? { result: 'ok', review: REVIEW };
         },
         async answerQuestion(id, questionId, answers, answeredBy) {
             boom();
@@ -3586,6 +3619,100 @@ describe('POST /api/jobs/:id/question-expire', () => {
         expect((await post(instance, EXPIRE_URL, { ...body, leaseToken: 'nope' })).json().code).toBe('BAD_TOKEN');
         const response = await post(instance, EXPIRE_URL, { ...body, questionId: 'a b' });
         expect(response.json().code).toBe('INVALID_QUESTION');
+    });
+});
+
+const REVIEW_REQUEST = {
+    leaseToken: TOKEN,
+    key: 'security-1',
+    profile: 'security',
+    revision: 'abc:def',
+    ref: `refs/factory/review/${ID}/security-1`,
+};
+const REVIEW_URL = `/api/jobs/${ID}/review`;
+const REVIEW_READ_URL = `/api/jobs/${ID}/review-read`;
+
+describe('POST /api/jobs/:id/review (issue #549)', () => {
+    it('creates a review with 201, answers the stored one with 200, and passes only the named fields', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const created = await post(instance, REVIEW_URL, { ...REVIEW_REQUEST, extra: 'dropped' });
+        expect(created.statusCode).toBe(201);
+        expect(created.json().key).toBe('security-1');
+        const { leaseToken: _lease, ...request } = REVIEW_REQUEST;
+        expect(store.reviewRequests).toEqual([{ id: ID, request }]);
+
+        const again = await harnessWith(stubStore({ reviewRequest: { result: 'existing', review: REVIEW } }));
+        expect((await post(again, REVIEW_URL, REVIEW_REQUEST)).statusCode).toBe(200);
+    });
+
+    it.each([
+        ['an empty key', { key: '' }],
+        ['a key with a bad character', { key: 'a b' }],
+        ['a key over 64 characters', { key: 'k'.repeat(65) }],
+        ['an upper-case profile', { profile: 'Security' }],
+        ['a missing profile', { profile: undefined }],
+        ['an empty revision', { revision: '' }],
+        ['a revision over 256 characters', { revision: 'r'.repeat(257) }],
+        ['an empty ref', { ref: '' }],
+    ])('refuses %s with 400 INVALID_REVIEW', async (_label, patch) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, REVIEW_URL, { ...REVIEW_REQUEST, ...patch });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('INVALID_REVIEW');
+        expect(store.reviewRequests).toEqual([]);
+    });
+
+    it('refuses a bad lease token before the store is asked', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, REVIEW_URL, { ...REVIEW_REQUEST, leaseToken: 'nope' });
+        expect(response.statusCode).toBe(400);
+        expect(store.reviewRequests).toEqual([]);
+    });
+
+    it.each([
+        ['missing', 404, 'NOT_FOUND'],
+        ['lost', 409, 'LEASE_LOST'],
+        ['unsupported', 409, 'REVIEW_UNSUPPORTED'],
+        ['unknown_profile', 409, 'UNKNOWN_REVIEWER'],
+        ['invalid_ref', 400, 'INVALID_REVIEW'],
+    ] as const)('maps the store verdict %s to %i %s', async (result, status, code) => {
+        const instance = await harnessWith(stubStore({ reviewRequest: { result } }));
+        const response = await post(instance, REVIEW_URL, REVIEW_REQUEST);
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+});
+
+describe('POST /api/jobs/:id/review-read (issue #549)', () => {
+    it('answers the review with the thread’s review evidence', async () => {
+        const store = stubStore({
+            reviewRead: { result: 'ok', review: { ...REVIEW, evidence: { state: 'missing' } } },
+        });
+        const instance = await harnessWith(store);
+        const response = await post(instance, REVIEW_READ_URL, { leaseToken: TOKEN, key: 'security-1' });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().evidence).toEqual({ state: 'missing' });
+        expect(store.reviewReads).toEqual([{ id: ID, key: 'security-1' }]);
+    });
+
+    it.each([
+        ['unknown', 404, 'REVIEW_NOT_FOUND'],
+        ['missing', 404, 'NOT_FOUND'],
+        ['lost', 409, 'LEASE_LOST'],
+    ] as const)('maps the store verdict %s to %i %s', async (result, status, code) => {
+        const instance = await harnessWith(stubStore({ reviewRead: { result } }));
+        const response = await post(instance, REVIEW_READ_URL, { leaseToken: TOKEN, key: 'security-1' });
+        expect(response.statusCode).toBe(status);
+        expect(response.json().code).toBe(code);
+    });
+
+    it('refuses a bad key', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, REVIEW_READ_URL, { leaseToken: TOKEN, key: 'a b' });
+        expect(response.statusCode).toBe(400);
     });
 });
 

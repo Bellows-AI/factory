@@ -7,6 +7,7 @@ import { clearQuestionTimers, down, raceStep, RUN_CONTROL_POLL_MS } from './loop
 import type { JobState } from './loop-attempt.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
+import { createReviewRelay, reviewerQuestionRelay } from './loop-review.js';
 import type { LoopRuntime } from './loop-types.js';
 import { worktreeRelDir } from './publish.js';
 
@@ -113,7 +114,18 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
     try {
         const port = await gates.server.listen();
         const token = randomUUID();
-        gates.server.openControl(token, createQuestionRelay(rt, job, state, token), createPublishRelay(rt, job, state));
+        // A named reviewer's run (issue #549) gets the stop poll and nothing else: no publish, no
+        // reviewer of its own, and its questions are refused — it reports to its caller, not a member.
+        if (job.reviewRun) {
+            gates.server.openControl(token, reviewerQuestionRelay);
+        } else {
+            gates.server.openControl(
+                token,
+                createQuestionRelay(rt, job, state, token),
+                createPublishRelay(rt, job, state),
+                createReviewRelay(rt, job, state)
+            );
+        }
         job.gateEnv = {
             ...job.gateEnv,
             [CONTROL_URL_ENV]: gates.advertiseUrl(port),

@@ -28,6 +28,11 @@
  * `readGatesFile` takes it from the base clone only, never the task worktree, so a run cannot
  * edit away the requirement it must meet.
  *
+ * A top-level `reviewers:` block declares named reviewer profiles an agent may invoke as a separate
+ * run (issue #549): `- name:`, `instructions:`, and optionally `timeout:` (minutes) and
+ * `connections:` (a comma list of the env names the reviewer may receive — nothing else of the
+ * member's env reaches it). Like `policy:`, `readGatesFile` takes it from the base clone only.
+ *
  * Comments, blank lines, and bare / single- / double-quoted scalars are tolerated. Everything
  * else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — throws with the line
  * number, and `readGatesFile` turns that into the job's `gateError`.
@@ -35,6 +40,17 @@
 
 import { constants as fsConstants, open as fsOpen } from 'node:fs/promises';
 import { join } from 'node:path';
+import { BellowsError, fail, KEY_VALUE, MAX_COMMAND_LENGTH, scalar } from './bellows-grammar.js';
+import {
+    consumeReviewerLine,
+    finishReviewer,
+    newReviewersBlock,
+    openReviewersBlock,
+    type ReviewerProfile,
+    type ReviewersBlock,
+} from './bellows-reviewers.js';
+
+export { REVIEWER_DEFAULT_TIMEOUT_MINUTES, type ReviewerProfile } from './bellows-reviewers.js';
 
 export interface GateDef {
     readonly name: string;
@@ -60,32 +76,9 @@ export interface BellowsConfig {
 /** Same rules a checkout directory obeys (`badSegment`), plus a length a pill can render. */
 const MAX_NAME_LENGTH = 64;
 const MAX_GATES = 16;
-const MAX_COMMAND_LENGTH = 4096;
 
 /** Docker ref shape: no whitespace, no `$` expansion, nothing a CLI would read as a flag. */
 const IMAGE_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
-
-class BellowsError extends Error {}
-
-function fail(line: number, message: string): never {
-    throw new BellowsError(`.bellows.yaml line ${line}: ${message}`);
-}
-
-/**
- * A scalar: bare, 'single' or "double" quoted. No escapes — a command that needs one is a script
- * in the repo, not an inline one-liner.
- */
-function scalar(line: number, raw: string, what: string): string {
-    const value = raw.trim();
-    const quote = value[0];
-    if (quote === '"' || quote === "'") {
-        if (!value.endsWith(quote) || value.length < 2) {
-            fail(line, `${what}: unclosed ${quote === '"' ? 'double' : 'single'} quote`);
-        }
-        return value.slice(1, -1);
-    }
-    return value;
-}
 
 function checkImage(line: number, image: string): string {
     if (!IMAGE_PATTERN.test(image)) {
@@ -104,9 +97,6 @@ function checkName(line: number, name: string): string {
     return name;
 }
 
-/** `key: value` / `key:` — the key shape is fixed, the value may contain colons. */
-const KEY_VALUE = /^([A-Za-z][A-Za-z0-9_]*):(?:(\s+)(.*))?$/;
-
 interface RawGate {
     name?: string;
     command?: string;
@@ -124,6 +114,8 @@ interface BellowsState {
     inPolicy: boolean;
     seenPolicy: boolean;
     policy: EvidencePolicy;
+    /** The top-level `reviewers:` block (`bellows-reviewers.ts`). */
+    reviewers: ReviewersBlock;
     itemIndent: number;
     /** Where the gate currently being read began — the line its errors name. */
     itemLine: number;
@@ -185,8 +177,15 @@ function handleTopLevelLine(state: BellowsState, line: number, trimmed: string):
         openPolicyBlock(state, line, match[3]);
         return;
     }
+    if (match[1] === 'reviewers') {
+        openReviewersBlock(state.reviewers, line, match[3]);
+        return;
+    }
     if (match[1] !== 'environment') {
-        fail(line, `unknown top-level key "${match[1]}" — only "environment:", "services:" and "policy:" are read`);
+        fail(
+            line,
+            `unknown top-level key "${match[1]}" — only "environment:", "services:", "policy:" and "reviewers:" are read`
+        );
     }
     if (state.inEnvironment) fail(line, 'a second "environment:" block');
     if (match[3] !== undefined && match[3] !== '') {
@@ -311,6 +310,8 @@ function processLine(state: BellowsState, line: number, rawLine: string): void {
         state.inPolicy = false;
     }
 
+    if (consumeReviewerLine(state.reviewers, line, indent, trimmed)) return;
+
     if (indent === 0) {
         handleTopLevelLine(state, line, trimmed);
         return;
@@ -340,8 +341,12 @@ export function parseBellows(text: string): BellowsConfig | null {
     return parseBellowsWithPolicy(text).config;
 }
 
-/** The gates half and the evidence policy of one file. */
-export function parseBellowsWithPolicy(text: string): { config: BellowsConfig | null; policy: EvidencePolicy } {
+/** The gates half, the evidence policy and the reviewer profiles of one file. */
+export function parseBellowsWithPolicy(text: string): {
+    config: BellowsConfig | null;
+    policy: EvidencePolicy;
+    reviewers: ReviewerProfile[];
+} {
     const state: BellowsState = {
         image: null,
         setup: null,
@@ -352,6 +357,7 @@ export function parseBellowsWithPolicy(text: string): { config: BellowsConfig | 
         inPolicy: false,
         seenPolicy: false,
         policy: {},
+        reviewers: newReviewersBlock(),
         itemIndent: -1,
         itemLine: 0,
         current: null,
@@ -367,19 +373,21 @@ export function parseBellowsWithPolicy(text: string): { config: BellowsConfig | 
         processLine(state, line, rawLine);
     }
     finishGate(state);
+    finishReviewer(state.reviewers);
 
     // A required gate with nothing declared would pass vacuously — the opposite of the requirement.
     if (state.policy.gates && !state.inEnvironment) {
         throw new BellowsError('.bellows.yaml: policy requires gates but no environment declares any');
     }
-    if (!state.inEnvironment) return { config: null, policy: state.policy };
+    const reviewers = state.reviewers.profiles;
+    if (!state.inEnvironment) return { config: null, policy: state.policy, reviewers };
     if (state.image === null) throw new BellowsError('.bellows.yaml: environment declares no image');
     const config = {
         image: state.image,
         ...(state.setup === null ? {} : { setup: state.setup }),
         gates: state.gates,
     };
-    return { config, policy: state.policy };
+    return { config, policy: state.policy, reviewers };
 }
 
 /**
@@ -403,6 +411,8 @@ export interface GatesRead {
      * edit, and a policy read from it would let a run waive its own requirement. Absent: none.
      */
     readonly policy?: EvidencePolicy;
+    /** The reviewer profiles, from the BASE CLONE's file only for the same reason. Absent: none. */
+    readonly reviewers?: readonly ReviewerProfile[];
 }
 
 export type GatesSource = 'worktree' | 'clone';
@@ -502,7 +512,10 @@ export async function readGatesFile(options: {
     const cloneRead = source === 'clone' ? read : await readFirstExisting(resolved.paths.slice(-1), readFile);
     const cloned = parseCloneFile(cloneRead);
     if (cloned.error !== null) return { config: null, error: cloned.error, source };
-    const policy = cloned.policy ? { policy: cloned.policy } : {};
+    const policy = {
+        ...(cloned.policy ? { policy: cloned.policy } : {}),
+        ...(cloned.reviewers.length > 0 ? { reviewers: cloned.reviewers } : {}),
+    };
     if ('error' in read) return { config: null, error: read.error, source, ...policy };
     // A worktree file that exists but cannot be read is the run's answer — the same named-error
     // channel a clone file's failure takes. Only a missing file falls through to no config.
@@ -514,18 +527,19 @@ export async function readGatesFile(options: {
     }
 }
 
-/** The evidence policy of the clone's file, or the reason it cannot be read — a requirement fails closed. */
+/** The evidence policy and reviewer profiles of the clone's file, or the reason it cannot be read — a requirement fails closed. */
 function parseCloneFile(read: Awaited<ReturnType<typeof readFirstExisting>>): {
     policy: EvidencePolicy | null;
+    reviewers: readonly ReviewerProfile[];
     error: string | null;
 } {
-    if ('error' in read) return { policy: null, error: read.error };
-    if (read.text === null) return { policy: null, error: null };
+    if ('error' in read) return { policy: null, reviewers: [], error: read.error };
+    if (read.text === null) return { policy: null, reviewers: [], error: null };
     try {
-        const { policy } = parseBellowsWithPolicy(read.text);
-        return { policy: policy.gates || policy.review ? policy : null, error: null };
+        const { policy, reviewers } = parseBellowsWithPolicy(read.text);
+        return { policy: policy.gates || policy.review ? policy : null, reviewers, error: null };
     } catch (e) {
-        return { policy: null, error: (e as Error).message };
+        return { policy: null, reviewers: [], error: (e as Error).message };
     }
 }
 

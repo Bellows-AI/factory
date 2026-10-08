@@ -305,6 +305,47 @@ export type AskQuestionResult =
     | { result: 'created' | 'existing'; question: JobQuestion }
     | { result: 'lost' | 'missing' | 'limit' };
 
+/** A reviewer profile as frozen on a review row: its instructions, env grant and budget (issue #549). */
+export interface ReviewerSpec {
+    name: string;
+    instructions: string;
+    timeoutMinutes: number;
+    connections: readonly string[];
+}
+
+/** What the caller asks for: the driver measured `revision` and snapshotted it under `ref`. */
+export interface ReviewRequest {
+    key: string;
+    profile: string;
+    revision: string;
+    ref: string;
+}
+
+/**
+ * One review as the caller reads it. `status` is the review row's own; `verdict` is read from its
+ * output's final marker and is `none` until a succeeded run ends on one; `findings` is the output.
+ * `revision` is the tree the verdict is bound to. `evidence` is the THREAD's review evidence as the
+ * policy validator sees it right now — the driver adopts it, never computes its own.
+ */
+export interface ReviewView {
+    id: string;
+    key: string;
+    profile: string;
+    status: JobStatus;
+    verdict: 'clean' | 'blockers' | 'none';
+    revision: string;
+    findings: string | null;
+    failureKind: FailureKind | null;
+    evidence: ReviewEvidence;
+}
+
+/** What a request did: a new review (`created`), the stored one (`existing`), or why none. */
+export type RequestReviewResult =
+    | { result: 'created' | 'existing'; review: ReviewView }
+    | { result: 'lost' | 'missing' | 'unsupported' | 'unknown_profile' | 'invalid_ref' };
+
+export type ReadReviewResult = { result: 'ok'; review: ReviewView } | { result: 'lost' | 'missing' | 'unknown' };
+
 /** What a worker's expiry did; `answered` means the board decided the race for the answer. */
 export type ExpireQuestionResult =
     | { result: 'expired' }
@@ -501,6 +542,13 @@ export interface Claim {
      */
     policy?: EvidencePolicy;
     review?: ReviewEvidence;
+    /**
+     * Present only on a named-profile review's claim (issue #549): the git ref its worktree starts
+     * from, and the wall-clock budget its profile grants. Such a claim carries no GITHUB_TOKEN and
+     * no member env beyond the profile's `connections`, never publishes, runs no gates and opens
+     * no publish or question relay — the board decides all of that, never the caller.
+     */
+    reviewRun?: { profile: string; ref: string; timeoutMinutes: number };
     /**
      * Whether the driver may publish after this run's succeeded gated run. ABSENT on a
      * workflow-less claim — the driver reads its absence as "publish", the exact behavior before
@@ -995,6 +1043,16 @@ export interface JobStore {
      */
     expireQuestion(id: string, leaseToken: string, questionId: string): Promise<ExpireQuestionResult>;
     /**
+     * Starts a named reviewer's separate run over the revision the caller names (issue #549),
+     * under the caller's live lease. Idempotent on `(caller, key)`: a retried or reclaimed caller
+     * gets the stored review back (`existing`), never a second run. The profile must be one the
+     * repository declared when the caller was claimed (`unknown_profile`); a workflow thread's
+     * caller is `unsupported` — its graph owns its own review node.
+     */
+    requestReview(id: string, leaseToken: string, request: ReviewRequest): Promise<RequestReviewResult>;
+    /** The review the caller asked for under `key`, with the thread's review evidence; lease-fenced. */
+    readReview(id: string, leaseToken: string, key: string): Promise<ReadReviewResult>;
+    /**
      * A member's answer: ONE conditional update (pending, job running under the asking attempt's
      * lease, no stop requested), so a retried or concurrent answer lands once. `answers` maps each
      * stored question text to a trimmed, non-empty answer; any other key set is `invalid`.
@@ -1295,6 +1353,7 @@ export interface CreateJobStoreDeps {
             error: string | null;
             source: ClaimGatesSource | null;
             policy?: EvidencePolicy;
+            reviewers?: readonly ReviewerSpec[];
         }>;
     };
     /**
