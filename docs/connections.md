@@ -4,7 +4,7 @@ Which external services a task may use and as whom: an authorized connection the
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| The table, the proxy's per-call SQL check, `job.jira_connection_id` | `server/migrations/051_connections.sql`, `server/src/db/connection-store.ts` | `server/test-db/connection-store.test.ts` |
+| The table, the proxy's per-call SQL check, `job.jira_connection_id` | `server/migrations/054_connections.sql`, `server/src/db/connection-store.ts` | `server/test-db/connection-store.test.ts` |
 | Create, list, delete; who may own an org-wide one; site and credential shape | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
 | Task selection: `jiraConnection` on `POST /api/jobs`, checked against its author | `server/src/routes/connections.ts` (`resolveJiraConnection`), `server/src/db/job-store-actions.ts` | `server/test/routes.connections.test.ts` |
 | The Jira proxy: lease pair → live connection → Atlassian with Basic auth added | `server/src/routes/connector-jira.ts` | `server/test/routes.connector-jira.test.ts` |

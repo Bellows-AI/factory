@@ -22,7 +22,6 @@ codes, query parameters and error codes are read there, never restated here.
 | Organization executor profiles | `server/src/routes/org-executors.ts` | `server/test/routes.org-executors.test.ts` |
 | Member roster and roles | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Workflow definitions and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
-| Default-workflow settings | `server/src/routes/workflow-settings.ts` | `server/test/routes.workflow-settings.test.ts` |
 | GitHub webhook deliveries | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Which credential a path needs | `server/src/auth/plugin.ts` (`requirementFor`) | `server/test/auth.enforcement.test.ts` |
 

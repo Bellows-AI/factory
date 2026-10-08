@@ -4339,7 +4339,9 @@ describe('publishing the produced work', () => {
             dirty: true,
             unpushed: 2,
             hasIdentity: false,
+            fingerprint: null,
         });
+        expect(parseGitState('{"cloned":true,"fingerprint":"abc:def"}').fingerprint).toBe('abc:def');
         expect(parseGitState('')).toEqual({
             cloned: false,
             branch: '',
@@ -4347,6 +4349,7 @@ describe('publishing the produced work', () => {
             dirty: false,
             unpushed: 0,
             hasIdentity: false,
+            fingerprint: null,
         });
     });
 
@@ -4460,6 +4463,26 @@ describe('publishing the produced work', () => {
         expect(await runner.probeTree?.(ISSUE_JOB)).toBeNull();
     });
 
+    // Revision-bound evidence (issue #548): a publish bound to a revision pushes only that tree.
+    it('refuses a publish bound to a revision the checkout no longer holds, and runs no git step', async () => {
+        const { calls, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
+
+        const result = await runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' });
+
+        expect(result).toMatchObject({ ok: false, published: false, stale: true });
+        expect(shapesOf(calls)).toEqual(['probe']);
+    });
+
+    it('publishes a bound revision the checkout still holds, and an unbound publish ignores the fingerprint', async () => {
+        const bound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
+        expect(await bound.runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' })).toMatchObject({
+            ok: true,
+            published: true,
+        });
+        const unbound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
+        expect(await unbound.runner.publishGit?.(ISSUE_JOB)).toMatchObject({ ok: true, published: true });
+    });
+
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
         // branch), and `-c` creates it — both calls are part of the expected shape.
@@ -4548,6 +4571,23 @@ describe('publishing the produced work', () => {
         // On a task branch already: no switch, no commit (clean tree), push of the unpushed
         // commit, PR found and reused — and no summarizer step, which only a NEW PR gets.
         expect(shapesOf(calls)).toEqual(['probe', 'push', 'pr-view']);
+    });
+
+    it('opens a draft PR for the agent, and reuses a PR that exists without a second create', async () => {
+        const fresh = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('switch') && !a.includes('-c') });
+        await fresh.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
+        const create = fresh.calls.find((a) => a.includes('pr') && a.includes('create'));
+        expect(create).toContain('--draft');
+        expect(create?.[create.indexOf('--body') + 1]).toContain('Draft published by the agent');
+        expect(create?.[create.indexOf('--body') + 1]).not.toContain('declared gates passed');
+
+        const again = publishRunner(
+            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false },
+            { prExists: true }
+        );
+        const result = await again.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
+        expect(result).toMatchObject({ ok: true, published: true, prUrl: PR_URL, prNumber: 42 });
+        expect(shapesOf(again.calls)).toEqual(['probe', 'push', 'pr-view']);
     });
 
     it('answers the ordinary no-ops without touching the daemon further', async () => {

@@ -129,8 +129,7 @@ export interface UseWorkflowsManagement {
 
 /**
  * The settings management panel's CRUD surface (issue 131): the caller-visible list — org-level
- * and the caller's own user-level workflows, the same no-repo-context list `DefaultWorkflowPanel`'s
- * page already sits beside — plus fetch-one, create, update and delete. No polling, like
+ * and the caller's own user-level workflows, the no-repo-context list — plus fetch-one, create, update and delete. No polling, like
  * `useAccessTokens`: the list only changes when this panel writes to it, and each write refetches
  * so the table shows exactly what is stored.
  *

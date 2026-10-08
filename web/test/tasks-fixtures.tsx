@@ -1,3 +1,4 @@
+import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import type { Job, JobQuestion } from '../src/api/useJobs.js';
@@ -31,7 +32,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         executor: null,
         workflowName: null,
         workflowNode: null,
-        defaultGateFixRounds: null,
+        mode: OBJECTIVE_MODE,
         followUpTo: null,
         rootJobId: '11111111-1111-4111-8111-111111111111',
         doneAt: null,
@@ -96,8 +97,6 @@ export interface ComposerArgs {
         | null;
     actionError?: string | null;
     sending?: boolean;
-    /** The saved default-workflow step settings; null while they have not answered yet. */
-    defaultWorkflowSettings?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean } | null;
     /** The draft the store holds for this member — what a return from Settings restores. */
     restored?: ComposerDraftInput | null;
 }
@@ -110,7 +109,6 @@ export const renderComposer = ({
     workflows = null,
     actionError = null,
     sending = false,
-    defaultWorkflowSettings = null,
     restored = null,
 }: ComposerArgs = {}) =>
     // The Settings remediation is an SPA Link, so the panel needs a routing context to render.
@@ -123,7 +121,6 @@ export const renderComposer = ({
                 executors={executors}
                 defaultExecutor={defaultExecutor ?? executors[0] ?? null}
                 workflows={workflows}
-                defaultWorkflowSettings={defaultWorkflowSettings}
                 actionError={actionError}
                 sending={sending}
                 onSend={async () => null}

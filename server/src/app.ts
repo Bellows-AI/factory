@@ -24,7 +24,6 @@ import { tokenRoutes } from './routes/tokens.js';
 import { versionRoutes } from './routes/version.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
-import { workflowSettingsRoutes } from './routes/workflow-settings.js';
 import type { TelemetryStore } from './telemetry/store.js';
 import { readVersion } from './version.js';
 
@@ -168,10 +167,6 @@ export async function buildApp({
     await app.register(jobRoutes({ orgs }));
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
-    // A member's own settings, not a workflow definition — its own route module (#203) so it
-    // lands without editing generic workflow CRUD, registered next to it because it is the same
-    // area of the API.
-    await app.register(workflowSettingsRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
     // Managed connector connections (#546) and the runner-facing proxy that spends them.
     await app.register(connectionRoutes({ orgs, ...(cloudIdLookup ? { lookupCloudId: cloudIdLookup } : {}) }));

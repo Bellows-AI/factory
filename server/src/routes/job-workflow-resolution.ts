@@ -1,21 +1,12 @@
 /**
- * `POST /api/jobs`'s workflow resolution (issue #209's launch contract): an explicit `workflow`
- * name resolves the repo -> user -> org stack exactly as before; an unnamed task now resolves the
- * code-owned DEFAULT workflow — the mandatory `{{command}}` spine plus whichever of the two
- * optional blocks the caller selected (a per-task `defaultWorkflow` override, else the caller's
- * saved settings from #203, else both on). Split out of `job-handlers-worker.ts` to keep
- * `handleCreateJob` within the repo's complexity/parameter budget (AGENTS.md).
+ * `POST /api/jobs`'s workflow resolution (issue #543's launch contract): an explicit `workflow`
+ * name resolves the repo -> user -> org stack and the task runs in workflow mode; an omitted
+ * `workflow` is OBJECTIVE mode — no workflow is resolved and the raw command is the job. Split out
+ * of `job-handlers-worker.ts` to keep `handleCreateJob` within the repo's complexity/parameter
+ * budget (AGENTS.md).
  */
-import { DEFAULT_GATE_FIX_ROUNDS, ERROR_CODES, type ExecutorScope } from '@factory-ai/core';
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import {
-    compileDefaultWorkflow,
-    DEFAULT_WORKFLOW_NAME,
-    parseDefaultWorkflowSelection,
-    type DefaultWorkflowSelection,
-} from '../db/default-workflow.js';
-import { BOTH_ENABLED, type DefaultWorkflowSettingsStore } from '../db/default-workflow-settings-store.js';
-import type { UserExecutorStore } from '../db/user-executor-store.js';
 import type { workflowsFor } from './job-context.js';
 import { type ResolvedWorkflow, buildWorkflowSelection } from './job-field-validation.js';
 import { bad, guard } from './helpers.js';
@@ -24,11 +15,6 @@ import { HTTP_NOT_FOUND } from './job-limits.js';
 type NamedWorkflowStore = NonNullable<Awaited<ReturnType<typeof workflowsFor>>>;
 
 type LaunchResolution = { handled: true } | { handled: false; workflow: ResolvedWorkflow | null; command: string };
-
-/** Strips a settings/override shape down to the plain two-key pair `ResolvedWorkflow.defaultOptions` carries. */
-function pairOf(value: { reviewReconciliation: boolean; mergeConflictAutofix: boolean }): DefaultWorkflowSelection {
-    return { reviewReconciliation: value.reviewReconciliation, mergeConflictAutofix: value.mergeConflictAutofix };
-}
 
 /**
  * Resolves the `workflow` field the create body named, within the caller's visible scopes — repo
@@ -71,147 +57,25 @@ async function resolveNamedWorkflow(
 }
 
 /**
- * The gate-repair round limit (issue #49): the executor row the body names decides, and only a row
- * of the CALLER's own can answer — `createdBy` null (open mode) skips the read. No store, no
- * label, or no such row answers the code default. `handled: true` means a refusal already landed
- * on `reply` (the store read failed).
- */
-async function resolveGateFixRounds(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    opts: {
-        executorsStore: UserExecutorStore | null;
-        executor: string | null;
-        executorScope: ExecutorScope;
-        createdBy: string | null;
-    }
-): Promise<{ handled: true } | { handled: false; rounds: number }> {
-    const { executorsStore, executor, executorScope, createdBy } = opts;
-    if (!executorsStore || !createdBy || !executor) return { handled: false, rounds: DEFAULT_GATE_FIX_ROUNDS };
-    const row = await guard(
-        reply,
-        (e) => request.log.error({ err: e }, 'executor row read failed'),
-        () => executorsStore.configFor(createdBy, executor, executorScope)
-    );
-    if (!row.ok) return { handled: true };
-    return { handled: false, rounds: row.value?.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS };
-}
-
-/**
- * Resolves the code-owned default workflow's selected pair — an explicit per-task override, else
- * the caller's saved settings (missing row/no store/no caller means both on) — and the gate-repair
- * round limit: the configured value of the executor row the body names (issue #49), the code
- * default when no store, no caller or no such row resolves. Compiles the graph with both.
- * `handled: true` means a refusal already landed on `reply`.
- */
-async function resolveDefaultWorkflow(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    opts: {
-        defaultsStore: DefaultWorkflowSettingsStore | null;
-        executorsStore: UserExecutorStore | null;
-        executor: string | null;
-        executorScope: ExecutorScope;
-        fields: Record<string, unknown>;
-        createdBy: string | null;
-        command: string;
-    }
-): Promise<{ handled: true } | { handled: false; workflow: ResolvedWorkflow; command: string }> {
-    const { defaultsStore, executorsStore, executor, executorScope, fields, createdBy, command } = opts;
-    const hasOverride = fields.defaultWorkflow !== undefined && fields.defaultWorkflow !== null;
-
-    let selection: DefaultWorkflowSelection;
-    if (hasOverride) {
-        const parsed = parseDefaultWorkflowSelection(fields.defaultWorkflow);
-        if (!parsed.ok) {
-            bad(reply, ERROR_CODES.BAD_DEFAULT_WORKFLOW, parsed.message);
-            return { handled: true };
-        }
-        selection = parsed.value;
-    } else if (defaultsStore && createdBy) {
-        const loaded = await guard(
-            reply,
-            (e) => request.log.error({ err: e }, 'default workflow settings read failed'),
-            () => defaultsStore.get(createdBy)
-        );
-        if (!loaded.ok) return { handled: true };
-        selection = pairOf(loaded.value);
-    } else {
-        // No settings store, or no authenticated caller to key one by (open auth mode, a route
-        // test harness with no store configured): both optional blocks on, matching "missing
-        // settings include both blocks" — the same answer a missing row gives.
-        selection = pairOf(BOTH_ENABLED);
-    }
-
-    // The value freezes into defaultOptions and the snapshot below; a later settings edit changes
-    // later tasks, never this thread.
-    const rounds = await resolveGateFixRounds(request, reply, { executorsStore, executor, executorScope, createdBy });
-    if (rounds.handled) return { handled: true };
-    const gateFixRounds = rounds.rounds;
-
-    const definition = compileDefaultWorkflow(selection, gateFixRounds);
-    const built = buildWorkflowSelection(
-        { id: null, name: DEFAULT_WORKFLOW_NAME, definition },
-        fields.workflowParams,
-        command
-    );
-    if (!built.ok) {
-        bad(reply, built.code, built.message);
-        return { handled: true };
-    }
-    return {
-        handled: false,
-        workflow: { ...built.value, defaultOptions: { ...selection, gateFixRounds } },
-        command: built.command,
-    };
-}
-
-/**
- * The launch contract's top-level branch (issue #209): an explicit `workflow` alongside a
- * `defaultWorkflow` override is always refused, before either is ever resolved — a named workflow
- * has no optional-block options to select, so combining the two fields is a client bug, not an
- * ambiguity to guess at.
+ * The launch contract's one branch (issue #543): a named `workflow` resolves; an omitted one
+ * resolves nothing, and the task is created in objective mode with its command untouched.
  */
 export async function resolveLaunchWorkflow(
     request: FastifyRequest,
     reply: FastifyReply,
     opts: {
         workflowsStore: NamedWorkflowStore | null;
-        defaultsStore: DefaultWorkflowSettingsStore | null;
-        executorsStore: UserExecutorStore | null;
-        executor: string | null;
-        executorScope: ExecutorScope;
         fields: Record<string, unknown>;
         repo: string | null;
         createdBy: string | null;
         command: string;
     }
 ): Promise<LaunchResolution> {
-    const { workflowsStore, defaultsStore, executorsStore, executor, executorScope, fields, repo, createdBy, command } =
-        opts;
+    const { workflowsStore, fields, repo, createdBy, command } = opts;
     const named = fields.workflow !== undefined && fields.workflow !== null;
-    const hasOverride = fields.defaultWorkflow !== undefined && fields.defaultWorkflow !== null;
-
-    if (named && hasOverride) {
-        bad(reply, ERROR_CODES.BAD_DEFAULT_WORKFLOW, 'defaultWorkflow cannot accompany a named workflow');
-        return { handled: true };
-    }
-
-    if (named) {
-        // No workflows store configured for this org (a route-test harness that never wires one):
-        // the name is silently not resolved, the pre-209 quirk this branch has always had — never
-        // reachable in production, where a jobs store and a workflows store are wired together.
-        if (!workflowsStore) return { handled: false, workflow: null, command };
-        return resolveNamedWorkflow(request, reply, { workflowsStore, fields, repo, createdBy, command });
-    }
-
-    return resolveDefaultWorkflow(request, reply, {
-        defaultsStore,
-        executorsStore,
-        executor,
-        executorScope,
-        fields,
-        createdBy,
-        command,
-    });
+    // No workflows store configured for this org (a route-test harness that never wires one) is
+    // the same as naming nothing — never reachable in production, where a jobs store and a
+    // workflows store are wired together.
+    if (!named || !workflowsStore) return { handled: false, workflow: null, command };
+    return resolveNamedWorkflow(request, reply, { workflowsStore, fields, repo, createdBy, command });
 }

@@ -243,16 +243,13 @@ describe('TaskComposer — the prompt and the launch', () => {
     });
 
     it('hides the workflow select on a board that serves no workflows', () => {
-        // No list, no process to pick: the selector and the optional steps are absent, and the
-        // workflow details section says only what every task runs anyway.
-        const html = renderComposer({
-            workflows: null,
-            defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
-        });
+        // No list, no process to pick: the selector is absent, and the workflow details section
+        // says the prompt runs as written.
+        const html = renderComposer({ workflows: null });
         expect(html).not.toContain('Reusable workflow');
         expect(html).not.toContain('composer-steps');
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(2);
-        expect(html).toContain('Every task runs: prompt → gates → publish.');
+        expect(html).toContain('Without a workflow, your prompt runs as written.');
     });
 
     it('runs the raw prompt when no workflow is chosen: no params, no gate', () => {
@@ -287,7 +284,7 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).not.toContain('A workflow can turn this request');
         // Unchosen means NO process: the trigger reads the empty option's label. The offered
         // names are client-side; e2e/composer.spec.ts drives the real dropdown.
-        expect(html).toContain('>Default workflow</span></button>');
+        expect(html).toContain('>No workflow</span></button>');
     });
 
     it('gathers repository, executor and workflow as the three columns of the execution context', () => {
@@ -308,66 +305,13 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).toContain('title="main"');
     });
 
-    describe('default-workflow step checkboxes (#208)', () => {
-        const oneWorkflow = [{ id: 'w1', name: 'fix-issue', scope: 'org' as const }];
-
-        it('shows both optional steps, initialized from the saved defaults, once they have answered', () => {
-            const html = renderComposer({
-                workflows: oneWorkflow,
-                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: false },
-            });
-            expect(html).toContain('Iterate on PR review comments');
-            expect(html).toContain('Repair merge conflicts');
-            const checkboxes = html.match(/<input type="checkbox"[^>]*>/g) ?? [];
-            expect(checkboxes).toHaveLength(2);
-            expect(checkboxes[0]).toContain('checked=""');
-            expect(checkboxes[1]).not.toContain('checked=""');
-            // The pair lives inside a closed-by-default disclosure, not two persistent rows — the
-            // summary alone carries the enabled count for the default, unopened view.
-            expect(html).toContain('<details class="composer-steps">');
-            expect(html).not.toMatch(/<details class="composer-steps"[^>]*\bopen(="")?/);
-            expect(html).toContain('Optional steps (1 of 2 on)');
-        });
-
-        it('shows both steps on for the missing-row defaults', () => {
-            const html = renderComposer({
-                workflows: oneWorkflow,
-                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
-            });
-            const checkboxes = html.match(/<input type="checkbox"[^>]*>/g) ?? [];
-            expect(checkboxes).toHaveLength(2);
-            for (const box of checkboxes) expect(box).toContain('checked=""');
-            expect(html).toContain('Optional steps (2 of 2 on)');
-        });
-
-        it('renders no checkboxes while the saved defaults have not answered yet', () => {
-            const html = renderComposer({ workflows: oneWorkflow, defaultWorkflowSettings: null });
-            expect(html).not.toContain('Iterate on PR review comments');
-            expect(html).not.toContain('Repair merge conflicts');
-            expect(html).not.toContain('composer-steps');
-        });
-
-        it('renders no checkboxes on a board that serves no workflows at all', () => {
-            // The same gate as the dropdown itself: a board without the feature renders exactly
-            // the composer that came before it.
-            const html = renderComposer({
-                workflows: null,
-                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
-            });
-            expect(html).not.toContain('Iterate on PR review comments');
-            expect(html).not.toContain('Repair merge conflicts');
-            expect(html).not.toContain('composer-steps');
-        });
-
-        it('lists the final step set in the preflight sentence', () => {
-            const html = renderComposer({
-                workflows: oneWorkflow,
-                defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: false },
-            });
-            expect(html).toContain(
-                'Default workflow selected: prompt, gates, publish, plus iterate on PR review comments.'
-            );
-        });
+    it('offers no workflow step controls: no checkboxes, no composer-steps, no default-workflow wording', () => {
+        const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
+        expect(html).not.toMatch(/<input type="checkbox"/);
+        expect(html).not.toContain('composer-steps');
+        expect(html).not.toContain('Default workflow');
+        expect(html).not.toContain('Optional steps');
+        expect(html).toContain('Your prompt will run as written.');
     });
 });
 
@@ -389,7 +333,7 @@ describe('composer parameters', () => {
         expect(html).not.toContain('composer-param');
         // The dropdown renders unchosen; the offered names are client-side, and e2e covers the
         // real dropdown.
-        expect(html).toContain('>Default workflow</span></button>');
+        expect(html).toContain('>No workflow</span></button>');
     });
 });
 
@@ -677,17 +621,6 @@ describe('the redesigned composer (#280)', () => {
         expect(startButton(html)).toContain('disabled=""');
     });
 
-    it('says delayed preferences in a blue banner, never red', () => {
-        const html = renderComposer({
-            restored: restoredDraft({ draft: 'fix it' }),
-            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
-            defaultWorkflowSettings: null,
-        });
-        expect(html).toContain('class="banner-info" id="composer-readiness"');
-        expect(html).toContain('Loading your saved workflow defaults…');
-        expect(html).not.toContain('banner-bad');
-    });
-
     it('raises incomplete workflow details as a red banner', () => {
         const html = renderComposer({
             restored: restoredDraft({ draft: 'fix it', workflow: 'fix-issue' }),
@@ -697,15 +630,10 @@ describe('the redesigned composer (#280)', () => {
         expect(html).toContain('Complete the required workflow details to continue.');
     });
 
-    it('explains the default workflow in words, beside the real optional steps', () => {
-        const html = renderComposer({
-            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
-            defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
-        });
-        expect(html).toContain('Every task runs: prompt → gates → publish.');
-        expect(html).toContain('Optional steps (2 of 2 on)');
-        expect(html).toContain('Iterate on PR review comments');
-        expect(html).toContain('Repair merge conflicts');
+    it('labels the empty workflow option "No workflow" and explains it in words', () => {
+        const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
+        expect(html).toContain('<span class="composer-context-value">No workflow</span>');
+        expect(html).toContain('Without a workflow, your prompt runs as written.');
     });
 
     it('holds Start while a restored workflow waits for its list — its parameters are not known yet', () => {
@@ -755,15 +683,6 @@ describe('the redesigned composer (#280)', () => {
         expect(startButton(html)).not.toContain('disabled=""');
     });
 
-    it('restores the step overrides beside Default workflow', () => {
-        const html = renderComposer({
-            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
-            defaultWorkflowSettings: { reviewReconciliation: true, mergeConflictAutofix: true },
-            restored: restoredDraft({ draft: 'fix it', defaultStepOverrides: { mergeConflictAutofix: false } }),
-        });
-        expect(html).toContain('Optional steps (1 of 2 on)');
-    });
-
     it('offers Discard draft only once the composer holds something a fresh one would not', () => {
         expect(renderComposer({})).not.toContain('Discard draft');
         expect(renderComposer({ restored: restoredDraft({ draft: 'fix it' }) })).toContain('>Discard draft</button>');
@@ -781,7 +700,6 @@ function restoredDraft(overrides: Partial<ComposerDraftInput>): ComposerDraftInp
         workflow: '',
         storedParams: { workflowId: null, values: {} },
         paramTouched: {},
-        defaultStepOverrides: {},
         ...overrides,
     };
 }

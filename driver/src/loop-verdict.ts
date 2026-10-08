@@ -6,12 +6,12 @@
  * `loop-run.ts` is the only importer.
  */
 
-import type { Board, BoardJob, LeaseState } from './board.js';
+import type { Board, BoardJob, LeaseState, VerdictEvidence } from './board.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import { kindOf, ledgerOf, type Ledger, outputOf, publishEligible, statusOf } from './loop-ledger.js';
 import type { LoopRuntime } from './loop-types.js';
-import { type PublishResult, publishFailed } from './publish.js';
+import { type PublishOptions, type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
 import type { GateRunNote, TimeoutActivity } from './timeout-note.js';
 import { timeoutNote } from './timeout-note.js';
@@ -44,11 +44,12 @@ export async function askPublishToken(rt: LoopRuntime, job: BoardJob): Promise<s
 export async function publishBranch(
     rt: LoopRuntime,
     job: BoardJob,
-    publishToken: string | null
+    publishToken: string | null,
+    options?: PublishOptions
 ): Promise<PublishResult | null> {
     if (!rt.runner.publishGit) return null;
     return rt.runner
-        .publishGit(job, publishToken ?? undefined)
+        .publishGit(job, publishToken ?? undefined, options)
         .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`));
 }
 
@@ -96,6 +97,10 @@ export interface FinishCtx {
     gatesSkipped: string | null;
     /** Whether a failed gate's tree differs from the synced one; null when unmeasured. */
     treeChanged: boolean | null;
+    /** The revision-bound evidence record (set only under a policy); null when none was taken. */
+    evidence: VerdictEvidence | null;
+    /** Why the evidence policy refused the publish before anything was pushed; null when it did not. */
+    policyRefusal: string | null;
 }
 
 /** The verdict output text, annotated with every fault on the ledger. */
@@ -146,6 +151,7 @@ export async function reportFinish(rt: LoopRuntime, finish: FinishCtx): Promise<
         // The structured failure reason (issue #339); a success reports no kind at all.
         ...(failureKind ? { failureKind } : {}),
         ...(finish.treeChanged !== null ? { treeChanged: finish.treeChanged } : {}),
+        ...(finish.evidence ? { evidence: finish.evidence } : {}),
         ...(publication ? { publication } : {}),
     });
     log(

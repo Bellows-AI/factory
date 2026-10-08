@@ -2,6 +2,8 @@ export { HOUR } from './config.js';
 export { ENV_NAME, ENV_NAME_LIMIT, ENV_VALUE_LIMIT, MAX_ENV_VARS_PER_SCOPE, RESERVED_ENV_NAMES } from './env.js';
 export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';
+export type { JobMode } from './job-mode.js';
+export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';
 export type { ExecutorScope, ExecutorType } from './executors.js';
 export {
     CLAUDE_CODE,

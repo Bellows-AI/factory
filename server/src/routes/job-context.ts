@@ -45,19 +45,7 @@ export async function workflowsFor(orgs: OrgRegistry, request: FastifyRequest) {
     return rt?.workflows ?? null;
 }
 
-/**
- * The caller's saved default-workflow settings (#203) — read at launch when an unnamed task names
- * no `defaultWorkflow` override, mirroring `workflowsFor`'s org lookup.
- */
-export async function workflowDefaultsFor(orgs: OrgRegistry, request: FastifyRequest) {
-    const rt = await orgs.for(orgOf(request));
-    return rt?.workflowDefaults ?? null;
-}
-
-/**
- * The caller's configured executor rows — read at launch for the default workflow's gate-repair
- * round limit (issue #49), mirroring `workflowDefaultsFor`'s org lookup.
- */
+/** The caller's configured executor rows — read at launch for the suspended-profile refusal. */
 export async function executorsFor(orgs: OrgRegistry, request: FastifyRequest) {
     const rt = await orgs.for(orgOf(request));
     return rt?.userExecutors ?? null;

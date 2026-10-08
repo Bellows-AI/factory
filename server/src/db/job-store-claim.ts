@@ -8,14 +8,18 @@ import {
     CLAUDE_CODE,
     EXECUTOR_TYPES,
     executorSuspendedMessage,
+    OBJECTIVE_MODE,
     USER_SCOPE,
     type ExecutorScope,
     type ExecutorType,
+    type JobMode,
     OPENCODE,
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
+import { readReviewEvidence } from './job-store-evidence.js';
 import { withMintedToken } from './job-store-org-resolvers.js';
 import { workspacePathFor } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
@@ -47,6 +51,7 @@ export interface ClaimCandidateRow {
     follow_up: boolean;
     workflow_node: string | null;
     workflow_name: string | null;
+    mode: JobMode;
     root_command: string;
 }
 
@@ -154,6 +159,7 @@ async function claimNextCandidate(
                     follow_up: boolean;
                     workflow_node: string | null;
                     workflow_name: string | null;
+                    mode: JobMode;
                     root_command: string;
                 }[]
             >`
@@ -205,7 +211,7 @@ async function claimNextCandidate(
                 -- never been parked, so its command still has to go out; a suspended one settles
                 -- stopped, and is never claimed again.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
-                          session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name,
+                          session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
@@ -252,8 +258,14 @@ async function claimNextCandidate(
             const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
             const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
+            const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates.claimPolicy);
             const command = await claimCommand(tx, orgId, rootJobId, row);
-            return buildClaimResult({ ...row, command }, rootJobId, { ...executor, ...gates, ...workflow });
+            return buildClaimResult({ ...row, command }, rootJobId, {
+                ...executor,
+                ...gates,
+                ...workflow,
+                ...evidence,
+            });
         }
     });
 }
@@ -432,6 +444,14 @@ export interface ResolvedClaimGates {
     gateError: string | null;
     gatesSource: ClaimGatesSource | null;
     claimPath: string | null;
+    /** The repository's evidence policy (base clone only); null when none is declared. */
+    claimPolicy: EvidencePolicy | null;
+}
+
+/** What a claim carries of the evidence policy: the requirement and the thread's review evidence. */
+export interface ResolvedClaimEvidence {
+    policy?: EvidencePolicy;
+    review?: ReviewEvidence;
 }
 
 /**
@@ -448,10 +468,38 @@ export async function resolveClaimGates(
 ): Promise<ResolvedClaimGates> {
     const claimPath = workspacePathFor(ctx.orgId, ctx.hasWorkspaces, row.created_by);
     if (!gatesReader || !row.repo || !claimPath) {
-        return { claimGates: null, gateError: null, gatesSource: null, claimPath };
+        return { claimGates: null, gateError: null, gatesSource: null, claimPath, claimPolicy: null };
     }
     const read = await gatesReader.readFor(claimPath, row.repo, ctx.rootJobId);
-    return { claimGates: read.error ? null : read.config, gateError: read.error, gatesSource: read.source, claimPath };
+    return {
+        claimGates: read.error ? null : read.config,
+        gateError: read.error,
+        gatesSource: read.source,
+        claimPath,
+        claimPolicy: read.policy ?? null,
+    };
+}
+
+/**
+ * claim()'s evidence half. The policy is stamped on THIS row — re-stamped on every claim, so a
+ * retry or a reclaim is judged against the requirement as it stands now — and the thread's review
+ * evidence is derived from its rows only when a review is required (one read, otherwise none).
+ * The completion check (`completeJob`) reads the stamped policy, never the repository again.
+ */
+async function resolveClaimEvidence(
+    tx: TransactionSql,
+    ctx: { orgId: string; rootJobId: string },
+    row: { id: string; mode: JobMode },
+    policy: EvidencePolicy | null
+): Promise<ResolvedClaimEvidence> {
+    const { orgId, rootJobId } = ctx;
+    const stamp = policy === null ? null : tx.json(policy as never);
+    await tx`update job set policy = ${stamp} where org_id = ${orgId} and id = ${row.id}`;
+    if (policy === null) return {};
+    if (!policy.review) return { policy };
+    // An objective thread has no graph, so no reviewer.
+    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
+    return { policy, review: await readReviewEvidence(tx, { orgId, rootJobId }, snapshot) };
 }
 
 export interface ResolvedClaimPublish {
@@ -547,7 +595,7 @@ export async function resolveClaimHelperPlans(
  * claim()'s one bundle of every workflow-shaped decision: the snapshot read, the publish flag, the
  * declared helper plans, and the master prompt they all feed (issue #244) — pulled out of
  * `claimNextCandidate` purely to keep that function's own complexity readable, no behavior change.
- * Reads the snapshot for a member follow-up too (workflow_node null, workflow_name not): the
+ * Reads the snapshot for a workflow-mode member follow-up too (workflow_node null, workflow_name not): the
  * master prompt's graph-wide capabilities (publish path, review/merge-conflict blocks) still apply
  * to that turn, even though it carries no node of its own — `resolveClaimPublish` and
  * `resolveClaimHelperPlans` both branch on workflowNode first, so this widening changes neither of
@@ -556,7 +604,7 @@ export async function resolveClaimHelperPlans(
 async function resolveClaimWorkflow(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
-    row: { workflow_node: string | null; workflow_name: string | null },
+    row: { workflow_node: string | null; workflow_name: string | null; mode: JobMode },
     gates: ClaimGatesRead
 ): Promise<
     ResolvedClaimPublish & {
@@ -566,10 +614,9 @@ async function resolveClaimWorkflow(
     }
 > {
     const { orgId, rootJobId, prs } = ctx;
-    const snapshot =
-        row.workflow_node === null && row.workflow_name === null
-            ? null
-            : await readWorkflowSnapshot(tx, orgId, rootJobId);
+    // The stored mode decides (051): an objective row never reads a snapshot, so it resolves no
+    // publish, no helper plans and an objective master prompt.
+    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
     const published = resolveClaimPublish(snapshot, row.workflow_node, gates);
     const helperPlans = await resolveClaimHelperPlans(tx, {
         rootJobId,
@@ -578,6 +625,7 @@ async function resolveClaimWorkflow(
         prs,
     });
     const promptInput = {
+        mode: row.mode,
         workflowNode: row.workflow_node,
         workflowName: row.workflow_name,
         snapshot,
@@ -597,7 +645,8 @@ export function buildClaimResult(
     rootJobId: string,
     resolved: ResolvedClaimExecutor &
         ResolvedClaimGates &
-        ResolvedClaimPublish & {
+        ResolvedClaimPublish &
+        ResolvedClaimEvidence & {
             helperPlans: ClaimHelperPlan[] | undefined;
             masterPrompt: string | null;
             turnContext: string | null;
@@ -616,6 +665,8 @@ export function buildClaimResult(
         helperPlans,
         masterPrompt,
         turnContext,
+        policy,
+        review,
     } = resolved;
     return {
         id: row.id,
@@ -641,6 +692,8 @@ export function buildClaimResult(
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(claimGates || gateError ? { gates: claimGates, gateError } : {}),
         ...(gatesSource ? { gatesSource } : {}),
+        ...(policy ? { policy } : {}),
+        ...(review ? { review } : {}),
         ...(publish !== undefined ? { publish } : {}),
         ...(agent === false ? { agent } : {}),
         ...(helperPlans !== undefined ? { helperPlans } : {}),

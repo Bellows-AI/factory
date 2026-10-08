@@ -3,12 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { Claim, GateReport, JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
-import {
-    compileDefaultWorkflow,
-    DEFAULT_ENTRY_NODE,
-    DEFAULT_GATE_FIX_NODE,
-    DEFAULT_WORKFLOW_NAME,
-} from '../src/db/default-workflow.js';
+import { GATE_FIX_NODE, gateFixTarget } from './gate-fix-workflow.js';
 import { useTestDb } from './harness.js';
 
 /** Issue #427 (G2): the verdict transaction against a Stop stamp no heartbeat has delivered yet. */
@@ -26,22 +21,13 @@ beforeAll(() => {
     store = createJobStore({ sql, orgId: ORG, prs: createPrLifecycleStore({ sql, orgId: ORG }) });
 });
 
-const NEITHER = { reviewReconciliation: false, mergeConflictAutofix: false };
 const failedGate = (output: string): GateReport[] => [{ name: 'test', status: 'failed', exitCode: 1, output }];
 
 async function queueDefault(rounds = 3): Promise<string> {
-    const snapshot = compileDefaultWorkflow(NEITHER, rounds);
     const job = await store.create('do the thing', null, {
         repo: null,
         executor: null,
-        workflow: {
-            id: null,
-            name: DEFAULT_WORKFLOW_NAME,
-            node: DEFAULT_ENTRY_NODE,
-            snapshot,
-            params: {},
-            defaultOptions: { ...NEITHER, gateFixRounds: rounds },
-        },
+        workflow: gateFixTarget(rounds),
     });
     if (typeof job === 'string') throw new Error(job);
     return job.id;
@@ -53,7 +39,7 @@ const claim = async (): Promise<Claim> => {
     return c;
 };
 const queuedGateFix = async (root: string) =>
-    (await store.thread(root))!.filter((r) => r.workflowNode === DEFAULT_GATE_FIX_NODE && r.status === 'queued');
+    (await store.thread(root))!.filter((r) => r.workflowNode === GATE_FIX_NODE && r.status === 'queued');
 
 describe.skipIf(!enabled)('a verdict racing a Stop — database', () => {
     // A Stop stamped on a running row loses to a verdict that lands before the next beat:

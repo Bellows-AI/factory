@@ -4,10 +4,9 @@ import type { WorkflowResult, WorkflowSummaryView } from '../src/api/useWorkflow
 import { WorkflowsPanel } from '../src/panels/WorkflowsPanel.js';
 
 /**
- * The workflow management panel (issue 131), server-render-tested by markup assertions the way
- * `default-workflow.render.test.tsx` pins `DefaultWorkflowPanel`: everything reachable from props,
- * with the open-edit/save lifecycle exercised end to end by `verify:ui` where a browser is
- * available.
+ * The workflow management panel (issue 131), server-render-tested by markup assertions:
+ * everything reachable from props, with the open-edit/save lifecycle exercised end to end by
+ * `verify:ui` where a browser is available.
  */
 
 const FORBIDDEN = ['NaN', 'undefined', 'Infinity', '[object Object]'];

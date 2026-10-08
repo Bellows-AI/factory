@@ -46,6 +46,7 @@ const SINGLE: Record<Exclude<FailureKind, 'config'>, LedgerParts> = {
     services: parts({ deadServices: [dead] }),
     gate: parts({ failure: { name: 't', exitCode: 1, output: '' } }),
     helper: parts({ helperFailure: helper }),
+    policy: parts({ policyRefusal: 'declared gates are required and did not pass' }),
     publish: parts({ published: { ok: false, published: false, reason: 'r' } as never }),
     runner_error: parts({ outcome: outcome({ exitCode: 2 }) }),
 };
@@ -63,6 +64,7 @@ const merge = (a: LedgerParts, b: LedgerParts): LedgerParts => ({
     deadServices: [...a.deadServices, ...b.deadServices],
     helperFailure: a.helperFailure ?? b.helperFailure,
     published: a.published ?? b.published,
+    policyRefusal: a.policyRefusal ?? b.policyRefusal,
 });
 
 describe('a dead service note (issue #487)', () => {
@@ -110,7 +112,7 @@ describe('the fault ledger', () => {
 
     it('lets only a timeout, a gate, services, a helper or a publish leave the gates running', () => {
         const runs = (kind: FailureKind): boolean => gatesEligible(ledgerOf(single(kind)));
-        expect(RANK.filter(runs)).toEqual(['timeout', 'services', 'gate', 'helper', 'publish']);
+        expect(RANK.filter(runs)).toEqual(['timeout', 'services', 'gate', 'helper', 'policy', 'publish']);
         // A non-zero exit that is the timeout's own kill still leaves the work to judge.
         expect(gatesEligible(agentFaults(outcome({ timedOut: true, exitCode: 137 })))).toBe(true);
     });

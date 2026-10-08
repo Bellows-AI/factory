@@ -350,12 +350,12 @@ async function seedThread(jobs: readonly ThreadJob[]) {
     for (const job of jobs) {
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, attempts, max_attempts,
-                             claimed_by, session_id, repo, executor, workflow_name, workflow_node, exit_code,
+                             claimed_by, session_id, repo, executor, workflow_name, workflow_node, mode, exit_code,
                              output, summary, gates, runtime, wall_clock_ms, done_at, cancel_requested_at,
                              created_at, started_at, finished_at)
             values (${orgId}, ${job.id}, ${job.rootJobId}, ${job.followUpTo}, ${job.command}, ${job.status},
                     ${job.attempts}, ${job.maxAttempts}, ${job.claimedBy}, ${job.sessionId}, ${job.repo},
-                    ${job.executor}, ${job.workflowName}, ${job.workflowNode}, ${job.exitCode}, ${job.output},
+                    ${job.executor}, ${job.workflowName}, ${job.workflowNode}, ${job.mode}, ${job.exitCode}, ${job.output},
                     ${job.summary}, ${job.gates ? sql.json(job.gates as never) : null},
                     ${job.runtime ? sql.json(job.runtime as never) : null}, ${job.wallClockMs}, ${job.doneAt},
                     ${job.cancelRequestedAt}, ${job.createdAt}, ${job.startedAt}, ${job.finishedAt})

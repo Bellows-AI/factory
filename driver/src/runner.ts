@@ -7,7 +7,7 @@
 
 import type { BoardJob, ServiceStatus } from './board.js';
 import type { HelperPlan, HelperResult } from './helpers.js';
-import type { PublishResult, SyncResult, ReclaimResult } from './publish.js';
+import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
 
 /** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
 export interface RunOutcome {
@@ -218,9 +218,10 @@ export interface Runner {
      * refusal in the result — or does not implement the method at all, which the loop reads as
      * "this platform does not publish". `publishToken` is the board's publish-fresh credential
      * (the claim's can be an hour past expiry by push time); both transports lay it over the
-     * claim env through withPublishToken, so neither can drift.
+     * claim env through withPublishToken, so neither can drift. `draft` opens a NEW pull request as
+     * a draft (the agent's mid-run publish); an existing PR is reused whatever its state.
      */
-    publishGit?(job: BoardJob, publishToken?: string): Promise<PublishResult>;
+    publishGit?(job: BoardJob, publishToken?: string, options?: PublishOptions): Promise<PublishResult>;
     /**
      * The task tree's fingerprint now (`probeTreeFingerprint`): the probe step over the same
      * transport `publishGit` uses, read only after a declared gate failed. Null is unknown.

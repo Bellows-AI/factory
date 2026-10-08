@@ -1,3 +1,4 @@
+import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -29,7 +30,6 @@ import type {
     StoredArtifact,
 } from '../src/db/job-store-types.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
-import { DEFAULT_ENTRY_NODE, DEFAULT_WORKFLOW_NAME, compileDefaultWorkflow } from '../src/db/default-workflow.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -59,14 +59,13 @@ interface StoreStub extends JobStore {
         executor: string | null;
         executorScope: string | null;
     }[];
-    /** The workflow triple the create was handed, when one resolved — null when none did. */
+    /** The workflow triple the create was handed, when one resolved — empty in objective mode. */
     workflowTargets: {
-        id: string | null;
+        id: string;
         name: string;
         node: string;
         snapshot: unknown;
         params?: unknown;
-        defaultOptions?: { reviewReconciliation: boolean; mergeConflictAutofix: boolean };
     }[];
     listed: { status?: JobStatus | 'terminal'; repo?: string | undefined; limit: number }[];
     completed: {
@@ -78,6 +77,7 @@ interface StoreStub extends JobStore {
         summary: string | null;
         failureKind: string | null;
         treeChanged: boolean | null;
+        evidence: unknown;
     }[];
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
@@ -336,7 +336,7 @@ function stubStore(
         async complete(
             id: string,
             _token: string,
-            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged }
+            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged, evidence }
         ) {
             boom();
             stub.completed.push({
@@ -348,6 +348,7 @@ function stubStore(
                 summary: summary ?? null,
                 failureKind: failureKind ?? null,
                 treeChanged: treeChanged ?? null,
+                evidence: evidence ?? null,
             });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
@@ -693,12 +694,9 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(jobs.created).toEqual([]);
     });
 
-    // The code-owned default identity (issue #209): a body without a workflow field names no
-    // CUSTOM process, so the named-workflow store is not read at all — but it is no longer
-    // workflow-less: the default workflow resolves instead, with no saved-settings store
-    // configured here, both optional blocks default on (`BOTH_ENABLED`). The entry's prompt is
-    // exactly `{{command}}`, so the root command still reads as the member's raw words.
-    it("runs the raw prompt as the default workflow's entry, reading no NAMED workflows, when the body names none", async () => {
+    // Objective mode (issue #543): a body without a workflow field resolves nothing — the named
+    // workflow store is not read, no workflow target reaches the store, and the command is raw.
+    it('creates an objective-mode task with the raw command, reading no workflows, when the body names none', async () => {
         const jobs = stubStore();
         const workflows = stubWorkflows();
         const instance = await harnessWith(jobs, workflows);
@@ -707,16 +705,21 @@ describe('POST /api/jobs workflow resolution', () => {
 
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual([]);
-        expect(jobs.workflowTargets).toEqual([
-            {
-                id: null,
-                name: DEFAULT_WORKFLOW_NAME,
-                node: DEFAULT_ENTRY_NODE,
-                snapshot: compileDefaultWorkflow({ reviewReconciliation: true, mergeConflictAutofix: true }, 3),
-                params: {},
-                defaultOptions: { reviewReconciliation: true, mergeConflictAutofix: true, gateFixRounds: 3 },
-            },
-        ]);
+        expect(jobs.workflowTargets).toEqual([]);
+        expect(jobs.commands).toEqual(['echo hi']);
+    });
+
+    it('ignores a legacy defaultWorkflow body field: still objective mode, no workflow target', async () => {
+        const jobs = stubStore();
+        const instance = await harnessWith(jobs, stubWorkflows());
+
+        const response = await post(instance, '/api/jobs', {
+            command: 'echo hi',
+            defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: true },
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(jobs.workflowTargets).toEqual([]);
         expect(jobs.commands).toEqual(['echo hi']);
     });
 });
@@ -804,12 +807,11 @@ describe('POST /api/jobs workflow parameters', () => {
         // The name came off the record the store resolved, never off the body.
         expect(jobs.workflowTargets[0]!.name).toBe('fix-issue');
 
-        // A body naming no CUSTOM workflow ignores a client-supplied workflowName entirely — but
-        // it is no longer workflow-less: it resolves the code-owned default instead (issue #209).
+        // A body naming no workflow ignores a client-supplied workflowName entirely: objective
+        // mode, no workflow target at all.
         const ghost = await post(instance, '/api/jobs', { command: 'echo hi', workflowName: 'ghost' });
         expect(ghost.statusCode).toBe(201);
-        expect(jobs.workflowTargets).toHaveLength(2);
-        expect(jobs.workflowTargets[1]!.name).toBe(DEFAULT_WORKFLOW_NAME);
+        expect(jobs.workflowTargets).toHaveLength(1);
     });
 
     it('refuses an interpolated root command over the cap with BAD_COMMAND', async () => {
@@ -2546,6 +2548,7 @@ describe('POST /api/jobs/:id/complete', () => {
                 summary: null,
                 failureKind: null,
                 treeChanged: null,
+                evidence: null,
             },
         ]);
     });
@@ -2725,6 +2728,44 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(store.completed).toEqual([]);
     });
 
+    it('hands the store the verdict’s evidence record, rebuilt field by field', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const evidence = { treeBefore: 'h:1', treeAfter: null, gates: 'passed' };
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            evidence: { ...evidence, extra: 'dropped' },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ evidence });
+        expect(store.completed[0]?.evidence).not.toHaveProperty('extra');
+    });
+
+    it.each([
+        ['a string', 'h:1'],
+        ['an unknown gate outcome', { treeBefore: null, treeAfter: null, gates: 'maybe' }],
+        ['an empty fingerprint', { treeBefore: '', treeAfter: null, gates: 'none' }],
+        ['an oversized fingerprint', { treeBefore: 'x'.repeat(257), treeAfter: null, gates: 'none' }],
+        ['a missing fingerprint', { treeAfter: null, gates: 'none' }],
+    ])('refuses evidence as %s with BAD_EVIDENCE', async (_label, evidence) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, evidence });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_EVIDENCE');
+        expect(store.completed).toEqual([]);
+    });
+
+    it('accepts the policy failure kind on a failed verdict', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'ok' }));
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            status: 'failed',
+            failureKind: 'policy',
+        });
+        expect(response.statusCode).toBe(200);
+    });
+
     it.each([
         ['an unknown failure kind', 'nope'],
         ['a non-string failure kind', 3],
@@ -2798,6 +2839,7 @@ describe('GET /api/jobs', () => {
         followUpTo: null,
         rootJobId: ID,
         workflowName: 'fix-issue',
+        mode: WORKFLOW_MODE,
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,
@@ -2847,6 +2889,18 @@ describe('GET /api/jobs', () => {
         const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual(job);
+    });
+
+    it("serves the row's stored mode on the detail read and the thread read", async () => {
+        const objective = { ...job, workflowName: null, mode: OBJECTIVE_MODE };
+        const instance = await harnessWith(stubStore({ job: objective, thread: [objective] }));
+        const one = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
+        expect(one.json().mode).toBe(OBJECTIVE_MODE);
+        const thread = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/thread` });
+        expect(thread.json().jobs[0].mode).toBe(OBJECTIVE_MODE);
+        const named = await harnessWith(stubStore({ job }));
+        const detail = await named.inject({ method: 'GET', url: `/api/jobs/${ID}` });
+        expect(detail.json().mode).toBe(WORKFLOW_MODE);
     });
 
     it('exposes the frozen workflow name on the detail, thread and list payloads — and null without one', async () => {
@@ -2966,6 +3020,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         followUpTo: null,
         rootJobId: ID,
         workflowName: null,
+        mode: OBJECTIVE_MODE,
         workflowNode: null,
         waitReason: null,
         waitingSince: null,
@@ -3150,6 +3205,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         rootJobId: ID,
         workflowNode: null,
         workflowName: null,
+        mode: OBJECTIVE_MODE,
         gates: null,
         runtime: null,
         doneAt: null,

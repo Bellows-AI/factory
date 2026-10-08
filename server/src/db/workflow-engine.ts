@@ -86,6 +86,7 @@ export type RestReason =
     | 'services'
     | 'publish'
     | 'config'
+    | 'policy'
     | 'no_progress'
     | 'thread_busy';
 
@@ -95,6 +96,7 @@ const REST_BY_KIND: Partial<Record<FailureKind, RestReason>> = {
     services: 'services',
     publish: 'publish',
     config: 'config',
+    policy: 'policy',
 };
 
 export type Transition =

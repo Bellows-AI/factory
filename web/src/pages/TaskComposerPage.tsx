@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useDefaultWorkflowSettings } from '../api/useDefaultWorkflowSettings.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
 import { useWorkflows } from '../api/useWorkflows.js';
 import { useComposerDraftStore } from '../composer-draft.js';
@@ -40,7 +39,6 @@ export function TaskComposerPage() {
     const [reportedRepo, setReportedRepo] = useState<string | null | undefined>(undefined);
     const repo = reportedRepo === undefined ? draftStore.state?.repo || null : reportedRepo;
     const workflows = useWorkflows(repo);
-    const defaultWorkflowSettings = useDefaultWorkflowSettings();
 
     const send = async (input: QueueTaskInput): Promise<string | null> => {
         setActionError(null);
@@ -81,7 +79,6 @@ export function TaskComposerPage() {
                     // Passed through as-is: null while the list is pending or from another context,
                     // and the composer hides the workflow selector for exactly that duration.
                     workflows={workflows.workflows}
-                    defaultWorkflowSettings={defaultWorkflowSettings.data}
                     actionError={actionError}
                     sending={sending}
                     onSend={send}

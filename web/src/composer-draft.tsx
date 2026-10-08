@@ -1,7 +1,7 @@
 import { type ReactNode, createContext, useCallback, useContext, useMemo, useReducer } from 'react';
 import type { ExecutorScope } from '@factory-ai/core';
 import type { Session } from './api/useSession.js';
-import type { DefaultStepOverrides, freshWorkflowDraft } from './task-composer.js';
+import type { freshWorkflowDraft } from './task-composer.js';
 
 type WorkflowDraft = ReturnType<typeof freshWorkflowDraft>;
 
@@ -22,7 +22,6 @@ export interface ComposerDraftState {
     workflow: string;
     storedParams: WorkflowDraft['storedParams'];
     paramTouched: WorkflowDraft['paramTouched'];
-    defaultStepOverrides: DefaultStepOverrides;
 }
 
 /** What the composer hands over; the store stamps the owner itself. */

@@ -4,6 +4,7 @@ import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from './runner.js';
 import type { DeadService } from './runner.js';
 import type { RuntimeSample } from './runner.js';
 import type { LoopRuntime } from './loop-types.js';
+import type { PublishResult } from './publish.js';
 import type { TimeoutActivity } from './timeout-note.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
@@ -86,6 +87,8 @@ export interface JobState {
     questionTimers: Map<string, ReturnType<typeof setTimeout>>;
     /** How far the run deadline has been pushed out by questions — what the timeout note adds to `jobTimeoutMs`. */
     deadlineExtensionMs: number;
+    /** The last draft publication the agent made mid-run (`loop-publish.ts`); null when it made none. */
+    draftPublication: PublishResult | null;
     /** Resolves the moment the run ends, so the heartbeat can stop waiting out its period. */
     woken: Promise<void>;
     wake: () => void;
@@ -120,6 +123,7 @@ export function newJobState(): JobState {
         graceTimer: null,
         questionTimers: new Map(),
         deadlineExtensionMs: 0,
+        draftPublication: null,
         woken,
         wake,
         signal: controller.signal,

@@ -405,8 +405,12 @@ describe('readGatesFile: worktree precedence', () => {
                 );
             },
         });
-        // One read, one answer: the worktree's file is authoritative once it exists.
-        expect(seen).toEqual([`/workspaces/o/${USER}/.worktrees/${ROOT}/.bellows.yaml`]);
+        // The worktree's file is authoritative for the gates once it exists; the clone's is read
+        // too, for the evidence policy only — the worktree is the run's to edit.
+        expect(seen).toEqual([
+            `/workspaces/o/${USER}/.worktrees/${ROOT}/.bellows.yaml`,
+            `/workspaces/o/${USER}/r/.bellows.yaml`,
+        ]);
         expect(result.config?.image).toBe('node:20');
         expect(result.error).toBeNull();
         expect(result.source).toBe('worktree');

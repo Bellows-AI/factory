@@ -495,18 +495,19 @@ describe('Settings executors page', () => {
 });
 
 describe('Settings workflows page', () => {
-    // The page owns its own poll (`useDefaultWorkflowSettings`) rather than riding the layout's
+    // The page owns its own poll (`useWorkflowsManagement`) rather than riding the layout's
     // shared workspace/env polls — the same precedent `TaskComposerPage` sets for `useWorkflows`,
     // since no other settings page needs this data. Effects never fire under a static render, so
-    // this pins the one posture SSR can reach: the initial loading state, the page's one h1, and
+    // this pins the one posture SSR can reach: the page's one h1, no default-workflow panel, and
     // that it fetches nothing before mount.
-    it('says it is loading until the default-workflow poll answers', () => {
+    it('renders the workflows page with no default-workflow panel', () => {
         const html = render('/settings/workflows');
         expect(html.match(/<h1/g)?.length).toBe(1);
         expect(html).toContain('<h1>Workflows</h1>');
         expect(html).toContain('page-header-eyebrow');
         expect(html).toContain('page-header-description');
-        expect(html).toContain('status');
+        expect(html).not.toContain('Default workflow');
+        expect(html).not.toContain('Iterate on PR review comments');
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 

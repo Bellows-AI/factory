@@ -5,10 +5,11 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
-import type { UserRef, ExecutorScope, ExecutorType } from '@factory-ai/core';
+import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import type { EvidencePolicy, RecordedEvidence, ReviewEvidence } from './evidence-policy.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
@@ -33,6 +34,7 @@ export type FailureKind =
     | 'helper'
     | 'services'
     | 'config'
+    | 'policy'
     | 'runner_error';
 
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
@@ -197,12 +199,11 @@ export interface Job {
      */
     workflowName: string | null;
     /**
-     * The thread root's frozen gate-repair round limit (043, issue #49): how many bounded
-     * gate-fix rounds this default-workflow thread may spend, fixed at create. Null on every
-     * non-default thread, where no repair loop exists to bound. Only the thread read selects it
-     * — it is the task view's repair counter, not a claim input.
+     * The task's execution mode (051, issue #543): 'objective' for a task created without a
+     * workflow, 'workflow' for one that walks a named workflow's graph. Fixed on the root at
+     * create and inherited by every follow-up, retry and successor.
      */
-    defaultGateFixRounds?: number | null;
+    mode: JobMode;
     /**
      * When the user declared the task done — the verdict no run can make. Null until they say so,
      * and only settable on a finished task; it never replaces the run's own outcome.
@@ -487,6 +488,13 @@ export interface Claim {
      */
     gatesSource?: ClaimGatesSource;
     /**
+     * The evidence the repository requires before this work publishes or completes, read from the
+     * base clone's `.bellows.yaml`. ABSENT means none is required. `review` is the thread's review
+     * evidence as of this claim; the driver refuses a publish the pair does not authorise.
+     */
+    policy?: EvidencePolicy;
+    review?: ReviewEvidence;
+    /**
      * Whether the driver may publish after this run's succeeded gated run. ABSENT on a
      * workflow-less claim — the driver reads its absence as "publish", the exact behavior before
      * workflows existed, which is what keeps the no-workflow claim byte-identical. On a workflow
@@ -701,7 +709,7 @@ export interface JobStore {
              */
             executorScope?: ExecutorScope;
             /**
-             * The managed Jira connection (051, issue #546) the task selected, already authorized
+             * The managed Jira connection (054, issue #546) the task selected, already authorized
              * by the route. Stamped on the ROOT row only; every later row of the thread reads its
              * root's choice at use time, so nothing is copied and revoking is a delete.
              */
@@ -713,25 +721,15 @@ export interface JobStore {
              * values (`{{param.*}}` resolves from them on every row of the thread). The route
              * validates the values against the definition's declarations before calling; the
              * store freezes them as given. The name comes off the resolved record, the same trust
-             * pattern as `createdBy` — never off the body. Null when no workflow resolved, which
-             * is the ordinary create and behaves exactly as it did before 027.
+             * pattern as `createdBy` — never off the body. Null when no workflow was named: the
+             * row is stamped objective mode (051) and no graph ever walks it.
              */
             workflow?: {
-                /** Null for the code-owned default (issue #209): never a row in `workflow`. */
-                id: string | null;
+                id: string;
                 name: string;
                 node: string;
                 snapshot: WorkflowDefinition;
                 params: ParamValues;
-                /**
-                 * The default workflow's launch-time options, only for the code-owned default
-                 * (039, and the round limit 043). Absent on a named workflow.
-                 */
-                defaultOptions?: {
-                    reviewReconciliation: boolean;
-                    mergeConflictAutofix: boolean;
-                    gateFixRounds: number;
-                };
             } | null;
         }
     ): Promise<{ id: string } | 'purging'>;
@@ -1071,6 +1069,12 @@ export interface JobStore {
              */
             treeChanged?: boolean | null;
             /**
+             * The attempt's evidence record: the tree it started from, the tree its gates assessed
+             * and how they ended. Stored on the row under the lease guard; absent overwrites to
+             * null, so a retry never inherits the killed attempt's evidence.
+             */
+            evidence?: RecordedEvidence | null;
+            /**
              * The publication the run reports — the PR identity a successful publish landed.
              * Omitted (or null) when the run published nothing, so no `job_pr` row is invented.
              * When present it is recorded in the verdict's own transaction, and its `repo` is
@@ -1273,7 +1277,12 @@ export interface CreateJobStoreDeps {
             workspacePath: string,
             repo: string,
             worktreeId: string | null
-        ): Promise<{ config: BellowsConfig | null; error: string | null; source: ClaimGatesSource | null }>;
+        ): Promise<{
+            config: BellowsConfig | null;
+            error: string | null;
+            source: ClaimGatesSource | null;
+            policy?: EvidencePolicy;
+        }>;
     };
     /**
      * The member executor store's claim-time reader. Declared inline like `env`, because `db/`

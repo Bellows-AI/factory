@@ -142,6 +142,7 @@ export const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
     helper: 'helper failed',
     services: 'service failed',
     config: 'config error',
+    policy: 'evidence required',
     runner_error: 'runner error',
 };
 

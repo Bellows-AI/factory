@@ -23,6 +23,11 @@
  * services-only file parses to no gates — while every other unknown top-level key is still
  * refused.
  *
+ * A top-level `policy:` block configures the evidence a task must carry before it publishes or
+ * completes: `gates: required` and/or `review: required`, the one value each key takes.
+ * `readGatesFile` takes it from the base clone only, never the task worktree, so a run cannot
+ * edit away the requirement it must meet.
+ *
  * Comments, blank lines, and bare / single- / double-quoted scalars are tolerated. Everything
  * else — tabs, unknown keys, a seventeenth gate, a flag-shaped image — throws with the line
  * number, and `readGatesFile` turns that into the job's `gateError`.
@@ -35,6 +40,15 @@ export interface GateDef {
     readonly name: string;
     readonly command: string;
 }
+
+/** The evidence a repository requires; an absent key requires nothing. */
+export interface EvidencePolicy {
+    gates?: true;
+    review?: true;
+}
+
+export const POLICY_REQUIRED = 'required';
+const POLICY_KEYS = ['gates', 'review'] as const;
 
 export interface BellowsConfig {
     readonly image: string;
@@ -106,6 +120,10 @@ interface BellowsState {
     /** Inside a top-level `services:` block — the services half, not this parser's grammar. */
     inServices: boolean;
     seenServices: boolean;
+    /** Inside a top-level `policy:` block, and whether one was seen. */
+    inPolicy: boolean;
+    seenPolicy: boolean;
+    policy: EvidencePolicy;
     itemIndent: number;
     /** Where the gate currently being read began — the line its errors name. */
     itemLine: number;
@@ -134,6 +152,14 @@ function finishGate(state: BellowsState): void {
     state.current = null;
 }
 
+/** The `policy:` header: one block per file, no inline value. */
+function openPolicyBlock(state: BellowsState, line: number, inlineValue: string | undefined): void {
+    if (state.seenPolicy) fail(line, 'a second "policy:" block');
+    if (inlineValue !== undefined && inlineValue !== '') fail(line, 'policy takes keys, not a value');
+    state.seenPolicy = true;
+    state.inPolicy = true;
+}
+
 /**
  * A top-level (indent 0) line: `environment:` opens the block this parser reads; `services:` is
  * skipped wholesale as the driver's own grammar; anything else is refused.
@@ -155,8 +181,12 @@ function handleTopLevelLine(state: BellowsState, line: number, trimmed: string):
         state.inServices = true;
         return;
     }
+    if (match[1] === 'policy') {
+        openPolicyBlock(state, line, match[3]);
+        return;
+    }
     if (match[1] !== 'environment') {
-        fail(line, `unknown top-level key "${match[1]}" — only "environment:" and "services:" are read`);
+        fail(line, `unknown top-level key "${match[1]}" — only "environment:", "services:" and "policy:" are read`);
     }
     if (state.inEnvironment) fail(line, 'a second "environment:" block');
     if (match[3] !== undefined && match[3] !== '') {
@@ -242,6 +272,20 @@ function handleEnvironmentField(state: BellowsState, line: number, key: string, 
     }
 }
 
+/** `gates: required` / `review: required` under `policy:` — the one value is `required`. */
+function handlePolicyField(state: BellowsState, line: number, trimmed: string): void {
+    const match = KEY_VALUE.exec(trimmed);
+    const key = POLICY_KEYS.find((candidate) => candidate === match?.[1]);
+    if (!match || key === undefined) {
+        fail(line, `unknown policy key "${match?.[1] ?? trimmed}" — only ${POLICY_KEYS.join(' and ')} are read`);
+    }
+    if (state.policy[key]) fail(line, `policy ${key} is declared twice`);
+    if (scalar(line, match[3] ?? '', key) !== POLICY_REQUIRED) {
+        fail(line, `policy ${key} must be "${POLICY_REQUIRED}"`);
+    }
+    state.policy[key] = true;
+}
+
 /** One non-blank, non-comment line of the file, dispatched to the block its indentation names. */
 function processLine(state: BellowsState, line: number, rawLine: string): void {
     const trimmed = rawLine.trim();
@@ -257,6 +301,14 @@ function processLine(state: BellowsState, line: number, rawLine: string): void {
     if (state.inServices) {
         if (indent > 0) return;
         state.inServices = false;
+    }
+
+    if (state.inPolicy) {
+        if (indent > 0) {
+            handlePolicyField(state, line, trimmed);
+            return;
+        }
+        state.inPolicy = false;
     }
 
     if (indent === 0) {
@@ -285,6 +337,11 @@ function processLine(state: BellowsState, line: number, rawLine: string): void {
 }
 
 export function parseBellows(text: string): BellowsConfig | null {
+    return parseBellowsWithPolicy(text).config;
+}
+
+/** The gates half and the evidence policy of one file. */
+export function parseBellowsWithPolicy(text: string): { config: BellowsConfig | null; policy: EvidencePolicy } {
     const state: BellowsState = {
         image: null,
         setup: null,
@@ -292,6 +349,9 @@ export function parseBellows(text: string): BellowsConfig | null {
         inGates: false,
         inServices: false,
         seenServices: false,
+        inPolicy: false,
+        seenPolicy: false,
+        policy: {},
         itemIndent: -1,
         itemLine: 0,
         current: null,
@@ -308,9 +368,18 @@ export function parseBellows(text: string): BellowsConfig | null {
     }
     finishGate(state);
 
-    if (!state.inEnvironment) return null;
+    // A required gate with nothing declared would pass vacuously — the opposite of the requirement.
+    if (state.policy.gates && !state.inEnvironment) {
+        throw new BellowsError('.bellows.yaml: policy requires gates but no environment declares any');
+    }
+    if (!state.inEnvironment) return { config: null, policy: state.policy };
     if (state.image === null) throw new BellowsError('.bellows.yaml: environment declares no image');
-    return { image: state.image, ...(state.setup === null ? {} : { setup: state.setup }), gates: state.gates };
+    const config = {
+        image: state.image,
+        ...(state.setup === null ? {} : { setup: state.setup }),
+        gates: state.gates,
+    };
+    return { config, policy: state.policy };
 }
 
 /**
@@ -329,6 +398,11 @@ export interface GatesRead {
      * A claim's 'clone' answer is only as current as the clone's checked-out files.
      */
     readonly source: GatesSource | null;
+    /**
+     * The evidence policy, from the BASE CLONE's file only — the task worktree is the run's to
+     * edit, and a policy read from it would let a run waive its own requirement. Absent: none.
+     */
+    readonly policy?: EvidencePolicy;
 }
 
 export type GatesSource = 'worktree' | 'clone';
@@ -424,14 +498,34 @@ export async function readGatesFile(options: {
     const read = await readFirstExisting(resolved.paths, readFile);
     // The clone is always the last candidate; the worktree, when asked for, the first.
     const source: GatesSource = read.at === resolved.paths.length - 1 ? 'clone' : 'worktree';
-    if ('error' in read) return { config: null, error: read.error, source };
+    // The policy is the BASE CLONE's, whichever tree answered the gates: the worktree is the run's.
+    const cloneRead = source === 'clone' ? read : await readFirstExisting(resolved.paths.slice(-1), readFile);
+    const cloned = parseCloneFile(cloneRead);
+    if (cloned.error !== null) return { config: null, error: cloned.error, source };
+    const policy = cloned.policy ? { policy: cloned.policy } : {};
+    if ('error' in read) return { config: null, error: read.error, source, ...policy };
     // A worktree file that exists but cannot be read is the run's answer — the same named-error
     // channel a clone file's failure takes. Only a missing file falls through to no config.
-    if (read.text === null) return { config: null, error: null, source };
+    if (read.text === null) return { config: null, error: null, source, ...policy };
     try {
-        return { config: parseBellows(read.text), error: null, source };
+        return { config: parseBellows(read.text), error: null, source, ...policy };
     } catch (e) {
-        return { config: null, error: (e as Error).message, source };
+        return { config: null, error: (e as Error).message, source, ...policy };
+    }
+}
+
+/** The evidence policy of the clone's file, or the reason it cannot be read — a requirement fails closed. */
+function parseCloneFile(read: Awaited<ReturnType<typeof readFirstExisting>>): {
+    policy: EvidencePolicy | null;
+    error: string | null;
+} {
+    if ('error' in read) return { policy: null, error: read.error };
+    if (read.text === null) return { policy: null, error: null };
+    try {
+        const { policy } = parseBellowsWithPolicy(read.text);
+        return { policy: policy.gates || policy.review ? policy : null, error: null };
+    } catch (e) {
+        return { policy: null, error: (e as Error).message };
     }
 }
 

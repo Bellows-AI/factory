@@ -452,9 +452,12 @@ function applyEnvironmentEntry(item: BellowsItem, content: string): void {
 function applyPreamble(content: string): { seenServices: boolean; inGatesBlock: boolean } {
     const emptyList = content.match(/^services:\s*\[\s*\]$/);
     if (content === 'services:' || emptyList) return { seenServices: true, inGatesBlock: false };
-    if (content.startsWith('environment:')) return { seenServices: false, inGatesBlock: true };
+    if (isBoardBlock(content)) return { seenServices: false, inGatesBlock: true };
     refuseTopLevel(content);
 }
+
+/** The board-read halves of the file, skipped wholesale here: the gates `environment:` and the evidence `policy:`. */
+const isBoardBlock = (content: string): boolean => content.startsWith('environment:') || content.startsWith('policy:');
 
 /**
  * Advances the gates-block state for one line, and whether the main loop should skip it: every
@@ -469,7 +472,7 @@ function advanceGatesBlock(inGatesBlock: boolean, indent: number): { inGatesBloc
 
 /** Handles a line back at indentation 0 while parsing service items — a new top-level key. */
 function applyTopLevelDuringServices(content: string): boolean {
-    if (content.startsWith('environment:')) return true;
+    if (isBoardBlock(content)) return true;
     refuseTopLevel(content);
 }
 

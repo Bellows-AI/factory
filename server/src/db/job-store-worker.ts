@@ -5,7 +5,9 @@
  */
 
 import type { TransactionSql } from 'postgres';
-import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
+import type { EvidencePolicy } from './evidence-policy.js';
+import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { exists, insertWorkflowSuccessor, runtimePatch, workspacePathFor } from './job-store-rows.js';
 import type {
@@ -278,12 +280,22 @@ export async function completeJob(
     // the attempt's whole write, so an absent kind overwrites to null — a success and a
     // pre-column row read the same, "not a failure".
     const failureKindPatch = failureKind ?? null;
+    const evidencePatch = result.evidence ? sql.json(result.evidence as never) : null;
     const runtimeUpdate = context === null ? sql`runtime` : sql`coalesce(runtime, '{}'::jsonb) || ${context}`;
     // One transaction, because the terminality answer must describe the thread AS THE
     // VERDICT lands: the walk below runs on the same connection, where the just-updated
     // row's new status is visible and no follow-up inserted after the commit can be.
     return sql.begin(async (tx) => {
-        const rows = await tx<{ id: string; root_job_id: string; repo: string | null; stop_pending: boolean }[]>`
+        const rows = await tx<
+            {
+                id: string;
+                root_job_id: string;
+                repo: string | null;
+                stop_pending: boolean;
+                workflow_node: string | null;
+                policy: EvidencePolicy | null;
+            }[]
+        >`
             update job set
                 status      = ${status},
                 exit_code   = ${exitCode},
@@ -306,11 +318,14 @@ export async function completeJob(
                 agent_turns = ${agentTurnsPatch},
                 summary = ${summaryPatch},
                 failure_kind = ${failureKindPatch},
+                -- The attempt's evidence record, same overwrite rule: a retry never inherits the
+                -- killed attempt's tree or gate outcome.
+                evidence = ${evidencePatch},
                 runtime     = ${runtimeUpdate}
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}
             -- The subselect reads the row as the statement began: the stamp this UPDATE cleared.
-            returning id, root_job_id, repo,
+            returning id, root_job_id, repo, workflow_node, policy,
                 (select cancel_requested_at is not null from job where org_id = ${orgId} and id = ${id}) as stop_pending
         `;
         if (!rows[0]) {
@@ -330,10 +345,25 @@ export async function completeJob(
         // snapshot on its root and skips it: its completes behave byte-identically to
         // before 027.
         const [root] = await tx<WorkflowTransitionRoot[]>`
-            select workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
+            select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
             from job
             where org_id = ${orgId} and id = ${rootJobId}
         `;
+        // The policy gate on completion: a succeeded verdict that ENDS work must carry the
+        // evidence the repository requires, however the agent ran. A refusal rewrites the verdict
+        // to a failed `policy` one inside this transaction, so the thread never sees the success.
+        const verdict = await enforceCompletionPolicy(
+            tx,
+            { orgId, rootJobId, id: completedId },
+            {
+                node: rows[0]!.workflow_node,
+                snapshot: root?.workflow_snapshot,
+                policy: rows[0]!.policy,
+                evidence: result.evidence,
+            },
+            { status: status as JobOutcome, output, failureKind: failureKindPatch }
+        );
+
         // A Stop the verdict outran is honored: the thread stays where the Stop left it.
         if (root && !stopPending) {
             await runWorkflowTransition(tx, {
@@ -341,9 +371,7 @@ export async function completeJob(
                 rootJobId,
                 root,
                 completedId,
-                status: status as JobOutcome,
-                output,
-                failureKind: failureKindPatch,
+                ...verdict,
                 treeChanged,
                 prs,
             });
@@ -431,6 +459,7 @@ async function maybeRecordPublicationAndClose(
 }
 
 export interface WorkflowTransitionRoot {
+    mode: JobMode;
     workflow_id: string | null;
     workflow_name: string | null;
     workflow_snapshot: WorkflowDefinition | null;
@@ -505,7 +534,8 @@ function transitionContextOf(
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
     const { orgId, rootJobId, root, completedId, prs } = input;
-    if (!root.workflow_snapshot) return;
+    // An objective-mode thread (051) has no graph: its verdict is the whole story.
+    if (root.mode !== WORKFLOW_MODE || !root.workflow_snapshot) return;
     // The same per-root advisory lock the claim takes: a transition insert must not interleave
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up
     // claimed against the one-worktree guarantee.

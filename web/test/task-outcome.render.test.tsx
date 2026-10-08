@@ -1,3 +1,4 @@
+import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { FORBIDDEN, job, renderDetail } from './tasks-fixtures.js';
 
@@ -156,60 +157,16 @@ describe('TaskOutcome', () => {
         expect(name).not.toBe(node);
     });
 
-    it('shows the gate-repair round counter on a default-workflow thread with repair rows', () => {
-        // The thread read stamps the root's frozen limit on every row, so the newest carries it.
-        const html = renderDetail({
-            jobs: [
-                job({ defaultGateFixRounds: 3 }),
-                job({
-                    id: '22222222-2222-4222-8222-222222222222',
-                    workflowNode: 'gate-fix',
-                    status: 'failed',
-                    defaultGateFixRounds: 3,
-                }),
-                job({
-                    id: '33333333-3333-4333-8333-333333333333',
-                    workflowNode: 'gate-fix',
-                    status: 'succeeded',
-                    defaultGateFixRounds: 3,
-                }),
-            ],
-        });
-        expect(html).toContain('Gate repair');
-        expect(html).toContain('2/3');
-    });
+    it("shows the thread's mode in the Execution section, and no gate-repair row", () => {
+        const objective = renderDetail({ jobs: [job({ mode: OBJECTIVE_MODE })] });
+        expect(objective).toContain('Mode');
+        expect(objective).toContain('objective');
+        expect(objective).not.toContain('Gate repair');
 
-    it('renders no repair row when the limit is null (not a default-workflow thread) or zero (repair off)', () => {
-        const notDefault = renderDetail({ jobs: [job({ defaultGateFixRounds: null, workflowNode: 'task' })] });
-        expect(notDefault).not.toContain('Gate repair');
-
-        const off = renderDetail({
-            jobs: [job({ defaultGateFixRounds: 0, workflowNode: 'task', status: 'failed' })],
-        });
-        expect(off).not.toContain('Gate repair');
-    });
-
-    it("counts the thread's gate-fix rows against the limit the rows carry", () => {
-        // A follow-up lands off-graph after the repair rounds; the counter still reads the whole
-        // thread's gate-fix rows against the frozen limit.
-        const html = renderDetail({
-            jobs: [
-                job({ defaultGateFixRounds: 1 }),
-                job({
-                    id: '22222222-2222-4222-8222-222222222222',
-                    workflowNode: 'gate-fix',
-                    status: 'failed',
-                    defaultGateFixRounds: 1,
-                }),
-                job({
-                    id: '33333333-3333-4333-8333-333333333333',
-                    workflowNode: null,
-                    command: 'one more thing',
-                    defaultGateFixRounds: 1,
-                }),
-            ],
-        });
-        expect(html).toContain('1/1');
+        const workflow = renderDetail({ jobs: [job({ mode: WORKFLOW_MODE, workflowName: 'fix-issue' })] });
+        expect(workflow).toContain('Mode');
+        expect(workflow).toContain('workflow');
+        expect(workflow).not.toContain('Gate repair');
     });
 
     it('shows thread context and cost, and fabricates neither', () => {

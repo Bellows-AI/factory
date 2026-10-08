@@ -31,6 +31,7 @@ const job = (overrides: Record<string, unknown> = {}) => ({
     rootJobId: 'job-1',
     workflowNode: null,
     workflowName: null,
+    mode: 'objective',
     doneAt: null,
     cancelRequestedAt: null,
     workspacePath: null,
@@ -218,6 +219,17 @@ describe('factory job investigate', () => {
 
         expect(code).toBe(0);
         expect(out.join('')).toMatch(/scope:\s+org/);
+    });
+
+    it('prints the task mode in the detail block', async () => {
+        const detail = job({ mode: 'objective' });
+        const thread = { jobs: [detail] };
+        const { out, io } = harness(ENV, (index) => (index === 0 ? json(detail) : json(thread)));
+
+        const code = await run(['job', 'investigate', 'job-1'], io);
+
+        expect(code).toBe(0);
+        expect(out.join('')).toMatch(/mode:\s+objective/);
     });
 
     it('prints { job, thread } with --json', async () => {

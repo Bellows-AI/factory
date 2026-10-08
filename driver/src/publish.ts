@@ -92,6 +92,8 @@ export interface GitState {
     unpushed: number;
     /** The checkout has a committer identity configured; the fallback is only applied when not. */
     hasIdentity: boolean;
+    /** The tree fingerprint (`HEAD:hash` of the uncommitted state); null when the probe measured none. */
+    fingerprint: string | null;
 }
 
 /** What the publish attempt answers to the loop. */
@@ -113,6 +115,24 @@ export interface PublishResult {
     /** The branch the PR targets — the origin default the task branched from. */
     baseBranch: string | null;
     prNumber: number | null;
+    /**
+     * True when the publish was refused because the checkout is no longer the revision the required
+     * evidence assessed (`PublishOptions.revision`). Nothing was pushed; the loop reports it as a
+     * `policy` failure rather than a `publish` one.
+     */
+    stale?: true;
+}
+
+/** How one publish differs from the board's end-of-run one. */
+export interface PublishOptions {
+    /**
+     * The tree fingerprint the required evidence assessed. When set, the publish pushes only a
+     * checkout whose own probe still reports it, and refuses `stale` otherwise — the check sits
+     * here, in the one function both executors publish through, so docker and kubernetes cannot drift.
+     */
+    revision?: string;
+    /** Open a NEW pull request as a draft — the agent's mid-run publish. An existing PR is reused as it is. */
+    draft?: boolean;
 }
 
 /** The PR number a url names, or null when it does not point at a pull request. */
@@ -204,6 +224,10 @@ export const publishNothing = (reason: string): PublishResult => ({
     baseBranch: null,
     prNumber: null,
 });
+
+/** Why a publish bound to a revision pushed nothing: the tree moved after the evidence was taken. */
+export const STALE_REVISION_REASON =
+    'the checkout changed after the required evidence was taken — nothing was pushed; re-run the gates (and review) over the current work';
 
 export const publishFailed = (reason: string): PublishResult => ({
     ok: false,
@@ -309,9 +333,18 @@ export function parseGitState(stdout: string): GitState {
             dirty: p.dirty === true,
             unpushed: typeof p.unpushed === 'number' && Number.isFinite(p.unpushed) && p.unpushed >= 0 ? p.unpushed : 0,
             hasIdentity: p.hasIdentity === true,
+            fingerprint: typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null,
         };
     } catch {
-        return { cloned: false, branch: '', defaultBranch: 'main', dirty: false, unpushed: 0, hasIdentity: false };
+        return {
+            cloned: false,
+            branch: '',
+            defaultBranch: 'main',
+            dirty: false,
+            unpushed: 0,
+            hasIdentity: false,
+            fingerprint: null,
+        };
     }
 }
 
@@ -515,9 +548,9 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
 async function resolveOrCreatePr(
     runStep: RunPublishStep,
     step: RunPublishStep,
-    context: { branch: string; plan: PublishPlan; state: GitState }
+    context: { branch: string; plan: PublishPlan; state: GitState; draft: boolean }
 ): Promise<string | null> {
-    const { branch, plan, state } = context;
+    const { branch, plan, state, draft } = context;
     // A `pr view` that fails is the ordinary "no PR yet", not a step failure: the next call
     // creates one.
     const existing = await runStep({
@@ -558,14 +591,16 @@ async function resolveOrCreatePr(
     const body = [
         summarized?.body,
         plan.issueNumber ? `Closes #${plan.issueNumber}.` : null,
-        'Published by the factory board after the declared gates passed.',
+        draft
+            ? 'Draft published by the agent while the task runs; the gates may not have passed yet.'
+            : 'Published by the factory board after the declared gates passed.',
     ]
         .filter(Boolean)
         .join('\n\n');
     const created = await step({
         label: 'gh pr create',
         entrypoint: 'gh',
-        args: ['pr', 'create', '--head', branch, '--title', title, '--body', body],
+        args: ['pr', 'create', '--head', branch, '--title', title, '--body', body, ...(draft ? ['--draft'] : [])],
         env: true,
         inRepo: true,
     });
@@ -582,6 +617,7 @@ async function resolveOrCreatePr(
 export async function publishCheckout(
     config: DriverConfig,
     job: BoardJob,
+    options: PublishOptions | undefined,
     runStep: RunPublishStep
 ): Promise<PublishResult> {
     const repo = worktreeDir(config, job);
@@ -607,6 +643,9 @@ export async function publishCheckout(
         // tree are the two ordinary no-ops; everything else flows.
         const state = await probeCheckout(runStep, repo);
         if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
+        if (options?.revision !== undefined && state.fingerprint !== options.revision) {
+            return { ...publishFailed(STALE_REVISION_REASON), stale: true };
+        }
         if (!state.dirty && state.unpushed === 0) {
             return publishNothing('no uncommitted changes and nothing unpushed');
         }
@@ -634,7 +673,7 @@ export async function publishCheckout(
         });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
-        const prUrl = await resolveOrCreatePr(runStep, step, { branch, plan, state });
+        const prUrl = await resolveOrCreatePr(runStep, step, { branch, plan, state, draft: options?.draft === true });
 
         return {
             ok: true,

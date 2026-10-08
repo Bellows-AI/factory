@@ -529,9 +529,8 @@
         white-space: nowrap;
     }
 
-    /* The default-workflow settings panel's two switches and the composer's matching pair
-       (issue 208): a labelled checkbox row, the one boolean-control primitive this design system
-       has — no dedicated toggle/switch family exists. */
+    /* A labelled checkbox row, the one boolean-control primitive this design system has — no
+       dedicated toggle/switch family exists. */
     .settings-toggle {
         align-items: center;
         display: flex;
