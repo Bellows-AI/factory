@@ -284,6 +284,92 @@ describe('the agent’s draft publication (issue #547)', () => {
     });
 });
 
+describe('an objective-mode task, ticket to draft publication (issue #550)', () => {
+    const LANDED: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'factory/objective',
+        prUrl: 'https://github.com/Bellows-AI/factory/pull/77',
+        reason: null,
+        repository: 'Bellows-AI/factory',
+        baseBranch: 'main',
+        prNumber: 77,
+    };
+
+    /** An objective claim: gated, and carrying no `publish` key — the board never reserves publication. */
+    const objectiveJob = (n: number): BoardJob => {
+        const claim = gatedJob(n);
+        expect('publish' in claim).toBe(false);
+        return claim;
+    };
+
+    it('revises after a gate failure and a review finding, publishes a draft twice, and completes on the current evidence', async () => {
+        const board = stubBoard([objectiveJob(1)]);
+        // Mutable on purpose: the agent "fixes the code" mid-run, which flips the gate's answer.
+        const outcomes: Record<string, number> = { test: 1 };
+        const { stack, gates } = stubGateStack(outcomes, { control: true });
+        const adHoc: number[] = [];
+        const answers: number[] = [];
+        const runner: ReturnType<typeof stubRunner> = stubRunner(
+            async (running) => {
+                const key = `bellows/${USER}/.worktrees/${objectiveJob(1).id}`;
+                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                if (!control?.publisher) throw new Error('no publisher on the control entry');
+                const gate = async () => adHoc.push((await stack.manager.runGate(key, 'test')).exitCode);
+                // 1. implement, run the gate: red.
+                await gate();
+                // 2. revise, rerun: green; publish the first draft.
+                outcomes.test = 0;
+                await gate();
+                answers.push((await servePublish(control.publishing, control.publisher)).status);
+                // 3. a review finding sends the agent back; the revision reruns the gate before the
+                //    draft is updated.
+                await gate();
+                answers.push((await servePublish(control.publishing, control.publisher)).status);
+                return ok();
+            },
+            { publish: LANDED }
+        );
+        const options: unknown[] = [];
+        runner.publishGit = async (_job, _token, publishOptions) => {
+            options.push(publishOptions);
+            return LANDED;
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(adHoc).toEqual([1, 0, 0]);
+        expect(answers).toEqual([200, 200]);
+        expect(options).toEqual([{ draft: true }, { draft: true }, undefined]);
+        // The close-of-run gates still run over the final tree — policy, not a stage the agent picked.
+        expect(stack.ran.names.slice(-2)).toEqual(['test', 'lint']);
+        const verdict = board.board.completed[0]!;
+        expect(verdict.status).toBe('succeeded');
+        expect(verdict.publication?.prNumber).toBe(77);
+    });
+
+    it('does not complete green when the agent left the gate red, whatever it published', async () => {
+        const board = stubBoard([objectiveJob(1)]);
+        const { stack, gates } = stubGateStack({ test: 1 }, { control: true });
+        const runner: ReturnType<typeof stubRunner> = stubRunner(
+            async (running) => {
+                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                if (!control?.publisher) throw new Error('no publisher on the control entry');
+                await servePublish(control.publishing, control.publisher);
+                return ok();
+            },
+            { publish: LANDED }
+        );
+        runner.publishGit = async () => LANDED;
+
+        await drive({ ...board, runner, gates });
+
+        const verdict = board.board.completed[0]!;
+        expect(verdict.status).toBe('failed');
+        expect(verdict.failureKind).toBe('gate');
+    });
+});
+
 function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
     options: {

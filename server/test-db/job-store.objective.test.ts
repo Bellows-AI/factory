@@ -116,6 +116,37 @@ describe.skipIf(!enabled)('objective mode — database', () => {
         ]);
     });
 
+    it('issue 550: survives a dead worker and a red gate on one row, then settles succeeded under the final evidence', async () => {
+        const root = await queueObjective();
+        const first = await claim();
+        await sql`update job set lease_expires_at = now() - interval '1 second' where id = ${first.id}`;
+
+        // The dead worker's lease is reclaimed in place: same row, fresh token, bumped attempt.
+        const second = await claim();
+        expect(second).toMatchObject({ id: first.id, attempts: 2 });
+        expect(second.leaseToken).not.toBe(first.leaseToken);
+
+        // The red gate fails the run; the retry is a new row of the same objective thread.
+        await store.gates(second.id, second.leaseToken, failedGate);
+        await store.complete(second.id, second.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'red',
+            failureKind: 'gate',
+            treeChanged: true,
+        });
+        const retry = await store.createRetry(root, null);
+        if (typeof retry === 'string') throw new Error(`retry refused: ${retry}`);
+        const third = await claim();
+        expect(third.id).toBe(retry.id);
+        await store.gates(third.id, third.leaseToken, [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }]);
+        await store.complete(third.id, third.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+
+        const rows = (await store.thread(root))!;
+        expect(rows.map((row) => row.status).sort()).toEqual(['failed', 'succeeded']);
+        expect(rows.every((row) => row.mode === OBJECTIVE_MODE)).toBe(true);
+    });
+
     it('a retry inherits the objective mode', async () => {
         const root = await queueObjective();
         const claimed = await claim();
