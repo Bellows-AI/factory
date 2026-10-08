@@ -126,6 +126,8 @@ describe('the route table', () => {
         expect(all).toContain('settings/workspace');
         expect(all).toContain('settings/repos');
         expect(all).toContain('settings/executors');
+        // Workflows are dormant: the page exists, but no address serves it.
+        expect(all).not.toContain('settings/workflows');
         expect(all).toContain('tasks');
         expect(all).toContain('tasks/new');
         expect(all).toContain('tasks/:id');

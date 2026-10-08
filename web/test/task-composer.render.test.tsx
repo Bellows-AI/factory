@@ -242,14 +242,16 @@ describe('TaskComposer — the prompt and the launch', () => {
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
-    it('hides the workflow select on a board that serves no workflows', () => {
-        // No list, no process to pick: the selector is absent, and the workflow details section
-        // says the prompt runs as written.
+    it('hides the workflow select and its details step when no workflow list is given', () => {
+        // No list, no process to pick: the selector and the workflow details section are absent,
+        // and readiness takes step 3.
         const html = renderComposer({ workflows: null });
         expect(html).not.toContain('Reusable workflow');
         expect(html).not.toContain('composer-steps');
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(2);
-        expect(html).toContain('Without a workflow, your prompt runs as written.');
+        expect(html).not.toContain('Workflow details');
+        expect(html).not.toContain('Without a workflow, your prompt runs as written.');
+        expect(html).toMatch(/3<\/span>[\s\S]*?Readiness/);
     });
 
     it('runs the raw prompt when no workflow is chosen: no params, no gate', () => {

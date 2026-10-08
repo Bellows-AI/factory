@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { EngineRow } from '../src/db/workflow-engine.js';
 import { nextTransition } from '../src/db/workflow-engine.js';
-import { BASE_WORKFLOW } from '../src/db/workflow-templates.js';
+import { FIX_ISSUE_WORKFLOW } from './fix-issue-workflow.js';
 import { checkWorkflowParams } from '../src/db/workflow-schema.js';
 import { validateDefinition } from '../src/db/workflow-schema-validate.js';
 import { done, gate, row } from './workflow-engine-fixtures.js';
 
-describe('the base workflow walkthrough', () => {
+describe('the fix-issue fixture walkthrough', () => {
     /** Walks the happy path and the loop, inserting as the store would, so every node's template
      * is filled at least once under the walkthrough's rows. */
     const insert = (t: Extract<ReturnType<typeof nextTransition>, { action: 'insert' }>, id: string): EngineRow => ({
@@ -26,7 +26,7 @@ describe('the base workflow walkthrough', () => {
         let t = nextTransition({
             params: {},
             command: '',
-            snapshot: BASE_WORKFLOW.definition,
+            snapshot: FIX_ISSUE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'fetch', node: 'fetch-issue' }),
         });
@@ -41,7 +41,7 @@ describe('the base workflow walkthrough', () => {
         t = nextTransition({
             params: {},
             command: '',
-            snapshot: BASE_WORKFLOW.definition,
+            snapshot: FIX_ISSUE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'impl', node: 'implement' }),
         });
@@ -55,7 +55,7 @@ describe('the base workflow walkthrough', () => {
         t = nextTransition({
             params: {},
             command: '',
-            snapshot: BASE_WORKFLOW.definition,
+            snapshot: FIX_ISSUE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'rev1', node: 'review', output: '1. src/x.ts is wrong\nVERDICT: BLOCKERS' }),
         });
@@ -67,7 +67,11 @@ describe('the base workflow walkthrough', () => {
 
         // fix succeeded → review (round two), then clean → publish
         rows[rows.length - 1] = row({ id: 'fix1', node: 'fix', output: 'fixed' });
-        t = nextTransition({ snapshot: BASE_WORKFLOW.definition, rows, completed: done({ id: 'fix1', node: 'fix' }) });
+        t = nextTransition({
+            snapshot: FIX_ISSUE_WORKFLOW.definition,
+            rows,
+            completed: done({ id: 'fix1', node: 'fix' }),
+        });
         expect(t).toMatchObject({ action: 'insert', node: { name: 'review' } });
         if (t.action !== 'insert') return;
         steps.push(t.node.name);
@@ -76,7 +80,7 @@ describe('the base workflow walkthrough', () => {
         t = nextTransition({
             params: {},
             command: '',
-            snapshot: BASE_WORKFLOW.definition,
+            snapshot: FIX_ISSUE_WORKFLOW.definition,
             rows,
             completed: done({ id: 'rev2', node: 'review', output: 'all good\nVERDICT: CLEAN' }),
         });
@@ -92,7 +96,7 @@ describe('the base workflow walkthrough', () => {
         const t = nextTransition({
             params: {},
             command: '',
-            snapshot: BASE_WORKFLOW.definition,
+            snapshot: FIX_ISSUE_WORKFLOW.definition,
             rows,
             completed: done({
                 id: 'impl',
@@ -111,17 +115,17 @@ describe('the base workflow walkthrough', () => {
     });
 
     it('carries the publish flag on exactly the publish node and the fresh policy on review', () => {
-        for (const node of BASE_WORKFLOW.definition.nodes) {
+        for (const node of FIX_ISSUE_WORKFLOW.definition.nodes) {
             expect(node.publish === true).toBe(node.name === 'publish');
             expect(node.session === 'fresh').toBe(node.name === 'review');
         }
     });
 });
 
-describe('the seeded issue parameter', () => {
+describe('the fixture issue parameter', () => {
     it('declares a required issue param accepting a bare #number or an issues URL', () => {
-        expect(validateDefinition(BASE_WORKFLOW.definition).ok).toBe(true);
-        expect(BASE_WORKFLOW.definition.params).toEqual([
+        expect(validateDefinition(FIX_ISSUE_WORKFLOW.definition).ok).toBe(true);
+        expect(FIX_ISSUE_WORKFLOW.definition.params).toEqual([
             {
                 name: 'issue',
                 pattern: expect.any(String),
@@ -129,21 +133,21 @@ describe('the seeded issue parameter', () => {
                 example: '#123',
             },
         ]);
-        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: '#127' }).ok).toBe(true);
+        expect(checkWorkflowParams(FIX_ISSUE_WORKFLOW.definition, { issue: '#127' }).ok).toBe(true);
         expect(
-            checkWorkflowParams(BASE_WORKFLOW.definition, { issue: 'https://github.com/acme/widget/issues/44' }).ok
+            checkWorkflowParams(FIX_ISSUE_WORKFLOW.definition, { issue: 'https://github.com/acme/widget/issues/44' }).ok
         ).toBe(true);
         // The bare form keeps its '#': the driver's issue parse and the branch/commit issue
         // references read it off the interpolated prompt.
-        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: '127' }).ok).toBe(false);
-        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: 'issues 44' }).ok).toBe(false);
-        expect(checkWorkflowParams(BASE_WORKFLOW.definition, { issue: 'x#44' }).ok).toBe(false);
+        expect(checkWorkflowParams(FIX_ISSUE_WORKFLOW.definition, { issue: '127' }).ok).toBe(false);
+        expect(checkWorkflowParams(FIX_ISSUE_WORKFLOW.definition, { issue: 'issues 44' }).ok).toBe(false);
+        expect(checkWorkflowParams(FIX_ISSUE_WORKFLOW.definition, { issue: 'x#44' }).ok).toBe(false);
         // A param-less launch is refused — the point of the declaration.
-        expect(checkWorkflowParams(BASE_WORKFLOW.definition, {}).ok).toBe(false);
+        expect(checkWorkflowParams(FIX_ISSUE_WORKFLOW.definition, {}).ok).toBe(false);
     });
 
     it("fetches the declared param and carries the member's words, with no mining fallback", () => {
-        const fetchNode = BASE_WORKFLOW.definition.nodes[0]!;
+        const fetchNode = FIX_ISSUE_WORKFLOW.definition.nodes[0]!;
         expect(fetchNode.name).toBe('fetch-issue');
         expect(fetchNode.prompt).toContain('{{param.issue}}');
         expect(fetchNode.prompt).toContain('{{command}}');

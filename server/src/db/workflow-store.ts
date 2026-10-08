@@ -4,7 +4,6 @@ import { type WorkflowDefinition, type WorkflowParam, WORKFLOW_NAME, SCOPE_SEGME
 import { validateDefinition } from './workflow-schema-validate.js';
 import { compileDefinition } from './workflow-blocks/index.js';
 import type { CompileRefusal } from './workflow-blocks/types.js';
-import { BASE_WORKFLOW } from './workflow-templates.js';
 
 /**
  * Which scope a workflow belongs to — exactly one, the env-var scopes: the organization, a member,
@@ -103,8 +102,7 @@ const toRecord = (row: WorkflowRow): WorkflowRecord => ({
 
 /**
  * The structural refusals `create` checks before ever touching `validateDefinition` or the
- * database: a bad name, a malformed scope segment, or a name reserved for the seeded base
- * workflow. Pulled out of `create` so the method itself stays a straight line.
+ * database: a bad name or a malformed scope segment. Pulled out of `create` so the method itself stays a straight line.
  */
 function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal | null {
     if (typeof name !== 'string' || !WORKFLOW_NAME.test(name.trim()) || name.trim() !== name) {
@@ -122,16 +120,6 @@ function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal |
                 return { code: ERROR_CODES.BAD_SCOPE, message: `repo scope ${label} must be a checkout-safe segment` };
             }
         }
-    }
-    // The base workflow's org slot is the board's: seedBase refreshes that one row to the
-    // shipped template every boot, so an admin definition here would be silently replaced
-    // on the next start. The name stays reserved in the org scope; sibling scopes keep
-    // their own same-named definitions untouched.
-    if (scope.kind === 'org' && name.trim() === BASE_WORKFLOW.name) {
-        return {
-            code: ERROR_CODES.NAME_TAKEN,
-            message: `"${BASE_WORKFLOW.name}" is reserved for the board's own org-level workflow`,
-        };
     }
     return null;
 }
@@ -232,7 +220,6 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
     get(id: string): Promise<WorkflowRecord | null>;
     remove(id: string): Promise<boolean>;
     findByName(name: string, target: WorkflowTarget): Promise<WorkflowRecord | null>;
-    seedBase(): Promise<void>;
 } {
     const gate = async () => {
         if (ready) await ready;
@@ -293,11 +280,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
             if (!existing) return { notFound: true };
 
             // Scope is immutable after create — rebuilt from the row, never accepted from a
-            // caller, so a rename can never re-gate a definition into a different scope. This is
-            // also what keeps the base workflow's org slot refused here exactly as it is in
-            // `create`: renaming IN PLACE still names `fix-issue` at org scope, which
-            // `checkCreateInput` reserves — an edit lands only by renaming the row away first,
-            // which frees the name for the next boot's `seedBase` to reseed (docs/workflows.md).
+            // caller, so a rename can never re-gate a definition into a different scope.
             const refusal = checkCreateInput(name, scopeOfRow(existing));
             if (refusal) return { refused: true, ...refusal };
 
@@ -354,32 +337,6 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
                 limit 1
             `;
             return rows[0] ? toRecord(rows[0]) : null;
-        },
-
-        async seedBase() {
-            await gate();
-            // The base workflow ships with the board, org-level. Its row is the board's, so it
-            // tracks the board's code: a definition an older boot seeded (a pre-parameter shape,
-            // say) refreshes to what this build ships instead of serving a stale process forever
-            // — the name is reserved in the org scope (create refuses it), so there is no edit
-            // path and no admin row for the refresh to run over. A running thread is safe
-            // regardless, having frozen its snapshot at creation. A member's own same-named
-            // definition in another scope is never touched. Idempotent by name — the
-            // `is distinct from` guard makes a matching row a no-op, and the insert populates
-            // only an absent row.
-            await sql`
-                update workflow
-                set definition = ${sql.json(BASE_WORKFLOW.definition as never)}, updated_at = now()
-                where org_id = ${orgId}
-                  and name = ${BASE_WORKFLOW.name}
-                  and user_id is null and repo_owner is null and repo_name is null
-                  and definition is distinct from ${sql.json(BASE_WORKFLOW.definition as never)}
-            `;
-            await sql`
-                insert into workflow (org_id, name, definition)
-                values (${orgId}, ${BASE_WORKFLOW.name}, ${BASE_WORKFLOW.definition as never})
-                on conflict do nothing
-            `;
         },
     };
 }
