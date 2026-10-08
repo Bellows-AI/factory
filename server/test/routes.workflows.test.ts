@@ -85,7 +85,6 @@ function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean 
         async findByName() {
             return null;
         },
-        async seedBase() {},
     };
     return stub as unknown as WorkflowStore & typeof stub;
 }

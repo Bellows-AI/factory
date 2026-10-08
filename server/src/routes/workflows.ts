@@ -60,11 +60,7 @@ function noStore(reply: FastifyReply) {
  *   `DELETE` alone for a user-scope row: `DELETE` lets an admin remove one they cannot see, but a
  *   blind admin EDIT of a member's private definition is a bigger blast radius than a delete, so
  *   `PUT` refuses 404 before it ever reaches the modify check. A `scope` field in the body is a
- *   `BAD_SCOPE` refusal, since scope is immutable after create. The base org workflow's own row
- *   can never be edited in place — its name is reserved (`checkCreateInput`) — but renaming it to
- *   anything else frees the name, and the next boot's `seedBase` reseeds a fresh copy into the
- *   freed slot. That is the documented, working shape of "edit the base workflow": never a bug to
- *   chase.
+ *   `BAD_SCOPE` refusal, since scope is immutable after create.
  * - `DELETE /api/workflows/:id` — an admin, the owning member, or any member within repo scope.
  *
  * Refusals carry named codes: a pasted foreign pipeline fails loudly (UNKNOWN_KEY, UNKNOWN_NODE,

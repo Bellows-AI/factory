@@ -37,27 +37,8 @@ function watchConsole(page: Page): string[] {
 }
 
 /**
- * The board owns the base workflow's row and refreshes it at boot — seedBase fires without being
- * awaited (orgs.ts), so the first list read can still serve a stale pre-parameter definition. The
- * refresh must land BEFORE the page loads: the visit is the one a member gets, and a test takes no
- * second one. toPass bounds the wait — a refresh that never lands is a real failure, not a race
- * to hide.
- */
-async function awaitSeedRefresh(page: Page) {
-    await expect(async () => {
-        const response = await page.request.get('/api/workflows');
-        expect(response.ok()).toBe(true);
-        const { workflows } = (await response.json()) as {
-            workflows: { name: string; params: { name: string }[] }[];
-        };
-        const fixIssue = workflows.find((choice) => choice.name === 'fix-issue');
-        expect(fixIssue?.params.map((param) => param.name)).toContain('issue');
-    }).toPass({ timeout: 15_000 });
-}
-
-/**
  * Open one of the execution-context selectors the way a member on a short screen does: scroll it
- * up first. The four-section page puts section 2 near the bottom of a 720px viewport, and the
+ * up first. The three-section page puts section 2 near the bottom of a 720px viewport, and the
  * menu is downward-only (issue 224) and fixed-positioned, so opened there it lands below the fold.
  */
 async function openSelector(page: Page, label: string) {
@@ -69,49 +50,26 @@ async function openSelector(page: Page, label: string) {
 test.describe('the guided task composer', () => {
     test.beforeEach(({ page }) => withExecutor(page));
 
-    test('a workflow that declares parameters asks for them in words before Start', async ({ page }) => {
+    test('workflows are dormant: no selector, no details step, and the prompt runs as written', async ({ page }) => {
         const problems = watchConsole(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
         await expect(composer.getByText('What should the agent do?')).toBeVisible();
         await expect(composer.getByLabel('Repository')).toBeVisible();
         await expect(composer.getByLabel('Executor')).toBeVisible();
-        await expect(composer.getByLabel('Reusable workflow')).toBeVisible();
+        await expect(composer.getByLabel('Reusable workflow')).toHaveCount(0);
+        await expect(composer.getByRole('heading', { name: 'Workflow details' })).toHaveCount(0);
 
-        // The board's own process is offered by name: the Listbox opens on the trigger click and
-        // its options render in the anchored listbox.
-        await openSelector(page, 'Reusable workflow');
-        await page.getByRole('option', { name: 'fix-issue' }).click();
-
-        // Selecting it surfaces one labelled input per declared parameter, with the field's
-        // label spoken in words, not the raw identifier.
-        const issue = composer.getByRole('textbox', { name: 'Issue' });
-        await expect(issue).toBeVisible();
+        // Readiness takes the workflow details' place as step 3.
+        await expect(composer.locator('.composer-section').last()).toContainText('3');
+        await expect(composer.locator('.composer-section').last()).toContainText('Readiness');
 
         await page.getByLabel('What should the agent do?').fill('fix the login crash');
-        await issue.fill('not an issue reference');
-        await issue.blur();
-
-        // The refusal speaks the declaration's own words first — the seeded `issue` param
-        // describes the shape it wants — and never the regex source: the raw rule lives only
-        // under the field's Format details.
-        await expect(composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })).toBeVisible();
-        await expect(composer.getByText('Format details')).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Start task' })).toBeEnabled();
+        await expect(composer.getByText(/Your prompt will run as written\./)).toBeVisible();
         const visible = await composer.innerText();
-        expect(visible).not.toContain('#\\d+');
         for (const token of FORBIDDEN) expect(visible, token).not.toContain(token);
-
-        // A value the declaration refuses keeps Start dark, and the blocker says what is missing.
-        const start = page.getByRole('button', { name: 'Start task' });
-        await expect(start).toBeDisabled();
-        await expect(composer.getByText('Complete the required workflow details to continue.')).toBeVisible();
-
-        // A value the declaration accepts lights Start and the preflight speaks the actual choices.
-        await issue.fill('#12');
-        await expect(start).toBeEnabled();
-        await expect(composer.getByText(/, with the fix-issue workflow\./)).toBeVisible();
 
         await page.screenshot({ path: `${SHOTS}/composer-guided.png`, fullPage: true });
         await page.setViewportSize({ width: 360, height: 800 });
@@ -122,31 +80,26 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the execution context is three columns on a wide screen, and the optional steps sit behind a closed disclosure', async ({
-        page,
-    }) => {
+    test('the execution context shares one row on a wide screen, with no workflow step controls', async ({ page }) => {
         const problems = watchConsole(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
         const context = composer.locator('.composer-context');
         await expect(context).toBeVisible();
 
-        // At 1440 the three selectors share one row, a column each (plan §2.3): same top, left to
-        // right, none wider than a third of the section.
+        // At 1440 the selectors share one row, a column each (plan §2.3): same top, left to right,
+        // none wider than a third of the section.
         const contextBox = await context.boundingBox();
         const boxes: { x: number; y: number }[] = [];
-        for (const label of ['Repository', 'Executor', 'Reusable workflow']) {
+        for (const label of ['Repository', 'Executor']) {
             const box = await page.getByLabel(label).boundingBox();
             expect(box).not.toBeNull();
             expect(box!.width).toBeLessThan(contextBox!.width / 3);
             boxes.push(box!);
         }
         expect(boxes[1]!.y).toBeCloseTo(boxes[0]!.y, 0);
-        expect(boxes[2]!.y).toBeCloseTo(boxes[0]!.y, 0);
         expect(boxes[0]!.x).toBeLessThan(boxes[1]!.x);
-        expect(boxes[1]!.x).toBeLessThan(boxes[2]!.x);
 
         // No workflow step controls exist (issue 543): objective mode has nothing to configure.
         await expect(composer.locator('.composer-steps')).toHaveCount(0);
@@ -158,7 +111,6 @@ test.describe('the guided task composer', () => {
     test('renders correctly in dark theme at desktop and mobile widths', async ({ page }) => {
         const problems = watchConsole(page);
         await page.addInitScript(() => localStorage.setItem('factory.theme', 'dark'));
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 
@@ -171,7 +123,7 @@ test.describe('the guided task composer', () => {
         await noHorizontalOverflow(page);
         // Every context trigger still clears the compact-shell touch-target floor in dark theme,
         // the same as light — the theme swaps color tokens only.
-        for (const label of ['Repository', 'Executor', 'Reusable workflow']) {
+        for (const label of ['Repository', 'Executor']) {
             const box = await page.getByLabel(label).boundingBox();
             expect(box).not.toBeNull();
             expect(box!.height).toBeGreaterThanOrEqual(44);
@@ -180,13 +132,11 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('an unchosen workflow runs the raw prompt, and an empty prompt explains the dark Start', async ({ page }) => {
+    test('the raw prompt runs as written, and an empty prompt explains the dark Start', async ({ page }) => {
         const problems = watchConsole(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
-        await expect(page.getByLabel('Reusable workflow')).toHaveText('No workflow');
 
         // Fresh page, empty prompt: Start is dark by design and says so.
         const start = page.getByRole('button', { name: 'Start task' });
@@ -203,31 +153,23 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the keyboard path shares the button validation: marks, focuses, and never queues', async ({ page }) => {
+    test('the keyboard path shares the button validation: an empty prompt never queues', async ({ page }) => {
         const problems = watchConsole(page);
         await stubLaunch(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
-        await openSelector(page, 'Reusable workflow');
-        await page.getByRole('option', { name: 'fix-issue' }).click();
-        await page.getByLabel('What should the agent do?').fill('fix the login crash');
+        const request = page.getByLabel('What should the agent do?');
 
-        const issue = composer.getByRole('textbox', { name: 'Issue' });
-        await issue.fill('not an issue reference');
-
-        // The shortcut is the button, never a bypass: the invalid submission marks the field,
-        // focuses it, and sends nothing — the member is still on the composer.
-        await issue.press('ControlOrMeta+Enter');
-        await expect(composer.locator('.composer-param-error', { hasText: 'Enter an issue reference' })).toBeVisible();
-        await expect(issue).toBeFocused();
+        // The shortcut is the button, never a bypass: an empty prompt sends nothing and says why.
+        await request.press('ControlOrMeta+Enter');
+        await expect(composer.getByText('Describe the task to continue.')).toBeVisible();
         expect(page.url()).toContain('/tasks/new');
 
-        // A valid value lets the same shortcut queue: the board answers 201 and the page walks
+        // A prompt lets the same shortcut queue: the board answers 201 and the page walks
         // straight to the new task.
-        await issue.fill('#12');
-        await issue.press('ControlOrMeta+Enter');
+        await request.fill('fix the login crash');
+        await request.press('ControlOrMeta+Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(problems.join('\n')).toBe('');
     });
@@ -240,7 +182,6 @@ test.describe('the guided task composer', () => {
         await page.unroute('**/api/workspace');
         await mockExecutors(page, [E2E_EXECUTOR_ROW], [{ ...E2E_REPO, status: 'cloning' }]);
         const launches = countLaunches(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const prompt = page.getByLabel('What should the agent do?');
@@ -270,7 +211,6 @@ test.describe('the guided task composer', () => {
     test('Go to Repositories carries the draft there and back', async ({ page }) => {
         await page.unroute('**/api/workspace');
         await mockExecutors(page, [E2E_EXECUTOR_ROW], []);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const prompt = page.getByLabel('What should the agent do?');
@@ -296,7 +236,6 @@ test.describe('the guided task composer', () => {
             ]
         );
         const launches = countLaunches(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         await page.getByLabel('What should the agent do?').fill('fix the login crash');
@@ -312,7 +251,6 @@ test.describe('the guided task composer', () => {
         page,
     }) => {
         const problems = watchConsole(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
@@ -338,7 +276,6 @@ test.describe('the guided task composer', () => {
     });
 
     test("the board's refusal keeps the draft, and Discard empties it only after asking", async ({ page }) => {
-        await awaitSeedRefresh(page);
         await page.route('**/api/jobs', (route) =>
             route.request().method() === 'POST'
                 ? route.fulfill({ status: 503, json: { error: 'The board is unavailable' } })
@@ -382,14 +319,10 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         const held = await mockExecutors(page, [], [E2E_REPO]);
         const launches = countLaunches(page);
         await stubLaunch(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
         await prompt(page).fill('fix the login crash');
-        await openSelector(page, 'Reusable workflow');
-        await page.getByRole('option', { name: 'fix-issue' }).click();
-        await composer.getByRole('textbox', { name: 'Issue' }).fill('#12');
 
         // No executor: the one red banner, with the way to fix it.
         const banner = composer.locator('.banner-bad');
@@ -407,8 +340,6 @@ test.describe('the draft survives the configuration detour (F1)', () => {
 
         // Everything as it was left, and the new executor chosen by the composer's own autoselect.
         await expect(prompt(page)).toHaveValue('fix the login crash');
-        await expect(page.getByLabel('Reusable workflow')).toHaveText('fix-issue');
-        await expect(composer.getByRole('textbox', { name: 'Issue' })).toHaveValue('#12');
         await expect(page.getByLabel('Executor')).toHaveText('fresh-executor');
         await expect(composer.locator('.banner-bad')).toHaveCount(0);
         // Nothing launches on its own: the return only restores.
@@ -421,16 +352,14 @@ test.describe('the draft survives the configuration detour (F1)', () => {
             command: 'fix the login crash',
             executor: 'fresh-executor',
             repo: `${E2E_REPO.owner}/${E2E_REPO.name}`,
-            workflow: 'fix-issue',
-            workflowParams: { issue: '#12' },
         });
+        expect(launches.bodies[0]).toMatchObject({ workflow: null });
         expect(problems.join('\n')).toBe('');
     });
 
     test('Cancel in Settings comes back to the same draft', async ({ page }) => {
         await mockExecutors(page, []);
         const launches = countLaunches(page);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
@@ -500,7 +429,6 @@ test.describe('the draft survives the configuration detour (F1)', () => {
                 config: {},
             },
         ]);
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         await prompt(page).fill('fix the login crash');
@@ -540,7 +468,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         // The two choices a fresh composer would pick differently: a non-default executor and the
         // second repository. The return remounts the tasks area, so the workspace poll starts over
         // — while it is pending the page hands in an empty executor list, which must not clamp the
-        // held choice away, and the workflow list must be asked for the held repository's context.
+        // held choice away. Workflows are dormant, so no workflow list is asked for at all.
         const problems = watchConsole(page);
         await mockExecutors(
             page,
@@ -558,7 +486,6 @@ test.describe('the draft survives the configuration detour (F1)', () => {
                 { owner: 'acme', name: 'api' },
             ]
         );
-        await awaitSeedRefresh(page);
         await page.goto('/tasks/new');
 
         await prompt(page).fill('fix the login crash');
@@ -579,10 +506,10 @@ test.describe('the draft survives the configuration detour (F1)', () => {
             await pollHeld;
             await route.fallback();
         });
-        const workflowContexts: (string | null)[] = [];
+        const workflowReads: string[] = [];
         page.on('request', (request) => {
             const url = new URL(request.url());
-            if (url.pathname === '/api/workflows') workflowContexts.push(url.searchParams.get('repo'));
+            if (url.pathname === '/api/workflows') workflowReads.push(url.search);
         });
         // The pending window only exists once the remounted poll has actually asked. Waiting for
         // the request — which the route above holds — is what makes it deterministic; asserting
@@ -597,7 +524,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await expect(page.getByLabel('Executor')).toHaveText('heavy');
         await expect(page.getByLabel('Repository')).toHaveText('acme/api');
         await expect(page.locator('.composer-notices')).toHaveCount(0);
-        expect(workflowContexts[0]).toBe('acme/api');
+        expect(workflowReads).toEqual([]);
         expect(problems.join('\n')).toBe('');
     });
 

@@ -168,9 +168,7 @@ function buildOrgStores({
 
 /**
  * Attaches the write-side stores to a runtime and starts its background work, in the one order
- * that matters: the base `fix-issue` workflow seeds (fired — no route on the read path needs it,
- * and a task naming `fix-issue` in the seeding's first seconds simply refuses with
- * UNKNOWN_WORKFLOW yet), THEN purge recovery is awaited (a row left `purging` is owned by a
+ * that matters: purge recovery is awaited (a row left `purging` is owned by a
  * process that no longer exists, and every workspace mutation and task insert refuses or
  * serializes behind a purging stamp — finishing each one here is what makes "boot recovery
  * before accepting mutations" true rather than aspirational; the single-process assumption is
@@ -188,7 +186,6 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.jobs = stores.jobs;
     runtime.prs = stores.prs;
     runtime.workflows = stores.workflows;
-    void stores.workflows.seedBase().catch((e: Error) => console.error(`[workflows] seed failed: ${e.message}`));
     try {
         await stores.purger?.recoverInterrupted();
     } catch (e) {
