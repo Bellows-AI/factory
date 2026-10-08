@@ -10,6 +10,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Personal and org access tokens | `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts` |
 | Liveness and readiness probes | `server/src/routes/health.ts` | `server/test/routes.health.test.ts` |
 | Packaged release version (`/api/version`, open) | `server/src/routes/version.ts`, `server/src/version.ts` | `server/test/routes.version.test.ts`, `server/test/auth.enforcement.test.ts` |
+| Skill discovery (`GET /api/skills`): name, description, declared requirements with env names, never the instructions | `server/src/routes/skills.ts`, `server/src/skills.ts` | `server/test/skills.test.ts` |
 | Dashboard payload (`/api/stats`) | `server/src/routes/stats.ts` | `server/test/routes.stats.get.test.ts` |
 | OTLP ingest, `/api/sessions/branch` | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
 | Jobs: create, claim, worker reports, actions, reclaims | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts` |

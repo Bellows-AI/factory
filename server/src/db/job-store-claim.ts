@@ -15,6 +15,7 @@ import {
     type JobMode,
     OPENCODE,
     RUNNER_MANAGED_KEYS,
+    skillSelectionProblems,
 } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
@@ -32,6 +33,7 @@ import type {
 } from './job-store-types.js';
 import { claimCommand } from './follow-up-recap.js';
 import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
+import { skillCatalog } from '../skills.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
 
@@ -51,6 +53,8 @@ export interface ClaimCandidateRow {
     workflow_name: string | null;
     mode: JobMode;
     root_command: string;
+    /** The thread ROOT's selected skills (053), read in the claim's RETURNING. */
+    skills: string[];
 }
 
 /**
@@ -159,6 +163,7 @@ async function claimNextCandidate(
                     workflow_name: string | null;
                     mode: JobMode;
                     root_command: string;
+                    skills: string[];
                 }[]
             >`
                 update job set
@@ -212,7 +217,9 @@ async function claimNextCandidate(
                           session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
-                           where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
+                          (select r.skills from job r
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as skills
             `;
 
             const row = rows[0];
@@ -257,7 +264,15 @@ async function claimNextCandidate(
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
             const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
             const command = await claimCommand(tx, orgId, rootJobId, row);
-            return buildClaimResult({ ...row, command }, rootJobId, { ...executor, ...gates, ...workflow });
+            // The thread root's selection checked against what this claim's env authorizes: names
+            // only, so selecting a skill never adds to the env and the sentence never carries a value.
+            const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv);
+            return buildClaimResult({ ...row, command }, rootJobId, {
+                ...executor,
+                ...gates,
+                ...workflow,
+                skillRefusal,
+            });
         }
     });
 }
@@ -431,6 +446,19 @@ export async function resolveClaimExecutor(
     return { claimEnv, executorType, executorRefusal };
 }
 
+/**
+ * The sentence that stops a claim whose selected skills cannot run, or null (issue #545): a
+ * selection the catalog lacks, or a skill whose connection has no env names in the claim's
+ * resolved env. Config-kind and recoverable — the member fixes the settings and retries.
+ */
+export function resolveClaimSkills(
+    skills: readonly string[],
+    claimEnv: Readonly<Record<string, string>> | undefined
+): string | null {
+    const problems = skillSelectionProblems(skillCatalog(), skills, claimEnv ?? {});
+    return problems.length === 0 ? null : `[skills unavailable] ${problems.join('; ')}. Fix this, then retry the task.`;
+}
+
 export interface ResolvedClaimGates {
     claimGates: BellowsConfig | null;
     gateError: string | null;
@@ -560,7 +588,7 @@ export async function resolveClaimHelperPlans(
 async function resolveClaimWorkflow(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
-    row: { workflow_node: string | null; workflow_name: string | null; mode: JobMode },
+    row: { workflow_node: string | null; workflow_name: string | null; mode: JobMode; skills: string[] },
     gates: ClaimGatesRead
 ): Promise<
     ResolvedClaimPublish & {
@@ -586,6 +614,7 @@ async function resolveClaimWorkflow(
         workflowName: row.workflow_name,
         snapshot,
         helperPlans,
+        skills: row.skills,
     };
     return {
         ...published,
@@ -605,12 +634,14 @@ export function buildClaimResult(
             helperPlans: ClaimHelperPlan[] | undefined;
             masterPrompt: string | null;
             turnContext: string | null;
+            skillRefusal: string | null;
         }
 ): Claim {
     const {
         claimEnv,
         executorType,
         executorRefusal,
+        skillRefusal,
         claimPath,
         claimGates,
         gateError,
@@ -629,6 +660,7 @@ export function buildClaimResult(
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
         executorRefusal,
+        skillRefusal,
         userId: row.created_by,
         masterPrompt,
         turnContext,

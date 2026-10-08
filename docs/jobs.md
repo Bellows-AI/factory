@@ -39,6 +39,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Auxiliary services, the dead-service probe | `driver/src/services.ts`, `scripts/bellows-read.sh`, `k8s-services.ts`, `docker-runner.ts` | `driver/test/services.test.ts`, `scripts-bellows-read.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Worktree sync (including a remote with no commits: an empty worktree on an unborn task branch), base-clone fast-forward, publish, PR identity | `driver/src/publish.ts`, `publish-stale.ts`, `scripts/git-worktree*.cjs`, `pr-summary.cjs` | `driver/test/worktree.test.ts`, `worktree-restore.test.ts`, `worktree-clone-ff.test.ts`, `worktree-empty-remote.test.ts`, `pr-summary.test.ts`, `publish-stale.test.ts` |
 | Objective mode (`job.mode`, an omitted `workflow`): created, claimed (no `publish`, `- Mode: objective` in the master prompt), settled with no transition | `core/src/job-mode.ts`, `server/migrations/051_job_mode.sql`, `server/src/db/job-store-actions.ts`, `job-store-claim.ts`, `master-prompt.ts` | `server/test-db/job-store.objective.test.ts`, `server/test/master-prompt.test.ts` |
+| Skill selection (`skills` on create, the root's names read at every claim): `requires-tools` / `requires-connections` in a SKILL.md `metadata:` block, checked at claim against the claim env's names (never values) into `skillRefusal`, which the driver fails `config` before any runner; the selection rides the master prompt. A custom `RUNNER_IMAGE` missing a declared tool is a stated limit — tools are pinned against the shipped Dockerfiles only | `core/src/skills.ts`, `server/src/skills.ts`, `server/migrations/053_job_skills.sql`, `server/src/db/job-store-claim.ts`, `master-prompt.ts`, `driver/src/loop-run.ts`, `cli/src/run.ts` | `core/test/skills.test.ts`, `server/test-db/job-store.skills.test.ts`, `server/test/routes.jobs.test.ts`, `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | GitHub review collect and reply | `driver/src/review.ts`, `review-helpers.ts`, `scripts/review-*.cjs` | `driver/test/review.test.ts`, `review-collect-script.test.ts`, `review-reply-script.test.ts` |
 | Session id, close-time turn count and summary | `driver/src/close-read.ts`, `docker-close-read.ts`, `scripts/claude-turns.cjs` | `driver/test/scripts-claude-turns.test.ts`, `scripts-opencode-readout.test.ts` |
 | Run artifacts (full log, transcript) | `driver/src/artifacts.ts`, `server/migrations/046_job_artifacts.sql` | `driver/test/artifacts.test.ts` |
@@ -78,7 +79,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   `core/test/docs.terminology.test.ts`.
 - **`blocked` and `config` are failure kinds 044's comment predates**; `FAILURE_KINDS` in
   `server/src/routes/job-field-validation.ts` is the set — `server/test/routes.jobs.test.ts`.
-  `config` (a refused `.bellows.yaml`, `driver/src/loop-run.ts`) is no ledger fault and rests the
+  `config` (a refused `.bellows.yaml` or an unmet skill requirement, `driver/src/loop-run.ts`) is no ledger fault and rests the
   thread at once — `driver/test/loop.test.ts`, `server/test/workflow-engine.next-transition.test.ts`.
 - **A `409` from heartbeat means the container must be killed.** The board can refuse a worker, it
   cannot stop one, so double execution is prevented by the driver acting on the refusal —

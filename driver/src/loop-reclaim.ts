@@ -39,6 +39,7 @@ function reclaimJob(reclaim: Reclaim): BoardJob {
         repo: reclaim.repo,
         executorType: CLAUDE_CODE,
         executorRefusal: null,
+        skillRefusal: null,
         masterPrompt: null,
     };
 }

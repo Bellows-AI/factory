@@ -510,6 +510,24 @@ function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly
 }
 
 /**
+ * A launch the board refused in the claim itself: the executor selection (`runner_error`), then
+ * the selected skills (issue #545: `config`, since the member fixes the settings or the selection
+ * and retries). True when the task was failed here and nothing may launch.
+ */
+async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boolean> {
+    const executorRefusal = executorRefusalReason(rt, job);
+    const [reason, failureKind, what] = executorRefusal
+        ? ([executorRefusal, 'runner_error', 'executor selection'] as const)
+        : ([job.skillRefusal, 'config', 'selected skills'] as const);
+    if (!reason) return false;
+    rt.log(`job ${job.id}: ${what} is not runnable, failing`);
+    await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>
+        rt.log(`job ${job.id}: could not report the ${what} failure: ${e.message}`)
+    );
+    return true;
+}
+
+/**
  * One attempt, end to end: the startup setup (the reclaim barrier, the checkout sync, the
  * gates re-read, the gate environment) and the run itself. The setup lives here rather than in
  * the claim loop so the attempt's state — heartbeat, abort signal, cleanup — covers all of it:
@@ -519,17 +537,7 @@ function gateHistory(rt: LoopRuntime, gateSession: GateSession | null): readonly
 export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     const { log } = rt;
     const executorType = job.executorType;
-    const executorRefusal = executorRefusalReason(rt, job);
-    if (executorRefusal) {
-        log(`job ${job.id}: executor selection is not runnable, failing`);
-        await report(rt, job, {
-            status: 'failed',
-            exitCode: null,
-            output: executorRefusal,
-            failureKind: 'runner_error',
-        }).catch((e: Error) => log(`job ${job.id}: could not report the executor failure: ${e.message}`));
-        return;
-    }
+    if (await failOnClaimRefusal(rt, job)) return;
 
     // The board always renders a master prompt for every agent claim (server/src/db/master-prompt.ts);
     // a missing, oversized or malformed one is a contract violation, never a reason to run the

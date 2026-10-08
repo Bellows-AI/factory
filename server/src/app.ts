@@ -15,6 +15,7 @@ import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
 import { jobRoutes } from './routes/jobs.js';
 import { repoRoutes } from './routes/repos.js';
+import { skillRoutes } from './routes/skills.js';
 import { statsRoutes } from './routes/stats.js';
 import { taskRoutes } from './routes/tasks.js';
 import { tokenRoutes } from './routes/tokens.js';
@@ -22,6 +23,7 @@ import { versionRoutes } from './routes/version.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
 import type { TelemetryStore } from './telemetry/store.js';
+import { skillCatalog } from './skills.js';
 import { readVersion } from './version.js';
 
 const HTTP_NOT_FOUND = 404;
@@ -146,6 +148,7 @@ export async function buildApp({
             await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
     }
+    await app.register(skillRoutes(skillCatalog));
     await app.register(statsRoutes(config, orgs, auth, now));
     await app.register(repoRoutes({ config, orgs }));
     if (store) await app.register(ingestRoutes(store));

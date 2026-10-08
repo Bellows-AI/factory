@@ -382,6 +382,13 @@ export interface Claim {
      */
     executorRefusal: string | null;
     /**
+     * Why the task's selected skills cannot run (issue #545) — a skill the catalog lacks, or a
+     * connection whose env names the task's environment does not hold. Names only, never a value.
+     * The driver fails the task `config` with this sentence before any runner starts; null when
+     * nothing was selected or every requirement is met.
+     */
+    skillRefusal: string | null;
+    /**
      * Who queued the job, so a worker can run it as them. Null for an unattributed job.
      *
      * It was shipped ahead of any consumer so that the per-user work would be a change to the
@@ -699,6 +706,12 @@ export interface JobStore {
              * refuses anything outside the pair, and the store stamps the resolved value.
              */
             executorScope?: ExecutorScope;
+            /**
+             * The skills the task selects (issue #545), names the route validated against the
+             * catalog. Stored on the root row only; a follow-up, retry or successor reads the
+             * root's selection at claim time (053). Absent is none.
+             */
+            skills?: readonly string[];
             /**
              * When the task runs a workflow: the resolved workflow — the id, the NAME frozen on
              * the root row as workflow_name, the ENTRY node the thread's first run walks, the

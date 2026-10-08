@@ -41,6 +41,13 @@ export interface BoardJob {
      */
     executorRefusal: string | null;
     /**
+     * Why the task's selected skills cannot run (issue #545): a skill the board lacks, or a
+     * connection its environment does not authorize — env NAMES only, never a value. The loop
+     * fails the task `config` with this sentence before any runner starts, on docker and
+     * kubernetes alike.
+     */
+    skillRefusal: string | null;
+    /**
      * The board-owned Factory execution context (issue #244) — the master-prompt.ts renderer's
      * text, delivered through the executor's own system-instruction channel, never concatenated
      * into `command`. Read defensively as `?? null`, like every board field: a board that predates
@@ -643,6 +650,7 @@ export function createBoard({
                 rootJobId: claimed.rootJobId ?? null,
                 executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
                 executorRefusal: textOrNull(claimed.executorRefusal),
+                skillRefusal: textOrNull(claimed.skillRefusal),
                 env: claimed.env ?? {},
             };
         },

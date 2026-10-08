@@ -103,6 +103,8 @@ export interface BoardClient {
         executor?: string | undefined;
         /** The scope `executor` names (issue 391); absent lets the board default to personal. */
         executorScope?: 'user' | 'org' | undefined;
+        /** The skills the task selects (issue #545); absent selects none. */
+        skills?: string[] | undefined;
     }): Promise<JobCreated>;
     listJobs(filters: {
         status?: string | undefined;
@@ -201,6 +203,7 @@ export function createBoardClient({
                 ...(input.repo !== undefined ? { repo: input.repo } : {}),
                 ...(input.executor !== undefined ? { executor: input.executor } : {}),
                 ...(input.executorScope !== undefined ? { executorScope: input.executorScope } : {}),
+                ...(input.skills !== undefined ? { skills: input.skills } : {}),
             };
             const payload = (await request('/api/jobs', {
                 method: 'POST',
