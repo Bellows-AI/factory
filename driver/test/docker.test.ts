@@ -4339,7 +4339,9 @@ describe('publishing the produced work', () => {
             dirty: true,
             unpushed: 2,
             hasIdentity: false,
+            fingerprint: null,
         });
+        expect(parseGitState('{"cloned":true,"fingerprint":"abc:def"}').fingerprint).toBe('abc:def');
         expect(parseGitState('')).toEqual({
             cloned: false,
             branch: '',
@@ -4347,6 +4349,7 @@ describe('publishing the produced work', () => {
             dirty: false,
             unpushed: 0,
             hasIdentity: false,
+            fingerprint: null,
         });
     });
 
@@ -4458,6 +4461,26 @@ describe('publishing the produced work', () => {
     ])('answers null when the probe %s', async (_label, extra, fail) => {
         const { runner } = publishRunner({ ...DIRTY_ON_MAIN, ...extra }, { fail });
         expect(await runner.probeTree?.(ISSUE_JOB)).toBeNull();
+    });
+
+    // Revision-bound evidence (issue #548): a publish bound to a revision pushes only that tree.
+    it('refuses a publish bound to a revision the checkout no longer holds, and runs no git step', async () => {
+        const { calls, runner } = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
+
+        const result = await runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' });
+
+        expect(result).toMatchObject({ ok: false, published: false, stale: true });
+        expect(shapesOf(calls)).toEqual(['probe']);
+    });
+
+    it('publishes a bound revision the checkout still holds, and an unbound publish ignores the fingerprint', async () => {
+        const bound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:1' });
+        expect(await bound.runner.publishGit?.(ISSUE_JOB, undefined, { revision: 'h:1' })).toMatchObject({
+            ok: true,
+            published: true,
+        });
+        const unbound = publishRunner({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' });
+        expect(await unbound.runner.publishGit?.(ISSUE_JOB)).toMatchObject({ ok: true, published: true });
     });
 
     it('branches, commits, pushes and opens the PR — in that order', async () => {

@@ -19,6 +19,8 @@ import {
 } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
+import { readReviewEvidence } from './job-store-evidence.js';
 import { withMintedToken } from './job-store-org-resolvers.js';
 import { workspacePathFor } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
@@ -53,7 +55,7 @@ export interface ClaimCandidateRow {
     workflow_name: string | null;
     mode: JobMode;
     root_command: string;
-    /** The thread ROOT's selected skills (053), read in the claim's RETURNING. */
+    /** The thread ROOT's selected skills (054), read in the claim's RETURNING. */
     skills: string[];
 }
 
@@ -263,6 +265,7 @@ async function claimNextCandidate(
             const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
             const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
+            const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates.claimPolicy);
             const command = await claimCommand(tx, orgId, rootJobId, row);
             // The thread root's selection checked against what this claim's env authorizes: names
             // only, so selecting a skill never adds to the env and the sentence never carries a value.
@@ -271,6 +274,7 @@ async function claimNextCandidate(
                 ...executor,
                 ...gates,
                 ...workflow,
+                ...evidence,
                 skillRefusal,
             });
         }
@@ -464,6 +468,14 @@ export interface ResolvedClaimGates {
     gateError: string | null;
     gatesSource: ClaimGatesSource | null;
     claimPath: string | null;
+    /** The repository's evidence policy (base clone only); null when none is declared. */
+    claimPolicy: EvidencePolicy | null;
+}
+
+/** What a claim carries of the evidence policy: the requirement and the thread's review evidence. */
+export interface ResolvedClaimEvidence {
+    policy?: EvidencePolicy;
+    review?: ReviewEvidence;
 }
 
 /**
@@ -480,10 +492,38 @@ export async function resolveClaimGates(
 ): Promise<ResolvedClaimGates> {
     const claimPath = workspacePathFor(ctx.orgId, ctx.hasWorkspaces, row.created_by);
     if (!gatesReader || !row.repo || !claimPath) {
-        return { claimGates: null, gateError: null, gatesSource: null, claimPath };
+        return { claimGates: null, gateError: null, gatesSource: null, claimPath, claimPolicy: null };
     }
     const read = await gatesReader.readFor(claimPath, row.repo, ctx.rootJobId);
-    return { claimGates: read.error ? null : read.config, gateError: read.error, gatesSource: read.source, claimPath };
+    return {
+        claimGates: read.error ? null : read.config,
+        gateError: read.error,
+        gatesSource: read.source,
+        claimPath,
+        claimPolicy: read.policy ?? null,
+    };
+}
+
+/**
+ * claim()'s evidence half. The policy is stamped on THIS row — re-stamped on every claim, so a
+ * retry or a reclaim is judged against the requirement as it stands now — and the thread's review
+ * evidence is derived from its rows only when a review is required (one read, otherwise none).
+ * The completion check (`completeJob`) reads the stamped policy, never the repository again.
+ */
+async function resolveClaimEvidence(
+    tx: TransactionSql,
+    ctx: { orgId: string; rootJobId: string },
+    row: { id: string; mode: JobMode },
+    policy: EvidencePolicy | null
+): Promise<ResolvedClaimEvidence> {
+    const { orgId, rootJobId } = ctx;
+    const stamp = policy === null ? null : tx.json(policy as never);
+    await tx`update job set policy = ${stamp} where org_id = ${orgId} and id = ${row.id}`;
+    if (policy === null) return {};
+    if (!policy.review) return { policy };
+    // An objective thread has no graph, so no reviewer.
+    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
+    return { policy, review: await readReviewEvidence(tx, { orgId, rootJobId }, snapshot) };
 }
 
 export interface ResolvedClaimPublish {
@@ -630,7 +670,8 @@ export function buildClaimResult(
     rootJobId: string,
     resolved: ResolvedClaimExecutor &
         ResolvedClaimGates &
-        ResolvedClaimPublish & {
+        ResolvedClaimPublish &
+        ResolvedClaimEvidence & {
             helperPlans: ClaimHelperPlan[] | undefined;
             masterPrompt: string | null;
             turnContext: string | null;
@@ -651,6 +692,8 @@ export function buildClaimResult(
         helperPlans,
         masterPrompt,
         turnContext,
+        policy,
+        review,
     } = resolved;
     return {
         id: row.id,
@@ -677,6 +720,8 @@ export function buildClaimResult(
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(claimGates || gateError ? { gates: claimGates, gateError } : {}),
         ...(gatesSource ? { gatesSource } : {}),
+        ...(policy ? { policy } : {}),
+        ...(review ? { review } : {}),
         ...(publish !== undefined ? { publish } : {}),
         ...(agent === false ? { agent } : {}),
         ...(helperPlans !== undefined ? { helperPlans } : {}),

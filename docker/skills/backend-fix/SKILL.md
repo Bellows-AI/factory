@@ -1,21 +1,30 @@
 ---
 name: backend-fix
-description: End-to-end fix of a backend bug under strict TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, and publish the pull request through the driver. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
+description: Optional playbook for fixing a backend bug end to end under TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, and publish the pull request through the driver. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
 metadata:
   requires-tools: git
 ---
 
 # Backend bug fix, end to end
 
-Runs a bug from ticket to merged-ready PR without pausing for approval at each step. It stops for
+An **optional playbook**: a suggested order for taking a bug from ticket to a merge-ready draft PR
+without pausing for approval at each step. The task's objective, the repo's own instructions and
+the board's policy come first; use the steps that fit and skip the ones that do not. It stops for
 exactly two things: an infrastructure blocker it cannot fix, and a genuine contradiction (Step 7).
+
+**The order is a suggestion, not a graph.** Go back whenever the evidence says so — a red gate, a
+review finding, a ticket comment you missed, a wrong module — and redo the steps that revision
+invalidates. Evidence from before a revision (a green gate, a clean review) does not carry over:
+rerun what the change touched before you publish or finish. What is *required* is policy, and the
+board enforces it whatever this playbook says: the declared gates over the final tree, the
+publication rules, the credentials you are given. This file only suggests how to meet them.
 
 Everything here is stack-agnostic. **Discover the project's conventions first (Step 0) and use
 them** — the commands in this skill are placeholders, not literals.
 
-## Hard rules — read first
+## Practices — read first
 
-- **TDD order is non-negotiable.** Red repro test → fix → green. Never bundle the test and the fix
+- **TDD order is the default.** Red repro test → fix → green. Do not bundle the test and the fix
   into one commit.
 - **Reproduce at the right layer.** If the fault isolates without I/O — a util, validator, pure
   function, calculation, model method — the failing **unit** test is the repro. Otherwise
@@ -150,7 +159,7 @@ plumbing.
 
 ### 5.4 Decide the reproduction layer
 
-Apply the hard rule above. If unit-reproducible, write the failing unit test now and confirm it
+Apply the reproduction-layer practice above. If unit-reproducible, write the failing unit test now and confirm it
 fails **for the right reason**. Otherwise state explicitly why the fault is not unit-reproducible
 and go to 5.5b.
 
@@ -247,7 +256,7 @@ A contradiction is feedback that cannot be reconciled automatically:
 - Two reviewers, or a reviewer and the ticket, ask for mutually exclusive changes.
 - A comment demands behaviour that contradicts the ticket's acceptance criteria.
 - A comment asks for a rearchitecture or a new feature well beyond the bug.
-- Complying would violate a hard rule above — hardcoded test ids, shape-only assertions, a
+- Complying would violate a practice above — hardcoded test ids, shape-only assertions, a
   non-surgical refactor, a swallowed error.
 
 When one appears: do not silently pick a side. Quote each position, name its source, lay out the
@@ -282,7 +291,7 @@ loop:
   git diff $(git merge-base origin/<base> HEAD)..HEAD    # before the first push
 
   Review it for correctness, error handling, security, and violations of the conventions in
-  the repo's own AGENTS.md / CLAUDE.md — plus this skill's hard rules. Ask for actionable
+  the repo's own AGENTS.md / CLAUDE.md — plus this skill's practices. Ask for actionable
   issues only, each with file:line and a concrete fix, and for an exact "NO ISSUES" when clean.
 
   if clean: break
@@ -297,4 +306,4 @@ earliest commits.
 Run the review as a subagent (Claude Code: `code-reviewer`, else `general-purpose`; OpenCode:
 `general`) with the diff, or through a headless CLI if the environment has one. Skip pure style
 nitpicks the linter already owns. If the review raises something that genuinely contradicts the
-ticket or a hard rule, treat it as Step 7 rather than degrading the fix to comply.
+ticket or a practice above, treat it as Step 7 rather than degrading the fix to comply.

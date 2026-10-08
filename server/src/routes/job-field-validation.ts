@@ -8,6 +8,7 @@ import {
     USER_SCOPE,
 } from '@factory-ai/core';
 import type { ExecutorScope } from '@factory-ai/core';
+import { GATES_OUTCOMES, type RecordedEvidence } from '../db/evidence-policy.js';
 import type { FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
 import {
     type ParamValues,
@@ -229,6 +230,7 @@ export interface CompleteFields {
     summary: string | null;
     failureKind: FailureKind | null;
     treeChanged: boolean | null;
+    evidence: RecordedEvidence | null;
 }
 
 /**
@@ -245,6 +247,7 @@ export const FAILURE_KINDS: readonly FailureKind[] = [
     'helper',
     'services',
     'config',
+    'policy',
     'runner_error',
 ];
 
@@ -315,7 +318,30 @@ function closingFieldRefusal(fields: Record<string, unknown>): { code: string; m
     if (fields.treeChanged !== undefined && fields.treeChanged !== null && typeof fields.treeChanged !== 'boolean') {
         return { code: ERROR_CODES.BAD_TREE_CHANGED, message: 'treeChanged must be a boolean or null' };
     }
+    if (badEvidence(fields.evidence)) {
+        return {
+            code: ERROR_CODES.BAD_EVIDENCE,
+            message: `evidence must be {treeBefore, treeAfter: string|null, gates: ${GATES_OUTCOMES.join('|')}} or null`,
+        };
+    }
     return null;
+}
+
+/** A fingerprint is `HEAD:sha256`, far under this; the bound refuses a payload built to bloat the row. */
+const FINGERPRINT_LIMIT = 256;
+
+const badFingerprint = (value: unknown): boolean =>
+    value !== null && (typeof value !== 'string' || value === '' || value.length > FINGERPRINT_LIMIT);
+
+function badEvidence(evidence: unknown): boolean {
+    if (evidence === undefined || evidence === null) return false;
+    if (typeof evidence !== 'object' || Array.isArray(evidence)) return true;
+    const { treeBefore, treeAfter, gates } = evidence as Record<string, unknown>;
+    return (
+        badFingerprint(treeBefore) ||
+        badFingerprint(treeAfter) ||
+        !GATES_OUTCOMES.includes(gates as RecordedEvidence['gates'])
+    );
 }
 
 /** The measured fields of a complete body, before the close-time pair — every bounded number. */
@@ -356,6 +382,13 @@ function measuredFieldRefusal(fields: Record<string, unknown>): { code: string; 
 const summaryValue = (summary: unknown): string | null =>
     typeof summary === 'string' && summary.trim() ? [...summary.trim()].slice(0, SUMMARY_LIMIT).join('') : null;
 
+/** The validated record, rebuilt field by field so no extra key rides into the row. */
+function evidenceValue(evidence: unknown): RecordedEvidence | null {
+    if (typeof evidence !== 'object' || evidence === null) return null;
+    const { treeBefore, treeAfter, gates } = evidence as RecordedEvidence;
+    return { treeBefore, treeAfter, gates };
+}
+
 export function validateCompleteFields(
     fields: Record<string, unknown>
 ): { ok: true; value: CompleteFields } | { ok: false; code: string; message: string } {
@@ -375,6 +408,7 @@ export function validateCompleteFields(
             summary: summaryValue(summary),
             failureKind: (failureKind as FailureKind | undefined) ?? null,
             treeChanged: typeof treeChanged === 'boolean' ? treeChanged : null,
+            evidence: evidenceValue(fields.evidence),
         },
     };
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { BoardJob } from './board.js';
+import type { BoardJob, VerdictEvidence } from './board.js';
+import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
@@ -291,6 +292,8 @@ type RunPhaseResult = {
     gatesSkipped: string | null;
     /** Whether the failed gate's tree differs from the synced one; null when unmeasured. */
     treeChanged: boolean | null;
+    /** The revision-bound evidence record; null when no policy is configured. */
+    evidence: VerdictEvidence | null;
 };
 
 /** What one run needs beyond its `AttemptCtx`: the session, its gates, and its I/O plumbing. */
@@ -402,8 +405,9 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      */
     const gating = gateSession && !outcome.refused && !state.lost ? gateSession : null;
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
-    // report) must not read as the agent's progress.
-    const treeAfter = gating ? await probeTreeNow(ctx) : null;
+    // report) must not read as the agent's progress. Under an evidence policy it is read gated or
+    // not: it is the revision the evidence is bound to.
+    const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
     if (await standDown(ctx, 'its gates')) return { done: true };
     const gated = gating
         ? await runGatesPhase(ctx, gating, outcome)
@@ -413,7 +417,17 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
         gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
     if (await standDown(ctx, 'its gates')) return { done: true };
 
-    return { done: false, outcome, ...gated, endedAt, treeChanged };
+    const evidence = evidencePolicyActive(job)
+        ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(gating !== null, gated) }
+        : null;
+    return { done: false, outcome, ...gated, endedAt, treeChanged, evidence };
+}
+
+/** How the declared gates ended for the evidence record: `none` when none were declared to run. */
+function gatesOutcomeOf(declared: boolean, gated: GatesPhase): GatesOutcome {
+    if (!declared) return 'none';
+    if (gated.gatesSkipped !== null || gated.deadServices.length > 0) return 'incomplete';
+    return gated.failure ? 'failed' : 'passed';
 }
 
 /** What the gates phase of one attempt found: the failed gate, the dead services, or why it skipped. */
@@ -452,19 +466,33 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
 async function runPostHelpersAndPublish(
     ctx: AttemptCtx,
     outcome: RunPhaseResult
-): Promise<{ helperFailure: HelperFailureReport | null; published: PublishResult | null } | null> {
+): Promise<{
+    helperFailure: HelperFailureReport | null;
+    published: PublishResult | null;
+    policyRefusal: string | null;
+} | null> {
     const { rt, job, state } = ctx;
     const helperFailure = await runPostHelperPhase(rt, job, state, postHelperSkipWhy(outcome.outcome));
     if (await standDown(ctx, 'its post-helpers')) return null;
     const ledger = ledgerOf({ ...outcome, helperFailure, published: null });
     let published: PublishResult | null = null;
+    const policyRefusal: string | null = null;
     if (publishDue(rt, job, ledger)) {
+        // The configured evidence is enforced HERE, whatever the agent chose to run: a refusal
+        // pushes nothing, and an authorisation binds the push to the revision it assessed.
+        const decision = evidenceDecision(job.policy, gatesEvidenceOf(outcome.evidence), job.review);
+        if (!decision.ok) return { helperFailure, published, policyRefusal: decision.reason };
         const publishToken = await askPublishToken(rt, job);
         // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
         // and pushing now would outlive it. The push itself is never fenced — it cannot be
         // recalled (issue #472).
         if (await standDown(ctx, 'its publish')) return null;
-        published = await publishBranch(rt, job, publishToken);
+        published = await publishBranch(
+            rt,
+            job,
+            publishToken,
+            decision.revision === null ? undefined : { revision: decision.revision }
+        );
         // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
         // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
         if (await standDown(ctx, 'its publish')) return null;
@@ -472,7 +500,7 @@ async function runPostHelpersAndPublish(
         // the verdict still carries the publication the agent made.
         if (published?.ok && !published.published && state.draftPublication) published = state.draftPublication;
     }
-    return { helperFailure, published };
+    return { helperFailure, published, policyRefusal };
 }
 
 /** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */
@@ -604,7 +632,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             if (outcome.done) return;
             const closing = await runPostHelpersAndPublish(ctx, outcome);
             if (closing === null) return;
-            const { helperFailure, published } = closing;
+            const { helperFailure, published, policyRefusal } = closing;
             await settle();
             // The liveness read and the gate verdicts are read BEFORE the finally below
             // releases the gate session — unregistering clears the recorded runs.
@@ -621,6 +649,8 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 gateRuns: gateHistory(rt, gateSession),
                 gatesSkipped: outcome.gatesSkipped,
                 treeChanged: outcome.treeChanged,
+                evidence: outcome.evidence,
+                policyRefusal,
             });
         } finally {
             closeRunControl(rt, state);

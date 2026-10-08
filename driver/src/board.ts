@@ -1,3 +1,4 @@
+import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
 import type { HelperPlan } from './helpers.js';
@@ -138,6 +139,13 @@ export interface BoardJob {
      */
     gatesSource?: 'worktree' | 'clone';
     /**
+     * The evidence the repository requires before this work may publish (`policy`), and the
+     * thread's review evidence as of the claim (`review`). Absent means nothing is required —
+     * today's behaviour. Enforced in `evidence-policy.ts` at the draft and end-of-run publish.
+     */
+    policy?: EvidencePolicy;
+    review?: ReviewEvidence;
+    /**
      * The ad-hoc gate credentials the LOOP mints for this attempt (`BELLOWS_GATE_URL` /
      * `BELLOWS_GATE_TOKEN`) — set just before spawn, never by the board, which is why it sits
      * beside `env` rather than inside it: the reserved-name filter that keeps a member's claim
@@ -264,7 +272,19 @@ export type FailureKind =
     | 'helper'
     | 'services'
     | 'config'
+    | 'policy'
     | 'runner_error';
+
+/**
+ * The attempt's evidence record, reported with the verdict: the tree fingerprint the run started
+ * from, the one its gates assessed, and how the declared gates ended (copied from the board's
+ * `evidence-policy.ts`).
+ */
+export interface VerdictEvidence {
+    treeBefore: string | null;
+    treeAfter: string | null;
+    gates: GatesOutcome;
+}
 
 /**
  * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
@@ -426,6 +446,8 @@ export interface Board {
              * a declared gate failed. Absent is unknown; the board rests a gate-fix edge on false.
              */
             treeChanged?: boolean;
+            /** The revision-bound evidence record; absent when the attempt measured none. */
+            evidence?: VerdictEvidence;
             /**
              * What the publish landed, when a publish did: the board's only trusted record of a
              * thread's repository — review traffic and the thread's wait key on it. Omitted when
@@ -502,6 +524,7 @@ function completeBody({
     summary,
     failureKind,
     treeChanged,
+    evidence,
     publication,
 }: Parameters<Board['complete']>[1]): Record<string, unknown> {
     return {
@@ -518,6 +541,8 @@ function completeBody({
         ...(failureKind ? { failureKind } : {}),
         // Measured only after a failed gate; unknown stays off the wire.
         ...(typeof treeChanged === 'boolean' ? { treeChanged } : {}),
+        // What the gates and the review assessed, for the board's completion check.
+        ...(evidence ? { evidence } : {}),
         // The identity of what was published, when anything was — the board keys review
         // traffic and the thread's wait on it.
         ...(publication ? { publication } : {}),

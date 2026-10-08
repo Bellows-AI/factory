@@ -9,6 +9,7 @@ import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
+import type { EvidencePolicy, RecordedEvidence, ReviewEvidence } from './evidence-policy.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
@@ -33,6 +34,7 @@ export type FailureKind =
     | 'helper'
     | 'services'
     | 'config'
+    | 'policy'
     | 'runner_error';
 
 /** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
@@ -493,6 +495,13 @@ export interface Claim {
      */
     gatesSource?: ClaimGatesSource;
     /**
+     * The evidence the repository requires before this work publishes or completes, read from the
+     * base clone's `.bellows.yaml`. ABSENT means none is required. `review` is the thread's review
+     * evidence as of this claim; the driver refuses a publish the pair does not authorise.
+     */
+    policy?: EvidencePolicy;
+    review?: ReviewEvidence;
+    /**
      * Whether the driver may publish after this run's succeeded gated run. ABSENT on a
      * workflow-less claim — the driver reads its absence as "publish", the exact behavior before
      * workflows existed, which is what keeps the no-workflow claim byte-identical. On a workflow
@@ -709,7 +718,7 @@ export interface JobStore {
             /**
              * The skills the task selects (issue #545), names the route validated against the
              * catalog. Stored on the root row only; a follow-up, retry or successor reads the
-             * root's selection at claim time (053). Absent is none.
+             * root's selection at claim time (054). Absent is none.
              */
             skills?: readonly string[];
             /**
@@ -1067,6 +1076,12 @@ export interface JobStore {
              */
             treeChanged?: boolean | null;
             /**
+             * The attempt's evidence record: the tree it started from, the tree its gates assessed
+             * and how they ended. Stored on the row under the lease guard; absent overwrites to
+             * null, so a retry never inherits the killed attempt's evidence.
+             */
+            evidence?: RecordedEvidence | null;
+            /**
              * The publication the run reports — the PR identity a successful publish landed.
              * Omitted (or null) when the run published nothing, so no `job_pr` row is invented.
              * When present it is recorded in the verdict's own transaction, and its `repo` is
@@ -1269,7 +1284,12 @@ export interface CreateJobStoreDeps {
             workspacePath: string,
             repo: string,
             worktreeId: string | null
-        ): Promise<{ config: BellowsConfig | null; error: string | null; source: ClaimGatesSource | null }>;
+        ): Promise<{
+            config: BellowsConfig | null;
+            error: string | null;
+            source: ClaimGatesSource | null;
+            policy?: EvidencePolicy;
+        }>;
     };
     /**
      * The member executor store's claim-time reader. Declared inline like `env`, because `db/`

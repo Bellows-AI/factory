@@ -30,6 +30,7 @@ built-in block list is `workflow-blocks/index.ts`'s registry. Read those, not a 
 | Session policy and the follow-up's primary-session copy | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.sessions.test.ts` |
 | Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql`, `051_job_mode.sql` | `server/test-db/job-store.workflow.frozen-name.test.ts`, `job-store.workflow.params.test.ts` |
 | Stop/done/remove against a workflow thread | `server/src/db/job-store-actions.ts` | `server/test-db/job-store.workflow.control.test.ts` |
+| The `review: true` node flag (what a repository's `policy: review: required` reads as review evidence: the latest review row, succeeded and ending on the clean marker) and the `policy` rest reason | `server/src/db/workflow-schema.ts`, `workflow-schema-validate.ts`, `evidence-policy.ts`, `workflow-engine.ts` (`REST_BY_KIND`) | `server/test/evidence-policy.test.ts`, `workflow-engine.next-transition.test.ts` |
 | The driver's one publish gate | `driver/src/loop-verdict.ts` | `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | An agent-less node (`agent: false`): the claim flag, and the loop running pre-helpers, gates and publish with no runner session on both executors; the merge-conflict block's probe concludes `up-to-date`/`rebased` itself and only a conflict reaches an agent | `server/src/db/workflow-schema.ts` (`isAgentlessNode`), `job-store-claim.ts`, `driver/src/loop-agentless.ts`, `loop-run.ts` (`launchRun`), `driver/src/scripts/merge-conflict-probe.cjs` | `server/test/claim-gates-source.test.ts`, `workflow-block-merge-conflict-autofix.test.ts`, `driver/test/loop.test.ts`, `merge-conflict-probe-script.test.ts` |
 | The blocks' driver-side helper scripts | `driver/src/review-helpers.ts`, `driver/src/scripts/merge-conflict-probe.cjs`, `review-collect.cjs`, `review-reply.cjs` | `driver/test/review-helpers.test.ts`, `merge-conflict-probe-script.test.ts`, `scripts.test.ts` |
@@ -60,6 +61,10 @@ are [jobs.md](jobs.md) ("Block-helper steps", "The master prompt").
 - **A task's mode is stored on every row and decided by the root: no `workflow` is `objective`.**
   An objective thread has no snapshot, node, successor or wait — its verdict is the whole story
   (`job_mode_node_ck` refuses a node on an objective row). `server/test-db/job-store.objective.test.ts`.
+- **A playbook suggests; only policy enforces.** `docker/skills/backend-fix/SKILL.md` orders an
+  objective task's steps but adds no stage — gates and publication rules are the claim's.
+  `driver/test/executor-images.test.ts` (`optional playbook`). A workflow stays the opt-in for
+  durable approvals and enforced transitions.
 - **Marker absence is a first-class outcome.** A completed node no rule matches rests the thread
   loudly, output intact — never failed, never silently continued; a bound-exhausted edge rests too
   rather than falling through. `server/test/workflow-engine.next-transition.test.ts`.
