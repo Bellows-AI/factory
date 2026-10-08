@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
+import { resolveClaimSkills } from '../src/db/job-store-claim.js';
 import { skillRoutes } from '../src/routes/skills.js';
 import { readSkillCatalog, skillCatalog } from '../src/skills.js';
 
@@ -39,6 +40,20 @@ describe('readSkillCatalog', () => {
     it('throws naming the directory when it is missing', () => {
         const dir = join(tmpdir(), 'no-such-skills-dir');
         expect(() => readSkillCatalog(dir)).toThrow(dir);
+    });
+});
+
+describe('resolveClaimSkills', () => {
+    it('is null for no selection, and for a met connection', () => {
+        expect(resolveClaimSkills([], undefined)).toBeNull();
+        expect(resolveClaimSkills(['github'], { GITHUB_TOKEN: 'x' })).toBeNull();
+    });
+
+    it('treats an absent env as holding nothing, and names env names only', () => {
+        const sentence = resolveClaimSkills(['github'], undefined);
+        expect(sentence).toBe(
+            '[skills unavailable] skill "github" needs the github connection: set GITHUB_TOKEN in the task\'s environment settings. Fix this, then retry the task.'
+        );
     });
 });
 

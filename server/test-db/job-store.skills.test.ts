@@ -128,7 +128,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(stillBroken.skillRefusal).toContain('ATLASSIAN_SITE');
         expect(stillBroken.masterPrompt).toContain('- Selected skills: jira');
 
-        // The member fixes the environment: the very same retry row now runs, with the same prompt.
+        // The member fixes the environment: a fresh retry now runs, with the same prompt.
         await broken.complete(stillBroken.id, stillBroken.leaseToken, {
             status: 'failed',
             exitCode: null,

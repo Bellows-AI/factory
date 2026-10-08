@@ -67,7 +67,7 @@ interface Entries {
 }
 
 function frontmatterLines(text: string, dirName: string): string[] {
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
     if (lines[0] !== '---') throw new Error(`${dirName}: SKILL.md does not start with frontmatter`);
     const end = lines.indexOf('---', 1);
     if (end === -1) throw new Error(`${dirName}: SKILL.md frontmatter is not closed`);

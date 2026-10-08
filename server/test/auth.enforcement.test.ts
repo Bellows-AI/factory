@@ -238,6 +238,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // Both fall through to `user` rather than being listed anywhere, which is the point: the
     // default is the safe one, so a new route is walled unless somebody deliberately opens it.
     ['/api/repos', 'user'],
+    ['/api/skills', 'user'],
     ['/api/workspace', 'user'],
     ['/api/workspace/repos', 'user'],
     // Access-token management: a person's settings act, so session cookie or personal bearer —
