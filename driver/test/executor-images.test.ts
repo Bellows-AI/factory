@@ -982,6 +982,14 @@ describe('the executor PR boundary', () => {
         }
     });
 
+    it('the backend-fix skill is an optional playbook: suggested order, policy stays the board’s (issue #550)', () => {
+        const text = read('docker/skills/backend-fix/SKILL.md');
+        expect(text).toContain('optional playbook');
+        expect(text).toContain('The order is a suggestion, not a graph.');
+        expect(text).toContain('What is *required* is policy');
+        expect(text).not.toMatch(/non-negotiable|Hard rules/);
+    });
+
     it('the github skill names the board as the PR author instead', () => {
         const text = read(GITHUB_SKILL);
         expect(text).toContain('opens (or reuses) the pull request');

@@ -61,6 +61,10 @@ are [jobs.md](jobs.md) ("Block-helper steps", "The master prompt").
 - **A task's mode is stored on every row and decided by the root: no `workflow` is `objective`.**
   An objective thread has no snapshot, node, successor or wait — its verdict is the whole story
   (`job_mode_node_ck` refuses a node on an objective row). `server/test-db/job-store.objective.test.ts`.
+- **A playbook suggests; only policy enforces.** `docker/skills/backend-fix/SKILL.md` orders an
+  objective task's steps but adds no stage — gates and publication rules are the claim's.
+  `driver/test/executor-images.test.ts` (`optional playbook`). A workflow stays the opt-in for
+  durable approvals and enforced transitions.
 - **Marker absence is a first-class outcome.** A completed node no rule matches rests the thread
   loudly, output intact — never failed, never silently continued; a bound-exhausted edge rests too
   rather than falling through. `server/test/workflow-engine.next-transition.test.ts`.
