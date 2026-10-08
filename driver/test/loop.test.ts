@@ -24,7 +24,7 @@ import {
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../src/question-control.js';
 import { servePublish, type PublishRelay } from '../src/publish-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
-import type { PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
+import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
@@ -386,12 +386,16 @@ function stubRunner(
         probeTree?: string | null;
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
         deadServices?: () => Promise<DeadService[]>;
+        /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
+        restartServices?: (signal: AbortSignal) => Promise<void>;
     } = {}
 ): Runner & {
     killed: string[];
     samples: number;
     published: BoardJob[];
     publishTokens: (string | undefined)[];
+    publishOptions: (PublishOptions | undefined)[];
+    restartedServices: string[];
     synced: BoardJob[];
     reclaimed: BoardJob[];
     servicesReleased: string[];
@@ -416,6 +420,11 @@ function stubRunner(
         async releaseServices(releasedJob: BoardJob) {
             runner.servicesReleased.push(releasedJob.id);
         },
+        restartedServices: [] as string[],
+        async restartServices(restartedJob: BoardJob, signal: AbortSignal) {
+            runner.restartedServices.push(restartedJob.id);
+            await options.restartServices?.(signal);
+        },
         killed: [] as string[],
         extended: [] as { id: string; ms: number }[],
         async extendDeadline(extendedJob: BoardJob, ms: number) {
@@ -424,6 +433,7 @@ function stubRunner(
         samples: 0,
         published: [] as BoardJob[],
         publishTokens: [] as (string | undefined)[],
+        publishOptions: [] as (PublishOptions | undefined)[],
         synced: [] as BoardJob[],
         reclaimed: [] as BoardJob[],
         run: outcome,
@@ -439,9 +449,10 @@ function stubRunner(
         async kill(killedJob: BoardJob) {
             runner.killed.push(killedJob.id);
         },
-        async publishGit(publishedJob: BoardJob, publishToken?: string) {
+        async publishGit(publishedJob: BoardJob, publishToken?: string, publishOptions?: PublishOptions) {
             runner.published.push(publishedJob);
             runner.publishTokens.push(publishToken);
+            runner.publishOptions.push(publishOptions);
             return (
                 publish ?? {
                     ok: true,
@@ -2479,6 +2490,26 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
+    // A runner the platform took away — its pod deleted, evicted or its node removed — never gave
+    // the agent's verdict (issue #560): it is left to the lease and re-offered, never reported.
+    it('leaves a job to its lease when the runner reports an infrastructure loss', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const logs: string[] = [];
+        const runner = stubRunner(async () =>
+            ok({ exitCode: null, output: '', infraLoss: 'the runner pod was deleted before it exited (Evicted)' })
+        );
+
+        await drive({ ...board, runner, gates: stack.gates, log: (m) => logs.push(m) });
+
+        expect(board.board.completed).toEqual([]);
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(runner.published).toEqual([]);
+        expect(
+            logs.some((m) => m.includes('infrastructure loss: the runner pod was deleted before it exited (Evicted)'))
+        ).toBe(true);
+    });
+
     // The mirror case, and why classification lives in the runner rather than in an exit code
     // here: a run that started and exited 125 — a shell or an agent CLI can — is a genuine
     // verdict, and swallowing it would rerun the job to death instead of reporting the failure.
@@ -3908,11 +3939,48 @@ describe('a dead declared service (issue #423)', () => {
         logTail: 'chown: changing ownership of /data/db: Operation not permitted',
     };
 
-    it('skips the declared gates and fails the verdict as services, naming the service', async () => {
+    const draftPr: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'factory/1',
+        prUrl: 'https://github.com/Bellows-AI/factory/pull/7',
+        reason: null,
+        repository: 'Bellows-AI/factory',
+        baseBranch: 'main',
+        prNumber: 7,
+    };
+
+    it('restarts a fleet found dead before the gates, then runs them (issue #560)', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        let probes = 0;
+        const runner = stubRunner(async () => ok({ output: 'agent did the work' }), {
+            deadServices: async () => (probes++ === 0 ? [mongo] : []),
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(runner.restartedServices).toEqual([gatedJob(1).id]);
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        const complete = board.board.completed[0]!;
+        expect(complete).toMatchObject({ status: 'succeeded', exitCode: 0 });
+        expect(complete).not.toHaveProperty('failureKind');
+        // Not a fault, but never silent: the loss is on the verdict the board shows.
+        expect(complete.output).toContain(
+            '[driver] service "test-mongo" (mongo:8.0.11) failed — exit 1 (Error); restarted before the declared gates'
+        );
+        expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    it('a failed restart skips the gates, fails as services naming the cause, and drafts the work (issue #560)', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
         const runner = stubRunner(async () => ok({ output: 'agent did the work' }), {
             deadServices: async () => [mongo],
+            restartServices: async () => {
+                throw new Error('service "test-mongo" is not running after 300s');
+            },
+            publish: draftPr,
         });
 
         await drive({ ...board, runner, gates: stack.gates });
@@ -3923,12 +3991,61 @@ describe('a dead declared service (issue #423)', () => {
         expect(complete).toMatchObject({ status: 'failed', failureKind: 'services', exitCode: 0 });
         expect(complete.output).toContain('agent did the work');
         expect(complete.output).toContain(
-            '[driver] service "test-mongo" (mongo:8.0.11) failed — exit 1 (Error); declared gates skipped'
+            '[driver] service "test-mongo" (mongo:8.0.11) failed — exit 1 (Error); ' +
+                'restart failed: service "test-mongo" is not running after 300s; declared gates skipped'
         );
         expect(complete.output).toContain('chown: changing ownership of /data/db: Operation not permitted');
-        // Nothing an unverified run produced is published, and the fleet still goes.
-        expect(runner.published).toEqual([]);
+        // The finished work stays recoverable: a draft PR, recorded on the verdict.
+        expect(runner.publishOptions).toEqual([{ draft: true }]);
+        expect(complete.output).toContain(
+            '[driver] published factory/1 — https://github.com/Bellows-AI/factory/pull/7'
+        );
+        expect(complete.publication).toMatchObject({ prNumber: 7 });
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    it('parks a Stop that lands during the restart at once, aborting it and running no gates (issue #560)', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const stack = stubGateStack();
+        let restartSignal: AbortSignal | undefined;
+        const runner = stubRunner(async () => ok(), {
+            deadServices: async () => [mongo],
+            // A restart that would wait out its whole budget: only the abort ends it.
+            restartServices: (signal) => {
+                restartSignal = signal;
+                options.cancelRequested = true;
+                return new Promise(() => {});
+            },
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(restartSignal?.aborted).toBe(true);
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+        expect(runner.published).toEqual([]);
+    });
+
+    it('drafts nothing when the services failed under a gates-required policy, or the board reserves publication', async () => {
+        const board = stubBoard([
+            { ...gatedJob(1), policy: { gates: true } },
+            { ...gatedJob(2), publish: false },
+        ]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok(), {
+            deadServices: async () => [mongo],
+            restartServices: async () => {
+                throw new Error('no node');
+            },
+            publish: draftPr,
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(runner.published).toEqual([]);
+        expect(board.board.completed.map((c) => c.failureKind)).toEqual(['services', 'services']);
     });
 
     it('runs the gates when every service is alive, probing once', async () => {
@@ -3988,6 +4105,7 @@ describe('a dead declared service (issue #423)', () => {
         await drive({ ...board, runner, gates: stack.gates });
 
         expect(runner.deadServiceProbes).toBe(2);
+        expect(runner.restartedServices).toEqual([]);
         expect(stack.stack.ran.names).toEqual([]);
         expect(board.board.completed.map((c) => c.failureKind ?? null)).toEqual(['services', 'blocked']);
         for (const complete of board.board.completed) {
@@ -4002,6 +4120,9 @@ describe('a dead declared service (issue #423)', () => {
         const stack = stubGateStack();
         const runner = stubRunner(async () => ok({ exitCode: 124, timedOut: true }), {
             deadServices: async () => [mongo],
+            restartServices: async () => {
+                throw new Error('no node');
+            },
         });
 
         await drive({ ...board, runner, gates: stack.gates });

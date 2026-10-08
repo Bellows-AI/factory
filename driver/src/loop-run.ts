@@ -20,7 +20,14 @@ import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
 import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
-import { askPublishToken, publishBranch, publishDue, report, reportFinish } from './loop-verdict.js';
+import {
+    askPublishToken,
+    publishBranch,
+    publishModeOf,
+    publishOptionsOf,
+    report,
+    reportFinish,
+} from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
@@ -281,6 +288,8 @@ type RunPhaseResult = {
     failure: GateFailure | null;
     /** The declared services found dead before the gates — which were skipped for them. */
     deadServices: DeadService[];
+    /** The services found dead before the gates and restarted for them (issue #560). */
+    recoveredServices: DeadService[];
     /**
      * When `runner.run` resolved — the moment the run ended, and the timestamp the timeout
      * note's active/idle verdict is measured at. The verdict builds later: the declared gates,
@@ -377,9 +386,10 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * stamps `started: false` for it. Saying nothing here would rerun the job until attempts
      * run out and retire it dead, blaming the command for infrastructure.
      */
-    if (!outcome.started) {
+    const leftToLease = leaseLeftWhy(outcome);
+    if (leftToLease !== null) {
         await settle();
-        log(`job ${job.id}: the runner reports the container never started, leaving it to the lease`);
+        log(`job ${job.id}: ${leftToLease}, leaving it to the lease`);
         return { done: true };
     }
 
@@ -411,7 +421,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     if (await standDown(ctx, 'its gates')) return { done: true };
     const gated = gating
         ? await runGatesPhase(ctx, gating, outcome)
-        : { failure: null, deadServices: [], gatesSkipped: null };
+        : { failure: null, deadServices: [], gatesSkipped: null, recoveredServices: [] };
     // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
     const treeChanged =
         gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
@@ -421,6 +431,15 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
         ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(gating !== null, gated) }
         : null;
     return { done: false, outcome, ...gated, endedAt, treeChanged, evidence };
+}
+
+/**
+ * Why the loop reports no verdict for this outcome and leaves the job to the lease, or null when it
+ * reports: a container that never started, or a runner the platform took away (issue #560).
+ */
+function leaseLeftWhy(outcome: RunOutcome): string | null {
+    if (outcome.infraLoss) return `infrastructure loss: ${outcome.infraLoss}`;
+    return outcome.started ? null : 'the runner reports the container never started';
 }
 
 /** How the declared gates ended for the evidence record: `none` when none were declared to run. */
@@ -435,6 +454,8 @@ interface GatesPhase {
     failure: GateFailure | null;
     deadServices: DeadService[];
     gatesSkipped: string | null;
+    /** The services found dead before the gates and restarted for them (issue #560): noted, not faults. */
+    recoveredServices: DeadService[];
 }
 
 /** The declared gates, unless the run did not finish cleanly or a declared service is dead. */
@@ -446,16 +467,56 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         rt.log(`job ${job.id}: gates skipped — ${gatesSkipped}`);
         // The services' faults are the run's too, gates or not: a blocked agent is the one that
         // most needs to be told its environment was dead (issue #487).
-        return { failure: null, deadServices: await probeDeadServices(rt, job), gatesSkipped };
+        return {
+            failure: null,
+            deadServices: await probeDeadServices(rt, job),
+            gatesSkipped,
+            recoveredServices: [],
+        };
     }
     // A gate against a dead service fails on an environment the agent cannot fix, and a
-    // failed gate is what the workflow's gate-fix edge spends a round on (issue #423).
+    // failed gate is what the workflow's gate-fix edge spends a round on (issue #423). The
+    // services are stateless fixtures, so a dead one is restarted first; only a restart that
+    // cannot bring the fleet back is the run's fault (issue #560).
     const deadBefore = await probeDeadServices(rt, job);
-    if (deadBefore.length > 0) return { failure: null, deadServices: deadBefore, gatesSkipped: null };
+    let recoveredServices: DeadService[] = [];
+    if (deadBefore.length > 0) {
+        const restartFailure = await restartDeadServices(rt, job, state.signal, deadBefore);
+        // A stand-down during the restart runs no gates; the caller's fence settles the attempt.
+        if (restartFailure === STOOD_DOWN)
+            return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices };
+        if (restartFailure !== null) {
+            const deadServices = deadBefore.map((dead) => ({ ...dead, restartFailure }));
+            return { failure: null, deadServices, gatesSkipped: null, recoveredServices };
+        }
+        recoveredServices = deadBefore;
+    }
     const failure = await runDeclaredGates(rt, job, gateSession, state);
     // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
     const deadAfter = failure ? await probeDeadServices(rt, job) : [];
-    return { failure, deadServices: deadAfter, gatesSkipped: null };
+    return { failure, deadServices: deadAfter, gatesSkipped: null, recoveredServices };
+}
+
+/**
+ * Restarts the fleet `dead` was found in; null when it is back, else why it is not. Raced against
+ * the attempt's stand-down, which also aborts the restart itself: a Stop or lost lease must not
+ * wait out its budget, nor see services recreated after the kill took them.
+ */
+async function restartDeadServices(
+    rt: LoopRuntime,
+    job: BoardJob,
+    signal: AbortSignal,
+    dead: readonly DeadService[]
+): Promise<string | null | typeof STOOD_DOWN> {
+    rt.log(
+        `job ${job.id}: ${dead.map(({ name }) => `service "${name}"`).join(', ')} dead before the gates, restarting`
+    );
+    try {
+        return (await raceStep(signal, rt.runner.restartServices(job, signal))) === null ? STOOD_DOWN : null;
+    } catch (e) {
+        rt.log(`job ${job.id}: the service restart failed: ${(e as Error).message}`);
+        return (e as Error).message;
+    }
 }
 
 /**
@@ -477,22 +538,19 @@ async function runPostHelpersAndPublish(
     const ledger = ledgerOf({ ...outcome, helperFailure, published: null });
     let published: PublishResult | null = null;
     const policyRefusal: string | null = null;
-    if (publishDue(rt, job, ledger)) {
+    const mode = publishModeOf(rt, job, ledger);
+    if (mode !== null) {
         // The configured evidence is enforced HERE, whatever the agent chose to run: a refusal
-        // pushes nothing, and an authorisation binds the push to the revision it assessed.
+        // pushes nothing, and an authorisation binds the push to the revision it assessed. A
+        // refused draft is no refusal of its own: the services fault already fails the verdict.
         const decision = evidenceDecision(job.policy, gatesEvidenceOf(outcome.evidence), job.review);
-        if (!decision.ok) return { helperFailure, published, policyRefusal: decision.reason };
+        if (!decision.ok) return { helperFailure, published, policyRefusal: mode === 'draft' ? null : decision.reason };
         const publishToken = await askPublishToken(rt, job);
         // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
         // and pushing now would outlive it. The push itself is never fenced — it cannot be
         // recalled (issue #472).
         if (await standDown(ctx, 'its publish')) return null;
-        published = await publishBranch(
-            rt,
-            job,
-            publishToken,
-            decision.revision === null ? undefined : { revision: decision.revision }
-        );
+        published = await publishBranch(rt, job, publishToken, publishOptionsOf(mode, decision.revision));
         // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
         // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
         if (await standDown(ctx, 'its publish')) return null;
@@ -641,6 +699,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 outcome: outcome.outcome,
                 failure: outcome.failure,
                 deadServices: outcome.deadServices,
+                recoveredServices: outcome.recoveredServices,
                 helperFailure,
                 published,
                 endedAt: outcome.endedAt,

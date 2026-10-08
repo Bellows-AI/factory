@@ -1,4 +1,4 @@
-import { describe, expect, it, vitest } from 'vitest';
+import { afterEach, describe, expect, it, vitest } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
@@ -37,7 +37,13 @@ import {
 import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
-import { networkName, readBellowsArgs, serviceContainerName, serviceRunArgs } from '../src/services.js';
+import {
+    forgetDeclaredServices,
+    networkName,
+    readBellowsArgs,
+    serviceContainerName,
+    serviceRunArgs,
+} from '../src/services.js';
 import { syncCheckoutArgs } from '../src/docker-runner-support.js';
 import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
@@ -1905,6 +1911,36 @@ describe('the docker runner', () => {
         expect(outcome).toMatchObject({ exitCode: 1, started: true });
     });
 
+    // A runner container removed under the run (issue #560) — `docker rm -f` by hand, a host
+    // cleanup — exits the attached start 137, but the agent never ended it: the driver's own kill
+    // only kills, so a container the daemon no longer knows is an infrastructure loss.
+    it('reads a runner container removed mid-run as an infrastructure loss', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect'
+                ? Promise.reject(
+                      Object.assign(new Error('Command failed'), {
+                          stderr: `Error: No such object: ${containerName(job)}\n`,
+                      })
+                  )
+                : Promise.resolve({ stdout: '' });
+        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', '', 137), exec);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({
+            exitCode: 137,
+            started: true,
+            infraLoss: 'the runner container was removed before it exited (exit 137)',
+        });
+    });
+
+    it('reads an inspect that fails for any other reason as no loss', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect' ? Promise.reject(new Error('daemon unreachable')) : Promise.resolve({ stdout: '' });
+        const runner = createDockerRunner(loadDriverConfig({ RUNNER_SERVICES: '0' }), child('', '', 1), exec);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 1, started: true });
+        expect(outcome).not.toHaveProperty('infraLoss');
+    });
+
     // The full-log accumulator (issue #325): everything the stream printed, tail-kept at the
     // artifact cap — the artifact the loop uploads at close, of which the verdict's rolling tail
     // is only the end. The refused-start path carries neither.
@@ -2448,6 +2484,10 @@ describe('the docker runner', () => {
  */
 describe('auxiliary services (RUNNER_SERVICES)', () => {
     const READOUT = '###__bellows:demo\nservices:\n  - name: stub\n    image: stub-svc:1\n';
+    // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
+    afterEach(() => forgetDeclaredServices(job));
+    /** A restart's stand-down signal that never fires. */
+    const live = new AbortController().signal;
 
     const daemon = (
         readout: string,
@@ -3641,11 +3681,84 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
         removedByHand = true; // `docker rm -f` of the stub service, between the run and the gates
         const dead = await runner.deadServices(job);
-        expect(dead).toMatchObject([{ name: 'stub', state: 'missing', exitCode: null, logTail: '' }]);
+        expect(dead).toMatchObject([
+            { name: 'stub', state: 'missing', exitCode: null, reason: 'container removed', logTail: '' },
+        ]);
 
         // The attempt's teardown ends the declaration: nothing is expected of a released fleet.
         await runner.releaseServices(job);
         expect(await runner.deadServices(job)).toEqual([]);
+    });
+
+    const runningStub = JSON.stringify({ Labels: 'factory.service=stub', Image: 'stub-svc:1', State: 'running' });
+
+    it("restartServices re-runs a removed service on the attempt's existing network (issue #560)", async () => {
+        const base = daemon(READOUT);
+        let removedByHand = false;
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--network-alias')) removedByHand = false;
+            if (args[0] === 'ps' && args.includes('{{json .}}')) return { stdout: removedByHand ? '' : runningStub };
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        removedByHand = true;
+        const before = exec.mock.calls.length;
+
+        await runner.restartServices(job, live);
+
+        const calls = exec.mock.calls.slice(before).map((call) => call[0]);
+        // The leftover goes by name, the service comes back on the SAME network — never the
+        // whole teardown, which removes the network the gate containers join.
+        expect(calls[0]).toEqual(['rm', '-f', serviceContainerName(job, 'stub')]);
+        expect(calls[1]).toEqual(expect.arrayContaining(['--network', networkName(job), '--network-alias', 'stub']));
+        expect(calls.some((a) => a[0] === 'network')).toBe(false);
+        expect(await runner.deadServices(job)).toEqual([]);
+
+        await runner.releaseServices(job);
+    });
+
+    it('restartServices stops on a stand-down and removes the service it started again (issue #560)', async () => {
+        const base = daemon(READOUT);
+        const stand = new AbortController();
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--network-alias') && stand.signal.aborted === false) {
+                // The Stop lands while the replacement is being started.
+                const answer = await base(args);
+                stand.abort();
+                return answer;
+            }
+            if (args[0] === 'ps' && args.includes('{{json .}}')) return { stdout: '' };
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        const before = exec.mock.calls.length;
+
+        await expect(runner.restartServices(job, stand.signal)).rejects.toThrow(
+            'the restart was abandoned: the attempt stood down'
+        );
+        const calls = exec.mock.calls.slice(before).map((call) => call[0]);
+        expect(calls.at(-1)).toEqual(['rm', '-f', serviceContainerName(job, 'stub')]);
+        expect(calls.some((a) => a[0] === 'ps')).toBe(false);
+    });
+
+    it('restartServices throws when the daemon refuses the service again (issue #560)', async () => {
+        const base = daemon(READOUT);
+        let refuse = false;
+        const exec = vitest.fn(async (args: string[]) => {
+            if (refuse && args[0] === 'run' && args.includes('--network-alias')) throw new Error('no such network');
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        refuse = true;
+
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'could not start service "stub": no such network'
+        );
+
+        await runner.releaseServices(job);
     });
 });
 

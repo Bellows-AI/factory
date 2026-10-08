@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import {
@@ -10,6 +10,7 @@ import {
     serviceRunArgs,
     splitBellowsSections,
 } from '../src/services.js';
+import { awaitServicesRunning } from '../src/service-restart.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -671,5 +672,98 @@ describe('the RUNNER_SERVICES switch', () => {
         expect(() => loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'kubernetes' })).not.toThrow();
         expect(loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'kubernetes' }).servicesEnabled).toBe(true);
         expect(() => loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'docker' })).not.toThrow();
+    });
+});
+
+describe('awaitServicesRunning (issue #560)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const specs = parseBellows('services:\n  - name: db\n    image: mongo\n  - name: cache\n    image: redis\n');
+    const status = (name: string, state: string) => ({ name, image: 'x', state });
+    const noWait = async () => {};
+
+    it('returns once every service is listed running, re-listing through a failed read', async () => {
+        const answers = [
+            () => Promise.resolve([status('db', 'running')]),
+            () => Promise.reject(new Error('daemon blinked')),
+            () => Promise.resolve([status('db', 'running'), status('cache', 'running')]),
+        ];
+        let lists = 0;
+        await awaitServicesRunning(specs, () => answers[lists++]!(), noWait);
+        expect(lists).toBe(3);
+    });
+
+    it('throws at once, naming it, when a restarted service is already dead', async () => {
+        let lists = 0;
+        const list = async () => {
+            lists += 1;
+            return [status('db', 'exited'), status('cache', 'running')];
+        };
+        await expect(awaitServicesRunning(specs, list, noWait)).rejects.toThrow(
+            'service "db" exited after the restart'
+        );
+        expect(lists).toBe(1);
+    });
+
+    // Codex review on #562: a poll counter alone lets slow listings stretch a 300s budget to hours.
+    it('bounds the wait by the clock, however long each listing takes', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        let lists = 0;
+        const slow = async () => {
+            lists += 1;
+            vi.setSystemTime(Date.now() + 30_000);
+            return [status('db', 'pending'), status('cache', 'running')];
+        };
+        await expect(awaitServicesRunning(specs, slow, noWait)).rejects.toThrow(
+            'service "db" not running 300s after the restart'
+        );
+        expect(lists).toBe(10);
+    });
+
+    it('names a listing that keeps failing instead of calling the service not running', async () => {
+        const failing = async () => {
+            throw new Error('the API server is away');
+        };
+        await expect(awaitServicesRunning(specs, failing, noWait)).rejects.toThrow(
+            'the services could not be listed 300s after the restart: the API server is away'
+        );
+    });
+
+    it('stops polling once the attempt stands down', async () => {
+        const stand = new AbortController();
+        let lists = 0;
+        const list = async () => {
+            lists += 1;
+            if (lists === 2) stand.abort();
+            return [status('db', 'pending')];
+        };
+        await expect(awaitServicesRunning(specs, list, noWait, { signal: stand.signal })).rejects.toThrow(
+            'the restart was abandoned: the attempt stood down'
+        );
+        expect(lists).toBe(2);
+    });
+
+    it('throws naming what never ran once the timeout has passed', async () => {
+        let slept = 0;
+        const sleep = async (ms: number) => {
+            slept += ms;
+        };
+        await expect(awaitServicesRunning(specs, async () => [status('db', 'running')], sleep)).rejects.toThrow(
+            'service "cache" not running 300s after the restart'
+        );
+        expect(slept).toBe(300_000);
+    });
+
+    it('stops at a supplied budget, still naming the whole restart timeout', async () => {
+        let slept = 0;
+        const sleep = async (ms: number) => {
+            slept += ms;
+        };
+        await expect(
+            awaitServicesRunning(specs, async () => [status('db', 'running')], sleep, { timeoutMs: 6_000 })
+        ).rejects.toThrow('service "cache" not running 300s after the restart');
+        expect(slept).toBe(6_000);
     });
 });

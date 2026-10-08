@@ -54,7 +54,7 @@ import {
     runReclaimJob,
     runSyncJob,
 } from './k8s-poll.js';
-import { deadServices, startServiceFleet, teardownServices } from './k8s-services.js';
+import { deadServices, restartServiceFleet, startServiceFleet, teardownServices } from './k8s-services.js';
 import {
     answerPreview,
     expectOk,
@@ -344,7 +344,9 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         return { exitCode: KILLED_EXIT_CODE, output: '', timedOut: false, started: true };
     }
     const { timedOut, jobSucceeded } = polled;
-    const { exitCode, output, fullLog, logTruncated } = await readRunnerVerdict(deps, job, jobSucceeded);
+    const { exitCode, output, fullLog, logTruncated, infraLoss } = await readRunnerVerdict(deps, job, jobSucceeded);
+    // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
+    if (infraLoss && !timedOut) return { exitCode, output, timedOut, started: true, infraLoss };
 
     const outcome: RunOutcome = { exitCode, output, timedOut, started: true, fullLog, logTruncated };
 
@@ -596,6 +598,7 @@ export function createKubernetesRunner(
         extendDeadline: (job: BoardJob, ms: number) => extendRunnerDeadline(deps, job, ms),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),
+        restartServices: (job: BoardJob, signal: AbortSignal) => restartServiceFleet(deps, job, signal),
         startServices: (job: BoardJob) => startServiceFleet(deps, job),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
