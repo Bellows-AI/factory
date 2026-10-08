@@ -37,6 +37,7 @@ export const RANK: readonly FailureKind[] = [
     'gate',
     'runner_error',
     'helper',
+    'policy',
     'publish',
 ];
 
@@ -141,19 +142,26 @@ export interface LedgerParts {
     helperFailure: HelperFailureReport | null;
     /** The publish result, once a publish has been attempted; null before or without one. */
     published: PublishResult | null;
+    /** Why the evidence policy refused the publish before anything was pushed; null when it did not. */
+    policyRefusal?: string | null;
 }
 
 /** The whole ledger, in the order its notes read in the verdict output. */
 export function ledgerOf(parts: LedgerParts): Ledger {
-    const { outcome, failure, deadServices, helperFailure, published } = parts;
+    const { outcome, failure, deadServices, helperFailure, published, policyRefusal } = parts;
     const faults = agentFaults(outcome);
     const done = { gatesStillRun: true, skipWhy: null };
     if (published && !published.ok) {
-        faults.unshift({
-            kind: 'publish',
-            note: `publish failed — the work did not land: ${published.reason}`,
-            ...done,
-        });
+        // A stale publish pushed nothing because the evidence no longer fits the tree: a policy
+        // failure, not a transport one, and the thread rests rather than retrying the push.
+        faults.unshift(
+            published.stale
+                ? { kind: 'policy', note: `publication refused — ${published.reason}`, ...done }
+                : { kind: 'publish', note: `publish failed — the work did not land: ${published.reason}`, ...done }
+        );
+    }
+    if (policyRefusal) {
+        faults.unshift({ kind: 'policy', note: `publication refused — ${policyRefusal}`, ...done });
     }
     // The note claims the gates were skipped for the service only when nothing else already skipped them.
     const skippedForService = gatesEligible(faults);

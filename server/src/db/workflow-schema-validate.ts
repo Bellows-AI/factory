@@ -59,9 +59,10 @@ const KNOWN_AGENT_NODE_KEYS = new Set([
     'gates',
     'publish',
     'agent',
+    'review',
     'helperPlans',
 ]);
-const AGENT_NODE_BOOLEAN_KEYS = ['gates', 'publish', 'agent'] as const;
+const AGENT_NODE_BOOLEAN_KEYS = ['gates', 'publish', 'agent', 'review'] as const;
 const KNOWN_BLOCK_NODE_KEYS = new Set(['name', 'kind', 'uses', 'with']);
 const KNOWN_EDGE_KEYS = new Set(['from', 'to', 'when', 'max']);
 const KNOWN_TOP_KEYS = new Set(['entry', 'nodes', 'edges', 'params']);
@@ -329,6 +330,7 @@ function parseAgentNode(node: Record<string, unknown>, i: number, name: string):
             ...(node.gates !== undefined ? { gates: node.gates as boolean } : {}),
             ...(node.publish !== undefined ? { publish: node.publish as boolean } : {}),
             ...(node.agent !== undefined ? { agent: node.agent as boolean } : {}),
+            ...(node.review !== undefined ? { review: node.review as boolean } : {}),
             ...(helperPlans.value !== undefined ? { helperPlans: helperPlans.value } : {}),
         },
     };

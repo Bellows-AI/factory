@@ -92,6 +92,8 @@ export interface GitState {
     unpushed: number;
     /** The checkout has a committer identity configured; the fallback is only applied when not. */
     hasIdentity: boolean;
+    /** The tree fingerprint (`HEAD:hash` of the uncommitted state); null when the probe measured none. */
+    fingerprint: string | null;
 }
 
 /** What the publish attempt answers to the loop. */
@@ -113,10 +115,22 @@ export interface PublishResult {
     /** The branch the PR targets — the origin default the task branched from. */
     baseBranch: string | null;
     prNumber: number | null;
+    /**
+     * True when the publish was refused because the checkout is no longer the revision the required
+     * evidence assessed (`PublishOptions.revision`). Nothing was pushed; the loop reports it as a
+     * `policy` failure rather than a `publish` one.
+     */
+    stale?: true;
 }
 
 /** How one publish differs from the board's end-of-run one. */
 export interface PublishOptions {
+    /**
+     * The tree fingerprint the required evidence assessed. When set, the publish pushes only a
+     * checkout whose own probe still reports it, and refuses `stale` otherwise — the check sits
+     * here, in the one function both executors publish through, so docker and kubernetes cannot drift.
+     */
+    revision?: string;
     /** Open a NEW pull request as a draft — the agent's mid-run publish. An existing PR is reused as it is. */
     draft?: boolean;
 }
@@ -210,6 +224,10 @@ export const publishNothing = (reason: string): PublishResult => ({
     baseBranch: null,
     prNumber: null,
 });
+
+/** Why a publish bound to a revision pushed nothing: the tree moved after the evidence was taken. */
+export const STALE_REVISION_REASON =
+    'the checkout changed after the required evidence was taken — nothing was pushed; re-run the gates (and review) over the current work';
 
 export const publishFailed = (reason: string): PublishResult => ({
     ok: false,
@@ -315,9 +333,18 @@ export function parseGitState(stdout: string): GitState {
             dirty: p.dirty === true,
             unpushed: typeof p.unpushed === 'number' && Number.isFinite(p.unpushed) && p.unpushed >= 0 ? p.unpushed : 0,
             hasIdentity: p.hasIdentity === true,
+            fingerprint: typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null,
         };
     } catch {
-        return { cloned: false, branch: '', defaultBranch: 'main', dirty: false, unpushed: 0, hasIdentity: false };
+        return {
+            cloned: false,
+            branch: '',
+            defaultBranch: 'main',
+            dirty: false,
+            unpushed: 0,
+            hasIdentity: false,
+            fingerprint: null,
+        };
     }
 }
 
@@ -616,6 +643,9 @@ export async function publishCheckout(
         // tree are the two ordinary no-ops; everything else flows.
         const state = await probeCheckout(runStep, repo);
         if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
+        if (options?.revision !== undefined && state.fingerprint !== options.revision) {
+            return { ...publishFailed(STALE_REVISION_REASON), stale: true };
+        }
         if (!state.dirty && state.unpushed === 0) {
             return publishNothing('no uncommitted changes and nothing unpushed');
         }

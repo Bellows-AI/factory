@@ -238,4 +238,63 @@ describe('the publish relay: what an attempt may publish', () => {
         await expect(relay.publish()).resolves.toEqual(nothing);
         expect(state.draftPublication).toBeNull();
     });
+
+    describe('under a configured evidence policy', () => {
+        it('refuses a draft when gates are required — an ad-hoc run is not evidence — before any credential is asked', async () => {
+            const { relay, calls } = relayFor({ job: { policy: { gates: true } } });
+            await expect(relay.publish()).resolves.toEqual({
+                refused: 'declared gates are required but none ran over this work',
+            });
+            expect(calls.asks).toBe(0);
+            expect(calls.published).toEqual([]);
+        });
+
+        it.each(['unavailable', 'missing', 'incomplete', 'rejected'] as const)(
+            'refuses a required review that is %s',
+            async (state) => {
+                const { relay, calls } = relayFor({ job: { policy: { review: true }, review: { state } } });
+                const verdict = await relay.publish();
+                expect(verdict).toHaveProperty('refused');
+                expect(calls.published).toEqual([]);
+            }
+        );
+
+        it('binds the draft to the revision an approved review assessed', async () => {
+            const { relay, calls } = relayFor({
+                job: { policy: { review: true }, review: { state: 'approved', revision: 'r1' } },
+            });
+            await relay.publish();
+            expect(calls.published).toEqual([{ token: 'ghs_fresh', options: { draft: true, revision: 'r1' } }]);
+        });
+    });
+});
+
+describe('the control server: a publish the evidence policy refused', () => {
+    const post = (port: number) =>
+        fetch(`http://127.0.0.1:${port}/publish`, { method: 'POST', headers: { authorization: 'Bearer tok-p' } });
+
+    it('answers 409 with the reason for a refusal and for a stale checkout, and 502 for a push failure', async () => {
+        const answers: [PublishVerdict, number, string][] = [
+            [
+                { refused: 'a review is required and none has run' },
+                CONFLICT_STATUS,
+                'a review is required and none has run',
+            ],
+            [{ ...LANDED, ok: false, published: false, reason: 'moved on', stale: true }, CONFLICT_STATUS, 'moved on'],
+            [
+                { ...LANDED, ok: false, published: false, reason: 'git push: nope' },
+                BAD_GATEWAY_STATUS,
+                'git push: nope',
+            ],
+        ];
+        for (const [verdict, status, error] of answers) {
+            const server = createGateServer({ host: '127.0.0.1', manager });
+            server.openControl('tok-p', undefined, { publish: async () => verdict });
+            const port = await server.listen();
+            const answer = await post(port);
+            expect(answer.status).toBe(status);
+            await expect(answer.json()).resolves.toEqual({ error });
+            await server.close();
+        }
+    });
 });

@@ -46,6 +46,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | The control server's question routes (`POST /question`, `GET /question/:id`, control token only, 5 per attempt, validated as the board's route is) | `driver/src/gates.ts`, `question-control.ts`, `question-validation.ts` | `driver/test/gates.test.ts` |
 | The question relay: forward to the board with the board-call backoff, answers applied from each heartbeat's `answeredQuestions`, a 1 h expiry timer the board arbitrates, a Stop cancelling every pending question; the entry dies with `closeRunControl` | `driver/src/loop-questions.ts`, `loop-attempt.ts`, `loop-gates.ts`, `board-retry.ts`, `board.ts` | `driver/test/loop.test.ts` (`questions`), `board.test.ts` |
 | The agent's draft publication: `POST /publish` on the control server (control token only, one at a time per token, 403 on a claim with `publish: false`); the relay's stand-down fences before and after the credential ask; `--draft` only on a NEW pull request, an existing one reused; the verdict carries the agent's PR when the end-of-run publish has nothing left | `driver/src/publish-control.ts`, `control-channel.ts`, `loop-publish.ts`, `publish.ts`, `loop-run.ts`, `docker/skills/github/SKILL.md` | `driver/test/publish-control.test.ts`, `loop.test.ts` (`draft publication`), `docker.test.ts`, `k8s.test.ts` |
+| Revision-bound evidence: `policy:` in `.bellows.yaml` (read from the base clone only), the claim's `policy` and `review`, the verdict's `evidence` (`treeBefore`, `treeAfter`, `gates`), the publish decision (`evidenceDecision`, refusal `policy` kind), the stale-revision check in `publishCheckout`, and the board's completion check inside the verdict transaction | `server/src/workspace/bellows.ts`, `server/src/db/evidence-policy.ts`, `job-store-evidence.ts`, `job-store-claim.ts`, `job-store-worker.ts`, `server/migrations/053_job_evidence.sql`, `driver/src/evidence-policy.ts`, `loop-run.ts`, `loop-publish.ts`, `publish.ts` | `server/test/evidence-policy.test.ts`, `bellows.policy.test.ts`, `server/test-db/job-store.evidence.test.ts`, `driver/test/evidence-policy.test.ts`, `loop.test.ts` (`revision-bound evidence`), `publish-control.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | The deadline extension: each accepted question adds `QUESTION_TIMEOUT_MS` to the run deadline, never refunded (docker re-arms its kill timer, kubernetes patches the Job — [kubernetes.md](kubernetes.md)); the timeout note reports the extended deadline | `driver/src/run-deadline.ts`, `docker-runner.ts`, `k8s-runner.ts`, `loop-verdict.ts` | `driver/test/run-deadline.test.ts`, `k8s.test.ts`, `loop.test.ts`, `timeout-note.test.ts` |
 | Container scripts | `driver/src/container-scripts.ts`, `driver/src/scripts/` | `driver/test/scripts.test.ts`, `driver/test/scripts-*.test.ts` |
 | Orphan reaper | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
@@ -142,6 +143,12 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   answering `202` means the stop was only stamped, and the worker settles it on its next beat.
 
 ## Deliberately absent
+
+- Ad-hoc gate runs (the agent's `BELLOWS_GATE_*` endpoint) are not evidence: they carry no assessed revision, so a draft
+  publication under `policy: gates: required` is refused (`driver/src/loop-publish.ts`) and the
+  end-of-run publish, which runs the declared gates, is the path.
+- The evidence fingerprint includes `HEAD` and every non-ignored change, so a gate that writes an
+  untracked file makes its own evidence stale — deliberate, and only under a configured policy.
 
 - No idempotency key on create: a retried `POST /api/jobs` runs the command twice.
 - No priority and no scheduling; a queued job's place in the queue is not movable.

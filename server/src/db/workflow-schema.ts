@@ -125,6 +125,12 @@ export interface WorkflowNode {
      */
     publish?: boolean;
     /**
+     * Whether this node's run is a review: its latest succeeded row ending on the clean verdict
+     * marker is the review evidence a repository's `policy: review: required` is checked against
+     * (`evidence-policy.ts`). A graph with no such node has no reviewer at all.
+     */
+    review?: boolean;
+    /**
      * Whether the node launches an agent turn. Default true; `false` is a driver-only node: the
      * claim carries `agent: false` and the driver runs its pre-helpers, gates and publish without
      * ever starting a runner session.

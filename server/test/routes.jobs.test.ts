@@ -77,6 +77,7 @@ interface StoreStub extends JobStore {
         summary: string | null;
         failureKind: string | null;
         treeChanged: boolean | null;
+        evidence: unknown;
     }[];
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
@@ -335,7 +336,7 @@ function stubStore(
         async complete(
             id: string,
             _token: string,
-            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged }
+            { output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged, evidence }
         ) {
             boom();
             stub.completed.push({
@@ -347,6 +348,7 @@ function stubStore(
                 summary: summary ?? null,
                 failureKind: failureKind ?? null,
                 treeChanged: treeChanged ?? null,
+                evidence: evidence ?? null,
             });
             const verdict = options.verdict ?? 'ok';
             return verdict === 'ok' ? { result: 'ok', threadDone: options.threadDone ?? false } : { result: verdict };
@@ -2546,6 +2548,7 @@ describe('POST /api/jobs/:id/complete', () => {
                 summary: null,
                 failureKind: null,
                 treeChanged: null,
+                evidence: null,
             },
         ]);
     });
@@ -2723,6 +2726,44 @@ describe('POST /api/jobs/:id/complete', () => {
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_TREE_CHANGED');
         expect(store.completed).toEqual([]);
+    });
+
+    it('hands the store the verdict’s evidence record, rebuilt field by field', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const evidence = { treeBefore: 'h:1', treeAfter: null, gates: 'passed' };
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            evidence: { ...evidence, extra: 'dropped' },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(store.completed[0]).toMatchObject({ evidence });
+        expect(store.completed[0]?.evidence).not.toHaveProperty('extra');
+    });
+
+    it.each([
+        ['a string', 'h:1'],
+        ['an unknown gate outcome', { treeBefore: null, treeAfter: null, gates: 'maybe' }],
+        ['an empty fingerprint', { treeBefore: '', treeAfter: null, gates: 'none' }],
+        ['an oversized fingerprint', { treeBefore: 'x'.repeat(257), treeAfter: null, gates: 'none' }],
+        ['a missing fingerprint', { treeAfter: null, gates: 'none' }],
+    ])('refuses evidence as %s with BAD_EVIDENCE', async (_label, evidence) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, evidence });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_EVIDENCE');
+        expect(store.completed).toEqual([]);
+    });
+
+    it('accepts the policy failure kind on a failed verdict', async () => {
+        const instance = await harnessWith(stubStore({ verdict: 'ok' }));
+        const response = await post(instance, `/api/jobs/${ID}/complete`, {
+            ...done,
+            status: 'failed',
+            failureKind: 'policy',
+        });
+        expect(response.statusCode).toBe(200);
     });
 
     it.each([
