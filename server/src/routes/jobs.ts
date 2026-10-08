@@ -33,6 +33,7 @@ import {
     handleWaitPoke,
 } from './job-handlers-actions.js';
 import { handleAnswer, handleQuestion, handleQuestionExpire } from './job-handlers-questions.js';
+import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
 import { ARTIFACT_BODY_LIMIT, BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
 
@@ -147,6 +148,14 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/questions/:questionId/answer', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
             handleAnswer(orgs, request, reply)
+        );
+        // A named reviewer's separate run (054, issue #549): the driver's request and its read of
+        // the verdict, both worker routes — the agent reaches them only through the control endpoint.
+        app.post('/api/jobs/:id/review', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleReviewRequest(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/review-read', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleReviewRead(orgs, request, reply)
         );
         app.get('/api/jobs/:id', (request, reply) => handleGetJob(orgs, request, reply));
         app.get('/api/jobs/:id/thread', (request, reply) => handleThread(orgs, request, reply));

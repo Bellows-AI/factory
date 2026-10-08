@@ -8,6 +8,14 @@ export const JSON_CONTENT_TYPE = 'application/json';
 
 export const CONTENT_TYPE_HEADER = 'content-type';
 
+/**
+ * The error codes the board's answer bodies carry that the driver branches on, where one status
+ * means two things (a 409 is a lost lease or a refusal; a 404 a removed thread or an unknown key).
+ * Copied from core/src/error-codes.ts, for the same reason.
+ */
+export const LEASE_LOST_CODE = 'LEASE_LOST';
+export const NOT_FOUND_CODE = 'NOT_FOUND';
+
 /** What the kubernetes API requires of a PATCH body that is a JSON merge patch. */
 export const MERGE_PATCH_CONTENT_TYPE = 'application/merge-patch+json';
 

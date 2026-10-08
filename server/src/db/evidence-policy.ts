@@ -34,24 +34,43 @@ export interface EvidenceRow {
     status: string;
     output: string | null;
     evidence: RecordedEvidence | null;
+    /** A named-profile review run (issue #549): a row of its own thread, linked to the caller it assessed. */
+    reviewProfile?: boolean;
+    /** The tree fingerprint the caller asked this review to assess — the revision its verdict is bound to. */
+    reviewRevision?: string | null;
 }
 
-const isReviewNode = (snapshot: WorkflowDefinition, name: string | null): boolean =>
-    snapshot.nodes.some((node) => node.name === name && node.review === true);
+const isReviewNode = (snapshot: WorkflowDefinition | null, name: string | null): boolean =>
+    snapshot?.nodes.some((node) => node.name === name && node.review === true) ?? false;
+
+/** A graph reviewer node's row, or a named-profile review's. */
+const isReviewRow = (snapshot: WorkflowDefinition | null, row: EvidenceRow): boolean =>
+    row.reviewProfile === true || isReviewNode(snapshot, row.node);
+
+/** The revision a review row's verdict stands for: what the caller asked about, else the tree the node started from. */
+const revisionOf = (row: EvidenceRow): string | null =>
+    row.reviewProfile === true ? (row.reviewRevision ?? null) : (row.evidence?.treeBefore ?? null);
 
 /**
- * The review evidence a thread carries. `unavailable` — no node of the graph is a reviewer — is
- * distinct from the policy requiring one. The LATEST review row decides, and only a succeeded row
- * ending on the clean verdict marker, with a recorded tree, approves; queued, running, failed,
- * dead, stopped and marker-less rows never do. Rows are oldest first.
+ * The review evidence a thread carries. `unavailable` — no node of the graph is a reviewer and no
+ * reviewer profile is declared or has run — is distinct from the policy requiring one. The LATEST
+ * review row decides, and only a succeeded row ending on the clean verdict marker, with a recorded
+ * revision, approves; queued, running, failed, dead, stopped and marker-less rows never do. A graph
+ * node's row is bound to the tree it started from, a profile row to the revision its caller asked
+ * about. Rows are oldest first.
  */
-export function reviewEvidenceOf(snapshot: WorkflowDefinition | null, rows: readonly EvidenceRow[]): ReviewEvidence {
-    if (snapshot === null || !snapshot.nodes.some((node) => node.review === true)) return { state: 'unavailable' };
-    const latest = rows.findLast((row) => isReviewNode(snapshot, row.node));
+export function reviewEvidenceOf(
+    snapshot: WorkflowDefinition | null,
+    rows: readonly EvidenceRow[],
+    profilesDeclared = false
+): ReviewEvidence {
+    const graphReviewer = snapshot?.nodes.some((node) => node.review === true) ?? false;
+    const latest = rows.findLast((row) => isReviewRow(snapshot, row));
+    if (!graphReviewer && !profilesDeclared && latest === undefined) return { state: 'unavailable' };
     if (latest === undefined) return { state: 'missing' };
     if (latest.status !== 'succeeded') return { state: 'incomplete' };
     if (tailMatches(latest.output, REVIEW_BLOCKERS_MARKER)) return { state: 'rejected' };
-    const revision = latest.evidence?.treeBefore ?? null;
+    const revision = revisionOf(latest);
     if (!tailMatches(latest.output, REVIEW_VERDICT_MARKER) || revision === null) return { state: 'incomplete' };
     return { state: 'approved', revision };
 }

@@ -5,8 +5,9 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
-import { exists, queueReclaimIfThreadDone, workspacePathFor, hasRunningMember } from './job-store-rows.js';
+import { exists, queueReclaimIfThreadDone, stopRows, workspacePathFor, hasRunningMember } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
+import { stopReviewsOf } from './job-store-reviews.js';
 import type { EditCommandResult, JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
 import { wakeOneRound } from './workflow-blocks/runtime.js';
 
@@ -143,6 +144,9 @@ export async function createFollowUpRow(
                   and status in ('succeeded','failed','dead','stopped')
                   and done_at is null
                   and created_by is not distinct from ${createdBy}
+                  -- A named-profile review is not a task: a follow-up of it would run as an
+                  -- ordinary job with the author's full env and token (issue #549).
+                  and review_of is null
                 for update
             ),
             root as (
@@ -256,6 +260,9 @@ export async function createRetryRow(
                 from job
                 where org_id = ${orgId} and id = ${id}
                   and created_by is not distinct from ${createdBy}
+                  -- A named-profile review is not a task: a retry of it would run as an ordinary
+                  -- job with the author's full env and token, in the reviewer's worktree (#549).
+                  and review_of is null
                 for update
             ),
             head as (
@@ -440,43 +447,7 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
     // a rewrite of when it was asked. stopped_by coalesces beside it unconditionally —
     // every status this UPDATE touches is a stoppable one, so this caller acted, and the
     // first asker is the actor that survives.
-    const rows = await sql<{ status: JobStatus; cancel_requested_at: Date | null; root_job_id: string }[]>`
-        update job set
-            status = case
-                when status = 'queued' then 'stopped'
-                when status = 'running' and lease_expires_at <= now() then 'stopped'
-                else status
-            end,
-            finished_at = case
-                when status = 'queued' then now()
-                when status = 'running' and lease_expires_at <= now() then now()
-                else finished_at
-            end,
-            wall_clock_ms = case
-                when status = 'running' and lease_expires_at <= now() then ${wallTick}
-                else wall_clock_ms
-            end,
-            attempts = case
-                when status = 'running' and lease_expires_at <= now() then greatest(attempts - 1, 0)
-                else attempts
-            end,
-            lease_token = case
-                when status = 'running' and lease_expires_at <= now() then null
-                else lease_token
-            end,
-            lease_expires_at = case
-                when status = 'running' and lease_expires_at <= now() then now()
-                else lease_expires_at
-            end,
-            cancel_requested_at = case
-                when status = 'running' and lease_expires_at > now() then coalesce(cancel_requested_at, now())
-                else null
-            end,
-            stopped_by = coalesce(stopped_by, ${stoppedBy})
-        where org_id = ${orgId} and id = ${id}
-          and status in ('queued','running')
-        returning status, cancel_requested_at, root_job_id
-    `;
+    const rows = await stopRows(sql, { orgId, wallTick, stoppedBy, where: sql`id = ${id}` });
     const row = rows[0];
     if (!row) {
         // Nothing settled or moving — a task that already ended has no turn to stop, and
@@ -486,6 +457,8 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
         `;
         return other ? { result: 'conflict', status: other.status } : 'missing';
     }
+    // The caller's reviews go with it (issue #549): a Stop reaches every separate run it started.
+    await stopReviewsOf(sql, { orgId, wallTick, stoppedBy }, [id]);
     if (row.cancel_requested_at === null) {
         // A settled stop ends the thread's turn: its PR waits have nothing left to
         // fold for — the session a follow-up continues from starts its own wait cycle.
@@ -590,14 +563,21 @@ export async function removeJobThread(
         // The one refusal: a member is running. The user stops it first — the per-task
         // worktree is a live runner's checkout, and tearing it out under the container would
         // corrupt a run that was happily going.
-        if (hasRunningMember(members)) return 'conflict';
+        // The thread's named-profile reviews (issue #549) are threads of their own, so they are
+        // not in `members`: a running one is a live runner's checkout too, and they leave with it.
+        const reviews = await tx<{ id: string; status: JobStatus }[]>`
+            select id, status from job
+            where org_id = ${orgId} and review_of = any(${members.map((m) => m.id)}::uuid[])
+            for update
+        `;
+        if (hasRunningMember([...members, ...reviews])) return 'conflict';
 
         // The rows are gone for good — nothing joins through job.id at claim time (the
         // claim copies its session labels onto its own row), so deleting the audit trail is
         // the removal, not a cleanup that orphans something.
         await tx`
             delete from job
-            where org_id = ${orgId} and id = any(${members.map((m) => m.id)})
+            where org_id = ${orgId} and id = any(${[...members, ...reviews].map((m) => m.id)})
         `;
 
         // The thread is gone, and with it every PR wait folded for it — the webhook's
@@ -619,10 +599,13 @@ export async function removeJobThread(
         // path the claim derives, empty labels included: a tree keyed only on the root id
         // still gets reclaimed, pointing at nothing additional is fine.
         const workspacePath = workspacePathFor(orgId, hasWorkspaces, root.created_by);
-        await tx`
-            insert into task_reclaim (org_id, root_job_id, repo, workspace_path, removed_by)
-            values (${orgId}, ${rootJobId}, ${root.repo}, ${workspacePath}, ${removedBy})
-        `;
+        // One per tree: the thread's own, and each review's (its worktree is keyed by its own id).
+        for (const tree of [rootJobId, ...reviews.map((review) => review.id)]) {
+            await tx`
+                insert into task_reclaim (org_id, root_job_id, repo, workspace_path, removed_by)
+                values (${orgId}, ${tree}, ${root.repo}, ${workspacePath}, ${removedBy})
+            `;
+        }
 
         return { result: 'ok', rootJobId, repo: root.repo, workspacePath };
     });

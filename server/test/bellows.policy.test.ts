@@ -19,6 +19,7 @@ describe('parseBellowsWithPolicy', () => {
         expect(parseBellowsWithPolicy('policy:\n    review: required\n')).toEqual({
             config: null,
             policy: { review: true },
+            reviewers: [],
         });
     });
 

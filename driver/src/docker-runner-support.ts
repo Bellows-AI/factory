@@ -167,6 +167,9 @@ export function syncCheckoutArgs(
         // Restore mode, as a literal: the script's "keep the tree as the task left it, remote
         // untouched" switch (issue #58).
         ...(sync.restore ? ['-e', 'RESTORE=1'] : []),
+        // A named reviewer's tree starts at the snapshot ref its caller froze (issue #549): a ref
+        // name, never a credential — the same literal class as the paths above.
+        ...(job.reviewRun ? ['-e', `REVIEW_REF=${job.reviewRun.ref}`] : []),
         // The fetch's credential helper, as CODE in an env VALUE — the same class of value as
         // the three paths above, and the same mechanism as the push's `-c credential.helper=`.
         // Only when the claim env carries the token the helper reads; the token itself travels

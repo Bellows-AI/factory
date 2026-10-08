@@ -49,6 +49,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['git-probe.cjs', 'node'],
     ['git-worktree.cjs', 'node'],
     ['git-worktree-remove.cjs', 'node'],
+    ['git-review-snapshot.cjs', 'node'],
     ['pr-summary.cjs', 'node'],
     ['bellows-read.sh', 'sh'],
     ['opencode-readout.cjs', 'node'],

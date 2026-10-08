@@ -212,7 +212,8 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                        max(done_at) as done_at,
                        max(finished_at) as finished_at
                 from job
-                where org_id = ${orgId}
+                -- A named-profile review (issue #549) is its caller's evidence, not a task.
+                where org_id = ${orgId} and review_of is null
                 group by root_job_id
                 having count(*) filter (
                     where status not in ('succeeded', 'failed', 'dead', 'stopped')
@@ -323,7 +324,9 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
                    root_job_id, id, status, done_at, cancel_requested_at,
                    created_at, started_at, finished_at, summary, runtime
             from job
-            where org_id = ${orgId}
+            -- A named-profile review (issue #549) is a thread of its own, linked to its caller: it is
+            -- the caller's evidence, not a task a member queued, so it is not a row of this list.
+            where org_id = ${orgId} and review_of is null
             order by root_job_id, created_at desc, id desc
         ),
         task as (

@@ -83,6 +83,54 @@ describe('reviewEvidenceOf', () => {
     });
 });
 
+/** A row of a named-profile review (issue #549): bound to the revision the caller asked about. */
+const profileRow = (over: Partial<EvidenceRow> = {}): EvidenceRow => ({
+    node: null,
+    status: 'succeeded',
+    output: `all clear\n${REVIEW_VERDICT_MARKER}`,
+    evidence: null,
+    reviewProfile: true,
+    reviewRevision: 'r1',
+    ...over,
+});
+
+describe('reviewEvidenceOf with named reviewer profiles', () => {
+    it('stays unavailable with no graph reviewer, no declared profile and no profile row', () => {
+        expect(reviewEvidenceOf(null, [], false)).toEqual({ state: 'unavailable' });
+    });
+
+    it('is missing when profiles are declared and none has run, even on a thread with no graph', () => {
+        expect(reviewEvidenceOf(null, [], true)).toEqual({ state: 'missing' });
+    });
+
+    it('approves a clean profile row at the revision it was asked about, not the reviewer’s own tree', () => {
+        const row = profileRow({ evidence: evidence({ treeBefore: 'snapshot-head' }), reviewRevision: 'r7' });
+        expect(reviewEvidenceOf(null, [row], true)).toEqual({ state: 'approved', revision: 'r7' });
+    });
+
+    it.each(['queued', 'running', 'failed', 'dead', 'stopped'])('never approves a %s profile review', (status) => {
+        expect(reviewEvidenceOf(null, [profileRow({ status })], true)).toEqual({ state: 'incomplete' });
+    });
+
+    it('treats a marker-less row, or one with no revision, as incomplete, and blockers as rejected', () => {
+        expect(reviewEvidenceOf(null, [profileRow({ output: 'fine' })], true)).toEqual({ state: 'incomplete' });
+        expect(reviewEvidenceOf(null, [profileRow({ reviewRevision: null })], true)).toEqual({ state: 'incomplete' });
+        const output = `bad\n${REVIEW_BLOCKERS_MARKER}`;
+        expect(reviewEvidenceOf(null, [profileRow({ output })], true)).toEqual({ state: 'rejected' });
+    });
+
+    it('lets the latest review row decide across graph and profile rows alike', () => {
+        const running = profileRow({ status: 'running', output: null });
+        expect(reviewEvidenceOf(null, [profileRow(), running], true)).toEqual({ state: 'incomplete' });
+        expect(reviewEvidenceOf(null, [running, profileRow()], true)).toEqual({ state: 'approved', revision: 'r1' });
+    });
+
+    it('cannot satisfy a required review once the work moved past the reviewed revision', () => {
+        const review = reviewEvidenceOf(null, [profileRow({ reviewRevision: 'old' })], true);
+        expect(completionRefusal({ review: true }, evidence({ treeAfter: 'new' }), review)).toBe(REFUSAL_STALE);
+    });
+});
+
 describe('completionRefusal', () => {
     const approved = { state: 'approved', revision: 'r1' } as const;
 

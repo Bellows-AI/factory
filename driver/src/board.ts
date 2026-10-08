@@ -1,6 +1,6 @@
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
-import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
 import type { HelperPlan } from './helpers.js';
 
 /**
@@ -139,6 +139,12 @@ export interface BoardJob {
     policy?: EvidencePolicy;
     review?: ReviewEvidence;
     /**
+     * Present only on a named reviewer's claim (issue #549): the snapshot ref its worktree starts
+     * from and the wall-clock budget its profile grants. Such a run opens no publish or question
+     * relay, runs no gates and never publishes — the board decided that when it handed the claim out.
+     */
+    reviewRun?: { profile: string; ref: string; timeoutMinutes: number };
+    /**
      * The ad-hoc gate credentials the LOOP mints for this attempt (`BELLOWS_GATE_URL` /
      * `BELLOWS_GATE_TOKEN`) — set just before spawn, never by the board, which is why it sits
      * beside `env` rather than inside it: the reserved-name filter that keeps a member's claim
@@ -250,6 +256,42 @@ export type QuestionExpiry =
     | 'lost'
     | 'removed';
 
+/** What the caller asks of the board for one review: the driver measured `revision` and froze it under `ref`. */
+export interface ReviewRequest {
+    key: string;
+    profile: string;
+    revision: string;
+    ref: string;
+}
+
+/**
+ * One review as the board reports it (issue #549): the review row's own status, the verdict read
+ * from its output's final marker (`none` until a succeeded run ends on one), its findings, the
+ * revision it is bound to, and the THREAD's review evidence as the policy validator sees it now —
+ * which the loop adopts as `job.review`. Copied from the board's `ReviewView`; no `core` import.
+ */
+export interface ReviewReport {
+    id: string;
+    key: string;
+    profile: string;
+    status: BoardJobStatus;
+    verdict: 'clean' | 'blockers' | 'none';
+    revision: string;
+    findings: string | null;
+    failureKind: FailureKind | null;
+    evidence: ReviewEvidence;
+}
+
+/**
+ * How the board took a review request or read: the review (`created` when the request started a
+ * new one), a `refused` with the board's own reason (an undeclared profile, a workflow task, a bad
+ * ref, no such key), or the lease verdicts `lost` and `removed`.
+ */
+export type ReviewAnswer =
+    | { result: 'ok'; review: ReviewReport; created: boolean }
+    | { result: 'refused'; reason: string }
+    | { result: 'lost' | 'removed' };
+
 /**
  * The structured terminal reason of a run (issue #339): what class of ending the verdict records,
  * reported with the verdict and stored by the board as `job.failure_kind`. Null — the field off
@@ -323,6 +365,10 @@ export interface Board {
     question(job: BoardJob, questionId: string, questions: AskedQuestion[]): Promise<QuestionVerdict>;
     /** Gives up waiting on a question (`POST /api/jobs/:id/question-expire`); the board decides the race with an answer. */
     expireQuestion(job: BoardJob, questionId: string): Promise<QuestionExpiry>;
+    /** Starts a named reviewer's separate run (`POST /api/jobs/:id/review`); a repeated key answers the stored review. */
+    requestReview(job: BoardJob, request: ReviewRequest): Promise<ReviewAnswer>;
+    /** Reads the review asked for under `key` and the thread's review evidence (`POST /api/jobs/:id/review-read`). */
+    readReview(job: BoardJob, key: string): Promise<ReviewAnswer>;
     /**
      * Claims one row of the removed-thread queue put there by a Remove (issue #41): the thread's
      * rows are gone and the tree is this worker's to take down. Null means the queue is empty.
@@ -583,6 +629,31 @@ async function questionExpiryOf(response: Response): Promise<QuestionExpiry> {
         : { state: 'expired' };
 }
 
+const HTTP_BAD_REQUEST = 400;
+const HTTP_CREATED = 201;
+
+/**
+ * The board's answer to a review request or read. A 409 is two things here — the lease verdict, and
+ * a refusal such as an undeclared profile — so the code in the body decides; a 404 is the removed
+ * thread, or a key nothing was asked under.
+ */
+async function reviewAnswerOf(response: Response): Promise<ReviewAnswer> {
+    if (response.ok) {
+        return {
+            result: 'ok',
+            review: (await response.json()) as ReviewReport,
+            created: response.status === HTTP_CREATED,
+        };
+    }
+    const body = (await response.json().catch(() => ({}))) as { error?: unknown; code?: unknown };
+    if (body.code === LEASE_LOST_CODE) return { result: 'lost' };
+    if (response.status === HTTP_NOT_FOUND && body.code === NOT_FOUND_CODE) return { result: 'removed' };
+    return {
+        result: 'refused',
+        reason: typeof body.error === 'string' ? body.error : `the board answered ${response.status}`,
+    };
+}
+
 /**
  * The one POST every board call goes through: the JSON headers, the board secret when there is one,
  * and the status policy. 409 is a verdict, not a failure; 404 is a verdict too for the calls that
@@ -621,6 +692,21 @@ function createPost({ url, token, fetch }: { url: string; token: string | undefi
             );
         }
         return response;
+    };
+}
+
+/** The two named-reviewer calls (issue #549): both lease-fenced, both reading a 400 as the board's refusal. */
+function reviewCalls(post: ReturnType<typeof createPost>): Pick<Board, 'requestReview' | 'readReview'> {
+    const allow = [HTTP_BAD_REQUEST];
+    return {
+        async requestReview(job, request) {
+            const body = { leaseToken: job.leaseToken, ...request };
+            return reviewAnswerOf(await post(`/api/jobs/${job.id}/review`, body, true, { allow }));
+        },
+        async readReview(job, key) {
+            const body = { leaseToken: job.leaseToken, key };
+            return reviewAnswerOf(await post(`/api/jobs/${job.id}/review-read`, body, true, { allow }));
+        },
     };
 }
 
@@ -701,6 +787,8 @@ export function createBoard({
             const body = { leaseToken: job.leaseToken, questionId };
             return questionExpiryOf(await post(`/api/jobs/${job.id}/question-expire`, body, true));
         },
+
+        ...reviewCalls(post),
 
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });

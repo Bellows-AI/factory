@@ -1,5 +1,5 @@
 import type { BoardJob } from './board.js';
-import { claimContinuesSession, envFileBody } from './claim.js';
+import { claimRestoresTree, envFileBody } from './claim.js';
 import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, reportTail, tailKept } from './runner.js';
 import {
@@ -505,7 +505,7 @@ export async function runSyncJob(
     job: BoardJob,
     secretRef: { current: string | null }
 ): Promise<SyncResult> {
-    const restore = claimContinuesSession(job);
+    const restore = claimRestoresTree(job);
     const env = restore ? {} : envBodyToData(envFileBody(job));
     if (Object.keys(env).length) {
         const response = await deps.request(

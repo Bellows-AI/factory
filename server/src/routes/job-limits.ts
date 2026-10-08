@@ -84,6 +84,13 @@ export const QUESTION_DESCRIPTION_LIMIT = 1000;
 export const ANSWER_LIMIT = 2000;
 
 /**
+ * A named reviewer's request (issue #549): the caller's idempotency key, and the bound on the
+ * revision fingerprint and snapshot ref the driver reports (a `<sha>:<sha256>` fingerprint is 105).
+ */
+export const REVIEW_KEY = /^[A-Za-z0-9_-]{1,64}$/;
+export const REVIEW_REVISION_LIMIT = 256;
+
+/**
  * The runtime vitals a worker may report beside the tail. Numbers are bounded past anything a
  * real container reaches (a busy multi-core container exceeds 100% CPU; ten petabytes of RAM does
  * not exist), the activity line is capped because it is one CLI line and not a log, and the

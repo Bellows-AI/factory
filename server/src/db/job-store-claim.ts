@@ -21,6 +21,7 @@ import type { BellowsConfig } from '../workspace/bellows.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { withMintedToken } from './job-store-org-resolvers.js';
+import { stopReviewsOf } from './job-store-reviews.js';
 import { workspacePathFor } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import type {
@@ -31,8 +32,10 @@ import type {
     ClaimGatesSource,
     ClaimHelperPlan,
     JobStorePrs,
+    ReviewerSpec,
 } from './job-store-types.js';
 import { claimCommand } from './follow-up-recap.js';
+import { reviewerPrompts } from './review-prompt.js';
 import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
@@ -53,6 +56,10 @@ export interface ClaimCandidateRow {
     workflow_name: string | null;
     mode: JobMode;
     root_command: string;
+    /** Set only on a named-profile review's row (issue #549): the profile it runs as and the ref it starts from. */
+    review_of: string | null;
+    review_spec: ReviewerSpec | null;
+    review_ref: string | null;
 }
 
 /**
@@ -78,8 +85,14 @@ async function claimNextCandidate(
                            wall_clock_ms = ${ctx.wallTick}
             where org_id = ${orgId} and status = 'running'
               and lease_expires_at <= now() and attempts >= max_attempts
-            returning root_job_id
+            returning id, root_job_id
         `.then(async (retired) => {
+            // A retired caller's separate reviews (issue #549) have no one left to read them.
+            await stopReviewsOf(
+                tx,
+                { orgId, wallTick: ctx.wallTick, stoppedBy: null },
+                retired.map((r) => r.id)
+            );
             // A merge-marked thread whose last moving member just retired is closed by it
             // (issue #390) — the shared conditional settle, distinct roots in deterministic
             // order so two transactions settling the same roots cannot cycle on the locks.
@@ -161,6 +174,9 @@ async function claimNextCandidate(
                     workflow_name: string | null;
                     mode: JobMode;
                     root_command: string;
+                    review_of: string | null;
+                    review_spec: ReviewerSpec | null;
+                    review_ref: string | null;
                 }[]
             >`
                 update job set
@@ -212,6 +228,7 @@ async function claimNextCandidate(
                 -- stopped, and is never claimed again.
                 returning id, command, attempts, lease_token, lease_expires_at, created_by,
                           session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
+                          review_of, review_spec, review_ref,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
@@ -255,10 +272,14 @@ async function claimNextCandidate(
             // other claim env value, a claude-code row's config does not reach a Remote
             // Control runner, which gets only the baked settings.json and the mounted auth
             // volume.
+            // A named-profile review (issue #549) is claimed on its own, narrower terms: the
+            // profile's env grant, no minted token, no gates, no publish — see `claimReview`.
+            const reviewRow = reviewRowOf(row);
+            if (reviewRow) return claimReview(tx, { env, executorConfig, orgId, hasWorkspaces, rootJobId }, reviewRow);
             const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
             const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
             const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
-            const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates.claimPolicy);
+            const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
             const command = await claimCommand(tx, orgId, rootJobId, row);
             return buildClaimResult({ ...row, command }, rootJobId, {
                 ...executor,
@@ -393,24 +414,41 @@ export function mergeExecutorConfigEnv(
     return { ...(claimEnv ?? {}), [envName]: JSON.stringify(rest) };
 }
 
+/** The entries of `env` named in `grant`, nothing else: a reviewer profile's `connections`. */
+function grantedEnv(
+    env: Record<string, string> | undefined,
+    grant: readonly string[]
+): Record<string, string> | undefined {
+    if (env === undefined) return undefined;
+    return Object.fromEntries(Object.entries(env).filter(([name]) => grant.includes(name)));
+}
+
 export async function resolveClaimExecutor(
     tx: TransactionSql,
     deps: {
         env: CreateJobStoreDeps['env'];
         githubToken: CreateJobStoreDeps['githubToken'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
+        /**
+         * Set for a reviewer's claim (issue #549): ONLY these member env names reach it, and no
+         * installation token is minted for it. The executor config (the agent's own runtime
+         * settings) still travels — a reviewer needs to run — but nothing of the caller's access does.
+         */
+        grant?: readonly string[];
     },
     row: { created_by: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
 ): Promise<ResolvedClaimExecutor> {
-    const { env, githubToken, executorConfig } = deps;
+    const { env, githubToken, executorConfig, grant } = deps;
     const resolvedEnv = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined;
     // The mint fills only the gap: when the stacked env already carries a GITHUB_TOKEN, the mint
     // would be discarded — so it is not made at all, rather than spend a GitHub call and leave a
-    // live token nothing holds.
+    // live token nothing holds. A granted claim mints nothing: a token is access the profile never named.
     let claimEnv =
-        githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
-            ? withMintedToken(await githubToken.fresh(row.repo), resolvedEnv)
-            : resolvedEnv;
+        grant !== undefined
+            ? grantedEnv(resolvedEnv, grant)
+            : githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
+              ? withMintedToken(await githubToken.fresh(row.repo), resolvedEnv)
+              : resolvedEnv;
     // The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
     // 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
     // meaning — and the organization's when it is 'org', which is how a team-shared profile
@@ -446,6 +484,8 @@ export interface ResolvedClaimGates {
     claimPath: string | null;
     /** The repository's evidence policy (base clone only); null when none is declared. */
     claimPolicy: EvidencePolicy | null;
+    /** The repository's reviewer profiles (base clone only); empty when none is declared. */
+    claimReviewers: readonly ReviewerSpec[];
 }
 
 /** What a claim carries of the evidence policy: the requirement and the thread's review evidence. */
@@ -468,7 +508,14 @@ export async function resolveClaimGates(
 ): Promise<ResolvedClaimGates> {
     const claimPath = workspacePathFor(ctx.orgId, ctx.hasWorkspaces, row.created_by);
     if (!gatesReader || !row.repo || !claimPath) {
-        return { claimGates: null, gateError: null, gatesSource: null, claimPath, claimPolicy: null };
+        return {
+            claimGates: null,
+            gateError: null,
+            gatesSource: null,
+            claimPath,
+            claimPolicy: null,
+            claimReviewers: [],
+        };
     }
     const read = await gatesReader.readFor(claimPath, row.repo, ctx.rootJobId);
     return {
@@ -477,6 +524,7 @@ export async function resolveClaimGates(
         gatesSource: read.source,
         claimPath,
         claimPolicy: read.policy ?? null,
+        claimReviewers: read.reviewers ?? [],
     };
 }
 
@@ -490,16 +538,70 @@ async function resolveClaimEvidence(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string },
     row: { id: string; mode: JobMode },
-    policy: EvidencePolicy | null
+    declared: Pick<ResolvedClaimGates, 'claimPolicy' | 'claimReviewers'>
 ): Promise<ResolvedClaimEvidence> {
     const { orgId, rootJobId } = ctx;
+    const { claimPolicy: policy, claimReviewers: reviewers } = declared;
     const stamp = policy === null ? null : tx.json(policy as never);
-    await tx`update job set policy = ${stamp} where org_id = ${orgId} and id = ${row.id}`;
+    // The reviewer profiles are stamped the same way: a review request is validated against the
+    // profiles as of THIS claim (issue #549), never against the repository at request time.
+    const profiles = reviewers.length === 0 ? null : tx.json(reviewers as never);
+    await tx`update job set policy = ${stamp}, reviewers = ${profiles} where org_id = ${orgId} and id = ${row.id}`;
     if (policy === null) return {};
     if (!policy.review) return { policy };
-    // An objective thread has no graph, so no reviewer.
+    // An objective thread has no graph; its reviewers are the named profiles its callers invoke.
     const snapshot = row.mode === OBJECTIVE_MODE ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
     return { policy, review: await readReviewEvidence(tx, { orgId, rootJobId }, snapshot) };
+}
+
+/** The row as a named-profile review's, when it is one: the spec and the ref come together (`job_review_ck`). */
+function reviewRowOf<T extends ClaimCandidateRow>(
+    row: T
+): (T & { review_spec: ReviewerSpec; review_ref: string }) | null {
+    if (row.review_spec === null || row.review_ref === null) return null;
+    return { ...row, review_spec: row.review_spec, review_ref: row.review_ref };
+}
+
+/**
+ * A named-profile review's claim (issue #549): the row is its own thread, claimed under the
+ * profile's frozen spec. What it does NOT carry is the point — no minted GitHub token and no member
+ * env beyond the profile's `connections`, no gates (so no gate error either), no publish, no
+ * helpers, no policy to enforce on itself — and what it does carry that others do not is the
+ * profile's own system prompt and `reviewRun`, the snapshot ref its worktree starts from and the
+ * wall-clock budget the profile grants. The board decides all of it; the caller names none of it.
+ */
+async function claimReview(
+    tx: TransactionSql,
+    deps: {
+        env: CreateJobStoreDeps['env'];
+        executorConfig: CreateJobStoreDeps['executorConfig'];
+        orgId: string;
+        hasWorkspaces: boolean;
+        rootJobId: string;
+    },
+    row: ClaimCandidateRow & { executor_scope: string | null; review_spec: ReviewerSpec; review_ref: string }
+): Promise<Claim> {
+    const { env, executorConfig, orgId, hasWorkspaces, rootJobId } = deps;
+    const spec = row.review_spec;
+    const executor = await resolveClaimExecutor(
+        tx,
+        { env, githubToken: undefined, executorConfig, grant: spec.connections },
+        row
+    );
+    const claim = buildClaimResult(row, rootJobId, {
+        ...executor,
+        claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by),
+        claimGates: null,
+        gateError: null,
+        gatesSource: null,
+        claimPolicy: null,
+        claimReviewers: [],
+        publish: false,
+        helperPlans: undefined,
+        masterPrompt: reviewerPrompts(spec, '').masterPrompt,
+        turnContext: null,
+    });
+    return { ...claim, reviewRun: { profile: spec.name, ref: row.review_ref, timeoutMinutes: spec.timeoutMinutes } };
 }
 
 export interface ResolvedClaimPublish {

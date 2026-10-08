@@ -16,19 +16,40 @@ import {
 import type { FailureKind, JobOutcome } from './job-store-types.js';
 import { isPublishNode, type WorkflowDefinition } from './workflow-schema.js';
 
-/** The thread's review evidence; a thread with no graph (objective mode) has no reviewer. */
+/**
+ * The thread's review evidence: its graph's review-node rows, and the named-profile reviews its
+ * callers asked for (issue #549 — rows of their own threads, linked by `review_of`), oldest
+ * first. A thread with no graph (objective mode) has a reviewer only when a caller of it was
+ * claimed with profiles declared, or one has already run.
+ */
 export async function readReviewEvidence(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string },
     snapshot: WorkflowDefinition | null
 ): Promise<ReviewEvidence> {
-    if (snapshot === null) return reviewEvidenceOf(null, []);
+    const { orgId, rootJobId } = ctx;
     const rows = await tx<EvidenceRow[]>`
-        select workflow_node as node, status, output, evidence from job
-        where org_id = ${ctx.orgId} and root_job_id = ${ctx.rootJobId}
+        select node, status, output, evidence, "reviewProfile", "reviewRevision" from (
+            select workflow_node as node, status, output, evidence, false as "reviewProfile",
+                   null::text as "reviewRevision", created_at, id
+            from job
+            where org_id = ${orgId} and root_job_id = ${rootJobId} and workflow_node is not null
+            union all
+            select null::text, status, output, null::jsonb, true, review_revision, created_at, id
+            from job
+            where org_id = ${orgId}
+              and review_of in (select id from job where org_id = ${orgId} and root_job_id = ${rootJobId})
+        ) thread
         order by created_at, id
     `;
-    return reviewEvidenceOf(snapshot, rows);
+    const [declared] = await tx<{ declared: boolean }[]>`
+        select exists (
+            select 1 from job
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
+              and reviewers is not null and jsonb_array_length(reviewers) > 0
+        ) as declared
+    `;
+    return reviewEvidenceOf(snapshot, rows, declared?.declared ?? false);
 }
 
 /** What `refuseCompletion` needs of the verdict row. */
