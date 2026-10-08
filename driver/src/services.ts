@@ -15,12 +15,6 @@ import type { BoardJob, ServiceStatus } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { containerScript } from './container-scripts.js';
 import { WORKSPACE_PATH, worktreeDir } from './publish.js';
-import {
-    DEAD_SERVICE_STATES,
-    SERVICE_READY_POLL_MS,
-    SERVICE_RESTART_TIMEOUT_MS,
-    SERVICE_RESTART_TIMEOUT_S,
-} from './runner.js';
 
 /**
  * The readout's shell script: a real file (scripts/bellows-read.sh) read at load time and
@@ -661,40 +655,6 @@ export function missingDeclaredServices(job: BoardJob, listed: readonly { name: 
     return (declaredFleets.get(job.leaseToken) ?? [])
         .filter(({ name }) => !present.has(name))
         .map(({ name, image }) => ({ name, image, state: MISSING_SERVICE_STATE }));
-}
-
-/**
- * Waits until every service in `specs` is listed `running` (issue #560), re-listing every
- * SERVICE_READY_POLL_MS; a listing that fails is one more poll, not the answer. Throws naming
- * a service listed dead at once, and what is still not running once `timeoutMs` — the part of
- * the SERVICE_RESTART_TIMEOUT_MS budget the caller has left — has passed. Running is the bar on
- * purpose: `.bellows.yaml` declares no health checks.
- */
-export async function awaitServicesRunning(
-    specs: readonly ServiceSpec[],
-    list: () => Promise<readonly ServiceStatus[]>,
-    sleep: (ms: number) => Promise<void>,
-    timeoutMs = SERVICE_RESTART_TIMEOUT_MS
-): Promise<void> {
-    let pending = specs.map(({ name }) => name);
-    for (let waited = 0; ; waited += SERVICE_READY_POLL_MS) {
-        const listed = await list().catch(() => null);
-        if (listed) {
-            // A service that crashes on every start would only burn the timeout: it is the answer.
-            const dead = listed.find(
-                ({ name, state }) => DEAD_SERVICE_STATES.has(state) && specs.some((s) => s.name === name)
-            );
-            if (dead) throw new Error(`service "${dead.name}" ${dead.state} after the restart`);
-            const running = new Set(listed.filter(({ state }) => state === 'running').map(({ name }) => name));
-            pending = specs.map(({ name }) => name).filter((name) => !running.has(name));
-            if (pending.length === 0) return;
-        }
-        if (waited >= timeoutMs) {
-            const names = pending.map((name) => `"${name}"`).join(', ');
-            throw new Error(`service ${names} not running ${SERVICE_RESTART_TIMEOUT_S}s after the restart`);
-        }
-        await sleep(SERVICE_READY_POLL_MS);
-    }
 }
 
 /**

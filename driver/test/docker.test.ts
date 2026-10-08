@@ -2486,6 +2486,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     const READOUT = '###__bellows:demo\nservices:\n  - name: stub\n    image: stub-svc:1\n';
     // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
     afterEach(() => forgetDeclaredServices(job));
+    /** A restart's stand-down signal that never fires. */
+    const live = new AbortController().signal;
 
     const daemon = (
         readout: string,
@@ -3703,7 +3705,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         removedByHand = true;
         const before = exec.mock.calls.length;
 
-        await runner.restartServices(job);
+        await runner.restartServices(job, live);
 
         const calls = exec.mock.calls.slice(before).map((call) => call[0]);
         // The leftover goes by name, the service comes back on the SAME network — never the
@@ -3714,6 +3716,31 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(await runner.deadServices(job)).toEqual([]);
 
         await runner.releaseServices(job);
+    });
+
+    it('restartServices stops on a stand-down and removes the service it started again (issue #560)', async () => {
+        const base = daemon(READOUT);
+        const stand = new AbortController();
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--network-alias') && stand.signal.aborted === false) {
+                // The Stop lands while the replacement is being started.
+                const answer = await base(args);
+                stand.abort();
+                return answer;
+            }
+            if (args[0] === 'ps' && args.includes('{{json .}}')) return { stdout: '' };
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.run(job, { id: SESSION, resume: false });
+        const before = exec.mock.calls.length;
+
+        await expect(runner.restartServices(job, stand.signal)).rejects.toThrow(
+            'the restart was abandoned: the attempt stood down'
+        );
+        const calls = exec.mock.calls.slice(before).map((call) => call[0]);
+        expect(calls.at(-1)).toEqual(['rm', '-f', serviceContainerName(job, 'stub')]);
+        expect(calls.some((a) => a[0] === 'ps')).toBe(false);
     });
 
     it('restartServices throws when the daemon refuses the service again (issue #560)', async () => {
@@ -3727,7 +3754,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await runner.run(job, { id: SESSION, resume: false });
         refuse = true;
 
-        await expect(runner.restartServices(job)).rejects.toThrow('could not start service "stub": no such network');
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'could not start service "stub": no such network'
+        );
 
         await runner.releaseServices(job);
     });

@@ -598,7 +598,7 @@ export function createKubernetesRunner(
         extendDeadline: (job: BoardJob, ms: number) => extendRunnerDeadline(deps, job, ms),
         releaseServices: (job: BoardJob) => teardownServices(deps, job),
         deadServices: (job: BoardJob) => deadServices(deps, job),
-        restartServices: (job: BoardJob) => restartServiceFleet(deps, job),
+        restartServices: (job: BoardJob, signal: AbortSignal) => restartServiceFleet(deps, job, signal),
         startServices: (job: BoardJob) => startServiceFleet(deps, job),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),

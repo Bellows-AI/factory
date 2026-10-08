@@ -6619,6 +6619,8 @@ describe('the service pod and DNS specs', () => {
 describe('the kubernetes services flow', () => {
     // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
     afterEach(() => forgetDeclaredServices(job));
+    /** A restart's stand-down signal that never fires. */
+    const live = new AbortController().signal;
     const BELLOWS_OUTPUT =
         '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
     const DNS_UID = '99999999-9999-4999-8999-999999999999';
@@ -6942,7 +6944,7 @@ describe('the kubernetes services flow', () => {
         listed = () => (posted === replaced ? [] : polls++ === 0 ? [cachePod('Pending')] : [cachePod('Running')]);
         const before = calls.length;
 
-        await runner.restartServices(job);
+        await runner.restartServices(job, live);
 
         const after = calls.slice(before).filter((c) => c.method === 'POST');
         // The DNS name first, then the service pod under it — startFleet's order, again.
@@ -6961,7 +6963,7 @@ describe('the kubernetes services flow', () => {
         const runner = servicesRunner(withServicePods(request, () => [cachePod('Failed')]));
         await runner.run(job, { id: SESSION, resume: false });
 
-        await expect(runner.restartServices(job)).rejects.toThrow(
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
             'the old service fleet was still terminating 300s on'
         );
 
@@ -6979,7 +6981,9 @@ describe('the kubernetes services flow', () => {
         await runner.run(job, { id: SESSION, resume: false });
         posted = false;
 
-        await expect(runner.restartServices(job)).rejects.toThrow('service "cache" not running 300s after the restart');
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'service "cache" not running 300s after the restart'
+        );
 
         await runner.releaseServices(job);
     });
@@ -7010,7 +7014,9 @@ describe('the kubernetes services flow', () => {
         oldLists = 0;
         slept = 0;
 
-        await expect(runner.restartServices(job)).rejects.toThrow('service "cache" not running 300s after the restart');
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'service "cache" not running 300s after the restart'
+        );
         expect(slept).toBe(300_000);
 
         await runner.releaseServices(job);
@@ -7035,8 +7041,55 @@ describe('the kubernetes services flow', () => {
         await runner.run(job, { id: SESSION, resume: false });
         posted = false;
 
-        await expect(runner.restartServices(job)).rejects.toThrow('service "cache" failed after the restart');
+        await expect(runner.restartServices(job, live)).rejects.toThrow('service "cache" failed after the restart');
         expect(lists).toBe(1);
+    });
+
+    it('restartServices names a lease listing that keeps failing, not a fleet still terminating (issue #560)', async () => {
+        const { request } = servicesFake();
+        let restarting = false;
+        const runner = servicesRunner((method, path, body) => {
+            const scoped = decodeURIComponent(path ?? '');
+            if (restarting && method === 'GET' && scoped.includes(`factory.lease=${job.leaseToken}`)) {
+                return Promise.reject(new Error('the API server is away'));
+            }
+            return request(method, path, body);
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        restarting = true;
+
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'the old service fleet could not be listed 300s on: the API server is away'
+        );
+    });
+
+    it('restartServices stops on a stand-down and takes the fleet it started down again (issue #560)', async () => {
+        const { request, calls } = servicesFake();
+        const stand = new AbortController();
+        let posted = false;
+        const fleet = withServicePods(request, () => {
+            // The replacement is up but Pending when the Stop lands.
+            if (posted) stand.abort();
+            return posted ? [cachePod('Pending')] : [];
+        });
+        const runner = servicesRunner((method, path, body) => {
+            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
+            return fleet(method, path, body);
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        posted = false;
+        const before = calls.length;
+
+        await expect(runner.restartServices(job, stand.signal)).rejects.toThrow(
+            'the restart was abandoned: the attempt stood down'
+        );
+        // Swept again after the abort: the lease lists run once more after the pod create.
+        const after = calls.slice(before);
+        const create = after.findIndex((c) => c.method === 'POST' && c.path === `/api/v1/namespaces/${namespace}/pods`);
+        expect(after.slice(create).some((c) => c.method === 'GET' && c.path?.includes('services?labelSelector='))).toBe(
+            true
+        );
+        expect(await runner.deadServices(job)).toEqual([]);
     });
 
     it("reports a runner pod deleted mid-run as an infrastructure loss, not the agent's verdict (issue #560)", async () => {

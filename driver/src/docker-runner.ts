@@ -779,7 +779,7 @@ export function createDockerRunner(
         runHelper: (job, plan, token, signal) => dockerRunHelper(deps, job, plan, { token, signal }),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
-        restartServices: (job) => restartJobServices(job, execDocker),
+        restartServices: (job, signal) => restartJobServices(job, execDocker, signal),
         startServices: (job) => startJobServices(job, config, deps, (j) => dockerServiceTeardown(deps, j)),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
     };

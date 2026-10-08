@@ -219,9 +219,10 @@ export interface Runner {
      * service runs, up to SERVICE_RESTART_TIMEOUT_MS (issue #560). The loop calls it when a
      * service is found dead before the declared gates: services are stateless fixtures, so a
      * fleet the platform took away is put back rather than failing finished work. Throws when the
-     * fleet cannot be brought back; the message is the verdict's.
+     * fleet cannot be brought back; the message is the verdict's. `signal` is the attempt's
+     * stand-down: once it fires, nothing more is created or polled.
      */
-    restartServices(job: BoardJob): Promise<void>;
+    restartServices(job: BoardJob, signal: AbortSignal): Promise<void>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
     /**

@@ -387,7 +387,7 @@ function stubRunner(
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
         deadServices?: () => Promise<DeadService[]>;
         /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
-        restartServices?: () => Promise<void>;
+        restartServices?: (signal: AbortSignal) => Promise<void>;
     } = {}
 ): Runner & {
     killed: string[];
@@ -421,9 +421,9 @@ function stubRunner(
             runner.servicesReleased.push(releasedJob.id);
         },
         restartedServices: [] as string[],
-        async restartServices(restartedJob: BoardJob) {
+        async restartServices(restartedJob: BoardJob, signal: AbortSignal) {
             runner.restartedServices.push(restartedJob.id);
-            await options.restartServices?.();
+            await options.restartServices?.(signal);
         },
         killed: [] as string[],
         extended: [] as { id: string; ms: number }[],
@@ -4002,6 +4002,30 @@ describe('a dead declared service (issue #423)', () => {
         );
         expect(complete.publication).toMatchObject({ prNumber: 7 });
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
+    });
+
+    it('parks a Stop that lands during the restart at once, aborting it and running no gates (issue #560)', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([gatedJob(1)], options);
+        const stack = stubGateStack();
+        let restartSignal: AbortSignal | undefined;
+        const runner = stubRunner(async () => ok(), {
+            deadServices: async () => [mongo],
+            // A restart that would wait out its whole budget: only the abort ends it.
+            restartServices: (signal) => {
+                restartSignal = signal;
+                options.cancelRequested = true;
+                return new Promise(() => {});
+            },
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(restartSignal?.aborted).toBe(true);
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([gatedJob(1).id]);
+        expect(runner.published).toEqual([]);
     });
 
     it('drafts nothing when the services failed under a gates-required policy, or the board reserves publication', async () => {

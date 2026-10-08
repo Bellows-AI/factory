@@ -481,7 +481,10 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     const deadBefore = await probeDeadServices(rt, job);
     let recoveredServices: DeadService[] = [];
     if (deadBefore.length > 0) {
-        const restartFailure = await restartDeadServices(rt, job, deadBefore);
+        const restartFailure = await restartDeadServices(rt, job, state.signal, deadBefore);
+        // A stand-down during the restart runs no gates; the caller's fence settles the attempt.
+        if (restartFailure === STOOD_DOWN)
+            return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices };
         if (restartFailure !== null) {
             const deadServices = deadBefore.map((dead) => ({ ...dead, restartFailure }));
             return { failure: null, deadServices, gatesSkipped: null, recoveredServices };
@@ -494,18 +497,22 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     return { failure, deadServices: deadAfter, gatesSkipped: null, recoveredServices };
 }
 
-/** Restarts the fleet `dead` was found in; null when it is back, else why it is not. */
+/**
+ * Restarts the fleet `dead` was found in; null when it is back, else why it is not. Raced against
+ * the attempt's stand-down, which also aborts the restart itself: a Stop or lost lease must not
+ * wait out its budget, nor see services recreated after the kill took them.
+ */
 async function restartDeadServices(
     rt: LoopRuntime,
     job: BoardJob,
+    signal: AbortSignal,
     dead: readonly DeadService[]
-): Promise<string | null> {
+): Promise<string | null | typeof STOOD_DOWN> {
     rt.log(
         `job ${job.id}: ${dead.map(({ name }) => `service "${name}"`).join(', ')} dead before the gates, restarting`
     );
     try {
-        await rt.runner.restartServices(job);
-        return null;
+        return (await raceStep(signal, rt.runner.restartServices(job, signal))) === null ? STOOD_DOWN : null;
     } catch (e) {
         rt.log(`job ${job.id}: the service restart failed: ${(e as Error).message}`);
         return (e as Error).message;

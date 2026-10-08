@@ -24,7 +24,6 @@ import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './tele
 import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import {
-    awaitServicesRunning,
     declaredServiceSpecs,
     serviceContainerName,
     readBellowsArgs,
@@ -35,6 +34,7 @@ import {
     networkName,
     serviceRunArgs,
 } from './services.js';
+import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 
 export const run = promisify(execFile);
 
@@ -438,22 +438,31 @@ const serviceWait = (ms: number) => new Promise<void>((resolve) => setTimeout(re
 /**
  * The pre-gate restart (issue #560): each recorded service's container removed and run again on
  * the attempt's EXISTING network — never the whole teardown, which removes the network the gate
- * containers join by name — then waited until every one runs. Every failure throws.
+ * containers join by name — then waited until every one runs. Every failure throws; a stand-down
+ * ends it and removes whatever it had started again.
  */
 export async function restartJobServices(
     job: BoardJob,
     execDocker: ExecDocker,
+    signal: AbortSignal,
     sleep: (ms: number) => Promise<void> = serviceWait
 ): Promise<void> {
     const specs = declaredServiceSpecs(job);
-    for (const spec of specs) {
-        await execDocker(['rm', '-f', serviceContainerName(job, spec.name)]).catch(() => undefined);
-        try {
-            await execDocker(serviceRunArgs(job, spec));
-        } catch (e) {
-            throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
+    const remove = (name: string) => execDocker(['rm', '-f', serviceContainerName(job, name)]).catch(() => undefined);
+    try {
+        for (const spec of specs) {
+            throwIfStoodDown(signal);
+            await remove(spec.name);
+            try {
+                await execDocker(serviceRunArgs(job, spec));
+            } catch (e) {
+                throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
+            }
         }
+        const list = async () => parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
+        await awaitServicesRunning(specs, list, sleep, { signal });
+    } catch (e) {
+        if (signal.aborted) for (const spec of specs) await remove(spec.name);
+        throw e;
     }
-    const list = async () => parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
-    await awaitServicesRunning(specs, list, sleep);
 }
