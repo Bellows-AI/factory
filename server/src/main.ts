@@ -63,9 +63,7 @@ export async function start(options: { github?: GitHubConfig } = {}): Promise<vo
     console.log(`[persist] ${config.databaseUrl.replace(/\/\/[^@]*@/, '//')}`);
 
     // Everything per-org is built lazily from here, on the first request that names an org.
-    // The workflow definitions (027) ride the same per-org runtimes: created with the org's id,
-    // and the base `fix-issue` workflow seeds per org on first touch — idempotent, so a task
-    // queued in the seeding's first seconds simply resolves no default yet.
+    // The workflow definitions (027) ride the same per-org runtimes, created with the org's id.
     //
     // One facts cache per process, handed to every org runtime: a purge invalidates exactly the
     // cache the workspace routes read, which is only true if there is one cache.

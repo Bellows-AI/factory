@@ -1,14 +1,21 @@
-import type { BoardJob } from './board.js';
-import { SERVICE_LOG_TAIL_LINES } from './runner.js';
+import type { BoardJob, ServiceStatus } from './board.js';
+import {
+    SERVICE_LOG_TAIL_LINES,
+    SERVICE_READY_POLL_MS,
+    SERVICE_RESTART_TIMEOUT_MS,
+    SERVICE_RESTART_TIMEOUT_S,
+} from './runner.js';
 import type { DeadService, RunOutcome } from './runner.js';
 import {
     deleteJob,
+    eventsForPath,
     jobPodsPath,
     podLogPath,
     podsByLeasePath,
     podsPath,
     servicesByLeasePath,
     servicesPath,
+    servicePodName,
     servicePodSpec,
     serviceDnsSpec,
 } from './k8s-auxspec.js';
@@ -26,11 +33,13 @@ import {
 import type { K8sDeps, K8sResponse } from './k8s-transport.js';
 import {
     collectServices,
+    declaredServiceSpecs,
     forgetDeclaredServices,
     missingDeclaredServices,
     recordDeclaredServices,
     splitBellowsSections,
 } from './services.js';
+import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import type { ServiceSpec } from './services.js';
 
 /**
@@ -130,7 +139,8 @@ export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadSe
     const out: DeadService[] = [];
     // A declared service whose pod is not listed at all — deleted by hand, drained — is dead too.
     for (const gone of missingDeclaredServices(job, parseServicePods(found.body))) {
-        out.push({ ...gone, exitCode: null, reason: null, logTail: '' });
+        const reason = await vanishedPodReason(deps, servicePodName(job, gone.name));
+        out.push({ ...gone, exitCode: null, reason, logTail: '' });
     }
     for (const { pod, ...dead } of parseDeadServicePods(found.body)) {
         const log = await deps
@@ -139,6 +149,26 @@ export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadSe
         out.push({ ...dead, logTail: log && log.status < HTTP_ERROR_STATUS ? log.body : '' });
     }
     return out;
+}
+
+/** What a pod gone without a word was told last, when nobody wrote its events: the usual takers. */
+export const VANISHED_POD_REASON = 'pod deleted — evicted, drained or its node removed';
+
+/**
+ * Why a listed-no-more pod went (issue #560): its newest event, `reason: message`, while the
+ * events outlive it — or VANISHED_POD_REASON when none can be read. Best-effort: a read that
+ * fails costs the detail, never the finding.
+ */
+async function vanishedPodReason(deps: K8sDeps, pod: string): Promise<string> {
+    const read = await deps.request('GET', eventsForPath(deps.config.k8sNamespace, pod)).catch(() => null);
+    if (!read || read.status >= HTTP_ERROR_STATUS) return VANISHED_POD_REASON;
+    type K8sEvent = { reason?: string; message?: string; lastTimestamp?: string; eventTime?: string };
+    const events = parse<{ items?: K8sEvent[] }>(read.body).items ?? [];
+    // `events.k8s.io` writes a MicroTime `eventTime` and no `lastTimestamp`: compared as instants.
+    const at = (event: K8sEvent): number => Date.parse(event.lastTimestamp ?? event.eventTime ?? '') || 0;
+    const last = [...events].sort((a, b) => at(a) - at(b)).pop();
+    if (!last?.reason) return VANISHED_POD_REASON;
+    return last.message ? `${last.reason}: ${last.message}` : last.reason;
 }
 
 /**
@@ -212,4 +242,87 @@ export async function startServiceFleet(deps: K8sDeps, job: BoardJob): Promise<R
         recordDeclaredServices(job, specs);
     }
     return null;
+}
+
+/** How many of the fleet's objects `paths` still list — an unreadable list counts one — and the last read error. */
+async function fleetLeft(deps: K8sDeps, paths: string[]): Promise<{ left: number; readError: string | null }> {
+    let left = 0;
+    let readError: string | null = null;
+    for (const path of paths) {
+        const listed = await deps.request('GET', path).catch((e: Error) => {
+            readError = e.message;
+            return null;
+        });
+        if (listed && listed.status < HTTP_ERROR_STATUS) {
+            left += (parse<{ items?: unknown[] }>(listed.body).items ?? []).length;
+            continue;
+        }
+        if (listed) readError = answerPreview(listed.status, listed.body);
+        left += 1;
+    }
+    return { left, readError };
+}
+
+/**
+ * Polls until this attempt's fleet — pods and DNS Service — is out of the listing, or throws:
+ * past the budget by the poll count or the clock, or once the attempt stands down.
+ */
+async function awaitFleetGone(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
+    const paths = [podsByLeasePath(deps.config.k8sNamespace, job), servicesByLeasePath(deps.config.k8sNamespace, job)];
+    const deadline = Date.now() + SERVICE_RESTART_TIMEOUT_MS;
+    for (let waited = 0; ; waited += SERVICE_READY_POLL_MS) {
+        throwIfStoodDown(signal);
+        const { left, readError } = await fleetLeft(deps, paths);
+        if (left === 0) return;
+        if (waited >= SERVICE_RESTART_TIMEOUT_MS || Date.now() >= deadline) {
+            // A listing that failed never saw the fleet: say so, not that it was still terminating.
+            throw new Error(
+                readError
+                    ? `the old service fleet could not be listed ${SERVICE_RESTART_TIMEOUT_S}s on: ${readError}`
+                    : `the old service fleet was still terminating ${SERVICE_RESTART_TIMEOUT_S}s on`
+            );
+        }
+        await deps.sleep(SERVICE_READY_POLL_MS);
+    }
+}
+
+/**
+ * The pre-gate restart (issue #560): the recorded fleet torn down by lease, waited out of the
+ * listing — a replacement pod takes its predecessor's name, and a terminating one answers 409 —
+ * then started again and waited until every pod runs, the two waits sharing one budget. Every
+ * failure throws; a stand-down ends it and takes down whatever it had started again.
+ */
+export async function restartServiceFleet(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
+    const specs = declaredServiceSpecs(job);
+    if (specs.length === 0) return;
+    const started = Date.now();
+    let polls = 0;
+    const sleep = (ms: number) => {
+        polls += 1;
+        return deps.sleep(ms);
+    };
+    try {
+        await teardownServices(deps, job);
+        await awaitFleetGone({ ...deps, sleep }, job, signal);
+        throwIfStoodDown(signal);
+        await startFleet(deps, job, specs);
+        recordDeclaredServices(job, specs);
+        // The budget the teardown wait spent, by the poll count or the clock, whichever is more.
+        const spent = Math.max(polls * SERVICE_READY_POLL_MS, Date.now() - started);
+        await awaitServicesRunning(specs, () => listRestartedPods(deps, job), deps.sleep, {
+            timeoutMs: SERVICE_RESTART_TIMEOUT_MS - spent,
+            signal,
+        });
+    } catch (e) {
+        if (signal.aborted) await teardownServices(deps, job);
+        throw e;
+    }
+}
+
+/** The restarted fleet's pods; one Pending on an unpullable image never runs, so it lists as the dead one it is. */
+async function listRestartedPods(deps: K8sDeps, job: BoardJob): Promise<ServiceStatus[]> {
+    const found = await deps.request('GET', podsByLeasePath(deps.config.k8sNamespace, job));
+    expectOk(found, 'listing the service pods');
+    const dead = new Set(parseDeadServicePods(found.body).map(({ name }) => name));
+    return parseServicePods(found.body).map((pod) => (dead.has(pod.name) ? { ...pod, state: 'failed' } : pod));
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BASE_WORKFLOW } from '../src/db/workflow-templates.js';
+import { FIX_ISSUE_WORKFLOW } from './fix-issue-workflow.js';
 import { validateDefinition } from '../src/db/workflow-schema-validate.js';
 
 describe('validateDefinition', () => {
@@ -12,8 +12,8 @@ describe('validateDefinition', () => {
         expect(check.ok).toBe(true);
     });
 
-    it('accepts the seeded base workflow — the /fix skeleton as a graph', () => {
-        const check = validateDefinition(BASE_WORKFLOW.definition);
+    it('accepts the fix-issue fixture — the /fix skeleton as a graph', () => {
+        const check = validateDefinition(FIX_ISSUE_WORKFLOW.definition);
         expect(check.ok).toBe(true);
     });
 

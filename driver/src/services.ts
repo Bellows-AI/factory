@@ -634,13 +634,15 @@ export const MISSING_SERVICE_STATE = 'missing';
  * it: a service removed by hand or evicted is absent from the listing, never failed in it.
  * Process-local on purpose — the probe runs in the driver that started the fleet.
  */
-const declaredFleets = new Map<string, { name: string; image: string }[]>();
+const declaredFleets = new Map<string, ServiceSpec[]>();
 
 export function recordDeclaredServices(job: BoardJob, specs: ServiceSpec[]): void {
-    declaredFleets.set(
-        job.leaseToken,
-        specs.map(({ name, image }) => ({ name, image }))
-    );
+    declaredFleets.set(job.leaseToken, specs);
+}
+
+/** The attempt's recorded fleet, whole: what a pre-gate restart (issue #560) starts again. */
+export function declaredServiceSpecs(job: BoardJob): ServiceSpec[] {
+    return declaredFleets.get(job.leaseToken) ?? [];
 }
 
 export function forgetDeclaredServices(job: BoardJob): void {

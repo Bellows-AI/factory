@@ -9,6 +9,7 @@ import {
     outputOf,
     publishEligible,
     RANK,
+    servicesOnly,
     skipWhyOf,
     statusOf,
     type LedgerParts,
@@ -86,6 +87,30 @@ describe('a dead service note (issue #487)', () => {
         expect(noteOf({ logTail: 'FATAL: password authentication failed' })).not.toContain('hint:');
         expect(noteOf({ logTail: '' })).not.toContain('hint:');
     });
+
+    // A service the platform no longer lists has no exit to report (issue #560): the note says why it went.
+    it('names why a missing service went, never "exit unknown"', () => {
+        const note = noteOf({ state: 'missing', exitCode: null, reason: 'Evicted: low on memory', logTail: '' });
+        expect(note).toBe('service "db" (mongo) missing — Evicted: low on memory; declared gates skipped');
+        expect(noteOf({ state: 'missing', exitCode: null, reason: null, logTail: '' })).toContain('missing — gone;');
+    });
+
+    it('carries the failed restart before the rest of the note', () => {
+        const failed = { state: 'missing', exitCode: null, reason: 'container removed', restartFailure: 'no network' };
+        expect(noteOf(failed)).toBe(
+            'service "db" (mongo) missing — container removed; restart failed: no network; declared gates skipped'
+        );
+    });
+});
+
+describe('a services-only ledger (issue #560)', () => {
+    it('holds only when every fault is a service', () => {
+        expect(servicesOnly(ledgerOf(parts({ deadServices: [dead] })))).toBe(true);
+        expect(servicesOnly(ledgerOf(parts({})))).toBe(false);
+        expect(
+            servicesOnly(ledgerOf(parts({ deadServices: [dead], outcome: { ...parts({}).outcome, exitCode: 1 } })))
+        ).toBe(false);
+    });
 });
 
 describe('the fault ledger', () => {
@@ -135,6 +160,15 @@ describe('the fault ledger', () => {
         );
         expect(agentFaults(outcome({ output: 'FACTORY_BLOCKED: x', summary: 's' }))).toEqual([]);
         expect(agentFaults(outcome({ blockedLine: '   ' }))[0]?.note).toContain('no reason given');
+    });
+
+    it('reads a "none" marker as not blocked, on either path', () => {
+        expect(agentFaults(outcome({ blockedLine: 'none — work complete and committed locally' }))).toEqual([]);
+        expect(agentFaults(outcome({ blockedLine: 'None.' }))).toEqual([]);
+        expect(agentFaults(outcome({ output: 'done\nFACTORY_BLOCKED: none' }))).toEqual([]);
+        expect(agentFaults(outcome({ blockedLine: 'nonexistent Jira ticket' }))[0]?.note).toBe(
+            'the agent reported it is blocked: nonexistent Jira ticket'
+        );
     });
 
     it('places the gates-skipped line after the last skipping fault', () => {

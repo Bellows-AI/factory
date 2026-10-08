@@ -10,6 +10,7 @@ import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import type { PublishResult } from './publish.js';
 import { serviceHint } from './runner.js';
+import { MISSING_SERVICE_STATE } from './services.js';
 import type { DeadService, RunOutcome } from './runner.js';
 
 /** One terminal condition of the attempt. */
@@ -47,7 +48,11 @@ export const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
 const BLOCKED_TAIL_LINES = 20;
 const BLOCKED_REASON_MAX_CHARS = 300;
 
-const blockedText = (rest: string): string => rest.trim().slice(0, BLOCKED_REASON_MAX_CHARS) || 'no reason given';
+/** `FACTORY_BLOCKED: none …` — an agent that prints the marker to say it is NOT blocked. */
+const NOT_BLOCKED = /^none\b/i;
+
+const blockedText = (rest: string): string | null =>
+    NOT_BLOCKED.test(rest.trim()) ? null : rest.trim().slice(0, BLOCKED_REASON_MAX_CHARS) || 'no reason given';
 
 /**
  * The reason the agent reported it is blocked, or null. A close-time read that found the final
@@ -125,14 +130,29 @@ export function agentFaults(outcome: RunOutcome): Fault[] {
     return faults;
 }
 
-/** One dead service in the verdict output: how it ended, then what it last printed. */
-export function deadServiceNote(dead: DeadService, gatesSkipped: boolean): string {
-    const how = `exit ${dead.exitCode ?? 'unknown'}${dead.reason ? ` (${dead.reason})` : ''}`;
+/**
+ * One dead service in the verdict output: how it ended — or, for one the platform no longer lists,
+ * why it went — what became of the pre-gate restart (issue #560), then what it last printed.
+ */
+export function deadServiceNote(dead: DeadService, gatesSkipped: boolean, restarted = false): string {
+    const how =
+        dead.state === MISSING_SERVICE_STATE
+            ? (dead.reason ?? 'gone')
+            : `exit ${dead.exitCode ?? 'unknown'}${dead.reason ? ` (${dead.reason})` : ''}`;
+    const restart = dead.restartFailure
+        ? `; restart failed: ${dead.restartFailure}`
+        : restarted
+          ? '; restarted before the declared gates'
+          : '';
     const tail = dead.logTail.trim() ? `\n${dead.logTail.trimEnd()}` : '';
     const hint = serviceHint(dead.logTail);
     const skipped = gatesSkipped ? '; declared gates skipped' : '';
-    return `service "${dead.name}" (${dead.image}) ${dead.state} — ${how}${skipped}${tail}${hint ? `\nhint: ${hint}` : ''}`;
+    return `service "${dead.name}" (${dead.image}) ${dead.state} — ${how}${restart}${skipped}${tail}${hint ? `\nhint: ${hint}` : ''}`;
 }
+
+/** Whether only the services failed finished work, which then publishes as a draft (issue #560). */
+export const servicesOnly = (ledger: Ledger): boolean =>
+    ledger.length > 0 && ledger.every((fault) => fault.kind === 'services');
 
 /** Everything the phases after the agent found, beside its own outcome. */
 export interface LedgerParts {

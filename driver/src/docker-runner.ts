@@ -58,6 +58,8 @@ import {
     removeEachTolerantly,
     run,
     setupJobServices,
+    restartJobServices,
+    servicePsArgs,
     startJobServices,
     syncCheckoutArgs,
     unreadableDockerDetail,
@@ -510,20 +512,6 @@ async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omi
     return composeRuntimeSample(vitals, services);
 }
 
-/** The attempt's service fleet, exited ones included: the job and lease label pair, service key required. */
-const servicePsArgs = (job: BoardJob): string[] => [
-    'ps',
-    '-a',
-    '--filter',
-    `label=${JOB_LABEL}=${job.id}`,
-    '--filter',
-    `label=${LEASE_LABEL}=${job.leaseToken}`,
-    '--filter',
-    `label=${SERVICE_LABEL}`,
-    '--format',
-    '{{json .}}',
-];
-
 /**
  * The attempt's dead services (issue #423) — `exited` or `dead` in the sample's own fleet read,
  * each inspected for how it ended and tailed for what it last printed, stderr included: an
@@ -538,7 +526,7 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
     const listed = parseDockerServicePs(found.stdout);
     // A declared service with no container at all — removed by hand — is dead too: no exit or log to read.
     for (const gone of missingDeclaredServices(job, listed)) {
-        out.push({ ...gone, exitCode: null, reason: null, logTail: '' });
+        out.push({ ...gone, exitCode: null, reason: 'container removed', logTail: '' });
     }
     for (const service of listed) {
         if (service.state !== 'exited' && service.state !== 'dead') continue;
@@ -791,6 +779,7 @@ export function createDockerRunner(
         runHelper: (job, plan, token, signal) => dockerRunHelper(deps, job, plan, { token, signal }),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
+        restartServices: (job, signal) => restartJobServices(job, execDocker, signal),
         startServices: (job) => startJobServices(job, config, deps, (j) => dockerServiceTeardown(deps, j)),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
     };

@@ -55,6 +55,9 @@ const REPO_PLACEHOLDER = 'Select a repository';
 
 type Update = (patch: Partial<ComposerDraftInput>) => void;
 
+/** The workflow details' step number; readiness takes it over while workflows are hidden. */
+const WORKFLOW_DETAILS_STEP = 3;
+
 /** The empty workflow option: objective mode, the prompt runs as written. */
 const NO_WORKFLOW_LABEL = 'No workflow';
 
@@ -419,11 +422,12 @@ function ReadinessBanner({
 }
 
 /**
- * Section 4, readiness: what will run, what still blocks it — a banner for what the member must
+ * The last section, readiness: what will run, what still blocks it — a banner for what the member must
  * fix, quiet status text for an empty prompt or a launch in flight — and the actions. Start's
  * `aria-describedby` names whichever of the two is saying why it is dark.
  */
 function ReadinessSection({
+    step,
     preflight,
     workflow,
     repo,
@@ -433,6 +437,8 @@ function ReadinessSection({
     onDiscard,
     onStart,
 }: {
+    /** After the workflow details, or in their place when the selector hides them. */
+    step: number;
     preflight: string;
     /** The chosen workflow's name, for the banner that waits on its list. */
     workflow: string;
@@ -446,7 +452,7 @@ function ReadinessSection({
     const tone = blockerTone(blocker);
     const describedBy = tone === 'quiet' ? BLOCKER_ID : tone === null ? undefined : READINESS_ID;
     return (
-        <ComposerSection step={4} title="Readiness">
+        <ComposerSection step={step} title="Readiness">
             <p className="composer-preflight" aria-live="polite">
                 {preflight}
             </p>
@@ -683,10 +689,13 @@ export function TaskComposer({
                         update={update}
                     />
                 </ComposerSection>
-                <ComposerSection step={3} title="Workflow details">
-                    <ComposerWorkflowDetails composer={composer} />
-                </ComposerSection>
+                {workflows === null ? null : (
+                    <ComposerSection step={WORKFLOW_DETAILS_STEP} title="Workflow details">
+                        <ComposerWorkflowDetails composer={composer} />
+                    </ComposerSection>
+                )}
                 <ReadinessSection
+                    step={workflows === null ? WORKFLOW_DETAILS_STEP : WORKFLOW_DETAILS_STEP + 1}
                     preflight={preflightSentence({
                         repo: state.repo === '' ? null : state.repo,
                         executor: state.executor === '' ? null : state.executor,

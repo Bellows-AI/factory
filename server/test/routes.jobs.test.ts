@@ -705,7 +705,6 @@ function stubWorkflows(options: { found?: WorkflowRecord | null; definition?: Wo
             calls.findByName.push(name);
             return options.found === undefined ? record : options.found;
         },
-        async seedBase() {},
     } as unknown as WorkflowStore & typeof calls;
 }
 

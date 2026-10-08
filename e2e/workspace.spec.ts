@@ -212,7 +212,6 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
         ['/settings/organization', 'Core (organization)'],
         ['/settings/workspace', 'My workspace'],
         ['/settings/executors', 'My workspace'],
-        ['/settings/workflows', 'Workflows'],
     ] as const) {
         await page.goto(path);
         await expect(page.getByRole('heading', { name: ready }).first()).toBeVisible({ timeout: 60_000 });

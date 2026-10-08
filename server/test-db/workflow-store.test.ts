@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
-import { BASE_WORKFLOW } from '../src/db/workflow-templates.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -229,24 +228,6 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(record?.definition.nodes.map((n) => n.name).sort()).toEqual(
             ['review--collect', 'review--wait', 'review--repair', 'review--reply', 'ship'].sort()
         );
-    });
-
-    it('refuses to rename the org-scope base workflow in place, but a rename AWAY frees the reserved name', async () => {
-        await store.seedBase();
-        const [base] = await store.listVisible({ userId: null, repo: null });
-
-        // Editing the seed while keeping its name hits the same reservation `create` enforces —
-        // the row is the board's, and `seedBase` would silently clobber an admin edit at the next
-        // boot otherwise (docs/workflows.md).
-        const inPlace = await store.update(base!.id, { name: BASE_WORKFLOW.name, definition });
-        expect(inPlace).toMatchObject({ refused: true, code: 'NAME_TAKEN' });
-
-        // Renaming it away succeeds and frees the reserved name for the next boot's reseed.
-        const renamed = await store.update(base!.id, { name: 'my-fork-of-fix-issue', definition });
-        expect(renamed).toEqual({ id: base!.id });
-        await store.seedBase();
-        const rows = await store.listVisible({ userId: null, repo: null });
-        expect(rows.map((r) => r.name).sort()).toEqual([BASE_WORKFLOW.name, 'my-fork-of-fix-issue'].sort());
     });
 
     it('carries the declared params on the list summaries, for the composer to render inputs', async () => {

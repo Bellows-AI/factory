@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { QueueTaskInput } from '../api/useTasks.js';
-import { useWorkflows } from '../api/useWorkflows.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { TaskComposer, TaskComposerSkeleton } from '../panels/TaskComposer.js';
@@ -22,10 +21,8 @@ import { useTasksPage } from './TasksLayout.js';
  * comes back to the words, choices and workflow details the member left. It belongs to a session,
  * so the composer waits for the session check before it restores anything.
  *
- * The workflow list is the page's own read (`GET /api/workflows`), re-fetched when the selected
- * repository changes — repo-scoped workflows exist per repository. It rides beside the workspace
- * poll rather than inside it: a board that serves no workflows simply answers an empty list, and
- * the composer's workflow selector stays hidden either way.
+ * Workflows are dormant: the page reads no workflow list and hands the composer null, which
+ * hides the selector and the workflow details — every task runs in objective mode.
  */
 export function TaskComposerPage() {
     const { tasks, workspace, sessionLoading } = useTasksPage();
@@ -33,12 +30,6 @@ export function TaskComposerPage() {
     const navigate = useNavigate();
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
-    // `undefined` until the composer reports its repository. Before that, the list is fetched for
-    // the held draft's repository — the one the composer is about to restore — so a restored
-    // repo-scoped workflow is never judged against the no-repository list and clamped away.
-    const [reportedRepo, setReportedRepo] = useState<string | null | undefined>(undefined);
-    const repo = reportedRepo === undefined ? draftStore.state?.repo || null : reportedRepo;
-    const workflows = useWorkflows(repo);
 
     const send = async (input: QueueTaskInput): Promise<string | null> => {
         setActionError(null);
@@ -76,13 +67,10 @@ export function TaskComposerPage() {
                         workspace.data?.orgExecutors ?? []
                     )}
                     defaultExecutor={workspace.data?.defaultExecutor ?? null}
-                    // Passed through as-is: null while the list is pending or from another context,
-                    // and the composer hides the workflow selector for exactly that duration.
-                    workflows={workflows.workflows}
+                    workflows={null}
                     actionError={actionError}
                     sending={sending}
                     onSend={send}
-                    onRepoChange={setReportedRepo}
                     draftStore={draftStore}
                 />
             )}

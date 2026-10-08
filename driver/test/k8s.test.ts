@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript, claudeTranscriptScript, opencodeTranscriptScript } from '../src/container-scripts.js';
@@ -13,7 +13,7 @@ import {
     parseServicePods,
     parsePodMetrics,
 } from '../src/k8s-transport.js';
-import { readVerdict } from '../src/k8s-poll.js';
+import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import {
     bellowsJobSpec,
     claudeTurnsJobName,
@@ -60,7 +60,7 @@ import {
     gitWorktreeScript,
     TRANSIENT_SYNC_REASON,
 } from '../src/publish.js';
-import type { ServiceSpec } from '../src/services.js';
+import { forgetDeclaredServices, type ServiceSpec } from '../src/services.js';
 import { bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -6713,6 +6713,10 @@ describe('the service pod and DNS specs', () => {
 });
 
 describe('the kubernetes services flow', () => {
+    // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
+    afterEach(() => forgetDeclaredServices(job));
+    /** A restart's stand-down signal that never fires. */
+    const live = new AbortController().signal;
     const BELLOWS_OUTPUT =
         '###__bellows:factory\nservices:\n  - name: cache\n    image: redis\n    environment:\n      ALLOW_EMPTY_PASSWORD: "yes"\n';
     const DNS_UID = '99999999-9999-4999-8999-999999999999';
@@ -6956,6 +6960,265 @@ describe('the kubernetes services flow', () => {
         // The attempt's teardown ends the declaration: nothing is expected of a released fleet.
         await runner.releaseServices(job);
         expect(await runner.deadServices(job)).toEqual([]);
+    });
+
+    /** The fake with the lease-scoped service pod list answered by `servicePods`, everything else as before. */
+    const withServicePods = (request: K8sRequest, servicePods: () => unknown[]): K8sRequest => {
+        return (method, path, body) => {
+            const scoped = decodeURIComponent(path ?? '');
+            if (method === 'GET' && scoped.includes('/pods?') && scoped.includes(`factory.lease=${job.leaseToken}`)) {
+                return Promise.resolve({ status: 200, body: JSON.stringify({ items: servicePods() }) });
+            }
+            return request(method, path, body);
+        };
+    };
+    const cachePod = (phase: string) => ({
+        metadata: { name: 'cache-pod', labels: { 'factory.service': 'cache' } },
+        spec: { containers: [{ image: 'redis' }] },
+        status: { phase },
+    });
+
+    it('names why a vanished service pod went, from its newest event (issue #560)', async () => {
+        const { request } = servicesFake();
+        const events: K8sRequest = (method, path, body) =>
+            path?.includes('/events?')
+                ? Promise.resolve({
+                      status: 200,
+                      body: JSON.stringify({
+                          items: [
+                              { reason: 'Scheduled', message: 'assigned', lastTimestamp: '2026-10-08T13:44:28Z' },
+                              // An events.k8s.io event: a MicroTime and no lastTimestamp — compared as an instant.
+                              {
+                                  reason: 'Evicted',
+                                  message: 'The node was low on resource: memory.',
+                                  eventTime: '2026-10-08T13:44:28.500000Z',
+                              },
+                              { reason: 'Pulled', message: 'pulled', lastTimestamp: '2026-10-08T13:00:05Z' },
+                          ],
+                      }),
+                  })
+                : request(method, path, body);
+        const runner = servicesRunner(events);
+        await runner.run(job, { id: SESSION, resume: false });
+
+        expect(await runner.deadServices(job)).toMatchObject([
+            { name: 'cache', state: 'missing', reason: 'Evicted: The node was low on resource: memory.' },
+        ]);
+
+        await runner.releaseServices(job);
+    });
+
+    it('names a vanished service pod as deleted when its events cannot be read (issue #560)', async () => {
+        const { request } = servicesFake(); // no events route: the read throws
+        const runner = servicesRunner(request);
+        await runner.run(job, { id: SESSION, resume: false });
+
+        expect(await runner.deadServices(job)).toMatchObject([
+            { name: 'cache', state: 'missing', reason: 'pod deleted — evicted, drained or its node removed' },
+        ]);
+
+        await runner.releaseServices(job);
+    });
+
+    it('restartServices recreates the vanished fleet and waits until it runs (issue #560)', async () => {
+        const { request, calls } = servicesFake();
+        let listed = (): unknown[] => [];
+        let lists = 0;
+        const fleet = withServicePods(request, () => {
+            lists += 1;
+            return listed();
+        });
+        let posted = 0;
+        const runner = servicesRunner((method, path, body) => {
+            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted += 1;
+            return fleet(method, path, body);
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        // Gone at the restart; the replacement listed Pending on its first poll, then Running.
+        let polls = 0;
+        const replaced = posted;
+        listed = () => (posted === replaced ? [] : polls++ === 0 ? [cachePod('Pending')] : [cachePod('Running')]);
+        const before = calls.length;
+
+        await runner.restartServices(job, live);
+
+        const after = calls.slice(before).filter((c) => c.method === 'POST');
+        // The DNS name first, then the service pod under it — startFleet's order, again.
+        expect(after.map((c) => c.path)).toEqual([
+            `/api/v1/namespaces/${namespace}/services`,
+            `/api/v1/namespaces/${namespace}/pods`,
+        ]);
+        expect(lists).toBeGreaterThan(1);
+        expect(await runner.deadServices(job)).toEqual([]);
+
+        await runner.releaseServices(job);
+    });
+
+    it('restartServices throws when the old fleet never leaves the listing (issue #560)', async () => {
+        const { request } = servicesFake();
+        const runner = servicesRunner(withServicePods(request, () => [cachePod('Failed')]));
+        await runner.run(job, { id: SESSION, resume: false });
+
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'the old service fleet was still terminating 300s on'
+        );
+
+        await runner.releaseServices(job);
+    });
+
+    it('restartServices throws naming the service that stays pending (issue #560)', async () => {
+        const { request } = servicesFake();
+        let posted = false;
+        const fleet = withServicePods(request, () => (posted ? [cachePod('Pending')] : []));
+        const runner = servicesRunner((method, path, body) => {
+            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
+            return fleet(method, path, body);
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        posted = false;
+
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'service "cache" not running 300s after the restart'
+        );
+
+        await runner.releaseServices(job);
+    });
+
+    it('restartServices spends one timeout across the teardown and readiness waits (issue #560)', async () => {
+        const { request } = servicesFake();
+        let posted = false;
+        let oldLists = 0;
+        // The old pod leaves the listing on its fourth poll; the replacement never runs.
+        const fleet = withServicePods(request, () => {
+            if (posted) return [cachePod('Pending')];
+            oldLists += 1;
+            return oldLists > 3 ? [] : [cachePod('Failed')];
+        });
+        let slept = 0;
+        const runner = createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
+            (method, path, body) => {
+                if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
+                return fleet(method, path, body);
+            },
+            async (ms) => {
+                slept += ms;
+            }
+        );
+        await runner.run(job, { id: SESSION, resume: false });
+        posted = false;
+        oldLists = 0;
+        slept = 0;
+
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'service "cache" not running 300s after the restart'
+        );
+        expect(slept).toBe(300_000);
+
+        await runner.releaseServices(job);
+    });
+
+    it('restartServices fails at once on a replacement stuck on an unpullable image (issue #560)', async () => {
+        const { request } = servicesFake();
+        let posted = false;
+        let lists = 0;
+        const stuck = {
+            ...cachePod('Pending'),
+            status: { phase: 'Pending', containerStatuses: [{ state: { waiting: { reason: 'ErrImagePull' } } }] },
+        };
+        const fleet = withServicePods(request, () => {
+            if (posted) lists += 1;
+            return posted ? [stuck] : [];
+        });
+        const runner = servicesRunner((method, path, body) => {
+            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
+            return fleet(method, path, body);
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        posted = false;
+
+        await expect(runner.restartServices(job, live)).rejects.toThrow('service "cache" failed after the restart');
+        expect(lists).toBe(1);
+    });
+
+    it('restartServices names a lease listing that keeps failing, not a fleet still terminating (issue #560)', async () => {
+        const { request } = servicesFake();
+        let restarting = false;
+        const runner = servicesRunner((method, path, body) => {
+            const scoped = decodeURIComponent(path ?? '');
+            if (restarting && method === 'GET' && scoped.includes(`factory.lease=${job.leaseToken}`)) {
+                return Promise.reject(new Error('the API server is away'));
+            }
+            return request(method, path, body);
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        restarting = true;
+
+        await expect(runner.restartServices(job, live)).rejects.toThrow(
+            'the old service fleet could not be listed 300s on: the API server is away'
+        );
+    });
+
+    it('restartServices stops on a stand-down and takes the fleet it started down again (issue #560)', async () => {
+        const { request, calls } = servicesFake();
+        const stand = new AbortController();
+        let posted = false;
+        const fleet = withServicePods(request, () => {
+            // The replacement is up but Pending when the Stop lands.
+            if (posted) stand.abort();
+            return posted ? [cachePod('Pending')] : [];
+        });
+        const runner = servicesRunner((method, path, body) => {
+            if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
+            return fleet(method, path, body);
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        posted = false;
+        const before = calls.length;
+
+        await expect(runner.restartServices(job, stand.signal)).rejects.toThrow(
+            'the restart was abandoned: the attempt stood down'
+        );
+        // Swept again after the abort: the lease lists run once more after the pod create.
+        const after = calls.slice(before);
+        const create = after.findIndex((c) => c.method === 'POST' && c.path === `/api/v1/namespaces/${namespace}/pods`);
+        expect(after.slice(create).some((c) => c.method === 'GET' && c.path?.includes('services?labelSelector='))).toBe(
+            true
+        );
+        expect(await runner.deadServices(job)).toEqual([]);
+    });
+
+    it("reports a runner pod deleted mid-run as an infrastructure loss, not the agent's verdict (issue #560)", async () => {
+        const { request } = servicesFake();
+        const lost: K8sRequest = (method, path, body) => {
+            const decoded = decodeURIComponent(path ?? '');
+            if (method === 'GET' && path === `${jobsPath(namespace)}/${runnerJobName(job)}`) {
+                return Promise.resolve({
+                    status: 200,
+                    body: JSON.stringify({
+                        status: {
+                            failed: 1,
+                            conditions: [{ type: 'Failed', status: 'True', reason: 'BackoffLimitExceeded' }],
+                        },
+                    }),
+                });
+            }
+            if (method === 'GET' && decoded.includes(`job-name=${runnerJobName(job)}`)) {
+                return Promise.resolve({ status: 200, body: '{"items":[]}' });
+            }
+            return request(method, path, body);
+        };
+
+        const runner = servicesRunner(lost);
+        const outcome = await runner.run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({
+            exitCode: null,
+            started: true,
+            infraLoss: 'the runner pod was deleted before it exited (evicted, drained or its node removed)',
+        });
+
+        await runner.releaseServices(job);
     });
 
     /*
@@ -8082,5 +8345,53 @@ describe('a Stop on kubernetes (issue #427)', () => {
             finished = true;
             await running;
         }
+    });
+});
+
+describe('runnerLossOf (issue #560)', () => {
+    const exited = (exitCode: number) => ({
+        metadata: { name: 'runner-pod' },
+        status: { phase: 'Failed', containerStatuses: [{ state: { terminated: { exitCode } } }] },
+    });
+
+    it('is no loss when the live pod says the agent ended the run', () => {
+        expect(runnerLossOf([exited(1)])).toBeNull();
+    });
+
+    it('names a pod the kubelet evicted, in its own words', () => {
+        expect(
+            runnerLossOf([
+                { ...exited(137), status: { ...exited(137).status, reason: 'Evicted', message: 'low on memory' } },
+            ])
+        ).toBe('the runner pod was taken away before it exited (Evicted: low on memory)');
+    });
+
+    it('names a pod the control plane marked a disruption target', () => {
+        const pod = {
+            ...exited(137),
+            status: {
+                ...exited(137).status,
+                conditions: [
+                    {
+                        type: 'DisruptionTarget',
+                        status: 'True',
+                        reason: 'DeletionByTaintManager',
+                        message: 'node removed',
+                    },
+                ],
+            },
+        };
+        expect(runnerLossOf([pod])).toBe(
+            'the runner pod was taken away before it exited (DeletionByTaintManager: node removed)'
+        );
+    });
+
+    it('names a runner with no live pod left as deleted', () => {
+        expect(runnerLossOf([])).toBe(
+            'the runner pod was deleted before it exited (evicted, drained or its node removed)'
+        );
+        expect(runnerLossOf([{ ...exited(137), metadata: { name: 'p', deletionTimestamp: 'now' } }])).toBe(
+            'the runner pod was deleted before it exited (evicted, drained or its node removed)'
+        );
     });
 });

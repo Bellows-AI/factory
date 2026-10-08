@@ -1,5 +1,8 @@
 # Workflows
 
+**Dormant:** no UI offers workflows — no composer selector, no settings page, no nav entry — and
+the board seeds none; the API and the engine still serve one created by hand.
+
 A workflow is a graph of nodes the board walks between verdicts: the driver claims one row, runs it
 and reports one verdict; the board, never the driver, decides the next row. Checkout, gates and
 publish stay driver machinery the graph references by OUTCOME — they are never nodes.
@@ -19,8 +22,9 @@ built-in block list is `workflow-blocks/index.ts`'s registry. Read those, not a 
 | Durable block waits: the runtime allowlist, the park, the wake sweep, the user poke | `server/src/db/workflow-blocks/runtime.ts`, `server/migrations/038_workflow_round.sql`, `045_workflow_wait_user_control.sql` | `server/test/workflow-block-runtime.test.ts`, `server/test-db/job-store.block-wait.test.ts` |
 | Finishing a wait when a thread leaves the block's scope; the no-publication block-entry guard | `server/src/db/workflow-blocks/runtime-settle.ts` | `server/test/workflow-block-runtime-settle.test.ts` |
 | The PR-lifecycle primitives a wait is built on | `server/src/db/pr-lifecycle-store.ts`, `server/migrations/036_job_pr_lifecycle.sql` | `server/test-db/job-store.block-wait.test.ts` |
-| CRUD, scope visibility, block compilation at create, base-workflow seeding | `server/src/db/workflow-store.ts` | `server/test-db/workflow-store.test.ts`, `workflow-store.seeding.test.ts` |
-| Board-owned prompt templates and the seeded `fix-issue` workflow | `server/src/db/workflow-templates.ts` | `server/test/workflow-engine.walkthrough.test.ts` |
+| CRUD, scope visibility, block compilation at create; no seeded workflow, and 057 drops the retired `fix-issue` seed | `server/src/db/workflow-store.ts`, `server/migrations/057_drop_seeded_fix_issue.sql` | `server/test-db/workflow-store.test.ts`, `workflow-store.seeding.test.ts` |
+| The review verdict markers | `server/src/db/workflow-templates.ts` | `server/test/evidence-policy.test.ts` |
+| The engine walkthrough's fixture graph | `server/test/fix-issue-workflow.ts` | `server/test/workflow-engine.walkthrough.test.ts` |
 | Objective mode: an omitted `workflow` is an ordinary claimable job; the stored mode, inherited by follow-ups, retries and successors | `core/src/job-mode.ts`, `server/migrations/051_job_mode.sql`, `052_drop_default_workflow.sql`, `server/src/routes/job-workflow-resolution.ts`, `server/src/db/job-store-actions.ts` | `server/test-db/job-store.objective.test.ts`, `server/test/routes.jobs.test.ts` |
 | CRUD routes and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
 | Launch resolution and the `wait/cancel`, `wait/poke` verbs | `server/src/routes/jobs.ts`, `job-workflow-resolution.ts` | `server/test/routes.jobs.test.ts` |
@@ -35,8 +39,8 @@ built-in block list is `workflow-blocks/index.ts`'s registry. Read those, not a 
 | The driver's one publish gate | `driver/src/loop-verdict.ts` | `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | An agent-less node (`agent: false`): the claim flag, and the loop running pre-helpers, gates and publish with no runner session on both executors; the merge-conflict block's probe concludes `up-to-date`/`rebased` itself and only a conflict reaches an agent | `server/src/db/workflow-schema.ts` (`isAgentlessNode`), `job-store-claim.ts`, `driver/src/loop-agentless.ts`, `loop-run.ts` (`launchRun`), `driver/src/scripts/merge-conflict-probe.cjs` | `server/test/claim-gates-source.test.ts`, `workflow-block-merge-conflict-autofix.test.ts`, `driver/test/loop.test.ts`, `merge-conflict-probe-script.test.ts` |
 | The blocks' driver-side helper scripts | `driver/src/review-helpers.ts`, `driver/src/scripts/merge-conflict-probe.cjs`, `review-collect.cjs`, `review-reply.cjs` | `driver/test/review-helpers.test.ts`, `merge-conflict-probe-script.test.ts`, `scripts.test.ts` |
-| Composer dropdown and the parameter inputs | `web/src/panels/TaskComposer.tsx`, `web/src/components/WorkflowParameterFields.tsx`, `web/src/api/useWorkflows.ts` | `web/test/use-workflows.test.ts` |
-| Management panel and its settings page | `web/src/panels/WorkflowsPanel.tsx`, `web/src/pages/SettingsWorkflowsPage.tsx` | `web/test/workflows-panel.render.test.tsx`, `settings-pages.render.test.tsx` |
+| Composer dropdown and the parameter inputs — hidden: the page passes `workflows={null}` | `web/src/pages/TaskComposerPage.tsx`, `web/src/panels/TaskComposer.tsx`, `web/src/components/WorkflowParameterFields.tsx`, `web/src/api/useWorkflows.ts` | `web/test/task-composer.render.test.tsx`, `use-workflows.test.ts`, `e2e/composer.spec.ts` |
+| Management panel and its settings page — unrouted, no nav entry | `web/src/panels/WorkflowsPanel.tsx`, `web/src/pages/SettingsWorkflowsPage.tsx`, `web/src/App.tsx`, `web/src/nav-model.ts` | `web/test/workflows-panel.render.test.tsx`, `settings-pages.render.test.tsx`, `settings.wiring.test.tsx` |
 | A stub workflow walked on a real board and driver | `scripts/test-jobs.sh` (`# workflows`) | — |
 
 The helper transport a block's declared helpers run through, and the master prompt a claim carries,

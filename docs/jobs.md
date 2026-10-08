@@ -36,7 +36,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Stop/Remove cancelling every gate in flight, declared and ad-hoc (`GateServer.cancel`) | `driver/src/loop-gates.ts`, `gates.ts`, `k8s-gates.ts` | `driver/test/loop.test.ts`, `gates.test.ts`, `k8s.test.ts` |
 | Tree fingerprint: sync before, probe after the run and before the gates, `treeChanged` on complete | `driver/src/scripts/git-worktree.cjs`, `git-probe.cjs`, `publish.ts`, `loop-run.ts` | `driver/test/worktree.test.ts`, `loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Block-helper steps | `driver/src/helpers.ts`, `loop-helpers.ts`, `k8s-helper-runner.ts` | `driver/test/helpers.test.ts` |
-| Auxiliary services, the dead-service probe | `driver/src/services.ts`, `scripts/bellows-read.sh`, `k8s-services.ts`, `docker-runner.ts` | `driver/test/services.test.ts`, `scripts-bellows-read.test.ts`, `docker.test.ts`, `k8s.test.ts` |
+| Auxiliary services, the dead-service probe, the pre-gate restart (`restartServices`); a runner the platform took away (`infraLoss`) | `driver/src/services.ts`, `service-restart.ts`, `scripts/bellows-read.sh`, `k8s-services.ts`, `k8s-poll.ts`, `docker-runner.ts`, `docker-runner-support.ts` | `driver/test/services.test.ts`, `scripts-bellows-read.test.ts`, `docker.test.ts`, `k8s.test.ts` |
 | Worktree sync (including a remote with no commits: an empty worktree on an unborn task branch), base-clone fast-forward, publish, PR identity; one driver's syncs of a clone queued in-process, another driver's lock answered `transient` within 20 s and requeued | `driver/src/publish.ts`, `publish-stale.ts`, `sync-queue.ts`, `loop-run.ts`, `scripts/git-worktree*.cjs`, `pr-summary.cjs` | `driver/test/worktree.test.ts`, `worktree-restore.test.ts`, `worktree-clone-ff.test.ts`, `worktree-empty-remote.test.ts`, `pr-summary.test.ts`, `publish-stale.test.ts`, `sync-queue.test.ts`, `scripts-worktree-lock.test.ts`, `loop.test.ts` (`startup syncs of one clone`) |
 | Objective mode (`job.mode`, an omitted `workflow`): created, claimed (no `publish`, `- Mode: objective` in the master prompt), settled with no transition | `core/src/job-mode.ts`, `server/migrations/051_job_mode.sql`, `server/src/db/job-store-actions.ts`, `job-store-claim.ts`, `master-prompt.ts` | `server/test-db/job-store.objective.test.ts`, `server/test/master-prompt.test.ts` |
 | Skill selection (`skills` on create, the root's names read at every claim): `requires-tools` / `requires-connections` in a SKILL.md `metadata:` block, checked at claim — an env connection (`github`) against the claim env's names (never values), a managed one (`jira`, [connections.md](connections.md)) against the root's selected connection — into `skillRefusal`, which the driver fails `config` before any runner; the selection rides the master prompt. A custom `RUNNER_IMAGE` missing a declared tool is a stated limit — tools are pinned against the shipped Dockerfiles only | `core/src/skills.ts`, `server/src/skills.ts`, `server/migrations/055_job_skills.sql`, `server/src/db/job-store-claim.ts`, `master-prompt.ts`, `driver/src/loop-run.ts`, `cli/src/run.ts` | `core/test/skills.test.ts`, `server/test-db/job-store.skills.test.ts`, `server/test/routes.jobs.test.ts`, `driver/test/loop.test.ts`, `docker.test.ts`, `k8s.test.ts` |
@@ -69,12 +69,12 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   uid, skips the chown and user switch, and keeps every capability dropped (`runAsUser` on
   kubernetes, `--user` on docker). `driver/src/services.ts`, `driver/src/k8s-auxspec.ts`,
   `driver/test/services.test.ts`, [security.md](security.md).
-- **A declared service found dead before the declared gates skips them and fails the verdict
-  `services`, never `gate`** — a gate against a dead service fails on an environment the agent
-  cannot fix, and `gate-failed` would spend a gate-fix round on it. The verdict quotes the
-  service's exit and last log lines. A failed gate re-probes, so a service that died during the
-  gates is blamed too; a k8s pod Pending on an image-pull or config error counts as dead. A job
-  with no declared gates is never probed.
+- **A declared service found dead before the declared gates is restarted, and only a failed
+  restart skips them and fails the verdict `services`, never `gate`** — a gate against a dead
+  service fails on an environment the agent cannot fix. Work the services alone failed publishes
+  as a draft. The verdict quotes the exit, or why a vanished one went, and the last log lines. A
+  failed gate re-probes; a k8s pod Pending on an image-pull or config error counts as dead. A
+  runner the platform took away reports no verdict and is left to the lease.
   `driver/src/loop-run.ts`, `loop-verdict.ts`, `driver/test/loop.test.ts`.
 - **A run reports agent turns, never a bare "turns"** — the close-time agent-turn read
   (`driver/src/close-read.ts`) counts the executor's own transcript, and a job turn is a different
@@ -169,7 +169,7 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   task; the one per-user bound is the repo label on create ([docs/repos.md](repos.md)). Under
   `AUTH_MODE=none` the worker routes are open too ([docs/security.md](security.md)).
 - No service volumes, health checks, `depends_on` ordering or restart policies in `.bellows.yaml`;
-  the one liveness read is the dead-service probe before the gates.
+  a restarted service is ready once it runs (`SERVICE_RESTART_TIMEOUT_MS`, `driver/src/runner.ts`).
 - No abort for an in-flight publish: a push cannot be recalled, so a lease lost after
   `publishBranch` pushed stands down without reporting and the next holder re-runs it
   (`driver/test/loop.test.ts`, "a lease lost after the push"). Nor for the kubernetes checkout
