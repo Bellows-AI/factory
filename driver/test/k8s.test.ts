@@ -6984,6 +6984,38 @@ describe('the kubernetes services flow', () => {
         await runner.releaseServices(job);
     });
 
+    it('restartServices spends one timeout across the teardown and readiness waits (issue #560)', async () => {
+        const { request } = servicesFake();
+        let posted = false;
+        let oldLists = 0;
+        // The old pod leaves the listing on its fourth poll; the replacement never runs.
+        const fleet = withServicePods(request, () => {
+            if (posted) return [cachePod('Pending')];
+            oldLists += 1;
+            return oldLists > 3 ? [] : [cachePod('Failed')];
+        });
+        let slept = 0;
+        const runner = createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
+            (method, path, body) => {
+                if (method === 'POST' && path === `/api/v1/namespaces/${namespace}/pods`) posted = true;
+                return fleet(method, path, body);
+            },
+            async (ms) => {
+                slept += ms;
+            }
+        );
+        await runner.run(job, { id: SESSION, resume: false });
+        posted = false;
+        oldLists = 0;
+        slept = 0;
+
+        await expect(runner.restartServices(job)).rejects.toThrow('service "cache" not running 300s after the restart');
+        expect(slept).toBe(300_000);
+
+        await runner.releaseServices(job);
+    });
+
     it('restartServices fails at once on a replacement stuck on an unpullable image (issue #560)', async () => {
         const { request } = servicesFake();
         let posted = false;

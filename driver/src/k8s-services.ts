@@ -244,8 +244,11 @@ export async function startServiceFleet(deps: K8sDeps, job: BoardJob): Promise<R
     return null;
 }
 
-/** Polls until this attempt's fleet — pods and DNS Service — is out of the listing, or throws. */
-async function awaitFleetGone(deps: K8sDeps, job: BoardJob): Promise<void> {
+/**
+ * Polls until this attempt's fleet — pods and DNS Service — is out of the listing, or throws.
+ * Returns the time waited, which the restart's readiness wait does not get again.
+ */
+async function awaitFleetGone(deps: K8sDeps, job: BoardJob): Promise<number> {
     const paths = [podsByLeasePath(deps.config.k8sNamespace, job), servicesByLeasePath(deps.config.k8sNamespace, job)];
     for (let waited = 0; ; waited += SERVICE_READY_POLL_MS) {
         let left = 0;
@@ -256,7 +259,7 @@ async function awaitFleetGone(deps: K8sDeps, job: BoardJob): Promise<void> {
                     ? (parse<{ items?: unknown[] }>(listed.body).items ?? []).length
                     : 1;
         }
-        if (left === 0) return;
+        if (left === 0) return waited;
         if (waited >= SERVICE_RESTART_TIMEOUT_MS) {
             throw new Error(`the old service fleet was still terminating ${SERVICE_RESTART_TIMEOUT_S}s on`);
         }
@@ -273,7 +276,7 @@ export async function restartServiceFleet(deps: K8sDeps, job: BoardJob): Promise
     const specs = declaredServiceSpecs(job);
     if (specs.length === 0) return;
     await teardownServices(deps, job);
-    await awaitFleetGone(deps, job);
+    const fleetGoneWaited = await awaitFleetGone(deps, job);
     await startFleet(deps, job, specs);
     recordDeclaredServices(job, specs);
     await awaitServicesRunning(
@@ -285,6 +288,7 @@ export async function restartServiceFleet(deps: K8sDeps, job: BoardJob): Promise
             const dead = new Set(parseDeadServicePods(found.body).map(({ name }) => name));
             return parseServicePods(found.body).map((pod) => (dead.has(pod.name) ? { ...pod, state: 'failed' } : pod));
         },
-        deps.sleep
+        deps.sleep,
+        SERVICE_RESTART_TIMEOUT_MS - fleetGoneWaited
     );
 }

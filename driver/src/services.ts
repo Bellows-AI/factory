@@ -666,14 +666,15 @@ export function missingDeclaredServices(job: BoardJob, listed: readonly { name: 
 /**
  * Waits until every service in `specs` is listed `running` (issue #560), re-listing every
  * SERVICE_READY_POLL_MS; a listing that fails is one more poll, not the answer. Throws naming
- * a service listed dead at once, and what is still not running once SERVICE_RESTART_TIMEOUT_MS
- * has passed. Running is the bar on
+ * a service listed dead at once, and what is still not running once `timeoutMs` — the part of
+ * the SERVICE_RESTART_TIMEOUT_MS budget the caller has left — has passed. Running is the bar on
  * purpose: `.bellows.yaml` declares no health checks.
  */
 export async function awaitServicesRunning(
     specs: readonly ServiceSpec[],
     list: () => Promise<readonly ServiceStatus[]>,
-    sleep: (ms: number) => Promise<void>
+    sleep: (ms: number) => Promise<void>,
+    timeoutMs = SERVICE_RESTART_TIMEOUT_MS
 ): Promise<void> {
     let pending = specs.map(({ name }) => name);
     for (let waited = 0; ; waited += SERVICE_READY_POLL_MS) {
@@ -688,7 +689,7 @@ export async function awaitServicesRunning(
             pending = specs.map(({ name }) => name).filter((name) => !running.has(name));
             if (pending.length === 0) return;
         }
-        if (waited >= SERVICE_RESTART_TIMEOUT_MS) {
+        if (waited >= timeoutMs) {
             const names = pending.map((name) => `"${name}"`).join(', ');
             throw new Error(`service ${names} not running ${SERVICE_RESTART_TIMEOUT_S}s after the restart`);
         }

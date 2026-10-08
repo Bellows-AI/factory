@@ -713,4 +713,15 @@ describe('awaitServicesRunning (issue #560)', () => {
         );
         expect(slept).toBe(300_000);
     });
+
+    it('stops at a supplied budget, still naming the whole restart timeout', async () => {
+        let slept = 0;
+        const sleep = async (ms: number) => {
+            slept += ms;
+        };
+        await expect(awaitServicesRunning(specs, async () => [status('db', 'running')], sleep, 6_000)).rejects.toThrow(
+            'service "cache" not running 300s after the restart'
+        );
+        expect(slept).toBe(6_000);
+    });
 });
