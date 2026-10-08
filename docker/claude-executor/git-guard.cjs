@@ -32,9 +32,10 @@ const denyPrOf = (verb) => ({
     deny: true,
     reason:
         verb === 'create'
-            ? "git guard: 'gh pr create' is the driver publish's job — after the gates the " +
-              'board pushes the task branch and opens (or reuses) the pull request with a ' +
-              'summary of the work. Commit your work; the publish happens on its own.'
+            ? "git guard: 'gh pr create' is the driver publish's job — commit your work, then " +
+              'ask the driver to publish a draft (POST $BELLOWS_CONTROL_URL/publish, see the ' +
+              'github skill); it pushes the task branch and opens (or reuses) the pull request ' +
+              'with a summary of the work, and the board publishes again when the task is done.'
             : "git guard: 'gh pr checkout' would move HEAD off the task branch, and the " +
               'checkout must stay on it. Read the PR with `gh pr view` / `gh pr diff` instead.',
 });

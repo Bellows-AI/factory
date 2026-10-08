@@ -115,6 +115,12 @@ export interface PublishResult {
     prNumber: number | null;
 }
 
+/** How one publish differs from the board's end-of-run one. */
+export interface PublishOptions {
+    /** Open a NEW pull request as a draft — the agent's mid-run publish. An existing PR is reused as it is. */
+    draft?: boolean;
+}
+
 /** The PR number a url names, or null when it does not point at a pull request. */
 export const prNumberFromUrl = (url: string): number | null => {
     const match = /\/pull\/(\d+)\/?$/.exec(url.trim());
@@ -515,9 +521,9 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
 async function resolveOrCreatePr(
     runStep: RunPublishStep,
     step: RunPublishStep,
-    context: { branch: string; plan: PublishPlan; state: GitState }
+    context: { branch: string; plan: PublishPlan; state: GitState; draft: boolean }
 ): Promise<string | null> {
-    const { branch, plan, state } = context;
+    const { branch, plan, state, draft } = context;
     // A `pr view` that fails is the ordinary "no PR yet", not a step failure: the next call
     // creates one.
     const existing = await runStep({
@@ -558,14 +564,16 @@ async function resolveOrCreatePr(
     const body = [
         summarized?.body,
         plan.issueNumber ? `Closes #${plan.issueNumber}.` : null,
-        'Published by the factory board after the declared gates passed.',
+        draft
+            ? 'Draft published by the agent while the task runs; the gates may not have passed yet.'
+            : 'Published by the factory board after the declared gates passed.',
     ]
         .filter(Boolean)
         .join('\n\n');
     const created = await step({
         label: 'gh pr create',
         entrypoint: 'gh',
-        args: ['pr', 'create', '--head', branch, '--title', title, '--body', body],
+        args: ['pr', 'create', '--head', branch, '--title', title, '--body', body, ...(draft ? ['--draft'] : [])],
         env: true,
         inRepo: true,
     });
@@ -582,6 +590,7 @@ async function resolveOrCreatePr(
 export async function publishCheckout(
     config: DriverConfig,
     job: BoardJob,
+    options: PublishOptions | undefined,
     runStep: RunPublishStep
 ): Promise<PublishResult> {
     const repo = worktreeDir(config, job);
@@ -634,7 +643,7 @@ export async function publishCheckout(
         });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
-        const prUrl = await resolveOrCreatePr(runStep, step, { branch, plan, state });
+        const prUrl = await resolveOrCreatePr(runStep, step, { branch, plan, state, draft: options?.draft === true });
 
         return {
             ok: true,

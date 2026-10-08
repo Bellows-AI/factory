@@ -15,6 +15,7 @@ there is no CRD and no second control loop.
 | The re-claim fence (checkout-claim ConfigMap, sweep, create brackets), the polling it brackets, and what a Stop mid-run leaves them (`k8s-kill.ts`) | `driver/src/k8s-fence.ts`, `k8s-poll.ts`, `k8s-kill.ts` | `driver/test/k8s.test.ts` |
 | The cooperative Stop's control channel: `BELLOWS_CONTROL_*` rides the per-attempt Secret beside the gate pair, and the runner polls the driver pod's own IP, so Kubernetes drains exactly as docker does | `driver/src/k8s-podspec.ts`, `k8s-fence.ts`, `loop-gates.ts` | `driver/test/k8s.test.ts`, `driver/test/loop.test.ts` |
 | Gates as Jobs; declared services as pods under the attempt's headless Service | `driver/src/k8s-gates.ts`, `k8s-services.ts` | `driver/test/k8s.test.ts` |
+| The agent's draft publication needs no pod change: the runner reaches `POST /publish` through the same `BELLOWS_CONTROL_*` pair, and the driver runs the publish steps as the same aux Jobs the end-of-run publish uses | `driver/src/loop-publish.ts`, `k8s-runner.ts`, `publish.ts` | `driver/test/k8s.test.ts`, `driver/test/publish-control.test.ts` |
 | The orphan reaper | `driver/src/reaper.ts`, `driver/src/k8s-reaper.ts` | `driver/test/k8s-reaper.test.ts` |
 | Every `EXECUTOR`, `K8S_*` and `RUNNER_*` variable, with its boot-time validation | `driver/src/config.ts` | `driver/test/config.test.ts` |
 | The app chart: dashboard, driver, collector, RBAC, PDBs, Ingress | `charts/factory/` | `scripts/test-k8s.sh` |

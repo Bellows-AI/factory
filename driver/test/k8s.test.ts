@@ -2532,6 +2532,33 @@ describe('publishing the produced work', () => {
         }
     });
 
+    it('opens the agent’s PR as a draft through the same step Jobs', async () => {
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) }, // probe
+            { exit: 1, log: '' }, // switch — no such branch
+            { exit: 0, log: '' }, // switch -c
+            { exit: 0, log: '' }, // add
+            { exit: 0, log: '' }, // commit
+            { exit: 0, log: '' }, // push
+            { exit: 1, log: '' }, // pr view — none yet
+            { exit: 0, log: JSON.stringify({ title: 'Fix the sync re-claim fence', body: '## Commits' }) }, // pr summary
+            { exit: 0, log: `${PR_URL}\n` }, // pr create
+        ]);
+        const result = await runner(request).publishGit(ISSUE_JOB, undefined, { draft: true });
+
+        expect(result).toMatchObject({ ok: true, published: true, prUrl: PR_URL, prNumber: 42 });
+        const commands = calls
+            .filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))
+            .map(
+                (call) =>
+                    (call.body as { spec?: { template?: { spec?: { containers?: { command?: string[] }[] } } } }).spec
+                        ?.template?.spec?.containers?.[0]?.command ?? []
+            );
+        const create = commands.find((argv) => argv.includes('pr') && argv.includes('create'));
+        expect(create).toContain('--draft');
+        expect(create?.[create.indexOf('--body') + 1]).toContain('Draft published by the agent');
+    });
+
     it('creates the publish env Secret before the first step, and reaps it at the end', async () => {
         const { request, calls } = scripted([
             { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 }) },

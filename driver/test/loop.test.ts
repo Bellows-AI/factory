@@ -22,6 +22,7 @@ import {
     resolveQuestion,
 } from '../src/question-control.js';
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../src/question-control.js';
+import { servePublish, type PublishRelay } from '../src/publish-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
@@ -217,6 +218,71 @@ function stubBoard(
 
     return { board, attach: (l) => (loop = l) };
 }
+
+describe('the agent’s draft publication (issue #547)', () => {
+    const LANDED: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'fix/10',
+        prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+        reason: null,
+        repository: 'Bellows-AI/factory',
+        baseBranch: 'main',
+        prNumber: 42,
+    };
+    const NOTHING: PublishResult = { ...LANDED, published: false, prUrl: null, repository: null, baseBranch: null };
+
+    /** One attempt whose agent calls `POST /publish` through the real route logic; returns what it was answered. */
+    async function driveAgentPublishing(claim: BoardJob, endOfRun: PublishResult) {
+        const board = stubBoard([claim]);
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const answers: number[] = [];
+        const runner: ReturnType<typeof stubRunner> = stubRunner(
+            async (running) => {
+                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                if (!control?.publisher) throw new Error('no publisher on the control entry');
+                answers.push((await servePublish(control.publishing, control.publisher)).status);
+                return ok();
+            },
+            { publish: endOfRun }
+        );
+        const options: unknown[] = [];
+        const endOfRunPublish = runner.publishGit?.bind(runner);
+        runner.publishGit = async (publishedJob, token, publishOptions) => {
+            options.push(publishOptions);
+            return (
+                options.length === 1 && publishOptions?.draft ? LANDED : await endOfRunPublish?.(publishedJob, token)
+            ) as PublishResult;
+        };
+        const loop = createLoop({ board: board.board, runner, config: config(), gates, sleep });
+        board.attach(loop);
+        await loop.start();
+        return { board: board.board, runner, answers, options };
+    }
+
+    it('publishes a draft mid-run, and the verdict still names the PR when the end-of-run publish has nothing left', async () => {
+        const { board, answers, options } = await driveAgentPublishing(job(1), NOTHING);
+
+        expect(answers).toEqual([200]);
+        expect(options).toEqual([{ draft: true }, undefined]);
+        expect(board.completed[0]?.status).toBe('succeeded');
+        expect(board.completed[0]?.publication).toEqual({
+            repo: 'Bellows-AI/factory',
+            prNumber: 42,
+            prUrl: LANDED.prUrl,
+            headBranch: 'fix/10',
+            baseBranch: 'main',
+        });
+    });
+
+    it('refuses the agent on a task whose board reserves publication for another step', async () => {
+        const { board, answers, options } = await driveAgentPublishing({ ...job(1), publish: false }, NOTHING);
+
+        expect(answers).toEqual([403]);
+        expect(options).toEqual([]);
+        expect(board.completed[0]?.publication ?? null).toBeNull();
+    });
+});
 
 function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
@@ -421,10 +487,10 @@ function stubGateStack(outcomes: Record<string, number> = {}, options: { control
             },
             // The run-control channel (issue #442) is opt-in: a stack without it models a driver
             // whose endpoint could not open, where a Stop kills at once.
-            openControl: (token: string, relay?: QuestionRelay) => {
+            openControl: (token: string, relay?: QuestionRelay, publisher?: PublishRelay) => {
                 if (!options.control) throw new Error('no control endpoint in this stub');
                 stack.controlOpened.push(token);
-                stack.controls.set(token, newControl(relay ?? null));
+                stack.controls.set(token, newControl(relay ?? null, publisher ?? null));
             },
             controlPolled: () => options.polled ?? true,
             raiseStop: (token: string) => {

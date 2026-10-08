@@ -28,6 +28,11 @@ died: the note names its exit, reason and last log lines. That is an environment
 from the tree, and a gate that cannot reach the service (`ENOTFOUND`, connection refused) fails for it —
 do not work around it by installing the service yourself; end with `FACTORY_BLOCKED:` and the note.
 
+Run, read, fix, run again as often as the work needs: every answer is the gate's own result on the
+tree as it is now, and you can ship a draft pull request at any point (the github skill) without
+waiting for green. The declared gates also run when you finish, and a failing one fails the task —
+what you ran here is a check for you, never the verdict.
+
 If `BELLOWS_GATE_URL` is unset, this environment has no gates configured: say so and verify with
 your own commands instead. Do not guess the URL.
 

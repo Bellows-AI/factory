@@ -19,16 +19,29 @@ gh pr checks <N>
 gh pr diff <N>
 ```
 
-## Pull requests are the board's, not yours
+## Pull requests go through the driver
 
 Never run `gh pr create` — the guard denies it, and the deny is policy, not an obstacle to route
-around. When a task is done (work committed on the task branch, gates green), the factory board
-pushes the branch and opens (or reuses) the pull request itself, with a title and description
-summarized from the branch's commits by the driver's publish flow. Your job ends at committed
-work.
+around. Publishing is yours to ask for, through the driver, whenever your work is worth showing —
+before the task is done too. Commit on the task branch, then:
 
-A PR that already exists is yours to read — reviews, checks, diffs — and to fix on request,
-never to create. Read a PR's diff with `gh pr diff`, never by checking the branch out:
+```bash
+curl -sf -X POST "$BELLOWS_CONTROL_URL/publish" \
+    -H "authorization: Bearer $BELLOWS_CONTROL_TOKEN"
+```
+
+The driver pushes the branch and opens (or reuses) the pull request — a draft when it opens one —
+with a title and description summarized from the branch's commits, and answers
+`{"published":true,"prUrl":"…","prNumber":N,…}`. Call it again after more commits: the same pull
+request is updated, never duplicated, and a retried or resumed task lands on it too. `published:
+false` means there was nothing new to push. `403` means this task's workflow publishes at its own
+step; `409` means a publish is already running; `502` carries the failure's reason. If
+`BELLOWS_CONTROL_URL` is unset this environment cannot publish for you. A pull request is not a
+finished task: keep running the gates (see the gates skill), and the board publishes again, with
+the same pull request, when the task completes.
+
+A PR that already exists is yours to read — reviews, checks, diffs — and to fix on request.
+Read a PR's diff with `gh pr diff`, never by checking the branch out:
 `gh pr checkout` moves HEAD off the task branch and is denied for the same reason.
 
 ## Addressing review feedback

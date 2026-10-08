@@ -14,6 +14,7 @@ import type { GateRunNote } from './timeout-note.js';
 import { networkName } from './services.js';
 import { createControlChannel } from './control-channel.js';
 import { readBody, respondJson } from './http.js';
+import type { PublishRelay } from './publish-control.js';
 import type { QuestionRelay, QuestionResolution } from './question-control.js';
 
 const run = promisify(execFile);
@@ -489,7 +490,7 @@ export interface GateServer {
      * `{ stop }`, false until `raiseStop`. Independent of any gate registration — every launched
      * attempt gets one, gated or not. Idempotent.
      */
-    openControl(token: string, relay?: QuestionRelay): void;
+    openControl(token: string, relay?: QuestionRelay, publisher?: PublishRelay): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or the
      * wait expiring. False — and nothing changes — for an unknown token or id and a question
@@ -678,7 +679,7 @@ export function createGateServer({
         cancel(token) {
             this.unregister(token);
         },
-        openControl: (token, relay) => channel.open(token, relay),
+        openControl: (token, relay, publisher) => channel.open(token, relay, publisher),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
         cancelQuestions: (token) => channel.cancelQuestions(token),

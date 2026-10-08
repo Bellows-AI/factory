@@ -1,6 +1,6 @@
 ---
 name: backend-fix
-description: End-to-end fix of a backend bug under strict TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, and hand off to the board's publish, which opens the pull request. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
+description: End-to-end fix of a backend bug under strict TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, and publish the pull request through the driver. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
 metadata:
   requires-tools: git
 ---
@@ -210,13 +210,14 @@ Run the [Local review gate](#local-review-gate) on the diff about to be pushed. 
 actionable, re-review until clean, then push. Gate fixes go in a new commit
 (`<KEY> [fix] address local review: <summary>`) — never amend a commit already on the remote.
 
-### 5.13 Report ready for publish — the board opens the PR
+### 5.13 Publish through the driver
 
-Do not create the pull request yourself. The factory board's publish flow pushes the task branch
-and opens (or reuses) the pull request after the gates pass, writing the title and description
-from the branch's commits — `gh pr create` is denied to you, and the deny is policy, not an
-obstacle. Finish the job the publish expects: work committed on the task branch, lint and tests
-green.
+Do not run `gh pr create` — it is denied to you, and the deny is policy, not an obstacle. Ask the
+driver to publish instead (`POST $BELLOWS_CONTROL_URL/publish`, see the github skill): it pushes
+the task branch and opens (or reuses) the pull request, writing the title and description from the
+branch's commits, and a second call updates the same pull request. Finish with the work committed
+on the task branch and lint and tests green; the board publishes once more when the task
+completes.
 
 ---
 

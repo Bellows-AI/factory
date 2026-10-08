@@ -75,6 +75,7 @@ import type { K8sClaim, K8sDeps, K8sRequest, K8sResponse } from './k8s-transport
 import {
     probeTreeFingerprint,
     publishCheckout,
+    type PublishOptions,
     publishFailed,
     repoPath,
     withPublishToken,
@@ -400,7 +401,12 @@ async function run(
 // this executor's transport underneath: one aux Job per step over the workspaces PVC, the claim
 // env by a per-attempt Secret read through envFrom, and the verdict off the pod's exit code and
 // log.
-async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): Promise<PublishResult> {
+async function publishGit(
+    deps: K8sDeps,
+    job: BoardJob,
+    publishToken?: string,
+    options?: PublishOptions
+): Promise<PublishResult> {
     const repo = worktreeDir(deps.config, job);
     const env = envBodyToData(envFileBody(withPublishToken(job, publishToken)));
     const secret = Object.keys(env).length ? publishEnvSecretName(job) : null;
@@ -419,7 +425,7 @@ async function publishGit(deps: K8sDeps, job: BoardJob, publishToken?: string): 
     }
     let stepNumber = 0;
     try {
-        return await publishCheckout(deps.config, job, (publish) => {
+        return await publishCheckout(deps.config, job, options, (publish) => {
             stepNumber += 1;
             // Unreachable: the workflow answers a null-repo job with publishNothing before any
             // step runs. The assertion keeps the transport honest if the workflow's contract
@@ -638,7 +644,8 @@ export function createKubernetesRunner(
         startServices: (job: BoardJob) => startServiceFleet(deps, job),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
-        publishGit: (job: BoardJob, publishToken?: string) => publishGit(deps, job, publishToken),
+        publishGit: (job: BoardJob, publishToken?: string, options?: PublishOptions) =>
+            publishGit(deps, job, publishToken, options),
         probeTree: (job: BoardJob, signal?: AbortSignal) => probeTree(deps, job, signal),
         runHelper: (job: BoardJob, plan: HelperPlan, token?: string, signal?: AbortSignal) =>
             runHelper(deps, job, plan, { token, signal }),
