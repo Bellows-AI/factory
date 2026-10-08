@@ -75,6 +75,18 @@ const deleteOwnJob = (deps: K8sDeps, job: BoardJob): Promise<boolean> =>
     );
 
 /**
+ * Whether the board proves this attempt holds the job's live lease — the only proof a claim with
+ * no claim sequence (a hand-made one, or one an older driver wrote) is a stale holder's: the board
+ * hands a job to a new claimant only once the previous lease is gone. Anything short of that proof
+ * — no lookup wired, no answer, another token — is not one.
+ */
+async function holdsLiveLease(deps: K8sDeps, job: BoardJob): Promise<boolean> {
+    const rows = await deps.leases?.([job.id]).catch(() => null);
+    const row = rows?.find((lease) => lease.id === job.id);
+    return row?.status === 'running' && row.leaseToken === job.leaseToken;
+}
+
+/**
  * Reads the claim a 409 answered, and either recognizes it as already ours or takes it over —
  * pulled out of `acquireClaim` purely to keep that function's complexity readable. `'ours'` stops
  * the round; `'retry'` (a vanished claim, or a stale one just released) sends the caller back to
@@ -89,11 +101,18 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     if (claim.data?.holder === job.leaseToken) return 'ours';
     // Ordered by the claim sequence, never by `attempts`: a stop or a contention requeue refunds
     // an attempt, and a replacement must still read as newer than every claim before it.
-    const claimSeq = Number(claim.data?.claimSeq);
+    // Digits only: `Number('')` is 0, and an empty field must never read as an ordered claim.
+    const claimSeq = /^\d+$/.test(claim.data?.claimSeq ?? '') ? Number(claim.data?.claimSeq) : Number.NaN;
     if (Number.isFinite(claimSeq) && claimSeq >= job.claimSeq) {
         throw new Error(
             `job ${job.id} stands down: the checkout claim is held by a newer claim ` +
                 `(${claim.data?.claimSeq} >= ${job.claimSeq})`
+        );
+    }
+    if (!Number.isFinite(claimSeq) && !(await holdsLiveLease(deps, job))) {
+        throw new Error(
+            `job ${job.id} stands down: the checkout claim carries no claim sequence, and the board ` +
+                'could not prove this attempt holds the live lease'
         );
     }
     const uid = claim.metadata?.uid;

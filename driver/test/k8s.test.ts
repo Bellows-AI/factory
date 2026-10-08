@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { Board, BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { claudeTurnsScript, claudeTranscriptScript, opencodeTranscriptScript } from '../src/container-scripts.js';
 import { ARTIFACT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
@@ -1053,12 +1053,19 @@ const fakeRequest = (overrides: Record<string, unknown> = {}): { request: K8sReq
     return { request, calls };
 };
 
-const runner = (request: K8sRequest, env: Record<string, string> = {}) =>
+const runner = (request: K8sRequest, env: Record<string, string> = {}, leases?: Board['leases']) =>
     createKubernetesRunner(
         loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0', ...env }),
         request,
-        async () => {}
+        async () => {},
+        leases
     );
+
+/** The board's lease lookup, answering that `held` holds the job's live lease. */
+const boardLease =
+    (held: BoardJob, leaseToken: string | null = held.leaseToken): Board['leases'] =>
+    async (ids) =>
+        ids.includes(held.id) ? [{ id: held.id, status: 'running', leaseToken }] : [];
 
 /**
  * Default answers for the objects the runner touches beyond the runner Job itself: the fence
@@ -1834,6 +1841,38 @@ describe('the worktree sync', () => {
 
         const held = await request('GET', claimPathFor(repoJob.id));
         expect(JSON.parse(held.body)).toMatchObject({ data: { holder: replacement.leaseToken, claimSeq: '4' } });
+    });
+
+    // Review of PR #564: a claim a pre-#559 driver wrote carries no claimSeq, and is never taken
+    // over on that absence alone — only when the board proves this attempt's lease is the live one.
+    const seedLegacyClaim = (request: K8sRequest) =>
+        request('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, attempt: '1' },
+        });
+
+    it('takes over a claim with no claim sequence when the board proves this attempt holds the lease', async () => {
+        const { request } = fakeRequest(SYNCED);
+        await seedLegacyClaim(request);
+
+        expect(await runner(request, {}, boardLease(repoJob)).syncCheckout(repoJob)).toMatchObject({ ok: true });
+    });
+
+    it.each([
+        ['the board names the claim’s holder as the live lease', boardLease(repoJob, NEW_TOKEN)],
+        ['the board holds no live lease', boardLease(repoJob, null)],
+        ['the board cannot answer', (async () => null) as Board['leases']],
+        ['the lookup throws', (async () => Promise.reject(new Error('board unreachable'))) as Board['leases']],
+        ['no lookup is wired', undefined],
+    ] as const)('stands down on a claim with no claim sequence when %s', async (_what, leases) => {
+        const { request, calls } = fakeRequest(SYNCED);
+        await seedLegacyClaim(request);
+
+        await expect(runner(request, {}, leases).syncCheckout(repoJob)).rejects.toThrow(/stands down/);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id))).toBe(false);
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
     });
 
     it('answers checkout contention with the transient reason, its claim already given back', async () => {
@@ -4595,11 +4634,11 @@ describe('the kubernetes runner', () => {
         expect(calls.some((call) => call.method === 'DELETE' && call.path?.startsWith(configmapsPath))).toBe(false);
     });
 
-    // A claim with no attempt number — hand-made, or written by a driver from before the field
-    // existed — is never proof of a newer writer, so it is released by takeover like any other
-    // older holder's leftover. Standing down on garbage would let a dead claim hold the
-    // checkout forever.
-    it('takes over a claim object that carries no attempt number', async () => {
+    // A claim with no claim sequence — hand-made, or written by a driver from before the field
+    // existed — cannot be ordered, so it is taken over only once the board proves this attempt
+    // holds the job's live lease: its holder's lease is then gone. Standing down on garbage alone
+    // would let a dead claim hold the checkout forever.
+    it('takes over a claim object that carries no claim sequence once the board proves the lease', async () => {
         const claimPath = claimPathFor(job.id);
         const serve = claimServer();
         const calls: Call[] = [];
@@ -4650,7 +4689,7 @@ describe('the kubernetes runner', () => {
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
 
-        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+        const outcome = await runner(request, {}, boardLease(job)).run(job, { id: SESSION, resume: false });
         expect(outcome.exitCode).toBe(0);
         // Taken over, not stood down: the holder was not a newer attempt.
         expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(true);
