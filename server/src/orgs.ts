@@ -1,5 +1,6 @@
 import type { Sql } from 'postgres';
 import type { AppConfig } from './config.js';
+import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
 import { createJobStore } from './db/job-store.js';
 import type { JobStore } from './db/job-store-types.js';
@@ -46,6 +47,8 @@ export interface OrgRuntime {
     /** The PR lifecycle (036): the thread's publication identity and its PR waits. */
     prs?: PrLifecycleStore | undefined;
     envVars?: EnvVarStore | undefined;
+    /** The managed connector connections (054) a task may select; present with the other stores. */
+    connections?: ConnectionStore | undefined;
     userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
     cloneQueue?: CloneQueue | undefined;
@@ -98,6 +101,7 @@ function buildOrgStores({
     facts: FactsCache;
 }): {
     envVars: EnvVarStore;
+    connections: ConnectionStore;
     userExecutors: UserExecutorStore;
     userRepos: UserRepoStore;
     prs: PrLifecycleStore;
@@ -108,6 +112,7 @@ function buildOrgStores({
     facts: FactsCache;
 } {
     const envVars = createEnvVarStore({ sql, orgId, ready });
+    const connections = createConnectionStore({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
     const userRepos = createUserRepoStore({ sql, orgId, ready });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
@@ -158,7 +163,7 @@ function buildOrgStores({
     });
     // Workflow definitions (027): the process a task walks, stored per scope inside this org.
     const workflows = createWorkflowStore({ sql, orgId, ready });
-    return { facts, envVars, userExecutors, userRepos, prs, cloneQueue, purger, jobs, workflows };
+    return { facts, envVars, connections, userExecutors, userRepos, prs, cloneQueue, purger, jobs, workflows };
 }
 
 /**
@@ -175,6 +180,7 @@ function buildOrgStores({
 async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<typeof buildOrgStores>>): Promise<void> {
     runtime.facts = stores.facts;
     runtime.envVars = stores.envVars;
+    runtime.connections = stores.connections;
     runtime.userExecutors = stores.userExecutors;
     runtime.userRepos = stores.userRepos;
     runtime.cloneQueue = stores.cloneQueue;

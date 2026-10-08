@@ -68,7 +68,7 @@ describe('GET /api/skills', () => {
         const jira = skills.find((skill) => skill.name === 'jira');
         expect(jira?.requires).toEqual({
             tools: ['curl'],
-            connections: [{ name: 'jira', env: ['ATLASSIAN_SITE', 'ATLASSIAN_EMAIL', 'ATLASSIAN_API_TOKEN'] }],
+            connections: [{ name: 'jira', env: [], selectedBy: 'jiraConnection' }],
         });
         const body = readFileSync(join(root, 'docker/skills/jira/SKILL.md'), 'utf8').split('\n---\n')[1] ?? '';
         expect(body.length).toBeGreaterThan(100);

@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type BoardScanner, boardsFor, executorsFor, storeFor, userReposFor, workflowsFor } from './job-context.js';
+import { resolveJiraConnection } from './connections.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { validateArtifactBody } from './job-field-validation-artifacts.js';
 import {
@@ -104,6 +105,32 @@ async function refusedAsNotSynced(
     return true;
 }
 
+/**
+ * The create body's `skills` (issue #545): a well-formed list of installed catalog names, or null
+ * once a refusal — `400 BAD_SKILLS` for the shape, `404 UNKNOWN_SKILL` naming each missing name —
+ * has landed on `reply`.
+ */
+function selectedSkillsOf(reply: FastifyReply, raw: unknown): string[] | null {
+    const result = validateSkillsField(raw);
+    if (!result.ok) {
+        bad(reply, ERROR_CODES.BAD_SKILLS, result.message);
+        return null;
+    }
+    const installed = skillCatalog().map((skill) => skill.name);
+    const unknown = result.value.filter((name) => !installed.includes(name));
+    if (unknown.length > 0) {
+        const named = unknown.map((name) => `"${name}"`).join(', ');
+        bad(
+            reply,
+            ERROR_CODES.UNKNOWN_SKILL,
+            `unknown skill ${named} (installed: ${installed.join(', ')})`,
+            HTTP_NOT_FOUND
+        );
+        return null;
+    }
+    return result.value;
+}
+
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
@@ -123,19 +150,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const repo = repoResult.value;
     const executor = executorResult.value;
     const executorScope = scopeResult.value;
-    const skillsResult = validateSkillsField(fields.skills);
-    if (!skillsResult.ok) return bad(reply, ERROR_CODES.BAD_SKILLS, skillsResult.message);
-    const skills = skillsResult.value;
-    const installed = skillCatalog().map((skill) => skill.name);
-    const unknownSkills = skills.filter((name) => !installed.includes(name));
-    if (unknownSkills.length > 0) {
-        return bad(
-            reply,
-            ERROR_CODES.UNKNOWN_SKILL,
-            `unknown skill ${unknownSkills.map((name) => `"${name}"`).join(', ')} (installed: ${installed.join(', ')})`,
-            HTTP_NOT_FOUND
-        );
-    }
+    const selectedSkills = selectedSkillsOf(reply, fields.skills);
+    if (selectedSkills === null) return reply;
+    const skills = selectedSkills;
 
     // Read off the authenticated request, never off the body: a client-supplied author is
     // impersonation. Null only when the app was built with no auth store at all, which is the
@@ -171,6 +188,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         return bad(reply, ERROR_CODES.BAD_WORKFLOW_PARAMS, 'workflowParams requires a resolved workflow');
     }
 
+    const jira = await resolveJiraConnection(orgs, { request, reply, createdBy }, fields.jiraConnection);
+    if (jira.handled) return reply;
+
     const created = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job create failed'),
@@ -180,6 +200,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 executor,
                 executorScope,
                 skills,
+                jiraConnectionId: jira.id,
                 ...(workflow ? { workflow } : {}),
             })
     );

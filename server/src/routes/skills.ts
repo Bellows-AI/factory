@@ -1,4 +1,4 @@
-import { connectionEnvNames, type Skill } from '@factory-ai/core';
+import { connectionEnvNames, MANAGED_CONNECTIONS, type Skill } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
 
 /**
@@ -14,7 +14,14 @@ export const skillRoutes =
             description: skill.description,
             requires: {
                 tools: skill.requires.tools,
-                connections: skill.requires.connections.map((name) => ({ name, env: connectionEnvNames(name) })),
+                connections: skill.requires.connections.map((name) => ({
+                    name,
+                    env: connectionEnvNames(name),
+                    // A managed connection holds no env: the task selects it by this body field.
+                    selectedBy: Object.hasOwn(MANAGED_CONNECTIONS, name)
+                        ? MANAGED_CONNECTIONS[name as keyof typeof MANAGED_CONNECTIONS]
+                        : null,
+                })),
             },
         }));
         app.get('/api/skills', async () => ({ skills }));

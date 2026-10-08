@@ -519,6 +519,25 @@ describe("the board's environment", () => {
         ).toEqual({});
     });
 
+    // A Jira credential is a managed connection the board spends (docs/connections.md): even a
+    // stale or hand-planted claim value never reaches the runner's env file, so a runner holds the
+    // attempt pair and nothing that authenticates to Atlassian. Pinned beside the k8s Secret case.
+    it('never writes a Jira credential to the env file, only the attempt pair', () => {
+        const withJira: BoardJob = {
+            ...envJob,
+            env: {
+                MY_TOKEN: 'board-secret',
+                ATLASSIAN_SITE: 'https://example.atlassian.net',
+                ATLASSIAN_EMAIL: 'agent@example.com',
+                ATLASSIAN_API_TOKEN: 'atlassian-secret',
+            },
+        };
+        const body = envFileBody(withJira, loadDriverConfig({}));
+        expect(body).not.toContain('ATLASSIAN');
+        expect(body).not.toContain('atlassian-secret');
+        expect(body).toContain('RUNNER_LEASE_TOKEN=');
+    });
+
     it('writes one NAME=value line per variable, reserved names dropped', () => {
         expect(envFileBody(envJob)).toBe('MY_TOKEN=board-secret\n');
         expect(envFileBody(job)).toBe('');

@@ -55,8 +55,10 @@ export interface ClaimCandidateRow {
     workflow_name: string | null;
     mode: JobMode;
     root_command: string;
-    /** The thread ROOT's selected skills (054), read in the claim's RETURNING. */
+    /** The thread ROOT's selected skills (055), read in the claim's RETURNING. */
     skills: string[];
+    /** Whether the thread ROOT selected a managed Jira connection (054), read in the same RETURNING. */
+    has_jira_connection: boolean;
 }
 
 /**
@@ -166,6 +168,7 @@ async function claimNextCandidate(
                     mode: JobMode;
                     root_command: string;
                     skills: string[];
+                    has_jira_connection: boolean;
                 }[]
             >`
                 update job set
@@ -221,7 +224,9 @@ async function claimNextCandidate(
                           (select r.command from job r
                            where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
                           (select r.skills from job r
-                           where r.org_id = job.org_id and r.id = job.root_job_id) as skills
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as skills,
+                          (select r.jira_connection_id is not null from job r
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as has_jira_connection
             `;
 
             const row = rows[0];
@@ -269,7 +274,11 @@ async function claimNextCandidate(
             const command = await claimCommand(tx, orgId, rootJobId, row);
             // The thread root's selection checked against what this claim's env authorizes: names
             // only, so selecting a skill never adds to the env and the sentence never carries a value.
-            const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv);
+            const skillRefusal = resolveClaimSkills(
+                row.skills,
+                executor.claimEnv,
+                row.has_jira_connection ? ['jira'] : []
+            );
             return buildClaimResult({ ...row, command }, rootJobId, {
                 ...executor,
                 ...gates,
@@ -452,14 +461,16 @@ export async function resolveClaimExecutor(
 
 /**
  * The sentence that stops a claim whose selected skills cannot run, or null (issue #545): a
- * selection the catalog lacks, or a skill whose connection has no env names in the claim's
- * resolved env. Config-kind and recoverable — the member fixes the settings and retries.
+ * selection the catalog lacks, a skill whose connection has no env names in the claim's resolved
+ * env, or a managed connection the task never selected (`managed`; whether it is still authorized
+ * is the proxy's per-call check, docs/connections.md). Config-kind and recoverable — the member fixes the settings and retries.
  */
 export function resolveClaimSkills(
     skills: readonly string[],
-    claimEnv: Readonly<Record<string, string>> | undefined
+    claimEnv: Readonly<Record<string, string>> | undefined,
+    managed: readonly string[] = []
 ): string | null {
-    const problems = skillSelectionProblems(skillCatalog(), skills, claimEnv ?? {});
+    const problems = skillSelectionProblems(skillCatalog(), skills, claimEnv ?? {}, managed);
     return problems.length === 0 ? null : `[skills unavailable] ${problems.join('; ')}. Fix this, then retry the task.`;
 }
 

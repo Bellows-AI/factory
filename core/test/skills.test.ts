@@ -76,27 +76,44 @@ describe('skillSelectionProblems', () => {
         { name: 'jira', description: 'j', requires: { tools: ['curl'], connections: ['jira'] } },
         { name: 'gates', description: 'g', requires: { tools: ['curl'], connections: [] } },
     ];
-    const jiraEnv = { ATLASSIAN_SITE: 's', ATLASSIAN_EMAIL: 'e', ATLASSIAN_API_TOKEN: 't' };
+    const githubSkill: Skill = {
+        name: 'github',
+        description: 'g',
+        requires: { tools: ['gh'], connections: ['github'] },
+    };
 
-    it('is empty when every requirement is met', () => {
-        expect(skillSelectionProblems(catalog, ['jira', 'gates'], jiraEnv)).toEqual([]);
+    it('is empty when every requirement is met: the managed connection selected', () => {
+        expect(skillSelectionProblems(catalog, ['jira', 'gates'], {}, ['jira'])).toEqual([]);
     });
 
     it('names an unknown skill and what is installed', () => {
-        const [problem] = skillSelectionProblems(catalog, ['nope'], jiraEnv);
+        const [problem] = skillSelectionProblems(catalog, ['nope'], {});
         expect(problem).toContain('"nope" is not installed');
         expect(problem).toContain('jira, gates');
     });
 
-    it('names the missing env names of an unauthorized connection, never a value', () => {
-        const [problem] = skillSelectionProblems(catalog, ['jira'], { ATLASSIAN_SITE: 'secret-site-value' });
-        expect(problem).toContain('jira connection');
-        expect(problem).toContain('ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN');
-        expect(problem).not.toContain('secret-site-value');
+    it('asks for the managed connection by its body field when the task selected none', () => {
+        const [problem] = skillSelectionProblems(catalog, ['jira'], {});
+        expect(problem).toBe(
+            'skill "jira" needs the jira connection: select one (jiraConnection) when creating the task'
+        );
+    });
+
+    it('never lets env names stand in for a managed connection', () => {
+        const reserved = { ATLASSIAN_SITE: 's', ATLASSIAN_EMAIL: 'e', ATLASSIAN_API_TOKEN: 't' };
+        expect(skillSelectionProblems(catalog, ['jira'], reserved)).toHaveLength(1);
+    });
+
+    it('names the missing env names of an env connection, never a value', () => {
+        const [problem] = skillSelectionProblems([githubSkill], ['github'], { OTHER: 'secret-other-value' });
+        expect(problem).toContain('github connection');
+        expect(problem).toContain('GITHUB_TOKEN');
+        expect(problem).not.toContain('secret-other-value');
     });
 
     it('counts an empty value as missing', () => {
-        expect(skillSelectionProblems(catalog, ['jira'], { ...jiraEnv, ATLASSIAN_EMAIL: '' })).toHaveLength(1);
+        expect(skillSelectionProblems([githubSkill], ['github'], { GITHUB_TOKEN: '' })).toHaveLength(1);
+        expect(skillSelectionProblems([githubSkill], ['github'], { GITHUB_TOKEN: 't' })).toEqual([]);
     });
 
     it('lets a skill without connections run on an empty env', () => {

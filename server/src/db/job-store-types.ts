@@ -718,9 +718,15 @@ export interface JobStore {
             /**
              * The skills the task selects (issue #545), names the route validated against the
              * catalog. Stored on the root row only; a follow-up, retry or successor reads the
-             * root's selection at claim time (054). Absent is none.
+             * root's selection at claim time (055). Absent is none.
              */
             skills?: readonly string[];
+            /**
+             * The managed Jira connection (054, issue #546) the task selected, already authorized
+             * by the route. Stamped on the ROOT row only; every later row of the thread reads its
+             * root's choice at use time, so nothing is copied and revoking is a delete.
+             */
+            jiraConnectionId?: string | null;
             /**
              * When the task runs a workflow: the resolved workflow — the id, the NAME frozen on
              * the root row as workflow_name, the ENTRY node the thread's first run walks, the

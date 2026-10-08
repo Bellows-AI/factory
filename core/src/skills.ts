@@ -17,11 +17,18 @@ export const RUNNER_TOOLS = ['acli', 'curl', 'gh', 'git'] as const;
 /**
  * A connection is a named integration; the env names the board must hold for it in the task's
  * resolved env (org, workspace, repository scopes — docs/env.md). Presence is checked, never value.
+ * A MANAGED connection (docs/connections.md) holds no env names: the board keeps the credential and
+ * the task selects the connection itself, so it is listed in `MANAGED_CONNECTIONS` instead.
  */
 export const SKILL_CONNECTIONS = {
     github: ['GITHUB_TOKEN'],
-    jira: ['ATLASSIAN_SITE', 'ATLASSIAN_EMAIL', 'ATLASSIAN_API_TOKEN'],
+    jira: [],
 } as const satisfies Record<string, readonly string[]>;
+
+/** Managed connections, each to the `POST /api/jobs` body field that selects it for a task. */
+export const MANAGED_CONNECTIONS = { jira: 'jiraConnection' } as const satisfies Partial<
+    Record<keyof typeof SKILL_CONNECTIONS, string>
+>;
 
 export interface SkillRequirements {
     tools: string[];
@@ -123,13 +130,15 @@ export function connectionEnvNames(connection: string): readonly string[] {
 
 /**
  * One sentence per problem in a selection, or an empty list: a selected name the catalog lacks, and
- * each connection whose env names are not all present with a non-empty value in `env`. Names only —
- * the sentence is shown to the user and must never carry a value.
+ * each env connection whose env names are not all present with a non-empty value in `env`, and each
+ * managed connection the task did not select (`managed` lists the ones it did). Names only — the
+ * sentence is shown to the user and must never carry a value.
  */
 export function skillSelectionProblems(
     catalog: readonly Skill[],
     selected: readonly string[],
-    env: Readonly<Record<string, string>>
+    env: Readonly<Record<string, string>>,
+    managed: readonly string[] = []
 ): string[] {
     const problems: string[] = [];
     for (const name of selected) {
@@ -139,6 +148,15 @@ export function skillSelectionProblems(
             continue;
         }
         for (const connection of skill.requires.connections) {
+            if (Object.hasOwn(MANAGED_CONNECTIONS, connection)) {
+                if (!managed.includes(connection)) {
+                    const field = MANAGED_CONNECTIONS[connection as keyof typeof MANAGED_CONNECTIONS];
+                    problems.push(
+                        `skill "${name}" needs the ${connection} connection: select one (${field}) when creating the task`
+                    );
+                }
+                continue;
+            }
             const missing = connectionEnvNames(connection).filter((key) => !env[key]);
             if (missing.length > 0) {
                 problems.push(
