@@ -11,6 +11,7 @@ import {
     workflowDefaultsFor,
     workflowsFor,
 } from './job-context.js';
+import { resolveJiraConnection } from './connections.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { validateArtifactBody } from './job-field-validation-artifacts.js';
 import {
@@ -172,6 +173,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         return bad(reply, ERROR_CODES.BAD_WORKFLOW_PARAMS, 'workflowParams requires a resolved workflow');
     }
 
+    const jira = await resolveJiraConnection(orgs, { request, reply, createdBy }, fields.jiraConnection);
+    if (jira.handled) return reply;
+
     const created = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job create failed'),
@@ -180,6 +184,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 repo,
                 executor,
                 executorScope,
+                jiraConnectionId: jira.id,
                 ...(workflow ? { workflow } : {}),
             })
     );

@@ -5,42 +5,44 @@ description: Read, search, create and comment on Jira work items through Jira's 
 
 # Jira through the REST API
 
-Reach Jira with `curl` against `$JIRA_API`, authenticated as `$ATLASSIAN_EMAIL:$ATLASSIAN_API_TOKEN`.
-The Atlassian MCP server is deliberately not configured, and `acli` cannot use the scoped
-(service-account) token this container carries — do not use either.
+Reach Jira with `curl` against `$JIRA_API`, the board's connector for this task. You hold no Jira
+credential: the board adds the task's authorized connection to each call, and only while this
+attempt is running. Your run's own pair, `$RUNNER_JOB_ID` and `$RUNNER_LEASE_TOKEN`, is what the
+board checks. The Atlassian MCP server is deliberately not configured, and `acli` cannot use this
+connection — do not use either.
 
 Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it through
-`$JIRA_API` rather than fetching the page. Never put the token in a URL or echo it.
+`$JIRA_API` rather than fetching the page. Never put the lease token in a URL or echo it.
 
 ## Commands
 
-Every call is one self-contained command; shell state does not carry between them. Credentials
-reach curl as a config on stdin from `printf`, a shell builtin, because an argv shows in any
-process listing — never pass the token through `-u` or in a URL.
+Every call is one self-contained command; shell state does not carry between them. The pair
+reaches curl as headers in a config on stdin from `printf`, a shell builtin, because an argv shows
+in any process listing — never pass the token as a `-H` argument or in a URL.
 
 ```bash
 # Full detail, including the comment thread
-printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' \
+printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' \
     "$JIRA_API/issue/<KEY>?fields=summary,description,status,issuetype,parent,fixVersions,components,labels,comment"
 
 # Search by JQL
-printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' -G \
+printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' -G \
     --data-urlencode "jql=project = ABC AND status = 'In Progress' ORDER BY updated DESC" \
     --data-urlencode "fields=summary,status,issuetype,parent,fixVersions,components,labels" \
     "$JIRA_API/search/jql"
 
 # Comment — the body is Atlassian Document Format, not plain text
-printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
+printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
     -X POST "$JIRA_API/issue/<KEY>/comment" \
     -d '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"..."}]}]}}'
 
 # Create
-printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
+printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
     -X POST "$JIRA_API/issue" \
     -d '{"fields":{"project":{"key":"ABC"},"issuetype":{"name":"Task"},"summary":"..."}}'
 ```
 
-`assignee = currentUser()` matches the token's own account — a service account — not a person.
+`assignee = currentUser()` matches the connection's own account, not a person.
 
 ## Reading a ticket properly
 
@@ -53,8 +55,8 @@ printf 'user = "%s:%s"\n' "$ATLASSIAN_EMAIL" "$ATLASSIAN_API_TOKEN" | curl -K - 
 
 ## Authentication
 
-When the run's environment carries `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL` and `ATLASSIAN_API_TOKEN`,
-the entrypoint resolved the site's cloud id and exported `JIRA_API` before you started. If
-`JIRA_API` is empty, or a call answers 401/403, **stop and report it** — name the three variables
-(and, on 403, the token's Jira scopes) as the fix — do not retry, and do not work around it by
-guessing ticket contents.
+If `JIRA_API` is empty, or a call answers 401/403, **stop and report it** — quote the `error`
+message the board returned, which says what to fix (no connection selected, connection deleted or
+no longer authorized, read-only connection) — do not retry, and do not work around it by guessing
+ticket contents. Loading this skill never grants access; only the connection the task was started
+with does.

@@ -701,6 +701,12 @@ export interface JobStore {
              */
             executorScope?: ExecutorScope;
             /**
+             * The managed Jira connection (051, issue #546) the task selected, already authorized
+             * by the route. Stamped on the ROOT row only; every later row of the thread reads its
+             * root's choice at use time, so nothing is copied and revoking is a delete.
+             */
+            jiraConnectionId?: string | null;
+            /**
              * When the task runs a workflow: the resolved workflow — the id, the NAME frozen on
              * the root row as workflow_name, the ENTRY node the thread's first run walks, the
              * definition SNAPSHOT frozen onto the root row, and the validated launch parameter

@@ -30,6 +30,7 @@ export function staticRegistry(
         workflows?: OrgRuntime['workflows'];
         prs?: OrgRuntime['prs'];
         envVars?: OrgRuntime['envVars'];
+        connections?: OrgRuntime['connections'];
         userRepos?: OrgRuntime['userRepos'];
         userExecutors?: OrgRuntime['userExecutors'];
         workflowDefaults?: OrgRuntime['workflowDefaults'];
@@ -52,6 +53,7 @@ export function staticRegistry(
         workflows: parts.workflows,
         prs: parts.prs,
         envVars: parts.envVars,
+        connections: parts.connections,
         userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
         workflowDefaults: parts.workflowDefaults,

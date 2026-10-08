@@ -312,7 +312,7 @@ printf '%s\\n' "$@" > "$STUB_DIR/curl-argv"
 printf '%s' "\${CURL_BODY:-}"
 exit "\${CURL_STATUS:-0}"
 `;
-const ATLASSIAN_NAMES = ['ATLASSIAN_SITE', 'ATLASSIAN_EMAIL', 'ATLASSIAN_API_TOKEN', 'JIRA_API'];
+const ATLASSIAN_NAMES = ['FACTORY_STATS_URL', 'RUNNER_JOB_ID', 'RUNNER_LEASE_TOKEN', 'JIRA_API'];
 const CONTAINER_GUARD_NAMES = [
     'ANTHROPIC_MODEL',
     'FACTORY_TRANSCRIPT_DIR',
@@ -508,44 +508,31 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
 });
 
 /*
- * Jira: the claim env's ATLASSIAN_* names make the entrypoint resolve the site's cloud id and hand
- * the CLI JIRA_API on the api.atlassian.com gateway — the only host a scoped service-account token
- * authenticates against. The token never reaches the lookup's argv. A failed or half-configured
- * lookup must not cost the run.
+ * Jira: the board's connector proxy (docs/connections.md). The entrypoint derives JIRA_API from the
+ * board URL and the attempt's own job id — the credential never reaches the runner, so there is no
+ * lookup and no token to leak. Derived, never inherited.
  */
-describe('the entrypoint Jira gateway', () => {
-    const ATLASSIAN_ENV = {
-        ATLASSIAN_SITE: 'https://example.atlassian.net/',
-        ATLASSIAN_EMAIL: 'agent@example.com',
-        ATLASSIAN_API_TOKEN: 'secret-token',
+describe('the entrypoint Jira connector', () => {
+    const CONNECTOR_ENV = {
+        FACTORY_STATS_URL: 'http://board.test:8080/',
+        RUNNER_JOB_ID: 'b0a3c1e2-0000-4000-8000-000000000001',
+        RUNNER_LEASE_TOKEN: 'b0a3c1e2-0000-4000-8000-000000000002',
     };
-    const CLOUD_ID = 'bc18dcc3-123a-4216-a5a2-4f7b0e55b297';
     const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
-    /** Any valid JSON layout of tenant_info yields the cloud id. */
-    const TENANT_BODIES = {
-        compact: `{"cloudId":"${CLOUD_ID}"}`,
-        spaced: `{ "cloudId" : "${CLOUD_ID}" }`,
-        multiline: `{\n  "cloudId": "${CLOUD_ID}"\n}\n`,
-    };
     /** A JIRA_API the claim env carried in: the entrypoint derives the name, never inherits it. */
     const STALE_JIRA_API = 'https://stale.example/rest/api/3';
 
-    it.each(ENTRYPOINTS.flatMap((entrypoint) => Object.keys(TENANT_BODIES).map((layout) => [entrypoint, layout])))(
-        '%s exports JIRA_API from a %s site tenant_info',
-        async (entrypoint, layout) => {
+    it.each(ENTRYPOINTS)(
+        "%s points JIRA_API at this attempt's board connector and never looks Jira up",
+        async (entrypoint) => {
             const sandbox = makeSandbox();
             try {
-                const child = runEntrypoint(entrypoint, sandbox, {
-                    ...ATLASSIAN_ENV,
-                    CURL_BODY: TENANT_BODIES[layout as keyof typeof TENANT_BODIES],
-                });
+                const child = runEntrypoint(entrypoint, sandbox, { ...CONNECTOR_ENV, JIRA_API: STALE_JIRA_API });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-                const argv = readFileSync(join(sandbox.bin, 'curl-argv'), 'utf8').trimEnd().split('\n');
-                expect(argv.at(-1)).toBe('https://example.atlassian.net/_edge/tenant_info');
-                expect(argv.join(' ')).not.toContain(ATLASSIAN_ENV.ATLASSIAN_API_TOKEN);
                 expect(readFileSync(join(sandbox.bin, 'jira-api'), 'utf8')).toBe(
-                    `https://api.atlassian.com/ex/jira/${CLOUD_ID}/rest/api/3`
+                    `http://board.test:8080/api/jobs/${CONNECTOR_ENV.RUNNER_JOB_ID}/connectors/jira/rest/api/3`
                 );
+                expect(existsSync(join(sandbox.bin, 'curl-argv'))).toBe(false);
             } finally {
                 sandbox.cleanup();
             }
@@ -554,36 +541,13 @@ describe('the entrypoint Jira gateway', () => {
     );
 
     it.each(ENTRYPOINTS)(
-        '%s still runs the CLI when the lookup fails',
+        '%s leaves JIRA_API unset without the attempt pair',
         async (entrypoint) => {
             const sandbox = makeSandbox();
             try {
-                const child = runEntrypoint(entrypoint, sandbox, {
-                    ...ATLASSIAN_ENV,
-                    JIRA_API: STALE_JIRA_API,
-                    CURL_BODY: '<!DOCTYPE html>',
-                    CURL_STATUS: '22',
-                    STUB_STATUS: String(STUB_EXIT_CODE),
-                });
-                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(STUB_EXIT_CODE);
-                expect(existsSync(join(sandbox.bin, 'curl-argv'))).toBe(true);
-                expect(readFileSync(join(sandbox.bin, 'jira-api'), 'utf8')).toBe('unset');
-            } finally {
-                sandbox.cleanup();
-            }
-        },
-        CASE_TIMEOUT_MS
-    );
-
-    it.each(ENTRYPOINTS)(
-        '%s skips the lookup unless all three names are set',
-        async (entrypoint) => {
-            const sandbox = makeSandbox();
-            try {
-                const { ATLASSIAN_API_TOKEN: _omitted, ...partial } = ATLASSIAN_ENV;
+                const { RUNNER_LEASE_TOKEN: _omitted, ...partial } = CONNECTOR_ENV;
                 const child = runEntrypoint(entrypoint, sandbox, { ...partial, JIRA_API: STALE_JIRA_API });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-                expect(existsSync(join(sandbox.bin, 'curl-argv'))).toBe(false);
                 expect(readFileSync(join(sandbox.bin, 'jira-api'), 'utf8')).toBe('unset');
             } finally {
                 sandbox.cleanup();
@@ -934,19 +898,20 @@ describe('the shared executor skills', () => {
         expect(builds).toBeGreaterThan(0);
     });
 
-    // An argv is world-readable in a process listing, so the token reaches curl as a config on
-    // stdin from printf, a shell builtin that never execs.
-    it('the jira skill keeps the token out of every curl argv', () => {
+    // An argv is world-readable in a process listing, so the attempt's lease token reaches curl as
+    // header lines in a config on stdin from printf, a shell builtin that never execs. The skill
+    // holds no Jira credential at all (docs/connections.md).
+    it('the jira skill keeps the lease token out of every curl argv and names no Jira credential', () => {
         const text = read(`${SKILLS}/jira/SKILL.md`);
         const fences = text.match(/^```bash\n[\s\S]*?^```$/gm)?.join('\n') ?? '';
         const curls = fences.match(/^.*\bcurl\b.*$/gm) ?? [];
         expect(curls.length).toBeGreaterThan(0);
         for (const line of curls) {
             expect(line).toMatch(
-                /^printf 'user = "%s:%s"\\n' "\$ATLASSIAN_EMAIL" "\$ATLASSIAN_API_TOKEN" \| curl -K - /
+                /^printf 'header = "x-factory-job-id: %s"\\nheader = "x-factory-job-lease-token: %s"\\n' "\$RUNNER_JOB_ID" "\$RUNNER_LEASE_TOKEN" \| curl -K - /
             );
         }
-        expect(text).not.toMatch(/-u "\$ATLASSIAN_EMAIL/);
+        expect(text).not.toMatch(/ATLASSIAN_/);
     });
 
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {

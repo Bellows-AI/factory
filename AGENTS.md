@@ -22,6 +22,7 @@ left as a refusal message. Touching `driver/`? Ask what it does to `EXECUTOR=kub
 | `core/src/telemetry.ts`, `metrics.ts`, cache/TTL constants | [docs/metrics.md](docs/metrics.md) |
 | `org_id`, `005_organizations.sql`, the org selector | [docs/organizations.md](docs/organizations.md) |
 | `server/src/auth/*`, `010_auth.sql`, session cookie, worker token, route credentials | [docs/auth.md](docs/auth.md) |
+| `server/src/db/connection-store.ts`, `routes/connections.ts`, `routes/connector-jira.ts`, `051_connections.sql`, `JIRA_API`, `docker/skills/jira/` | [docs/connections.md](docs/connections.md) |
 | `config.ts`, `.env.example`, compose env blocks, `server/src/github/app-*`, `offline.ts` | [docs/configuration.md](docs/configuration.md) |
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping | [docs/repos.md](docs/repos.md) |
 | `server/src/workspace/*`, `011_user_workspace.sql`, `ORG_WORKSPACE_ROOT` | [docs/workspace.md](docs/workspace.md) |

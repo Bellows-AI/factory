@@ -273,6 +273,11 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'a Jira credential, which is a managed connection now',
+            { vars: [{ name: 'ATLASSIAN_API_TOKEN', value: 'spoof', isSecret: true }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'the session id the branch reporter claims',
             { vars: [{ name: 'BELLOWS_SESSION_ID', value: 'spoof', isSecret: false }] },
             'RESERVED_ENV_NAME',

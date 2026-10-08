@@ -70,7 +70,8 @@ export async function createJobRow(
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params,
-                default_review_reconciliation, default_merge_conflict_autofix, default_gate_fix_rounds
+                default_review_reconciliation, default_merge_conflict_autofix, default_gate_fix_rounds,
+                jira_connection_id
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -80,7 +81,8 @@ export async function createJobRow(
                    ${target.workflow ? sql.json(target.workflow.params as never) : null},
                    ${target.workflow?.defaultOptions?.reviewReconciliation ?? null},
                    ${target.workflow?.defaultOptions?.mergeConflictAutofix ?? null},
-                   ${target.workflow?.defaultOptions?.gateFixRounds ?? null}
+                   ${target.workflow?.defaultOptions?.gateFixRounds ?? null},
+                   ${target.jiraConnectionId ?? null}
             from (select gen_random_uuid() as x) s
             returning id
         `;
