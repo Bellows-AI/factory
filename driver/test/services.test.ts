@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import {
+    awaitServicesRunning,
     collectServices,
     networkName,
     parseBellows,
@@ -671,5 +672,45 @@ describe('the RUNNER_SERVICES switch', () => {
         expect(() => loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'kubernetes' })).not.toThrow();
         expect(loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'kubernetes' }).servicesEnabled).toBe(true);
         expect(() => loadDriverConfig({ RUNNER_SERVICES: '1', EXECUTOR: 'docker' })).not.toThrow();
+    });
+});
+
+describe('awaitServicesRunning (issue #560)', () => {
+    const specs = parseBellows('services:\n  - name: db\n    image: mongo\n  - name: cache\n    image: redis\n');
+    const status = (name: string, state: string) => ({ name, image: 'x', state });
+    const noWait = async () => {};
+
+    it('returns once every service is listed running, re-listing through a failed read', async () => {
+        const answers = [
+            () => Promise.resolve([status('db', 'running')]),
+            () => Promise.reject(new Error('daemon blinked')),
+            () => Promise.resolve([status('db', 'running'), status('cache', 'running')]),
+        ];
+        let lists = 0;
+        await awaitServicesRunning(specs, () => answers[lists++]!(), noWait);
+        expect(lists).toBe(3);
+    });
+
+    it('throws at once, naming it, when a restarted service is already dead', async () => {
+        let lists = 0;
+        const list = async () => {
+            lists += 1;
+            return [status('db', 'exited'), status('cache', 'running')];
+        };
+        await expect(awaitServicesRunning(specs, list, noWait)).rejects.toThrow(
+            'service "db" exited after the restart'
+        );
+        expect(lists).toBe(1);
+    });
+
+    it('throws naming what never ran once the timeout has passed', async () => {
+        let slept = 0;
+        const sleep = async (ms: number) => {
+            slept += ms;
+        };
+        await expect(awaitServicesRunning(specs, async () => [status('db', 'running')], sleep)).rejects.toThrow(
+            'service "cache" not running 300s after the restart'
+        );
+        expect(slept).toBe(300_000);
     });
 });

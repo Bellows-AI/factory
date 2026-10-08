@@ -32,6 +32,12 @@ export interface RunOutcome {
      */
     refused?: boolean;
     /**
+     * Set when the platform took the runner away before it exited — its pod deleted, evicted or
+     * its node removed, its container removed (issue #560) — and says how. No verdict of the
+     * agent's exists, so the loop reports none: it leaves the job to the lease, which re-offers it.
+     */
+    infraLoss?: string;
+    /**
      * The session the run actually used, when the runner could only know it after the fact —
      * opencode mints its own (`ses_…`) and the runner scrapes it out of the session database the
      * run left behind. Null for claude-code, whose session is minted up front and reported
@@ -142,10 +148,23 @@ export interface DeadService extends ServiceStatus {
     /** The platform's word for the ending — the kubelet's `reason`, docker's `OOMKilled` or error. */
     reason: string | null;
     logTail: string;
+    /** Why the pre-gate restart (`Runner.restartServices`) could not bring the fleet back; absent when none ran. */
+    restartFailure?: string;
 }
 
 /** How many of a dead service's last log lines the verdict quotes. */
 export const SERVICE_LOG_TAIL_LINES = 20;
+
+/**
+ * How long a restarted fleet has to reach running (issue #560), in seconds: long enough for a
+ * cluster autoscaler to bring a node up under the replacement pods.
+ */
+export const SERVICE_RESTART_TIMEOUT_S = 300;
+const MS_PER_SECOND = 1000;
+export const SERVICE_RESTART_TIMEOUT_MS = SERVICE_RESTART_TIMEOUT_S * MS_PER_SECOND;
+
+/** How often a restarting fleet is re-listed while it comes up. */
+export const SERVICE_READY_POLL_MS = 2000;
 
 /** The states a platform reports for a declared service that is gone: docker's, then the pod phases. */
 export const DEAD_SERVICE_STATES: ReadonlySet<string> = new Set(['exited', 'dead', 'failed', 'succeeded']);
@@ -194,6 +213,14 @@ export interface Runner {
      * by `releaseServices` like run()'s fleet.
      */
     startServices(job: BoardJob): Promise<RunOutcome | null>;
+    /**
+     * Recreates the attempt's declared fleet from the recorded specs and waits until every
+     * service runs, up to SERVICE_RESTART_TIMEOUT_MS (issue #560). The loop calls it when a
+     * service is found dead before the declared gates: services are stateless fixtures, so a
+     * fleet the platform took away is put back rather than failing finished work. Throws when the
+     * fleet cannot be brought back; the message is the verdict's.
+     */
+    restartServices(job: BoardJob): Promise<void>;
     /** Stops a container mid-run. Used when the lease is lost, and on shutdown. */
     kill(job: BoardJob): Promise<void>;
     /**

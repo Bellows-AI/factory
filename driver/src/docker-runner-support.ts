@@ -5,19 +5,28 @@
  * setup, the runner's create and verdict, and the killed-job guards around the env-file write.
  */
 
-import { JOB_LABEL, LEASE_LABEL } from './labels.js';
+import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import { execFile, type spawn } from 'node:child_process';
 import type { writeFile, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import type { BoardJob } from './board.js';
 import { workspacePath, claimCarriesGithubToken } from './claim.js';
 import { type DriverConfig, executorImage } from './config.js';
-import { workspacesMountArgs, containerName, containerHardeningArgs, dockerArgs } from './docker.js';
+import {
+    workspacesMountArgs,
+    containerName,
+    containerHardeningArgs,
+    dockerArgs,
+    parseDockerServicePs,
+} from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
 import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import {
+    awaitServicesRunning,
+    declaredServiceSpecs,
+    serviceContainerName,
     readBellowsArgs,
     type ServiceSpec,
     collectServices,
@@ -103,14 +112,15 @@ export function linesOf(stdout: string): string[] {
 }
 
 /**
- * Docker's already-gone answer, in either of its spellings, on stderr or the execFile message.
+ * Docker's already-gone answer, in any of its spellings — an untyped `inspect` says `No such
+ * object` — on stderr or the execFile message.
  * Read from a REMOVAL's own error only — never from a list, where "not found" could never mean
  * anything.
  */
 export function alreadyGone(e: unknown): boolean {
     const err = e as { stderr?: string | Buffer; message?: string };
     const stderr = typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString('utf8') ?? '');
-    return /no such (container|network)|not found/i.test(`${stderr} ${err.message ?? ''}`);
+    return /no such (container|network|object)|not found/i.test(`${stderr} ${err.message ?? ''}`);
 }
 
 /** Lists names by label, or throws `${what}: <the daemon's own message>`. */
@@ -295,14 +305,20 @@ export async function dockerRunVerdict(
     // `docker start` (it exits 1 when the runtime cannot start the process) is a verdict unless
     // the daemon still holds the container as `created`.
     let started = true;
+    let infraLoss: string | null = null;
     if (code !== null && code !== 0) {
         try {
             const state = JSON.parse(
                 (await ctx.execDocker(['inspect', '--format', '{{json .State}}', containerName(ctx.job)])).stdout
             ) as { Status?: string };
             started = code === CONTAINER_GONE ? state.Status === 'exited' : state.Status !== 'created';
-        } catch {
+        } catch (e) {
             started = code !== CONTAINER_GONE;
+            // A container that ran and is gone before its own close was removed under the run —
+            // the driver's kill only kills (issue #560). Its exit is the removal's, not the agent's.
+            if (started && !ctx.timedOut && alreadyGone(e)) {
+                infraLoss = `the runner container was removed before it exited (exit ${code})`;
+            }
         }
     }
     await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
@@ -311,6 +327,7 @@ export async function dockerRunVerdict(
         output: ctx.output,
         timedOut: ctx.timedOut,
         started,
+        ...(infraLoss ? { infraLoss } : {}),
         cacheLost: ctx.cacheLost,
         // The artifact the loop uploads at close (issue #325); present only when the
         // accumulator actually ran — a refused start has no log and uploads nothing.
@@ -396,4 +413,44 @@ export async function startJobServices(
 ): Promise<RunOutcome | null> {
     const { refusal } = await setupJobServices(job, config, { ...deps, serviceTeardown });
     return refusal === null ? null : { exitCode: null, output: refusal, timedOut: false, started: true, refused: true };
+}
+
+/** The attempt's service fleet, exited ones included: the job and lease label pair, service key required. */
+export const servicePsArgs = (job: BoardJob): string[] => [
+    'ps',
+    '-a',
+    '--filter',
+    `label=${JOB_LABEL}=${job.id}`,
+    '--filter',
+    `label=${LEASE_LABEL}=${job.leaseToken}`,
+    '--filter',
+    `label=${SERVICE_LABEL}`,
+    '--format',
+    '{{json .}}',
+];
+
+/** The wait between re-listings of a restarting fleet. */
+const serviceWait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The pre-gate restart (issue #560): each recorded service's container removed and run again on
+ * the attempt's EXISTING network — never the whole teardown, which removes the network the gate
+ * containers join by name — then waited until every one runs. Every failure throws.
+ */
+export async function restartJobServices(
+    job: BoardJob,
+    execDocker: ExecDocker,
+    sleep: (ms: number) => Promise<void> = serviceWait
+): Promise<void> {
+    const specs = declaredServiceSpecs(job);
+    for (const spec of specs) {
+        await execDocker(['rm', '-f', serviceContainerName(job, spec.name)]).catch(() => undefined);
+        try {
+            await execDocker(serviceRunArgs(job, spec));
+        } catch (e) {
+            throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
+        }
+    }
+    const list = async () => parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
+    await awaitServicesRunning(specs, list, sleep);
 }

@@ -352,6 +352,8 @@ export interface K8sPod {
         /** The pod-level ending — `Evicted` and its message — when no container recorded one. */
         reason?: string;
         message?: string;
+        /** `DisruptionTarget` is the control plane's mark on a pod it is taking away (issue #560). */
+        conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
         containerStatuses?: {
             state?: {
                 terminated?: { exitCode?: number; reason?: string; message?: string };

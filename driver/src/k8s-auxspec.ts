@@ -283,7 +283,8 @@ export function helperJobSpec(config: DriverConfig, job: BoardJob, input: Helper
  * were already world-readable in the author's `.bellows.yaml`, and no secret of this process's
  * own ever reaches them — the same reasoning docker's `-e KEY=value` argv states.
  */
-const servicePodName = (job: BoardJob, name: string): string => `factory-job-${job.id}-${job.leaseToken}-svc-${name}`;
+export const servicePodName = (job: BoardJob, name: string): string =>
+    `factory-job-${job.id}-${job.leaseToken}-svc-${name}`;
 
 const SERVICE_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -472,6 +473,10 @@ export const jobPodsPath = (namespace: string, jobName: string): string =>
 /** One pod's log, tailed to `LOG_TAIL_LINES` by default — the full log when `tail` is null. */
 export const podLogPath = (namespace: string, pod: string, tail: number | null = LOG_TAIL_LINES): string =>
     `${podsPath(namespace)}/${pod}/log${tail !== null ? `?tailLines=${tail}` : ''}`;
+
+/** One object's events, by name: read for why a service pod vanished (issue #560). */
+export const eventsForPath = (namespace: string, name: string): string =>
+    `/api/v1/namespaces/${namespace}/events?fieldSelector=${encodeURIComponent(`involvedObject.name=${name}`)}`;
 
 export const secretsPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/secrets`;
 

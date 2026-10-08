@@ -33,7 +33,7 @@ import {
     postRefusal,
     refusal,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sPodList, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
 import { parseLastJsonLine, reclaimUnreadable, syncUnreadable } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 
@@ -248,10 +248,11 @@ export async function readJobPodVerdict(
     jobName: string,
     succeeded: boolean,
     what: string
-): Promise<{ exitCode: number | null; output: string }> {
+): Promise<{ exitCode: number | null; output: string; pods: K8sPod[] }> {
     const podsResponse = await readVerdict(deps, jobPodsPath(deps.config.k8sNamespace, jobName), what);
     expectOk(podsResponse, what);
-    const pod = livePod(podsResponse.body);
+    const pods = parse<K8sPodList>(podsResponse.body).items ?? [];
+    const pod = livePodOfItems(pods);
     const exitCode = pod?.status?.containerStatuses?.[0]?.state?.terminated?.exitCode ?? (succeeded ? 0 : null);
     let output = '';
     if (pod?.metadata?.name) {
@@ -263,7 +264,30 @@ export async function readJobPodVerdict(
         }
         if (log.status < HTTP_ERROR_STATUS) output = log.body;
     }
-    return { exitCode, output };
+    return { exitCode, output, pods };
+}
+
+/**
+ * Why a runner Job that failed inside its deadline was taken away rather than ended by its agent
+ * (issue #560), or null when its pod says the agent ended it: no live pod left (deleted, drained,
+ * its node removed), or one the kubelet evicted or the control plane marked a disruption target.
+ */
+export function runnerLossOf(pods: readonly K8sPod[]): string | null {
+    const live = livePodOfItems([...pods]);
+    const pod = live ?? pods[0];
+    const disruption = pod?.status?.conditions?.find((c) => c.type === 'DisruptionTarget' && c.status === 'True');
+    const evicted = pod?.status?.reason === 'Evicted';
+    const said = disruption
+        ? [disruption.reason, disruption.message]
+        : evicted
+          ? [pod?.status?.reason, pod?.status?.message]
+          : [];
+    const detail = said.filter(Boolean).join(': ');
+    if (live && !disruption && !evicted) return null;
+    const what = live
+        ? 'the runner pod was taken away before it exited'
+        : 'the runner pod was deleted before it exited';
+    return `${what} (${detail || 'evicted, drained or its node removed'})`;
 }
 
 /**
@@ -404,7 +428,13 @@ export async function readRunnerVerdict(
     deps: K8sDeps,
     job: BoardJob,
     jobSucceeded: boolean
-): Promise<{ exitCode: number | null; output: string; fullLog: string; logTruncated: boolean }> {
+): Promise<{
+    exitCode: number | null;
+    output: string;
+    fullLog: string;
+    logTruncated: boolean;
+    infraLoss: string | null;
+}> {
     const verdict = await readJobPodVerdict(deps, runnerName(job), jobSucceeded, 'listing the runner pods');
     // The tail for the verdict's output field, and the full log (issue #325) tail-kept at the
     // artifact cap for the loop's upload — both cut from the one pod log this read exists for.
@@ -414,6 +444,7 @@ export async function readRunnerVerdict(
         output: reportTail(verdict.output),
         fullLog: full.content,
         logTruncated: full.truncated,
+        infraLoss: jobSucceeded ? null : runnerLossOf(verdict.pods),
     };
 }
 

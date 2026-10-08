@@ -62,6 +62,11 @@ rules:
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']
+    # Why a declared service pod vanished mid-run (evicted, its node removed): its events outlive
+    # it, and the verdict quotes the newest. Listed by name, one read per vanished pod.
+    - apiGroups: ['']
+      resources: ['events']
+      verbs: ['list']
     # The runner vitals: `metrics.k8s.io` is served by the metrics-server a cluster may or may
     # not run — absent, the driver's sample read fails and the dashboard renders no vitals
     # (null is "no fresh sample", never an error); present, this grant is what makes the read.

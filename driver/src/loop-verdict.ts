@@ -9,7 +9,16 @@
 import type { Board, BoardJob, LeaseState, VerdictEvidence } from './board.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
-import { kindOf, ledgerOf, type Ledger, outputOf, publishEligible, statusOf } from './loop-ledger.js';
+import {
+    deadServiceNote,
+    kindOf,
+    ledgerOf,
+    type Ledger,
+    outputOf,
+    publishEligible,
+    servicesOnly,
+    statusOf,
+} from './loop-ledger.js';
 import type { LoopRuntime } from './loop-types.js';
 import { type PublishOptions, type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
@@ -20,8 +29,23 @@ import { timeoutNote } from './timeout-note.js';
  * Whether this attempt's ledger calls for a publish at all: succeeded, ungated or passed, publish
  * not disabled, and a runner that can push. The caller fences around the two halves below.
  */
-export function publishDue(rt: LoopRuntime, job: BoardJob, ledger: Ledger): boolean {
+function publishDue(rt: LoopRuntime, job: BoardJob, ledger: Ledger): boolean {
     return publishEligible(ledger) && job.publish !== false && Boolean(rt.runner.publishGit);
+}
+
+/**
+ * What this ledger publishes: the end-of-run publish, a draft of finished work the services alone
+ * failed — kept recoverable rather than stranded (issue #560) — or nothing.
+ */
+export function publishModeOf(rt: LoopRuntime, job: BoardJob, ledger: Ledger): 'publish' | 'draft' | null {
+    if (publishDue(rt, job, ledger)) return 'publish';
+    return servicesOnly(ledger) && job.publish !== false && rt.runner.publishGit ? 'draft' : null;
+}
+
+/** The push's options for `mode`, bound to `revision` when the policy named one; none for a plain publish. */
+export function publishOptionsOf(mode: 'publish' | 'draft', revision: string | null): PublishOptions | undefined {
+    if (mode === 'draft') return revision === null ? { draft: true } : { draft: true, revision };
+    return revision === null ? undefined : { revision };
 }
 
 /**
@@ -83,6 +107,8 @@ export interface FinishCtx {
     failure: GateFailure | null;
     /** The declared services found dead before the gates, which skipped them (issue #423). */
     deadServices: readonly DeadService[];
+    /** The services found dead before the gates and restarted for them (issue #560): noted, never faults. */
+    recoveredServices: readonly DeadService[];
     helperFailure: HelperFailureReport | null;
     published: PublishResult | null;
     /** When the run ended — the stamp the timeout note's ages are measured from. */
@@ -124,7 +150,8 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, ledger: Ledger): string
         // publisher that cannot see the tree at all.
         log(`job ${job.id}: nothing to publish: ${published.reason}`);
     }
-    return output + outputOf(ledger, finish.gatesSkipped);
+    const recovered = finish.recoveredServices.map((dead) => `\n[driver] ${deadServiceNote(dead, false, true)}`);
+    return output + recovered.join('') + outputOf(ledger, finish.gatesSkipped);
 }
 
 /** Reports the run's final verdict to the board, after settle() and any publish attempt. */

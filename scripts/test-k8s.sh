@@ -200,6 +200,10 @@ expect_contains     'the driver role lists pods, only to find them' "$rbac" "ver
 expect_contains     'the driver role names the service DNS objects' "$rbac" \
     "resources: ['services']
       verbs: ['create', 'delete', 'list']"
+# A vanished service pod's events name why it went: list only, by field selector.
+expect_contains     'the driver role reads why a service pod vanished' "$rbac" \
+    "resources: ['events']
+      verbs: ['list']"
 # Arbitrary exec into a running pod is the one escalation the design never needed: gates run as
 # Jobs this driver specs itself, never as exec calls into somebody else's container.
 expect_not_contains 'the driver role never execs into pods' "$rbac" 'pods/exec'
