@@ -1,5 +1,6 @@
 import type { AskedQuestion } from './board.js';
 import type { PublishRelay, PublishSlot } from './publish-control.js';
+import type { ReviewRelay, ReviewSlot } from './review-control.js';
 import { QUESTION_ID, validateQuestionReport } from './question-validation.js';
 
 /**
@@ -51,9 +52,16 @@ export interface ControlEntry {
     /** The draft-publication route's relay and in-flight flag (`publish-control.ts`). */
     publisher: PublishRelay | null;
     publishing: PublishSlot;
+    /** The reviewer routes' relay and in-flight flag (`review-control.ts`); null on a run that may not invoke one. */
+    reviewer: ReviewRelay | null;
+    reviewing: ReviewSlot;
 }
 
-export const newControl = (relay: QuestionRelay | null, publisher: PublishRelay | null = null): ControlEntry => ({
+export const newControl = (
+    relay: QuestionRelay | null,
+    publisher: PublishRelay | null = null,
+    reviewer: ReviewRelay | null = null
+): ControlEntry => ({
     stop: false,
     polled: false,
     questions: new Map(),
@@ -61,6 +69,8 @@ export const newControl = (relay: QuestionRelay | null, publisher: PublishRelay 
     relay,
     publisher,
     publishing: { running: false },
+    reviewer,
+    reviewing: { running: false },
 });
 
 export interface QuestionAnswer {

@@ -10,6 +10,7 @@ import type { EvidencePolicy } from './evidence-policy.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { exists, insertWorkflowSuccessor, runtimePatch, workspacePathFor } from './job-store-rows.js';
+import { stopReviewsOf } from './job-store-reviews.js';
 import type {
     JobStore,
     JobStoreContext,
@@ -337,6 +338,17 @@ export async function completeJob(
         const rootJobId = rows[0]!.root_job_id;
         const jobRepo = rows[0]!.repo;
         const stopPending = rows[0]!.stop_pending;
+
+        // The caller's verdict ends its separate reviews (issue #549): one still queued or running
+        // has nothing left to inform, so it is stopped rather than left to finish orphaned.
+        await stopReviewsOf(tx, { orgId, wallTick, stoppedBy: null }, [completedId]);
+        // A review is a thread nobody marks done: its own verdict is the end of it, so the stamp
+        // lands here and the thread aggregate below reads `done` — the driver is told to reclaim
+        // the review's worktree on this very answer instead of leaving it on the volume.
+        await tx`
+            update job set done_at = coalesce(done_at, now())
+            where org_id = ${orgId} and id = ${completedId} and review_of is not null
+        `;
 
         await maybeRecordPublicationAndClose(tx, ctx, { rootJobId, jobRepo, publication: publication ?? null });
 

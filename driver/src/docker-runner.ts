@@ -9,7 +9,6 @@ import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import {
     gitWorktreeRemoveScript,
     parseLastJsonLine,
-    probeTreeFingerprint,
     publishCheckout,
     type PublishOptions,
     publishFailed,
@@ -32,7 +31,8 @@ import {
     parseDockerStats,
     workspacesMountArgs,
 } from './docker.js';
-import { claimContinuesSession, envFileBody, workspacePath } from './claim.js';
+import { claimRestoresTree, envFileBody, runTimeoutMs, workspacePath } from './claim.js';
+import { treeSteps } from './review-snapshot.js';
 import {
     composeRuntimeSample,
     reportTail,
@@ -272,7 +272,7 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob, signal?: Abor
      * teardown half runs twice.
      */
     await dockerReclaimFence(deps, job);
-    const restore = claimContinuesSession(job);
+    const restore = claimRestoresTree(job);
     let file: string | null = null;
     if (!restore) {
         try {
@@ -670,7 +670,7 @@ async function dockerRun(
         child.stdout?.on('data', collect);
         child.stderr?.on('data', collect);
 
-        const deadline = deps.deadlines.start(job.leaseToken, config.jobTimeoutMs, () => {
+        const deadline = deps.deadlines.start(job.leaseToken, runTimeoutMs(config, job), () => {
             timedOut = true;
             void dockerKill(deps, job);
         });
@@ -773,10 +773,9 @@ export function createDockerRunner(
         syncCheckout: (job, signal) => dockerSyncCheckout(deps, job, signal),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
         publishGit: (job, publishToken, options) => dockerPublishGit(deps, job, publishToken, options),
-        // The probe needs no claim env: no env file is written for it. A stand-down kills the
-        // client; the read-only `--rm` probe container exits and is removed on its own.
-        probeTree: (job, signal) =>
-            probeTreeFingerprint(config, job, (step) => dockerPublishStep(deps, job, step, { envFile: null, signal })),
+        // The probe and the review snapshot need no claim env: no env file is written for them. A
+        // stand-down kills the client; the `--rm` container exits and is removed on its own.
+        ...treeSteps(config, (job, signal) => (step) => dockerPublishStep(deps, job, step, { envFile: null, signal })),
         runHelper: (job, plan, token, signal) => dockerRunHelper(deps, job, plan, { token, signal }),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),

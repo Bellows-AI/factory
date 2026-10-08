@@ -220,6 +220,10 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/question`, 'worker'],
     [`/api/jobs/${JOB_ID}/question-expire`, 'worker'],
     [`/api/jobs/${JOB_ID}/questions/${JOB_ID}/answer`, 'user'],
+    // A named reviewer's separate run (056, issue #549): the driver's request and its read of the
+    // verdict, both under the caller's lease — worker routes, never a person's or an org token's.
+    [`/api/jobs/${JOB_ID}/review`, 'worker'],
+    [`/api/jobs/${JOB_ID}/review-read`, 'worker'],
     // The thread read is a person's again: it carries commands, output and session ids of the
     // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
     // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the

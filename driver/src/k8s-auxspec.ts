@@ -1,7 +1,7 @@
 import { FLEET_LABEL, JOB_LABEL, LEASE_LABEL, SERVICE_LABEL, UNHARDENED_LABEL } from './labels.js';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
-import { claimCarriesGithubToken, claimContinuesSession, workspacePath } from './claim.js';
+import { claimCarriesGithubToken, claimRestoresTree, workspacePath } from './claim.js';
 import { HELPER_TIMEOUT_MS, helperInputValue } from './helpers.js';
 import type { HelperDescriptor, HelperPlan } from './helpers.js';
 import {
@@ -91,13 +91,16 @@ export function syncJobSpec(config: DriverConfig, job: BoardJob, envSecret: stri
                 // Restore mode, as a literal: a claim that continues a session (a follow-up)
                 // keeps the tree exactly as the run before it left it — no
                 // fetch, no rebase, nothing that touches the remote (issue #58).
-                ...(claimContinuesSession(job) ? [{ name: 'RESTORE', value: '1' }] : []),
+                ...(claimRestoresTree(job) ? [{ name: 'RESTORE', value: '1' }] : []),
+                // A named reviewer's tree starts at the snapshot ref its caller froze (issue #549):
+                // a ref name, never a credential — the same literal class as the paths above.
+                ...(job.reviewRun ? [{ name: 'REVIEW_REF', value: job.reviewRun.ref }] : []),
                 // The fetch's credential helper CODE — a literal that is code, the same class as
                 // the three path literals above (the pin on literal credentials stays intact).
                 // Only when the claim env carries the token the helper reads; the token itself
                 // travels the Secret below, which git's spawned helper reads from the pod's
                 // environment. A restore fetches nothing, so it never carries one.
-                ...(!claimContinuesSession(job) && claimCarriesGithubToken(job)
+                ...(!claimRestoresTree(job) && claimCarriesGithubToken(job)
                     ? [{ name: 'CRED_HELPER', value: CREDENTIAL_HELPER }]
                     : []),
             ],

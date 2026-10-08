@@ -7,6 +7,7 @@
  */
 
 import type { Board, BoardJob, LeaseState, VerdictEvidence } from './board.js';
+import { runTimeoutMs } from './claim.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import {
@@ -135,7 +136,7 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, ledger: Ledger): string
     const { config, log } = rt;
     let output = outcome.timedOut
         ? `${outcome.output}\n${timeoutNote(
-              config.jobTimeoutMs + finish.deadlineExtensionMs,
+              runTimeoutMs(config, job) + finish.deadlineExtensionMs,
               finish.activity,
               finish.gateRuns,
               finish.endedAt

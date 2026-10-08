@@ -19,6 +19,11 @@
 //                 is a named refusal, never a recreation: a resumed job must never run in
 //                 the wrong checkout. No credential helper is
 //                 needed, because nothing here talks to the remote.
+//   REVIEW_REF  — optional, RESTORE only, set for a named reviewer's claim (issue #549): the ref of
+//                 the snapshot its worktree starts from. A review has no session and no earlier
+//                 tree, so where a follow-up would find its branch, a review's worktree is created
+//                 on its own branch AT this ref — still with no fetch and no rebase, because
+//                 nothing a reviewer needs is on the remote.
 //   CRED_HELPER — optional, STARTING claims only: the git credential-helper program the fetch
 //                 runs (`-c credential.helper=`), set only when the claim env carries a
 //                 NON-EMPTY GITHUB_TOKEN. The token itself still arrives only via the
@@ -66,6 +71,7 @@ const repo = process.env.REPO;
 const wt = process.env.WORKTREE;
 const branch = process.env.BRANCH;
 const restore = process.env.RESTORE === '1';
+const reviewRef = process.env.REVIEW_REF;
 const GIT_ERROR_MAX_LENGTH = 200;
 const SYNC_ERROR_MAX_LENGTH = 300;
 const FACTORY_STATE_EXCLUDE = '/.factory/';
@@ -400,7 +406,26 @@ try {
         fs.rmSync(wt, { recursive: true, force: true });
         git('worktree', 'prune');
         try {
-            git('worktree', 'add', wt, branch);
+            try {
+                git('worktree', 'add', wt, branch);
+            } catch (e) {
+                // A named reviewer's first attempt has no branch yet: it starts at its snapshot.
+                if (!reviewRef) throw e;
+                try {
+                    git('worktree', 'add', '-b', branch, wt, reviewRef);
+                } catch (snapshotError) {
+                    fail(
+                        'the review snapshot ' +
+                            reviewRef +
+                            ' could not be checked out: ' +
+                            String((snapshotError && snapshotError.stderr) || snapshotError).slice(
+                                0,
+                                GIT_ERROR_MAX_LENGTH
+                            )
+                    );
+                    process.exit(0);
+                }
+            }
         } catch (e) {
             fail(
                 'the task branch ' +

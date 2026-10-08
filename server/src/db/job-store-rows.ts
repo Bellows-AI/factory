@@ -280,6 +280,55 @@ export function hasRunningMember(members: { status: JobStatus }[]): boolean {
 }
 
 /**
+ * The Stop statement over the live rows `where` selects (a fragment over the `job` table), shared
+ * by a member's Stop of one row and the cancellation of a caller's reviews (issue #549) — one
+ * rule for what a stop does to a queued, a leased and an expired-lease row. `stopJob` explains it.
+ */
+export function stopRows(
+    sql: Sql | TransactionSql,
+    stop: { orgId: string; wallTick: Fragment; stoppedBy: string | null; where: Fragment }
+) {
+    const { orgId, wallTick, stoppedBy, where } = stop;
+    return sql<{ id: string; status: JobStatus; cancel_requested_at: Date | null; root_job_id: string }[]>`
+        update job set
+            status = case
+                when status = 'queued' then 'stopped'
+                when status = 'running' and lease_expires_at <= now() then 'stopped'
+                else status
+            end,
+            finished_at = case
+                when status = 'queued' then now()
+                when status = 'running' and lease_expires_at <= now() then now()
+                else finished_at
+            end,
+            wall_clock_ms = case
+                when status = 'running' and lease_expires_at <= now() then ${wallTick}
+                else wall_clock_ms
+            end,
+            attempts = case
+                when status = 'running' and lease_expires_at <= now() then greatest(attempts - 1, 0)
+                else attempts
+            end,
+            lease_token = case
+                when status = 'running' and lease_expires_at <= now() then null
+                else lease_token
+            end,
+            lease_expires_at = case
+                when status = 'running' and lease_expires_at <= now() then now()
+                else lease_expires_at
+            end,
+            cancel_requested_at = case
+                when status = 'running' and lease_expires_at > now() then coalesce(cancel_requested_at, now())
+                else null
+            end,
+            stopped_by = coalesce(stopped_by, ${stoppedBy})
+        where org_id = ${orgId} and ${where}
+          and status in ('queued','running')
+        returning id, status, cancel_requested_at, root_job_id
+    `;
+}
+
+/**
  * `markDone`'s second half, shared by every closure that frees a thread's tree (done, remove's
  * refusal-free sibling, the merge closure's settle points, issue #390): if this settle just made
  * the whole thread terminal, queue its worktree reclaim. The thread is one indexed read off the
