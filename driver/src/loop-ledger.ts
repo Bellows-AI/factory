@@ -48,7 +48,11 @@ export const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
 const BLOCKED_TAIL_LINES = 20;
 const BLOCKED_REASON_MAX_CHARS = 300;
 
-const blockedText = (rest: string): string => rest.trim().slice(0, BLOCKED_REASON_MAX_CHARS) || 'no reason given';
+/** `FACTORY_BLOCKED: none …` — an agent that prints the marker to say it is NOT blocked. */
+const NOT_BLOCKED = /^none\b/i;
+
+const blockedText = (rest: string): string | null =>
+    NOT_BLOCKED.test(rest.trim()) ? null : rest.trim().slice(0, BLOCKED_REASON_MAX_CHARS) || 'no reason given';
 
 /**
  * The reason the agent reported it is blocked, or null. A close-time read that found the final

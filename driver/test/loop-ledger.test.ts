@@ -162,6 +162,15 @@ describe('the fault ledger', () => {
         expect(agentFaults(outcome({ blockedLine: '   ' }))[0]?.note).toContain('no reason given');
     });
 
+    it('reads a "none" marker as not blocked, on either path', () => {
+        expect(agentFaults(outcome({ blockedLine: 'none — work complete and committed locally' }))).toEqual([]);
+        expect(agentFaults(outcome({ blockedLine: 'None.' }))).toEqual([]);
+        expect(agentFaults(outcome({ output: 'done\nFACTORY_BLOCKED: none' }))).toEqual([]);
+        expect(agentFaults(outcome({ blockedLine: 'nonexistent Jira ticket' }))[0]?.note).toBe(
+            'the agent reported it is blocked: nonexistent Jira ticket'
+        );
+    });
+
     it('places the gates-skipped line after the last skipping fault', () => {
         const ledger = ledgerOf(merge(SINGLE.blocked, SINGLE.helper));
         const lines = outputOf(ledger, 'the agent reported it is blocked').split('\n[driver] ').slice(1);
