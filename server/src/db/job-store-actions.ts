@@ -525,6 +525,48 @@ export async function suspendJob(
     return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
 }
 
+/**
+ * How long a pre-run claim handed back for checkout contention waits before it is claimable again
+ * (issue #559): long enough that a contended clone is not hammered, short enough that the job
+ * starts well before the lease it would otherwise have waited out.
+ */
+export const REQUEUE_DELAY_SECONDS = 15;
+
+export async function requeueJob(
+    ctx: JobStoreContext,
+    id: string,
+    leaseToken: string
+): ReturnType<JobStore['requeue']> {
+    const { sql, orgId } = ctx;
+    // One lease-guarded update, so a replacement claim (a new token) and a removal (no row) both
+    // win by construction. A queued row's lease_expires_at is its claimability (006), so the
+    // deferral is that column set into the future. A Stop already stamped on the row wins over
+    // the requeue: the row settles stopped, never queued again. Either way no agent ran: the
+    // attempt is handed back, nothing banks to the wall clock, and the command stays undelivered.
+    const rows = await sql<{ status: JobStatus; root_job_id: string }[]>`
+        update job set
+            status           = case when cancel_requested_at is null then 'queued' else 'stopped' end,
+            finished_at      = case when cancel_requested_at is null then finished_at else now() end,
+            started_at       = null,
+            lease_token      = null,
+            lease_expires_at = case
+                when cancel_requested_at is null then now() + make_interval(secs => ${REQUEUE_DELAY_SECONDS}::int)
+                else now()
+            end,
+            cancel_requested_at = null,
+            attempts         = greatest(attempts - 1, 0)
+        where org_id = ${orgId} and id = ${id}
+          and status = 'running' and lease_token = ${leaseToken}
+        returning status, root_job_id
+    `;
+    const row = rows[0];
+    if (row) {
+        if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id);
+        return { result: 'ok', status: row.status };
+    }
+    return (await exists(sql, orgId, id)) ? ({ result: 'lost' } as const) : ({ result: 'missing' } as const);
+}
+
 export async function removeJobThread(
     ctx: JobStoreContext,
     id: string,

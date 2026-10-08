@@ -87,11 +87,13 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     expectOk(get, 'reading the checkout claim');
     const claim = parse<K8sClaim>(get.body);
     if (claim.data?.holder === job.leaseToken) return 'ours';
-    const attempt = Number(claim.data?.attempt);
-    if (Number.isFinite(attempt) && attempt >= job.attempts) {
+    // Ordered by the claim sequence, never by `attempts`: a stop or a contention requeue refunds
+    // an attempt, and a replacement must still read as newer than every claim before it.
+    const claimSeq = Number(claim.data?.claimSeq);
+    if (Number.isFinite(claimSeq) && claimSeq >= job.claimSeq) {
         throw new Error(
-            `job ${job.id} stands down: the checkout claim is held by a newer attempt ` +
-                `(${claim.data?.attempt} >= ${job.attempts})`
+            `job ${job.id} stands down: the checkout claim is held by a newer claim ` +
+                `(${claim.data?.claimSeq} >= ${job.claimSeq})`
         );
     }
     const uid = claim.metadata?.uid;

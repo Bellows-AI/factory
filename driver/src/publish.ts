@@ -159,8 +159,8 @@ export interface SyncResult {
  * contention on the shared checkout (issue #307): a wait-out on the checkout's `factory-sync.lock`
  * until its wait bound, or a fetch that kept losing the refs' locks to a concurrent git past its
  * retries. Both are transient by nature — a re-claim starts the same sync over, usually against
- * refs that are current by then — so the loop reads this as infrastructure and leaves the job to
- * its lease, spending an attempt at the next claim, never as a verdict on the command. Anchored
+ * refs that are current by then — so the loop reads this as infrastructure and hands the claim
+ * back to the board, its attempt refunded (issue #559), never as a verdict on the command. Anchored
  * at the head ON PURPOSE: ordinary refusal reasons splice raw git stderr, whose conflicting file
  * paths are member-controlled content, and an unanchored match would misroute a terminal
  * conflict into the retry path. The literal lives in the script too (a .cjs cannot import it),
@@ -186,7 +186,7 @@ export interface ReclaimResult {
      * the board proves the holder job gone or terminal, to have the runner reap it instead of
      * retrying the same refusal forever.
      */
-    heldClaim?: { name: string; attempt: string | null; createdMs: number | null };
+    heldClaim?: { name: string; claimSeq: string | null; createdMs: number | null };
 }
 
 /**

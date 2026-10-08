@@ -7,6 +7,7 @@ const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix it',
     attempts: 3,
+    claimSeq: 3,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-09-30T12:05:00.000Z',
     executorType: 'claude-code',

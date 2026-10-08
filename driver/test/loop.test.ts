@@ -41,6 +41,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     id: `0000000${n}-1111-4111-8111-111111111111`,
     command: `job ${n}`,
     attempts: 1,
+    claimSeq: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
@@ -68,6 +69,8 @@ interface BoardStub extends Board {
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
+    /** The pre-run claims the loop handed back for checkout contention (issue #559). */
+    requeued: string[];
     beats: number;
     gatesReported: {
         id: string;
@@ -128,6 +131,7 @@ function stubBoard(
         sessions: [],
         progressed: [],
         suspended: [],
+        requeued: [],
         beats: 0,
         gatesReported: [],
         gatesReread: 0,
@@ -153,6 +157,10 @@ function stubBoard(
         },
         async suspend(claimed) {
             board.suspended.push(claimed.id);
+            return 'held';
+        },
+        async requeue(claimed) {
+            board.requeued.push(claimed.id);
             return 'held';
         },
         async session(claimed, sessionId) {
@@ -1324,6 +1332,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]?.status).toBe('failed');
+        expect(board.board.requeued).toEqual([]);
         expect(runner.synced).toHaveLength(1);
         expect(runner.reclaimed).toEqual([repoJob]);
     });
@@ -1935,6 +1944,7 @@ describe('the poll loop', () => {
                 id: root,
                 command: '',
                 attempts: 1,
+                claimSeq: 1,
                 leaseToken: rowId,
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 resumeSessionId: null,
@@ -2045,13 +2055,13 @@ describe('the poll loop', () => {
         };
         const heldClaim = {
             name: `factory-job-${root}-claim`,
-            attempt: '3',
+            claimSeq: '3',
             createdMs: Date.now() - 120_000,
         };
         const heldRefusal = (): ReclaimResult => ({
             ok: false,
             removed: false,
-            reason: `the checkout is held (/workspaces/bellows/${USER}/.worktrees/${root}): job ${root} stands down: the checkout claim is held by a newer attempt (3 >= 1)`,
+            reason: `the checkout is held (/workspaces/bellows/${USER}/.worktrees/${root}): job ${root} stands down: the checkout claim is held by a newer claim (3 >= 1)`,
             heldClaim,
         });
 
@@ -2081,7 +2091,7 @@ describe('the poll loop', () => {
             expect(board.board.reclaimAcks).toEqual([rowId]);
             const orphan = logs.find((m) => m.includes('orphaned'));
             expect(orphan).toContain(heldClaim.name);
-            expect(orphan).toContain('attempt 3');
+            expect(orphan).toContain('claim 3');
             expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(false);
         });
 
@@ -2258,7 +2268,7 @@ describe('the poll loop', () => {
             const changed: ReclaimResult = {
                 ...same,
                 reason: 'the checkout is held (/workspaces/x): a different holder now',
-                heldClaim: { ...heldClaim, attempt: '4' },
+                heldClaim: { ...heldClaim, claimSeq: '4' },
             };
             // The same row, re-offered three times with the same refusal, then once more after
             // the reason changed — five minutes a poll for a day, in the wild. (idleBeforeStop
@@ -2336,7 +2346,7 @@ describe('the poll loop', () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok());
         runner.syncCheckout = async () => {
-            throw new Error('job 1 stands down: the checkout claim is held by a newer attempt (3 >= 2)');
+            throw new Error('job 1 stands down: the checkout claim is held by a newer claim (3 >= 2)');
         };
 
         await drive({ ...board, runner });
@@ -2345,23 +2355,53 @@ describe('the poll loop', () => {
     });
 
     // Issue #307: lock contention on the shared checkout is infrastructure, not a verdict. The
-    // script's marker (`transient worktree sync:` — a wait-out on the checkout's sync lock, or a
-    // fetch that kept losing the refs' locks to a concurrent git) sends the claim back to the
-    // board instead of failing the run: an attempt is spent at the next claim, so maxAttempts
-    // governs. The non-transient refusal below keeps reporting `failed`.
-    it('leaves a job to its lease when the sync reports a transient lock failure', async () => {
+    // script's marker (`transient worktree sync:` — another driver holding the checkout's sync
+    // lock, or a fetch that kept losing the refs' locks to a concurrent git) hands the claim back
+    // to the board at once (issue #559): no verdict, no lease wait, and the board refunds the
+    // attempt. The non-transient refusal below keeps reporting `failed`.
+    it('requeues a job when the sync reports transient checkout contention', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok(), {
             sync: {
                 ok: false,
                 reason:
                     'transient worktree sync: the checkout lock /workspaces/bellows/x/factory/.git/factory-sync.lock ' +
-                    'is still held after 120000ms — a concurrent sync of this clone is running; the claim should be retried',
+                    'is still held after 20000ms — a concurrent sync of this clone is running; the claim should be retried',
             },
         });
 
         await drive({ ...board, runner });
 
+        expect(board.board.requeued).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+    });
+
+    it('retries a requeue the board did not accept, rather than fall back to the lease', async () => {
+        const board = stubBoard([job(1)]);
+        let refusals = 1;
+        board.board.requeue = async (claimed) => {
+            if (refusals-- > 0) throw new Error('board answered 503');
+            board.board.requeued.push(claimed.id);
+            return 'held';
+        };
+        const runner = stubRunner(async () => ok(), {
+            sync: { ok: false, reason: 'transient worktree sync: the fetch kept losing the refs’ locks' },
+        });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.requeued).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
+    it('requeues only classified contention — a sync that threw is still left to its lease', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok(), { syncError: new Error('daemon went away') });
+
+        await drive({ ...board, runner });
+
+        expect(board.board.requeued).toEqual([]);
         expect(board.board.completed).toEqual([]);
     });
 
@@ -5421,4 +5461,99 @@ describe('revision-bound evidence', () => {
         const { completed } = await driveWith({ ...gatedJob(1), policy: { gates: true } }, { publish: stale });
         expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
     });
+});
+
+describe('startup syncs of one clone (issue #559)', () => {
+    const repoJob = (n: number, repo = 'Bellows-AI/factory'): BoardJob => ({ ...job(n), repo });
+
+    /** Makes every sync take `ms`, recording the most syncs in flight at once, per clone and overall. */
+    function timedSyncs(runner: ReturnType<typeof stubRunner>, ms: number) {
+        const inFlight = new Map<string, number>();
+        const peak = new Map<string, number>();
+        const bump = (key: string, by: number) => {
+            const now = (inFlight.get(key) ?? 0) + by;
+            inFlight.set(key, now);
+            peak.set(key, Math.max(peak.get(key) ?? 0, now));
+        };
+        runner.syncCheckout = async (claimed) => {
+            runner.synced.push(claimed);
+            bump(claimed.repo ?? '', 1);
+            bump('*', 1);
+            await new Promise((resolve) => setTimeout(resolve, ms));
+            bump(claimed.repo ?? '', -1);
+            bump('*', -1);
+            return { ok: true, reason: null };
+        };
+        return peak;
+    }
+
+    it('syncs three claims on one clone one at a time, and each reaches its run on the attempt it was claimed with', async () => {
+        const board = stubBoard([repoJob(1), repoJob(2), repoJob(3)]);
+        const ran: BoardJob[] = [];
+        const runner = stubRunner(async (claimed) => {
+            ran.push(claimed);
+            return ok();
+        });
+        const peak = timedSyncs(runner, 20);
+
+        await drive({ ...board, runner }, { DRIVER_CONCURRENCY: '3' });
+
+        expect(peak.get('Bellows-AI/factory')).toBe(1);
+        expect(ran.map((r) => r.id).sort()).toEqual([1, 2, 3].map((n) => job(n).id).sort());
+        expect(ran.every((r) => r.attempts === 1)).toBe(true);
+        expect(board.board.requeued).toEqual([]);
+        expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded', 'succeeded', 'succeeded']);
+    });
+
+    it('syncs different clones side by side', async () => {
+        const board = stubBoard([repoJob(1, 'Bellows-AI/factory'), repoJob(2, 'Bellows-AI/stats')]);
+        const runner = stubRunner(async () => ok());
+        const peak = timedSyncs(runner, 20);
+
+        await drive({ ...board, runner }, { DRIVER_CONCURRENCY: '2' });
+
+        expect(peak.get('*')).toBe(2);
+        expect(board.board.completed).toHaveLength(2);
+    });
+
+    it.each([
+        ['a Stop', { result: 'held', cancelRequested: true } as HeartbeatVerdict, [job(2).id]],
+        ['a lost lease', 'lost' as HeartbeatVerdict, []],
+        ['a Remove', 'removed' as HeartbeatVerdict, []],
+    ] as const)(
+        'lets %s interrupt a sibling queued behind a long sync, which never syncs',
+        async (_what, verdict, parked) => {
+            const board = stubBoard([repoJob(1), repoJob(2)]);
+            // The verdict reaches the sibling only after a few beats — long after it would have
+            // started its own sync had nothing queued it.
+            let siblingBeats = 0;
+            board.board.heartbeat = async (claimed) => {
+                board.board.beats += 1;
+                if (claimed.id === job(2).id && ++siblingBeats > 3) return verdict;
+                return { result: 'held', cancelRequested: false };
+            };
+            let finishFirst: () => void = () => {};
+            const firstSync = new Promise<void>((resolve) => {
+                finishFirst = resolve;
+            });
+            const runner = stubRunner(async () => ok());
+            runner.syncCheckout = async (claimed) => {
+                runner.synced.push(claimed);
+                await firstSync;
+                return { ok: true, reason: null };
+            };
+
+            const started = drive({ ...board, runner }, { DRIVER_CONCURRENCY: '2' });
+            for (let i = 0; i < 200 && !runner.killed.includes(job(2).id); i += 1) await sleep();
+            // The queued sibling stood down while the first sync still held the clone.
+            expect(runner.killed).toContain(job(2).id);
+            finishFirst();
+            await started;
+
+            expect(runner.synced.map((s) => s.id)).toEqual([job(1).id]);
+            expect(board.board.suspended).toEqual(parked);
+            expect(board.board.requeued).toEqual([]);
+            expect(board.board.completed.map((c) => c.id)).toEqual([job(1).id]);
+        }
+    );
 });

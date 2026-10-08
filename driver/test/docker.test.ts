@@ -67,6 +67,7 @@ const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
     attempts: 1,
+    claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
@@ -4008,6 +4009,32 @@ describe('publishing the produced work', () => {
             ok: false,
             reason: 'the worktree sync answered nothing readable: exit 0, last log line "fatal: could not read from remote repository"',
         });
+    });
+
+    // Issue #559: the contention verdict reaches the loop unchanged — the anchored marker is what
+    // hands the claim back to the board — and the sync never shortens the script's lock wait.
+    it('passes checkout contention through as the transient reason, with the shipped lock wait', async () => {
+        const reason =
+            'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';
+        const runs: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                runs.push(args);
+                return { stdout: `${JSON.stringify({ ok: false, reason })}\n` };
+            }
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+
+        const result = await runner.syncCheckout(repoJob);
+
+        expect(result).toMatchObject({ ok: false, reason });
+        expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(true);
+        expect(runs.flat().some((arg) => arg.startsWith('SYNC_LOCK_WAIT_MS'))).toBe(false);
     });
 
     it('says the sync container printed nothing when its stdout is empty', async () => {

@@ -23,6 +23,7 @@ const JOB = (lease: string): BoardJob => ({
     id: '55555555-5555-4555-8555-555555555555',
     command: 'fix the failing build',
     attempts: 1,
+    claimSeq: 1,
     leaseToken: lease,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',

@@ -499,7 +499,7 @@ async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['h
     const created = claim.metadata?.creationTimestamp ? Date.parse(claim.metadata.creationTimestamp) : NaN;
     return {
         name: claimName(job),
-        attempt: claim.data?.attempt ?? null,
+        claimSeq: claim.data?.claimSeq ?? null,
         createdMs: Number.isFinite(created) ? created : null,
     };
 }

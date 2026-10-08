@@ -481,6 +481,30 @@ export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, 
     return reply.code(HTTP_OK).send({ id, status: result.value.status });
 }
 
+// Handing a pre-run claim back after checkout contention (issue #559): no agent ran, so there is
+// no outcome to report — the board requeues the row with its attempt refunded, or settles it
+// stopped when a Stop got there first, and the answer carries which.
+export async function handleRequeue(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const { leaseToken } = body(request.body);
+    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
+    }
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job requeue failed'),
+        () => store.requeue(id, leaseToken)
+    );
+    if (!result.ok) return reply;
+    if (result.value.result === 'missing') return notFoundJob(reply);
+    if (result.value.result === 'lost') return leaseLost(reply);
+    return reply.code(HTTP_OK).send({ id, status: result.value.status });
+}
+
 /*
  * The orphan reaper's one board route (issue #301): a batched "what does the board think of these
  * job ids" — each known id's status and CURRENT lease, absent for the ids it does not know. The

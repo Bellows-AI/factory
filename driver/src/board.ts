@@ -28,6 +28,11 @@ export interface BoardJob {
     id: string;
     command: string;
     attempts: number;
+    /**
+     * The board's claim sequence for this row: bumped by every claim and never refunded, unlike
+     * `attempts` (issue #559). What the kubernetes checkout claim orders contenders by.
+     */
+    claimSeq: number;
     leaseToken: string;
     leaseExpiresAt: string;
     /**
@@ -445,6 +450,12 @@ export interface Board {
     publishToken(job: BoardJob): Promise<string | null>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
+    /**
+     * Hands a pre-run claim back after checkout contention (issue #559): the board requeues it with
+     * its attempt refunded and its next claim deferred — or settles it stopped when a Stop got
+     * there first. `lost` when the lease is no longer this attempt's.
+     */
+    requeue(job: BoardJob): Promise<LeaseState>;
     /**
      * Asks the board what it thinks of a batch of job ids (issue #301): each known id's status
      * and CURRENT lease token. Unknown ids are ABSENT from the answer — that absence is the
@@ -871,6 +882,12 @@ export function createBoard({
 
         async suspend(job) {
             const response = await post(`/api/jobs/${job.id}/suspend`, { leaseToken: job.leaseToken });
+            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
+        },
+
+        async requeue(job) {
+            // 404: the thread was removed behind the requeue — nothing left to hand back.
+            const response = await post(`/api/jobs/${job.id}/requeue`, { leaseToken: job.leaseToken }, true);
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 

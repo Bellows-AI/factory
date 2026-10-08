@@ -217,3 +217,21 @@ describe.skipIf(!hasGit())('the worktree sync lock', () => {
         expect(existsSync(strayLock)).toBe(false);
     });
 });
+
+/**
+ * Issue #559: a driver's own syncs of one clone queue in the driver (sync-queue.ts), so the lock
+ * the script still meets is another driver's — and the contender must hand its claim back within
+ * 30 seconds of meeting it, not sit out a two-minute wait. Pinned on the shipped bytes: the
+ * driver never sets SYNC_LOCK_WAIT_MS, so the default IS the production bound.
+ */
+describe('the shipped checkout-lock wait', () => {
+    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'scripts', 'git-worktree.cjs'), 'utf8');
+    const constant = (name: string) => Number(new RegExp(`const ${name} = (\\d+);`).exec(source)?.[1]);
+
+    it('gives the claim back well inside 30 seconds of meeting another driver’s lock', () => {
+        const wait = constant('DEFAULT_SYNC_LOCK_WAIT_MS');
+        const retries = (constant('SYNC_FETCH_ATTEMPTS') - 1) * constant('SYNC_FETCH_BACKOFF_MS');
+        expect(wait).toBeGreaterThan(0);
+        expect(wait + retries).toBeLessThanOrEqual(25_000);
+    });
+});

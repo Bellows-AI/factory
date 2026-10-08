@@ -53,6 +53,7 @@ const JOB: BoardJob = {
     id: '55555555-5555-4555-8555-555555555555',
     command: 'fix the failing build',
     attempts: 1,
+    claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',

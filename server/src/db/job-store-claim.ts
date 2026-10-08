@@ -34,6 +34,7 @@ export interface ClaimCandidateRow {
     id: string;
     command: string;
     attempts: number;
+    claim_seq: string;
     lease_token: string;
     lease_expires_at: Date;
     created_by: string | null;
@@ -192,6 +193,7 @@ async function claimNextCandidate(
                     id: string;
                     command: string;
                     attempts: number;
+                    claim_seq: string;
                     lease_token: string;
                     lease_expires_at: Date;
                     created_by: string | null;
@@ -217,6 +219,8 @@ async function claimNextCandidate(
                     claimed_by       = ${worker},
                     lease_token      = gen_random_uuid(),
                     attempts         = attempts + 1,
+                    -- Never refunded (057): what orders this claim after every earlier one.
+                    claim_seq        = claim_seq + 1,
                     -- Unconditional, not coalesce(started_at, now()): this must describe the
                     -- attempt that is about to run, or every duration is measured from attempt 1.
                     started_at       = now(),
@@ -259,7 +263,7 @@ async function claimNextCandidate(
                 -- least once with its command in the transcript". A fresh or crashed follow-up has
                 -- never been parked, so its command still has to go out; a suspended one settles
                 -- stopped, and is never claimed again.
-                returning id, command, attempts, lease_token, lease_expires_at, created_by,
+                returning id, command, attempts, claim_seq, lease_token, lease_expires_at, created_by,
                           session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                           review_of, review_spec, review_ref,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
@@ -726,6 +730,7 @@ export function buildClaimResult(
         id: row.id,
         command: row.command,
         attempts: row.attempts,
+        claimSeq: Number(row.claim_seq),
         leaseToken: row.lease_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,

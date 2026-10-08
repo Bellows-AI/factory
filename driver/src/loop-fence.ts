@@ -6,6 +6,7 @@
  */
 
 import { down } from './loop-attempt.js';
+import { withBoardRetry } from './board-retry.js';
 import type { BoardJob } from './board.js';
 import type { SyncResult } from './publish.js';
 import type { AttemptCtx, LoopRuntime, SetupHalt } from './loop-types.js';
@@ -69,7 +70,7 @@ export async function standDown(ctx: AttemptCtx, phase: string, beforePark?: () 
 
 /**
  * The ONE setup conclusion: the claim goes back, the attempt settles, the line is said, the verdict
- * is reported — in that order, because a replacement claimant may start the moment the job is
+ * is reported (or the claim requeued) — in that order, because a replacement claimant may start the moment the job is
  * completed (issue #469).
  */
 export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<void> {
@@ -78,6 +79,15 @@ export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<v
     await ctx.settle();
     rt.log(`job ${job.id}: ${halt.log}`);
     if (halt.halt === 'leave') return;
+    if (halt.halt === 'requeue') {
+        // A refused requeue (a lost lease, a stop that won the race) leaves the board's answer
+        // standing; retried like a verdict, and one that still fails leaves the job to its lease,
+        // exactly like `leave`.
+        await withBoardRetry(rt, `job ${job.id}: the requeue was not accepted`, () => rt.board.requeue(job)).catch(
+            (e: Error) => rt.log(`job ${job.id}: could not requeue: ${e.message}`)
+        );
+        return;
+    }
     const what = halt.halt === 'concluded' ? 'conclusion' : 'failure';
     await report(rt, job, halt.verdict).catch((e: Error) =>
         rt.log(`job ${job.id}: could not report the ${what}: ${e.message}`)

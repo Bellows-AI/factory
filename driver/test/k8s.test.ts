@@ -53,7 +53,13 @@ import {
 } from '../src/k8s-auxspec.js';
 import { createKubernetesGateManager } from '../src/k8s-gates.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
-import { CREDENTIAL_HELPER, gitProbeScript, gitWorktreeRemoveScript, gitWorktreeScript } from '../src/publish.js';
+import {
+    CREDENTIAL_HELPER,
+    gitProbeScript,
+    gitWorktreeRemoveScript,
+    gitWorktreeScript,
+    TRANSIENT_SYNC_REASON,
+} from '../src/publish.js';
 import type { ServiceSpec } from '../src/services.js';
 import { bellowsService, bellowsTree } from './fixtures/bellows-tree.js';
 
@@ -68,6 +74,7 @@ const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
     attempts: 1,
+    claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
@@ -1098,17 +1105,17 @@ const claimPathFor = (id: string): string => `${configmapsPath}/factory-job-${id
  * exactly the three apiserver properties the acquire/takeover/release protocol rests on.
  */
 const claimServer = () => {
-    const claims = new Map<string, { uid: string; holder: string; attempt: string; created: string }>();
+    const claims = new Map<string, { uid: string; holder: string; claimSeq: string; created: string }>();
     let uids = 0;
     return (method: K8sMethod, path: string, body: unknown): K8sResponse | undefined => {
         if (method === 'POST' && path === configmapsPath) {
-            const b = body as { metadata?: { name?: string }; data?: { holder?: string; attempt?: string } };
+            const b = body as { metadata?: { name?: string }; data?: { holder?: string; claimSeq?: string } };
             const name = b.metadata?.name ?? '';
             if (claims.has(name)) return { status: 409, body: '{"reason":"AlreadyExists"}' };
             claims.set(name, {
                 uid: `claim-uid-${++uids}`,
                 holder: b.data?.holder ?? '',
-                attempt: b.data?.attempt ?? '',
+                claimSeq: b.data?.claimSeq ?? '',
                 // The apiserver stamps this on every object; the orphaned-claim readout (issue
                 // #344) reports the claim's age from it.
                 created: new Date().toISOString(),
@@ -1124,7 +1131,7 @@ const claimServer = () => {
                           status: 200,
                           body: JSON.stringify({
                               metadata: { uid: claim.uid, creationTimestamp: claim.created },
-                              data: { holder: claim.holder, attempt: claim.attempt },
+                              data: { holder: claim.holder, claimSeq: claim.claimSeq },
                           }),
                       }
                     : { status: 404, body: '{"kind":"Status"}' };
@@ -1782,7 +1789,7 @@ describe('the worktree sync', () => {
                     status: 200,
                     body: JSON.stringify({
                         metadata: { uid: 'claim-uid-9' },
-                        data: { holder: NEW_TOKEN, attempt: '2' },
+                        data: { holder: NEW_TOKEN, claimSeq: '2' },
                     }),
                 });
             }
@@ -1791,6 +1798,56 @@ describe('the worktree sync', () => {
         await expect(runner(request).syncCheckout(repoJob)).rejects.toThrow(/stands down/);
         expect(calls.some((call) => call.method === 'POST' && call.path?.includes('/secrets'))).toBe(false);
         expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
+    });
+
+    /*
+     * Issue #559: a contention requeue refunds the attempt, so `attempts` can go DOWN between two
+     * claims of one job. The claim is ordered by the claim sequence, which never does — a stale
+     * worker whose attempt count is ahead of its replacement's still stands down, and a
+     * replacement whose attempt was refunded still takes over the claim it supersedes.
+     */
+    const seedClaim = (request: K8sRequest, claimSeq: string) =>
+        request('POST', configmapsPath, {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: `factory-job-${repoJob.id}-claim` },
+            data: { holder: NEW_TOKEN, claimSeq },
+        });
+    const SYNCED = { log: { status: 200, body: '{"ok":true,"reason":null}\n' } };
+
+    it('stands a stale worker down against a newer claim even when its attempt count is ahead', async () => {
+        const { request, calls } = fakeRequest(SYNCED);
+        await seedClaim(request, '4');
+
+        await expect(runner(request).syncCheckout({ ...repoJob, attempts: 2, claimSeq: 3 })).rejects.toThrow(
+            /held by a newer claim \(4 >= 3\)/
+        );
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
+    });
+
+    it('takes over an older claim after its attempt was refunded', async () => {
+        const { request } = fakeRequest(SYNCED);
+        await seedClaim(request, '3');
+        const replacement: BoardJob = { ...repoJob, attempts: 1, claimSeq: 4 };
+
+        expect(await runner(request).syncCheckout(replacement)).toMatchObject({ ok: true });
+
+        const held = await request('GET', claimPathFor(repoJob.id));
+        expect(JSON.parse(held.body)).toMatchObject({ data: { holder: replacement.leaseToken, claimSeq: '4' } });
+    });
+
+    it('answers checkout contention with the transient reason, its claim already given back', async () => {
+        const reason =
+            'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';
+        const { request, calls } = fakeRequest({
+            log: { status: 200, body: `${JSON.stringify({ ok: false, reason })}\n` },
+        });
+
+        const result = await runner(request).syncCheckout(repoJob);
+
+        expect(result.ok).toBe(false);
+        expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(true);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPathFor(repoJob.id))).toBe(true);
     });
 
     /*
@@ -2028,7 +2085,7 @@ describe('the worktree reclaim', () => {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: `factory-job-${repoJob.id}-claim` },
-            data: { holder: NEW_TOKEN, attempt: '5' },
+            data: { holder: NEW_TOKEN, claimSeq: '5' },
         });
 
         const result = await runner(request).reclaimWorktree(repoJob);
@@ -2173,7 +2230,7 @@ describe('the worktree reclaim', () => {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: `factory-job-${repoJob.id}-claim` },
-            data: { holder: NEW_TOKEN, attempt: '5' },
+            data: { holder: NEW_TOKEN, claimSeq: '5' },
         });
 
         const result = await runner(request).reclaimWorktree(repoJob);
@@ -2181,7 +2238,7 @@ describe('the worktree reclaim', () => {
         expect(result.ok).toBe(false);
         expect(result.heldClaim).toEqual({
             name: `factory-job-${repoJob.id}-claim`,
-            attempt: '5',
+            claimSeq: '5',
             createdMs: expect.any(Number),
         });
     });
@@ -2208,7 +2265,7 @@ describe('the worktree reclaim', () => {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: `factory-job-${repoJob.id}-claim` },
-            data: { holder: NEW_TOKEN, attempt: '3' },
+            data: { holder: NEW_TOKEN, claimSeq: '3' },
         });
 
         await expect(runner(request).reapOrphanedClaim?.(repoJob)).resolves.toBe(true);
@@ -2228,7 +2285,7 @@ describe('the worktree reclaim', () => {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: `factory-job-${repoJob.id}-claim` },
-            data: { holder: NEW_TOKEN, attempt: '3' },
+            data: { holder: NEW_TOKEN, claimSeq: '3' },
         });
         // The read answers a stale incarnation: the claim was taken over (deleted and re-created
         // under a new uid) between the proof and the reap.
@@ -2259,7 +2316,7 @@ describe('the worktree reclaim', () => {
             apiVersion: 'v1',
             kind: 'ConfigMap',
             metadata: { name: `factory-job-${repoJob.id}-claim` },
-            data: { holder: NEW_TOKEN, attempt: '5' },
+            data: { holder: NEW_TOKEN, claimSeq: '5' },
         });
         const request: K8sRequest = (method, path, body) => {
             if (method === 'GET' && path === claimPathFor(repoJob.id)) {
@@ -2275,7 +2332,7 @@ describe('the worktree reclaim', () => {
         const result = await runner(request).reclaimWorktree(repoJob);
         expect(result.heldClaim).toEqual({
             name: `factory-job-${repoJob.id}-claim`,
-            attempt: '5',
+            claimSeq: '5',
             createdMs: null,
         });
     });
@@ -3616,7 +3673,7 @@ describe('the kubernetes runner', () => {
      * number is ahead of its own — and stands down having created and deleted nothing at all.
      */
     it('stands down when a newer attempt holds the checkout claim, and touches nothing of its replacement', async () => {
-        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const newerJobName = runnerJobName(newerJob);
         const claimPath = claimPathFor(job.id);
         const calls: Call[] = [];
@@ -3632,7 +3689,7 @@ describe('the kubernetes runner', () => {
                     status: 200,
                     body: JSON.stringify({
                         metadata: { uid: 'claim-uid-2' },
-                        data: { holder: NEW_TOKEN, attempt: '2' },
+                        data: { holder: NEW_TOKEN, claimSeq: '2' },
                     }),
                 });
             }
@@ -3749,7 +3806,7 @@ describe('the kubernetes runner', () => {
      * of the claim. Attempt numbers order the attempts of one job; no clock is read anywhere.
      */
     it('takes over the leftover claim of an older attempt under a uid precondition, then creates', async () => {
-        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const claimPath = claimPathFor(job.id);
         const serve = claimServer();
         const calls: Call[] = [];
@@ -3761,7 +3818,7 @@ describe('the kubernetes runner', () => {
                 seeded = true;
                 serve('POST', configmapsPath, {
                     metadata: { name: `factory-job-${job.id}-claim` },
-                    data: { holder: job.leaseToken, attempt: '1' },
+                    data: { holder: job.leaseToken, claimSeq: '1' },
                 });
             }
             const claimAnswer = serve(method, path, body);
@@ -3849,8 +3906,8 @@ describe('the kubernetes runner', () => {
      * anymore — finds the claim no longer its own and stands down before creating anything.
      */
     it('admits one runner per checkout: the superseded attempt stands down mid-sweep', async () => {
-        const olderJob: BoardJob = { ...job, attempts: 1 };
-        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2 };
+        const olderJob: BoardJob = { ...job, attempts: 1, claimSeq: 1 };
+        const newerJob: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
         const newerJobName = runnerJobName(newerJob);
         const serve = claimServer();
         const calls: Call[] = [];
@@ -4644,14 +4701,14 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-9' },
-                                      data: { holder: NEW_TOKEN, attempt: '2' },
+                                      data: { holder: NEW_TOKEN, claimSeq: '2' },
                                   }),
                               }
                             : {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-8' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                     );
@@ -4716,7 +4773,7 @@ describe('the kubernetes runner', () => {
                 // An older holder by attempt number, but a body with no uid on it.
                 return Promise.resolve({
                     status: 200,
-                    body: JSON.stringify({ data: { holder: 'someone-else', attempt: '0' } }),
+                    body: JSON.stringify({ data: { holder: 'someone-else', claimSeq: '0' } }),
                 });
             }
             if (method === 'GET' && path.startsWith(`${jobsPath(namespace)}?`)) {
@@ -4783,7 +4840,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                     );
@@ -4858,7 +4915,7 @@ describe('the kubernetes runner', () => {
                     status: 200,
                     body: JSON.stringify({
                         metadata: { uid: 'claim-uid-7' },
-                        data: { holder: NEW_TOKEN, attempt: '2' },
+                        data: { holder: NEW_TOKEN, claimSeq: '2' },
                     }),
                 });
             }
@@ -4932,7 +4989,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                     );
@@ -5014,7 +5071,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                             : { status: 503, body: 'unavailable' }
@@ -5091,7 +5148,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                             : { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) }
@@ -5175,7 +5232,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                             : { status: 500, body: 'unavailable' }
@@ -5247,7 +5304,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                             : { status: 500, body: 'unavailable' }
@@ -5321,7 +5378,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                             : { status: 500, body: 'unavailable' }
@@ -5402,14 +5459,14 @@ describe('the kubernetes runner', () => {
                               status: 200,
                               body: JSON.stringify({
                                   metadata: { uid: 'claim-uid-9' },
-                                  data: { holder: NEW_TOKEN, attempt: '2' },
+                                  data: { holder: NEW_TOKEN, claimSeq: '2' },
                               }),
                           }
                         : {
                               status: 200,
                               body: JSON.stringify({
                                   metadata: { uid: 'claim-uid-8' },
-                                  data: { holder: job.leaseToken, attempt: '1' },
+                                  data: { holder: job.leaseToken, claimSeq: '1' },
                               }),
                           }
                 );
@@ -5486,7 +5543,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                     );
@@ -5561,7 +5618,7 @@ describe('the kubernetes runner', () => {
                                   status: 200,
                                   body: JSON.stringify({
                                       metadata: { uid: 'claim-uid-1' },
-                                      data: { holder: job.leaseToken, attempt: '1' },
+                                      data: { holder: job.leaseToken, claimSeq: '1' },
                                   }),
                               }
                     );
@@ -7239,7 +7296,10 @@ describe('the kubernetes runner under opencode', () => {
             calls.push({ method, path, body });
             if (path === configmapsPath && method === 'POST') return Promise.resolve({ status: 201, body: '{}' });
             if (path === claimPathFor(job.id) && method === 'GET') {
-                return ok({ metadata: { uid: 'u1' }, data: { holder: job.leaseToken, attempt: String(job.attempts) } });
+                return ok({
+                    metadata: { uid: 'u1' },
+                    data: { holder: job.leaseToken, claimSeq: String(job.claimSeq) },
+                });
             }
             if (path === claimPathFor(job.id) && method === 'DELETE') {
                 return Promise.resolve({ status: 200, body: '{}' });

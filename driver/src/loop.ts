@@ -8,6 +8,7 @@ import { runJob } from './loop-run.js';
 import { processReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
 import { withBoardRetry } from './board-retry.js';
+import { syncQueue } from './sync-queue.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -123,6 +124,7 @@ export function createLoop({
         log,
         sleep,
         reclaims,
+        syncs: syncQueue(),
         report,
         ...(gates ? { gates } : {}),
         ...(stopGraceMs === undefined ? {} : { stopGraceMs }),

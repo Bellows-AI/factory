@@ -92,6 +92,7 @@ interface StoreStub extends JobStore {
     /** The artifact reads the person routes made, with the kind and attempt they asked for. */
     artifactReads: { id: string; kind: ArtifactKind; attempt: number | null }[];
     suspended: string[];
+    requeued: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     retries: { id: string; createdBy: string | null }[];
     edited: { id: string; command: string; caller: string | null }[];
@@ -210,6 +211,7 @@ function stubStore(
         artifacts: [],
         artifactReads: [],
         suspended: [],
+        requeued: [],
         gatesReread: [],
         publishTokens: [],
         followUps: [],
@@ -236,6 +238,12 @@ function stubStore(
             stub.suspended.push(id);
             const result = options.verdict ?? 'ok';
             return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'stopped' } : { result };
+        },
+        async requeue(id) {
+            boom();
+            stub.requeued.push(id);
+            const result = options.verdict ?? 'ok';
+            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'queued' } : { result };
         },
         async create(command, createdBy, target) {
             boom();
@@ -1870,6 +1878,38 @@ describe('POST /api/jobs/:id/suspend', () => {
     it('refuses a malformed id', async () => {
         const instance = await harnessWith(stubStore());
         expect((await post(instance, '/api/jobs/nope/suspend', { leaseToken: TOKEN })).statusCode).toBe(400);
+    });
+});
+
+// Issue #559: a pre-run claim handed back after checkout contention, lease-guarded like suspend.
+describe('POST /api/jobs/:id/requeue', () => {
+    it.each(['queued', 'stopped'] as const)(
+        'hands the claim back, echoing that the board landed it %s',
+        async (status) => {
+            const store = stubStore({ verdict: 'ok', suspendStatus: status });
+            const instance = await harnessWith(store);
+
+            const response = await post(instance, `/api/jobs/${ID}/requeue`, { leaseToken: TOKEN });
+
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toEqual({ id: ID, status });
+            expect(store.requeued).toEqual([ID]);
+        }
+    );
+
+    it.each([
+        ['lost', 409],
+        ['missing', 404],
+    ] as const)('answers a %s lease with %i', async (verdict, code) => {
+        const instance = await harnessWith(stubStore({ verdict }));
+        expect((await post(instance, `/api/jobs/${ID}/requeue`, { leaseToken: TOKEN })).statusCode).toBe(code);
+    });
+
+    it('refuses a lease token that is not a uuid without touching the store', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        expect((await post(instance, `/api/jobs/${ID}/requeue`, { leaseToken: 'nope' })).statusCode).toBe(400);
+        expect(store.requeued).toEqual([]);
     });
 });
 

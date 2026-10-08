@@ -150,7 +150,7 @@ export const TIMEOUT_EXIT_CODE = 124;
 
 export interface K8sClaim {
     metadata?: { uid?: string; creationTimestamp?: string };
-    data?: { holder?: string; attempt?: string };
+    data?: { holder?: string; claimSeq?: string };
 }
 
 /**
