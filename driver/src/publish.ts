@@ -168,6 +168,13 @@ export interface SyncResult {
  */
 export const TRANSIENT_SYNC_REASON = /^transient worktree sync:/;
 
+/**
+ * The startup sync's own bound, on both executors: the kubernetes sync Job's
+ * `activeDeadlineSeconds` and the docker sync container's timeout. The script's stale-lock bound
+ * (scripts/git-worktree.cjs, `DEFAULT_SYNC_LOCK_STALE_MS`) is this same 600s.
+ */
+export const SYNC_DEADLINE_MS = 600_000;
+
 /** What the terminal reclaim answers: ok, whether anything was removed, or the reason it did not. */
 export interface ReclaimResult {
     ok: boolean;

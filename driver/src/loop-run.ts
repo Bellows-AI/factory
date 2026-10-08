@@ -18,7 +18,7 @@ import { concludeSetup, handBackFence, releaseAbandonedSync, standDown } from '.
 import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
-import { repoPath, TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
+import { TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
 import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
 import {
     askPublishToken,
@@ -32,6 +32,7 @@ import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
+import { awaitSyncTurn } from './sync-queue.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -99,11 +100,8 @@ async function waitReclaimBarrier(ctx: AttemptCtx): Promise<SetupConclusion | nu
 async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     const { runner } = rt;
-    const turn = rt.syncs.enter(repoPath(rt.config, job));
-    if ((await raceStep(state.signal, turn.ready)) === null) {
-        turn.release();
-        return STOOD_DOWN;
-    }
+    const turn = await awaitSyncTurn(ctx);
+    if (turn === STOOD_DOWN || 'halt' in turn) return turn;
     const syncing = runner.syncCheckout(job, state.signal);
     turn.release(syncing);
     let syncedOut: { value: SyncResult } | null;

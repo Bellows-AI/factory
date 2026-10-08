@@ -26,6 +26,7 @@ import { servePublish, type PublishRelay } from '../src/publish-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../src/publish.js';
 import { createLoop, type Loop } from '../src/loop.js';
+import type { SyncQueue, SyncTurn } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
 import { newJobState, QUESTION_TIMEOUT_MS, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
@@ -530,6 +531,8 @@ async function drive(
         runner: Runner;
         gates?: GateStack;
         log?: (message: string) => void;
+        syncs?: SyncQueue;
+        syncWaitMs?: number;
     },
     env = {}
 ) {
@@ -540,6 +543,8 @@ async function drive(
         gates: deps.gates,
         log: deps.log,
         sleep,
+        ...(deps.syncs ? { syncs: deps.syncs } : {}),
+        ...(deps.syncWaitMs === undefined ? {} : { syncWaitMs: deps.syncWaitMs }),
     });
     deps.attach(loop);
     await loop.start();
@@ -4120,9 +4125,10 @@ describe('a dead declared service (issue #423)', () => {
     it('never probes a refused run or an ungated job', async () => {
         const board = stubBoard([gatedJob(1), job(2)]);
         const stack = stubGateStack();
-        let ran = 0;
+        // By id, not by call order: the two attempts' setups interleave.
         const runner = stubRunner(
-            async () => (ran++ === 0 ? ok({ exitCode: 1, output: 'refused', refused: true }) : ok()),
+            async (claimed) =>
+                claimed.id === gatedJob(1).id ? ok({ exitCode: 1, output: 'refused', refused: true }) : ok(),
             { deadServices: async () => [mongo] }
         );
 
@@ -5635,6 +5641,75 @@ describe('startup syncs of one clone (issue #559)', () => {
 
         expect(peak.get('*')).toBe(2);
         expect(board.board.completed).toHaveLength(2);
+    });
+
+    it('hands a sibling’s claim back once it out-waits the queue bound behind a wedged sync', async () => {
+        const board = stubBoard([repoJob(1), repoJob(2)]);
+        let finishFirst: () => void = () => {};
+        const firstSync = new Promise<void>((resolve) => {
+            finishFirst = resolve;
+        });
+        const ran: string[] = [];
+        const runner = stubRunner(async (claimed) => {
+            ran.push(claimed.id);
+            return ok();
+        });
+        runner.syncCheckout = async (claimed) => {
+            runner.synced.push(claimed);
+            await firstSync;
+            return { ok: true, reason: null };
+        };
+
+        const started = drive({ ...board, runner, syncWaitMs: 20 }, { DRIVER_CONCURRENCY: '2' });
+        for (let i = 0; i < 200 && !board.board.requeued.includes(job(2).id); i += 1) await sleep();
+        expect(board.board.requeued).toEqual([job(2).id]);
+        finishFirst();
+        await started;
+
+        // No agent ran for the requeued sibling, and nothing was reported or parked for it.
+        expect(ran).toEqual([job(1).id]);
+        expect(runner.synced.map((s) => s.id)).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed.map((c) => c.id)).toEqual([job(1).id]);
+    });
+
+    it('takes its turn from an injected queue by clone, and gives it back once the sync lands', async () => {
+        const board = stubBoard([repoJob(1)]);
+        const asked: unknown[] = [];
+        const released: unknown[] = [];
+        const syncs: SyncQueue = {
+            async acquire(clone, { holder }): Promise<SyncTurn> {
+                asked.push({ clone, holder });
+                return { release: (syncing) => void released.push(syncing) };
+            },
+        };
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, syncs });
+
+        expect(asked).toEqual([
+            {
+                clone: `/workspaces/bellows/${USER}/factory`,
+                holder: { jobId: job(1).id, leaseToken: job(1).leaseToken },
+            },
+        ]);
+        expect(released).toHaveLength(1);
+        expect(released[0]).toBeInstanceOf(Promise);
+        expect(board.board.completed.map((c) => c.status)).toEqual(['succeeded']);
+    });
+
+    it('requeues, without syncing, when the sync queue cannot be read', async () => {
+        const board = stubBoard([repoJob(1)]);
+        const syncs: SyncQueue = {
+            acquire: async () => Promise.reject(new Error('queue store unreachable')),
+        };
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, syncs });
+
+        expect(runner.synced).toEqual([]);
+        expect(board.board.requeued).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
     });
 
     it.each([

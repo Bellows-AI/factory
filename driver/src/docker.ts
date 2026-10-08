@@ -185,6 +185,9 @@ export function parseDockerServiceExit(stdout: string): { exitCode: number | nul
  */
 export const containerName = (job: BoardJob): string => `factory-job-${job.id}-${job.leaseToken}`;
 
+/** The attempt's startup sync container: named so a sync past its deadline can be removed (issue #559). */
+export const syncContainerName = (job: BoardJob): string => `factory-sync-${job.id}-${job.leaseToken}`;
+
 /**
  * The gate environment container's identity: `<checkout key>` under a label, `factory-env-…` as a
  * name. The KEY is the checkout the gates share with the coding agent — the task worktree

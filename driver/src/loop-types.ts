@@ -36,8 +36,10 @@ export interface LoopRuntime {
     log: (message: string) => void;
     sleep: (ms: number) => Promise<void>;
     reclaims: Map<string, Promise<void>>;
-    /** Orders this driver's startup syncs of one base clone (`sync-queue.ts`, issue #559). */
+    /** Orders startup syncs of one base clone (`sync-queue.ts`, issue #559). */
     syncs: SyncQueue;
+    /** Overrides `SYNC_QUEUE_WAIT_MS` — a test seam, never set in production. */
+    syncWaitMs?: number;
     report: (job: BoardJob, result: Parameters<Board['complete']>[1]) => Promise<LeaseState>;
 }
 

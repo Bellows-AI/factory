@@ -18,10 +18,11 @@ import {
     containerHardeningArgs,
     dockerArgs,
     parseDockerServicePs,
+    syncContainerName,
 } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
-import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript } from './publish.js';
+import { worktreeBranch, CREDENTIAL_HELPER, gitWorktreeScript, SYNC_DEADLINE_MS, type SyncResult } from './publish.js';
 import type { RunOutcome, RunSession } from './runner.js';
 import {
     declaredServiceSpecs,
@@ -152,6 +153,32 @@ export async function removeEachTolerantly(
     }
 }
 
+/** How long removing a sync container may take before it is left to the daemon. */
+const SYNC_REMOVE_TIMEOUT_MS = 30_000;
+
+/** A client the exec timeout killed — not one killed for overflowing its output buffer. */
+export const killedByTimeout = (e: unknown): boolean => {
+    const failure = e as { killed?: boolean; code?: unknown };
+    return failure.killed === true && failure.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+};
+
+export const removeSyncContainer = (execDocker: ExecDocker, job: BoardJob): Promise<unknown> =>
+    execDocker(['rm', '-f', syncContainerName(job)], { timeout: SYNC_REMOVE_TIMEOUT_MS }).catch(() => undefined);
+
+/** A sync container past its deadline: removed, and the run failed as the kubelet's kill fails it. */
+export async function syncPastDeadline(execDocker: ExecDocker, job: BoardJob): Promise<SyncResult> {
+    await removeSyncContainer(execDocker, job);
+    return { ok: false, reason: `the worktree sync container failed: it exceeded its ${SYNC_DEADLINE_MS}ms deadline` };
+}
+
+/** Waits out an abandoned sync container until the sync deadline, removing it past that. */
+export async function awaitAbandonedSync(execDocker: ExecDocker, job: BoardJob, deadline: number) {
+    const timeout = Math.max(1, deadline - Date.now());
+    await execDocker(['wait', syncContainerName(job)], { timeout }).catch(async (e: unknown) => {
+        if (killedByTimeout(e)) await removeSyncContainer(execDocker, job);
+    });
+}
+
 /**
  * The full `docker run` argv for the startup sync/restore container. Pure, for the same pinning
  * as dockerArgs: a starting claim's fetch + create-or-rebase versus a continuing claim's
@@ -164,6 +191,8 @@ export function syncCheckoutArgs(
 ): string[] {
     return [
         'run',
+        '--name',
+        syncContainerName(job),
         ...containerHardeningArgs(),
         '--rm',
         ...workspacesMountArgs(config, workspacePath(job)),

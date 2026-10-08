@@ -30,6 +30,7 @@ import {
     gitWorktreeRemoveScript,
     gitWorktreeScript,
     repoPath,
+    SYNC_DEADLINE_MS,
     worktreeBranch,
     worktreeDir,
 } from './publish.js';
@@ -51,7 +52,7 @@ import type { ServiceSpec } from './services.js';
  * worktree the run will edit. The executor image carries both node and git, as the docker
  * sync container does.
  */
-const SYNC_DEADLINE_SECONDS = 600;
+const SYNC_DEADLINE_SECONDS = SYNC_DEADLINE_MS / MS_PER_SECOND;
 
 export const syncJobName = (job: BoardJob): string => `factory-sync-${hash16(`${job.id}|${job.leaseToken}`)}`;
 
