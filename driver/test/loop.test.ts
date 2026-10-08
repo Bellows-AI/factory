@@ -5673,6 +5673,32 @@ describe('startup syncs of one clone (issue #559)', () => {
         expect(board.board.completed.map((c) => c.id)).toEqual([job(1).id]);
     });
 
+    it('keeps the clone’s turn until a failed sync’s writes are over, not just until it answered', async () => {
+        const board = stubBoard([repoJob(1), repoJob(2)]);
+        let writesOver: () => void = () => {};
+        const settled = new Promise<void>((resolve) => {
+            writesOver = resolve;
+        });
+        const runner = stubRunner(async () => ok());
+        runner.syncCheckout = async (claimed) => {
+            runner.synced.push(claimed);
+            return claimed.id === job(1).id
+                ? { ok: false, reason: 'the worktree sync container failed: it exceeded its deadline', settled }
+                : { ok: true, reason: null };
+        };
+
+        const started = drive({ ...board, runner }, { DRIVER_CONCURRENCY: '2' });
+        for (let i = 0; i < 200 && board.board.completed.length === 0; i += 1) await sleep();
+        // Job 1 has its verdict, but its container may still be writing: job 2 has not synced.
+        expect(board.board.completed.map((c) => [c.id, c.status])).toEqual([[job(1).id, 'failed']]);
+        for (let i = 0; i < 20; i += 1) await sleep();
+        expect(runner.synced.map((s) => s.id)).toEqual([job(1).id]);
+        writesOver();
+        await started;
+
+        expect(runner.synced.map((s) => s.id)).toEqual([job(1).id, job(2).id]);
+    });
+
     it('takes its turn from an injected queue by clone, and gives it back once the sync lands', async () => {
         const board = stubBoard([repoJob(1)]);
         const asked: unknown[] = [];

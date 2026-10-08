@@ -103,7 +103,8 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
     const syncing = runner.syncCheckout(job, state.signal);
-    turn.release(syncing);
+    // The turn is held until the sync's writes are over (`settled`), however the sync answered.
+    turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
     let syncedOut: { value: SyncResult } | null;
     try {
         syncedOut = await raceStep(state.signal, syncing);

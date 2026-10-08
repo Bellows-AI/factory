@@ -4164,14 +4164,48 @@ describe('publishing the produced work', () => {
         expect(run.options?.timeout).toBe(SYNC_DEADLINE_MS);
         const name = run.args[run.args.indexOf('--name') + 1];
         expect(name).toBe(`factory-sync-${repoJob.id}-${repoJob.leaseToken}`);
-        const remove = calls.find((call) => call.args.join(' ') === `rm -f ${name}`);
-        // Bounded too: a daemon that hangs on the removal must not hold the clone's queue.
-        expect(remove?.options?.timeout).toBeGreaterThan(0);
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             ok: false,
             reason: `the worktree sync container failed: it exceeded its ${SYNC_DEADLINE_MS}ms deadline`,
         });
         expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(false);
+        // The verdict answers at once; the writes are over only once the daemon proves it gone.
+        await result.settled;
+        const remove = calls.find((call) => call.args.join(' ') === `rm -f ${name}`);
+        // Bounded too: a daemon that hangs on the removal must not wedge the proof loop.
+        expect(remove?.options?.timeout).toBeGreaterThan(0);
+        expect(calls.some((call) => call.args[0] === 'ps' && call.args.join(' ').includes(name))).toBe(true);
+    });
+
+    it('settles a timed-out sync only once a listing proves its container gone, however the removal answered', async () => {
+        const name = `factory-sync-${repoJob.id}-${repoJob.leaseToken}`;
+        const listings = [`${name}\n`, ''];
+        const calls: string[] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) throw killed();
+            // Only the calls about the sync container — the re-claim fence lists by label.
+            if (!args.some((arg) => arg.includes(name))) return { stdout: '' };
+            calls.push(args[0]!);
+            // The daemon refuses the first removal; only a listing that no longer shows it counts.
+            if (args[0] === 'rm' && calls.filter((c) => c === 'rm').length === 1) throw new Error('daemon busy');
+            if (args[0] === 'ps') return { stdout: listings.shift() ?? '' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+
+        const result = await runner.syncCheckout(repoJob);
+        let settled = false;
+        void result.settled?.then(() => (settled = true));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(settled).toBe(false);
+        await result.settled;
+
+        expect(calls.filter((c) => c === 'ps')).toHaveLength(2);
+        expect(calls.filter((c) => c === 'rm')).toHaveLength(2);
     });
 
     it('lets an abandoned sync container finish its writes, and answers only once it has exited', async () => {

@@ -152,6 +152,13 @@ export interface SyncResult {
      * post-gate probe's to tell a round that changed nothing. Absent or null is unknown.
      */
     fingerprint?: string | null;
+    /**
+     * Settles once nothing of this sync can still write the checkout, when that is later than the
+     * answer: a docker sync killed at its deadline answers at once, while its container is proven
+     * gone only after (issue #559). The clone's sync queue holds the turn until then. Absent: the
+     * answer itself is that proof.
+     */
+    settled?: Promise<void>;
 }
 
 /**
