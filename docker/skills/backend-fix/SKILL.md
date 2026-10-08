@@ -1,6 +1,8 @@
 ---
 name: backend-fix
 description: Optional playbook for fixing a backend bug end to end under TDD — pull the ticket, locate the module, build a test harness if the module has none, reproduce the bug with a failing test at the right layer, fix it, generalize the repro into the permanent suite, and publish the pull request through the driver. Use when asked to "fix the backend bug", "work ticket ABC-1234", "take this bug end to end", or when handed a bug ticket with no further instructions. Stack-agnostic: it discovers the test runner and commands from the repo. Not for frontend/browser bugs.
+metadata:
+  requires-tools: git
 ---
 
 # Backend bug fix, end to end

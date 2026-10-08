@@ -13,7 +13,9 @@ import {
     validateExecutorScopeField,
     validateGates,
     validateRepoField,
+    validateSkillsField,
 } from './job-field-validation.js';
+import { skillCatalog } from '../skills.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { fullName, UUID } from '../config.js';
@@ -22,6 +24,7 @@ import {
     HTTP_CONFLICT,
     HTTP_CREATED,
     HTTP_NO_CONTENT,
+    HTTP_NOT_FOUND,
     HTTP_OK,
     HTTP_UNAVAILABLE,
     LEASE_BATCH_MAX,
@@ -102,6 +105,32 @@ async function refusedAsNotSynced(
     return true;
 }
 
+/**
+ * The create body's `skills` (issue #545): a well-formed list of installed catalog names, or null
+ * once a refusal — `400 BAD_SKILLS` for the shape, `404 UNKNOWN_SKILL` naming each missing name —
+ * has landed on `reply`.
+ */
+function selectedSkillsOf(reply: FastifyReply, raw: unknown): string[] | null {
+    const result = validateSkillsField(raw);
+    if (!result.ok) {
+        bad(reply, ERROR_CODES.BAD_SKILLS, result.message);
+        return null;
+    }
+    const installed = skillCatalog().map((skill) => skill.name);
+    const unknown = result.value.filter((name) => !installed.includes(name));
+    if (unknown.length > 0) {
+        const named = unknown.map((name) => `"${name}"`).join(', ');
+        bad(
+            reply,
+            ERROR_CODES.UNKNOWN_SKILL,
+            `unknown skill ${named} (installed: ${installed.join(', ')})`,
+            HTTP_NOT_FOUND
+        );
+        return null;
+    }
+    return result.value;
+}
+
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const store = await storeFor(orgs, request);
     if (!store) return noBoard(reply);
@@ -121,6 +150,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const repo = repoResult.value;
     const executor = executorResult.value;
     const executorScope = scopeResult.value;
+    const selectedSkills = selectedSkillsOf(reply, fields.skills);
+    if (selectedSkills === null) return reply;
+    const skills = selectedSkills;
 
     // Read off the authenticated request, never off the body: a client-supplied author is
     // impersonation. Null only when the app was built with no auth store at all, which is the
@@ -167,6 +199,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 repo,
                 executor,
                 executorScope,
+                skills,
                 jiraConnectionId: jira.id,
                 ...(workflow ? { workflow } : {}),
             })

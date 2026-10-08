@@ -66,7 +66,7 @@ const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): W
 describe('resolveMasterPrompt: objective', () => {
     it('renders the objective mode with no per-turn values', () => {
         const prompt = resolveMasterPrompt(OBJECTIVE);
-        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v3');
+        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v4');
         expect(prompt).toBe(
             `Factory execution contract (${MASTER_PROMPT_VERSION})
 
@@ -87,6 +87,30 @@ Rules for this turn
 
     it('never contains a brace — the opencode template-substitution vector', () => {
         expect(resolveMasterPrompt(OBJECTIVE)).not.toMatch(/[{}]/);
+        expect(resolveMasterPrompt({ ...OBJECTIVE, skills: ['github', 'jira'] })).not.toMatch(/[{}]/);
+    });
+});
+
+describe('resolveMasterPrompt: selected skills', () => {
+    it('names the selection and says a skill grants nothing', () => {
+        const prompt = resolveMasterPrompt({ ...OBJECTIVE, skills: ['github', 'jira'] });
+        expect(prompt).toContain('- Selected skills: github, jira');
+        expect(prompt).toContain('a skill grants no access beyond what this task already has');
+    });
+
+    it('renders no skills line when none are selected, absent or empty alike', () => {
+        expect(resolveMasterPrompt(OBJECTIVE)).not.toContain('Selected skills');
+        expect(resolveMasterPrompt({ ...OBJECTIVE, skills: [] })).toBe(resolveMasterPrompt(OBJECTIVE));
+    });
+
+    it('is byte-identical on every claim of a thread', () => {
+        const input = { ...OBJECTIVE, skills: ['gates'] };
+        expect(resolveMasterPrompt({ ...input })).toBe(resolveMasterPrompt({ ...input }));
+    });
+
+    it('stays inside the character cap with every shipped skill selected', () => {
+        const prompt = resolveMasterPrompt({ ...OBJECTIVE, skills: ['backend-fix', 'gates', 'github', 'jira'] });
+        expect(prompt).not.toBeNull();
     });
 });
 

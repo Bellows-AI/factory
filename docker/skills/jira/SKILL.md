@@ -1,6 +1,9 @@
 ---
 name: jira
 description: Read, search, create and comment on Jira work items through Jira's REST API with curl, against the $JIRA_API base the entrypoint exports. Use whenever a Jira issue key (ABC-1234), a *.atlassian.net/browse/ URL, or a request to look up, update or comment on a ticket appears. Also covers Jira authentication failures. Do not use an Atlassian MCP server or acli — curl on $JIRA_API is the supported path here.
+metadata:
+  requires-tools: curl
+  requires-connections: jira
 ---
 
 # Jira through the REST API

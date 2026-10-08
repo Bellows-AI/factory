@@ -114,6 +114,21 @@ describe('the runner job spec', () => {
         ]);
     });
 
+    // Issue #545, the kubernetes half of the pair: a selection rides the master prompt, so the pod's
+    // container args carry it exactly as the docker argv does — the skills are baked in the image.
+    it('delivers a prompt naming the selected skills verbatim, as the docker runner does', () => {
+        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
+        const withSkills = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, masterPrompt },
+            {
+                id: SESSION,
+                resume: false,
+            }
+        );
+        expect(withSkills.spec.template.spec.containers[0].args).toContain(masterPrompt);
+    });
+
     // Parity, decided in docker's favour: the prompt is delivered on EVERY run, resume included.
     // This platform used to suppress it on a resume that was not a follow-up, and docker never
     // did — one of the two had to be wrong, and a restored conversation that receives no prompt

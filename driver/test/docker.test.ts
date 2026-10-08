@@ -117,6 +117,25 @@ describe('the docker run arguments', () => {
         ]);
     });
 
+    // Issue #545, the docker half of the pair: a selection rides the master prompt, so it reaches
+    // the claude argv and the OpenCode `factory` agent with no executor-specific code. The pod-spec
+    // twin is in k8s.test.ts.
+    it('delivers a prompt naming the selected skills verbatim, to both CLIs', () => {
+        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
+        const claudeArgv = dockerArgs(
+            loadDriverConfig({}),
+            { ...job, masterPrompt },
+            { id: SESSION, resume: false },
+            {
+                envFile: '/tmp/e',
+            }
+        );
+        expect(claudeArgv).toContain(masterPrompt);
+        expect(envFileBody({ ...opencodeJob, masterPrompt }, loadDriverConfig({}))).toContain(
+            JSON.stringify(masterPrompt)
+        );
+    });
+
     // Parity pin, the docker half of the pair: the prompt is delivered on EVERY run, resume
     // included. The kubernetes runner used to suppress it on a resume that was not a follow-up;
     // both platforms now render the one plan (runner-plan.ts), and the k8s twin of this case is

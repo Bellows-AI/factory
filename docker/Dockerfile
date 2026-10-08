@@ -82,6 +82,9 @@ COPY --from=build /app/core/test/fixtures/telemetry-sessions.json core/test/fixt
 # tsc compiles neither .sql nor .json, so the migrations have to be copied by hand — they sit
 # outside src/ at a depth that resolves the same from src/ and dist/.
 COPY --from=build /app/server/migrations server/migrations
+# The skills catalog /api/skills serves and the claim checks requirements against, read by
+# import.meta.url depth from server/dist.
+COPY docker/skills docker/skills
 # The release version /api/version serves, read by import.meta.url depth from server/dist.
 COPY VERSION ./
 # No COPY for .env, despite the precedent just above: it carries secrets, so they
