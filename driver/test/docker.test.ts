@@ -4531,6 +4531,23 @@ describe('publishing the produced work', () => {
         expect(shapesOf(calls)).toEqual(['probe', 'push', 'pr-view']);
     });
 
+    it('opens a draft PR for the agent, and reuses a PR that exists without a second create', async () => {
+        const fresh = publishRunner(DIRTY_ON_MAIN, { fail: (a) => a.includes('switch') && !a.includes('-c') });
+        await fresh.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
+        const create = fresh.calls.find((a) => a.includes('pr') && a.includes('create'));
+        expect(create).toContain('--draft');
+        expect(create?.[create.indexOf('--body') + 1]).toContain('Draft published by the agent');
+        expect(create?.[create.indexOf('--body') + 1]).not.toContain('declared gates passed');
+
+        const again = publishRunner(
+            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, unpushed: 1, dirty: false },
+            { prExists: true }
+        );
+        const result = await again.runner.publishGit(ISSUE_JOB, undefined, { draft: true });
+        expect(result).toMatchObject({ ok: true, published: true, prUrl: PR_URL, prNumber: 42 });
+        expect(shapesOf(again.calls)).toEqual(['probe', 'push', 'pr-view']);
+    });
+
     it('answers the ordinary no-ops without touching the daemon further', async () => {
         const clean = publishRunner({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 });
         expect(await clean.runner.publishGit(ISSUE_JOB)).toEqual({

@@ -11,13 +11,13 @@ import {
     parseLastJsonLine,
     probeTreeFingerprint,
     publishCheckout,
+    type PublishOptions,
     publishFailed,
     reclaimUnreadable,
     repoPath,
     syncUnreadable,
     withPublishToken,
     worktreeDir,
-    type PublishResult,
     type PublishStep,
     type ReclaimResult,
     type SyncResult,
@@ -358,7 +358,7 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
  *
  * Every step runs in the task worktree (issue #35) — the tree the run actually edited.
  */
-async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: string): Promise<PublishResult> {
+async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: string, options?: PublishOptions) {
     const { config, files } = deps;
     let file: string | null = null;
     try {
@@ -369,7 +369,7 @@ async function dockerPublishGit(deps: RunnerDeps, job: BoardJob, publishToken?: 
     }
     const envFile = file;
     try {
-        return await publishCheckout(config, job, (publish) => dockerPublishStep(deps, job, publish, { envFile }));
+        return await publishCheckout(config, job, options, (step) => dockerPublishStep(deps, job, step, { envFile }));
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
     }
@@ -784,7 +784,7 @@ export function createDockerRunner(
         releaseServices: (job) => dockerServiceTeardown(deps, job),
         syncCheckout: (job, signal) => dockerSyncCheckout(deps, job, signal),
         reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
-        publishGit: (job, publishToken) => dockerPublishGit(deps, job, publishToken),
+        publishGit: (job, publishToken, options) => dockerPublishGit(deps, job, publishToken, options),
         // The probe needs no claim env: no env file is written for it. A stand-down kills the
         // client; the read-only `--rm` probe container exits and is removed on its own.
         probeTree: (job, signal) =>

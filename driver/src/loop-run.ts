@@ -468,6 +468,9 @@ async function runPostHelpersAndPublish(
         // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
         // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
         if (await standDown(ctx, 'its publish')) return null;
+        // The agent already shipped its work as a draft: a clean tree leaves nothing to push, and
+        // the verdict still carries the publication the agent made.
+        if (published?.ok && !published.published && state.draftPublication) published = state.draftPublication;
     }
     return { helperFailure, published };
 }
