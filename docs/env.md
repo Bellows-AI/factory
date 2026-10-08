@@ -17,7 +17,7 @@ both the route and the web editors render from. The driver keeps its own copy in
 | `claimEnv`: the driver's filter and the synthesized executor-config names | `driver/src/claim.ts` | `driver/test/docker.test.ts`, `k8s.test.ts` |
 | Docker: a 0600 `--env-file` written and removed around the run | `driver/src/docker.ts` | `driver/test/docker.test.ts` |
 | Kubernetes: a per-attempt Secret, values in `stringData`, referenced by `secretKeyRef` | `driver/src/k8s-podspec.ts` | `driver/test/k8s.test.ts` |
-| Jira: `ATLASSIAN_SITE`/`_EMAIL`/`_API_TOKEN` (ordinary member config, not reserved) → `JIRA_API` on the api.atlassian.com gateway; the agent's path is `docker/skills/jira/SKILL.md` | `docker/claude-executor/entrypoint.sh`, `docker/opencode-executor/entrypoint.sh` | `driver/test/executor-images.test.ts` |
+| Jira: `ATLASSIAN_*` are reserved names; the credential is a managed connection, see [connections.md](connections.md) | `core/src/env.ts`, `driver/src/claim.ts` | `server/test/routes.env.test.ts`, `driver/test/executor-images.test.ts` |
 | The three editors, their drafts, the `.env` disclosure | `web/src/panels/EnvVarsPanel.tsx`, `env-vars-panel-parts.tsx`, `env-draft.ts`, `env-raw.ts` | `web/test/env-draft.test.ts`, `env-raw.test.ts`, `env.render.test.tsx`, `e2e/env.spec.ts` |
 | Where the editors mount | `web/src/pages/SettingsOrganizationPage.tsx`, `SettingsWorkspacePage.tsx`, `SettingsRepositoriesPage.tsx` | `e2e/env.spec.ts` |
 | The vertical: PUT core env → claim → runner → the probe values in the output | `scripts/test-jobs.sh` | — |
@@ -53,4 +53,3 @@ both the route and the web editors render from. The driver keeps its own copy in
   `secrets: [create, delete]` only, never `get` or `list`.
 - `REPO`, `WORKTREE` and `BRANCH` belong to the startup sync's container and are deliberately NOT
   reserved board-wide: a runner never sees them.
-- A failed Jira cloud-id lookup warns on stderr and does not fail the run.

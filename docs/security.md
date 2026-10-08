@@ -10,6 +10,7 @@ What each credential grants, what each boundary actually holds, and where the co
 | Webhook signature as the credential | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Installation token minted onto a claim | `server/src/github/app-token.ts` | `server/test/github.app-token.test.ts` |
 | Runner secrets: write-only at the API, 0600 env file at the spawn; per-member mount (`subPath` / `volume-subpath`) | `server/src/routes/env.ts`, `driver/src/docker.ts`, `driver/src/k8s-podspec.ts` | `server/test/routes.env.test.ts`, `driver/test/docker.test.ts`, `driver/test/k8s.test.ts`, `scripts/test-k8s.sh --cluster` |
+| Managed connections: the Jira credential stays on the board; the runner holds only the attempt pair | `server/src/routes/connector-jira.ts`, `server/src/db/connection-store.ts` | `server/test/routes.connector-jira.test.ts`, `server/test-db/connection-store.test.ts` |
 | Container hardening, and the admission policy that requires it | `driver/src/k8s-podfields.ts`, `driver/src/services.ts`, `charts/factory/templates/driver-admission.yaml` | `driver/test/services.test.ts`, `driver/test/k8s-docs.test.ts`, `driver/test/k8s-admission.test.ts` |
 | Run artifacts built from the runner's own stream, never a claim env value | `driver/src/artifacts.ts` | `driver/test/artifacts.test.ts`, `driver/test/docker.test.ts` |
 

@@ -230,6 +230,12 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/activity`, 'user'],
     [`/api/jobs/${JOB_ID}/log`, 'user'],
     [`/api/jobs/${JOB_ID}/transcript`, 'user'],
+    // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
+    // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
+    [`/api/jobs/${JOB_ID}/connectors/jira/rest/api/3/myself`, 'connector'],
+    // Managing connections is a person's settings act; it falls through to `user`.
+    ['/api/connections', 'user'],
+    [`/api/connections/${JOB_ID}`, 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
     // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
     // repo must never choose the org it lands in, so the credential does. Its own requirement,

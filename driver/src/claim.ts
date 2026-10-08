@@ -151,6 +151,10 @@ export const RESERVED_ENV_NAMES = [
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',
     'BELLOWS_SESSION_ID',
+    // Jira credentials are a managed connection now (docs/connections.md), never claim env.
+    'ATLASSIAN_SITE',
+    'ATLASSIAN_EMAIL',
+    'ATLASSIAN_API_TOKEN',
 ] as const;
 
 /**

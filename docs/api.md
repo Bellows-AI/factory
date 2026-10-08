@@ -15,6 +15,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Jobs: create, claim, worker reports, actions, reclaims | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts` |
 | Agent questions: `POST /api/jobs/:id/question`, `question-expire` (worker), `questions/:questionId/answer` (member); heartbeat `answeredQuestions` | `server/src/routes/job-handlers-questions.ts`, `job-handlers-worker.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Task read model (`/api/tasks`) | `server/src/routes/tasks.ts` | `server/test/routes.tasks.test.ts` |
+| Managed connections: `GET/POST /api/connections`, `DELETE /api/connections/:id`, and the runner's `ANY /api/jobs/:id/connectors/jira/*` proxy | `server/src/routes/connections.ts`, `connector-jira.ts` | `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts` |
 | Repo picker (`/api/repos`) | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Runner env in three scopes | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
 | Workspace, checkouts, personal executors (incl. `DELETE /executors/:id`, `POST /executors/:id/suspension`) | `server/src/routes/workspace.ts`, `workspace-purge.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
