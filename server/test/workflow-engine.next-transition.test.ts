@@ -119,6 +119,17 @@ describe('nextTransition: blocked and no-progress rests', () => {
         expect(t).toEqual({ action: 'rest', reason: 'config' });
     });
 
+    it('rests a thread whose completion the evidence policy refused, whatever edge matches', () => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'fix', when: 'failed' }] },
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({ id: 'r1', status: 'failed', failureKind: 'policy' }),
+        });
+        expect(t).toEqual({ action: 'rest', reason: 'policy' });
+    });
+
     it('rests a gate-failed edge over a tree the run left unchanged', () => {
         const t = nextTransition({
             params: {},

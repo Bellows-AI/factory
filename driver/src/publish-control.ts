@@ -23,7 +23,7 @@ const HTTP_BAD_GATEWAY = 502;
  * `forbidden` (the board reserves publication for another step, `job.publish === false`),
  * `unsupported` (a runner that cannot push) or `gone` (the lease is lost, a Stop landed or the run ended).
  */
-export type PublishVerdict = PublishResult | 'forbidden' | 'unsupported' | 'gone';
+export type PublishVerdict = PublishResult | 'forbidden' | 'unsupported' | 'gone' | { refused: string };
 
 export interface PublishRelay {
     publish(): Promise<PublishVerdict>;
@@ -45,7 +45,12 @@ export function publishAnswer(verdict: PublishVerdict): PublishAnswer {
         return { status: HTTP_NOT_IMPLEMENTED, body: { error: 'this executor cannot publish' } };
     }
     if (verdict === 'gone') return { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
-    if (!verdict.ok) return { status: HTTP_BAD_GATEWAY, body: { error: verdict.reason } };
+    // The configured evidence policy refused, or the tree moved past the evidence: nothing was
+    // pushed, and the reason names what is missing, stale or failed.
+    if ('refused' in verdict) return { status: HTTP_CONFLICT, body: { error: verdict.refused } };
+    if (!verdict.ok) {
+        return { status: verdict.stale ? HTTP_CONFLICT : HTTP_BAD_GATEWAY, body: { error: verdict.reason } };
+    }
     return {
         status: HTTP_OK,
         body: {

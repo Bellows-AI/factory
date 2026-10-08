@@ -2517,6 +2517,20 @@ describe('publishing the produced work', () => {
         }
     });
 
+    // Revision-bound evidence (issue #548): the check lives in publishCheckout, so kubernetes
+    // refuses exactly where docker does — after the probe Job, before any git step Job.
+    it('refuses a publish bound to a revision the checkout no longer holds, after the probe alone', async () => {
+        const { request, calls } = scripted([
+            { exit: 0, log: JSON.stringify({ ...DIRTY_ON_MAIN, fingerprint: 'h:2' }) },
+        ]);
+
+        const result = await runner(request).publishGit(ISSUE_JOB, undefined, { revision: 'h:1' });
+
+        expect(result).toMatchObject({ ok: false, published: false, stale: true });
+        const created = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
+        expect(created).toHaveLength(1);
+    });
+
     it('opens the agent’s PR as a draft through the same step Jobs', async () => {
         const { request, calls } = scripted([
             { exit: 0, log: JSON.stringify(DIRTY_ON_MAIN) }, // probe

@@ -1,8 +1,9 @@
 import type { BoardJob } from './board.js';
+import { evidenceDecision } from './evidence-policy.js';
 import { down, type JobState } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import { publishFailed } from './publish.js';
-import type { PublishRelay } from './publish-control.js';
+import type { PublishRelay, PublishVerdict } from './publish-control.js';
 
 /**
  * The agent's draft publication (`POST /publish` on the control endpoint): the same
@@ -24,14 +25,30 @@ export function createPublishRelay(rt: LoopRuntime, job: BoardJob, state: JobSta
             if (job.publish === false) return 'forbidden';
             if (!rt.runner.publishGit) return 'unsupported';
             if (gone()) return 'gone';
-            const token = await rt.board.publishToken(job);
-            if (!token) rt.log(`job ${job.id}: draft publish-token ask answered nothing fresh — using the claim env`);
-            if (gone()) return 'gone';
-            const result = await rt.runner
-                .publishGit(job, token ?? undefined, { draft: true })
-                .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`));
-            if (result.ok && result.published) state.draftPublication = result;
-            return result;
+            // A configured requirement is enforced here whatever the agent ran. Ad-hoc gate runs
+            // are not evidence (they carry no assessed revision), so a draft under `gates:
+            // required` is refused and the end-of-run publish, which runs the declared gates, is
+            // the path; a review-only policy binds the push to the reviewed revision.
+            const decision = evidenceDecision(job.policy, null, job.review);
+            if (!decision.ok) return { refused: decision.reason };
+            return pushDraft(rt, job, state, { revision: decision.revision, gone });
         },
     };
+}
+
+/** The credential ask, the fence after it, and the draft push — bound to `revision` when the policy named one. */
+async function pushDraft(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    { revision, gone }: { revision: string | null; gone: () => boolean }
+): Promise<PublishVerdict> {
+    const token = await rt.board.publishToken(job);
+    if (!token) rt.log(`job ${job.id}: draft publish-token ask answered nothing fresh — using the claim env`);
+    if (gone()) return 'gone';
+    const result = await rt.runner
+        .publishGit?.(job, token ?? undefined, { draft: true, ...(revision === null ? {} : { revision }) })
+        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`));
+    if (result?.ok && result.published) state.draftPublication = result;
+    return result ?? 'unsupported';
 }

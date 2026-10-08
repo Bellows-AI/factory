@@ -5220,3 +5220,102 @@ describe('questions (issue #226)', () => {
         );
     });
 });
+
+/**
+ * The configured evidence policy (issue #548): enforced at publication whatever the agent chose to
+ * run, bound to the tree fingerprint the evidence assessed, and reported with the verdict.
+ */
+describe('revision-bound evidence', () => {
+    const synced = { ok: true, reason: null, fingerprint: 'head:aaaa' };
+    const LANDED: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'factory/1',
+        prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+        reason: null,
+        repository: 'Bellows-AI/factory',
+        baseBranch: 'main',
+        prNumber: 42,
+    };
+
+    async function driveWith(claim: BoardJob, runnerOptions: { publish?: PublishResult; gatesFail?: boolean } = {}) {
+        const board = stubBoard([claim]);
+        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: 'head:bbbb' });
+        const options: unknown[] = [];
+        runner.publishGit = async (_job, _token, publishOptions) => {
+            options.push(publishOptions);
+            return runnerOptions.publish ?? LANDED;
+        };
+        const stack = stubGateStack(runnerOptions.gatesFail ? { test: 1 } : {});
+        await drive({ ...board, runner, gates: stack.gates });
+        return { completed: board.board.completed[0], options };
+    }
+
+    it('reports nothing and publishes unbound when no policy is configured', async () => {
+        const { completed, options } = await driveWith(gatedJob(1));
+        expect(completed).not.toHaveProperty('evidence');
+        expect(options).toEqual([undefined]);
+    });
+
+    it('binds the publish to the tree the passing gates assessed, and reports that evidence', async () => {
+        const { completed, options } = await driveWith({ ...gatedJob(1), policy: { gates: true } });
+        expect(options).toEqual([{ revision: 'head:bbbb' }]);
+        expect(completed?.status).toBe('succeeded');
+        expect(completed?.evidence).toEqual({ treeBefore: 'head:aaaa', treeAfter: 'head:bbbb', gates: 'passed' });
+    });
+
+    it('refuses to publish when gates are required and the task declares none', async () => {
+        const { completed, options } = await driveWith({ ...job(1), policy: { gates: true } });
+        expect(options).toEqual([]);
+        expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
+        expect(completed?.output).toContain('publication refused — declared gates are required but none ran');
+        expect(completed?.evidence).toMatchObject({ gates: 'none' });
+    });
+
+    it('never publishes over a failed gate, and the failure stays a gate failure', async () => {
+        const { completed, options } = await driveWith(
+            { ...gatedJob(1), policy: { gates: true } },
+            { gatesFail: true }
+        );
+        expect(options).toEqual([]);
+        expect(completed).toMatchObject({ status: 'failed', failureKind: 'gate' });
+        expect(completed?.evidence).toMatchObject({ gates: 'failed' });
+    });
+
+    it.each(['unavailable', 'missing', 'incomplete', 'rejected'] as const)(
+        'refuses a required review that is %s',
+        async (state) => {
+            const { completed, options } = await driveWith({
+                ...gatedJob(1),
+                policy: { review: true },
+                review: { state },
+            });
+            expect(options).toEqual([]);
+            expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
+        }
+    );
+
+    it('refuses a review of a different revision than the gates assessed', async () => {
+        const claim = {
+            ...gatedJob(1),
+            policy: { gates: true, review: true },
+            review: { state: 'approved', revision: 'head:old' },
+        };
+        const { completed, options } = await driveWith(claim as BoardJob);
+        expect(options).toEqual([]);
+        expect(completed?.output).toContain('different revision');
+    });
+
+    it('binds an approved review to the revision it assessed', async () => {
+        const claim = { ...job(1), policy: { review: true }, review: { state: 'approved', revision: 'head:bbbb' } };
+        const { completed, options } = await driveWith(claim as BoardJob);
+        expect(options).toEqual([{ revision: 'head:bbbb' }]);
+        expect(completed?.status).toBe('succeeded');
+    });
+
+    it('reports a publish the checkout refused as stale as a policy failure, not a publish one', async () => {
+        const stale = { ...LANDED, ok: false, published: false, reason: 'the checkout changed', stale: true } as const;
+        const { completed } = await driveWith({ ...gatedJob(1), policy: { gates: true } }, { publish: stale });
+        expect(completed).toMatchObject({ status: 'failed', failureKind: 'policy' });
+    });
+});

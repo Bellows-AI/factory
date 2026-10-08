@@ -154,6 +154,15 @@ describe('parseBellows: shapes', () => {
         ]);
     });
 
+    it("skips a top-level policy block — the evidence policy is the board parser's grammar", () => {
+        const policy = ['policy:', '    gates: required', '    review: required'];
+        const services = ['services:', '    - name: postgres', '      image: postgres:17'];
+        const expected = [{ name: 'postgres', image: 'postgres:17', environment: [] }];
+        expect(parseBellows([...policy, ...services].join('\n'))).toEqual(expected);
+        expect(parseBellows([...services, ...policy].join('\n'))).toEqual(expected);
+        expect(parseBellows(policy.join('\n'))).toEqual([]);
+    });
+
     it('reads a gates-only file as no services', () => {
         // Every checkout's file is read out, gated or not: a workspace holding a repo that ships
         // only the gates half must parse, not fail the readout.

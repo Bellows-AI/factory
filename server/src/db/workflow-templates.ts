@@ -179,6 +179,7 @@ export const BASE_WORKFLOW: { name: string; definition: WorkflowDefinition } = {
                 kind: 'agent',
                 session: 'fresh',
                 gates: false,
+                review: true,
                 prompt: reviewPrompt,
             },
             {
