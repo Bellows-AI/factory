@@ -46,6 +46,9 @@ Credentials: [auth.md](auth.md) · runner env: [env.md](env.md) · cluster: [kub
   a uid-0 archive `docker cp`'d in before the start on docker, a read-only Secret mount on
   kubernetes; the entrypoints run as uid 1000 and never write them. Both `test.sh`,
   `driver/test/docker.test.ts`, `driver/test/k8s.test.ts`.
+- **claude's auto-mode classifier rules ride the same managed settings** (`autoMode`, `$defaults`
+  plus the runner's environment and the task-dependency and credential-check exceptions); only
+  managed scope reaches a run. `driver/test/telemetry-shipping.test.ts`.
 - **opencode's policy is baked root-owned twice**: the global copy (`~/.config/opencode`, the first
   config layer) fixes the key order every later layer merges into, and the managed copy
   (`/etc/opencode`) outranks every layer the agent can write — so no checkout or inline config drops
