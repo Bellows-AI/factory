@@ -1,6 +1,9 @@
 ---
 name: github
 description: Work with GitHub through the gh CLI — reading PR reviews and line comments, checking CI status, reading issues, and replying to review feedback. Use whenever a GitHub URL, PR number or issue is mentioned, or when asked to address review comments. Covers the reply-with-what-changed convention.
+metadata:
+  requires-tools: gh
+  requires-connections: github
 ---
 
 # GitHub through gh

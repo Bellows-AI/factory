@@ -117,6 +117,25 @@ describe('the docker run arguments', () => {
         ]);
     });
 
+    // Issue #545, the docker half of the pair: a selection rides the master prompt, so it reaches
+    // the claude argv and the OpenCode `factory` agent with no executor-specific code. The pod-spec
+    // twin is in k8s.test.ts.
+    it('delivers a prompt naming the selected skills verbatim, to both CLIs', () => {
+        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
+        const claudeArgv = dockerArgs(
+            loadDriverConfig({}),
+            { ...job, masterPrompt },
+            { id: SESSION, resume: false },
+            {
+                envFile: '/tmp/e',
+            }
+        );
+        expect(claudeArgv).toContain(masterPrompt);
+        expect(envFileBody({ ...opencodeJob, masterPrompt }, loadDriverConfig({}))).toContain(
+            JSON.stringify(masterPrompt)
+        );
+    });
+
     // Parity pin, the docker half of the pair: the prompt is delivered on EVERY run, resume
     // included. The kubernetes runner used to suppress it on a resume that was not a follow-up;
     // both platforms now render the one plan (runner-plan.ts), and the k8s twin of this case is
@@ -498,6 +517,25 @@ describe("the board's environment", () => {
                 },
             })
         ).toEqual({});
+    });
+
+    // A Jira credential is a managed connection the board spends (docs/connections.md): even a
+    // stale or hand-planted claim value never reaches the runner's env file, so a runner holds the
+    // attempt pair and nothing that authenticates to Atlassian. Pinned beside the k8s Secret case.
+    it('never writes a Jira credential to the env file, only the attempt pair', () => {
+        const withJira: BoardJob = {
+            ...envJob,
+            env: {
+                MY_TOKEN: 'board-secret',
+                ATLASSIAN_SITE: 'https://example.atlassian.net',
+                ATLASSIAN_EMAIL: 'agent@example.com',
+                ATLASSIAN_API_TOKEN: 'atlassian-secret',
+            },
+        };
+        const body = envFileBody(withJira, loadDriverConfig({}));
+        expect(body).not.toContain('ATLASSIAN');
+        expect(body).not.toContain('atlassian-secret');
+        expect(body).toContain('RUNNER_LEASE_TOKEN=');
     });
 
     it('writes one NAME=value line per variable, reserved names dropped', () => {

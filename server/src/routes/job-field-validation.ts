@@ -1,4 +1,12 @@
-import { COMMAND_LIMIT, ERROR_CODES, EXECUTOR_SCOPES, USER_SCOPE } from '@factory-ai/core';
+import {
+    COMMAND_LIMIT,
+    ERROR_CODES,
+    EXECUTOR_SCOPES,
+    MAX_TASK_SKILLS,
+    SKILL_NAME,
+    SKILL_NAME_LIMIT,
+    USER_SCOPE,
+} from '@factory-ai/core';
 import type { ExecutorScope } from '@factory-ai/core';
 import { GATES_OUTCOMES, type RecordedEvidence } from '../db/evidence-policy.js';
 import type { FailureKind, GateReport, JobOutcome, JobStatus } from '../db/job-store-types.js';
@@ -105,6 +113,24 @@ export function validateExecutorScopeField(
         return { ok: false, message: `executorScope must be one of: ${EXECUTOR_SCOPES.join(', ')}` };
     }
     return { ok: true, value: raw as ExecutorScope };
+}
+
+/**
+ * The skills a task selects (issue #545): absent or null means none. A well-formed name list —
+ * bounded, no duplicates — is this function's business; whether each name is installed is the
+ * caller's, which holds the catalog.
+ */
+export function validateSkillsField(raw: unknown): { ok: true; value: string[] } | { ok: false; message: string } {
+    if (raw === undefined || raw === null) return { ok: true, value: [] };
+    if (!Array.isArray(raw)) return { ok: false, message: 'skills must be an array of skill names' };
+    if (raw.length > MAX_TASK_SKILLS) return { ok: false, message: `skills holds at most ${MAX_TASK_SKILLS} names` };
+    for (const name of raw) {
+        if (typeof name !== 'string' || name.length > SKILL_NAME_LIMIT || !SKILL_NAME.test(name)) {
+            return { ok: false, message: 'every skill must be a skill name: lowercase letters, digits and hyphens' };
+        }
+    }
+    if (new Set(raw).size !== raw.length) return { ok: false, message: 'skills must not repeat a name' };
+    return { ok: true, value: raw as string[] };
 }
 
 export interface ResolvedWorkflow {

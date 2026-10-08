@@ -114,6 +114,21 @@ describe('the runner job spec', () => {
         ]);
     });
 
+    // Issue #545, the kubernetes half of the pair: a selection rides the master prompt, so the pod's
+    // container args carry it exactly as the docker argv does — the skills are baked in the image.
+    it('delivers a prompt naming the selected skills verbatim, as the docker runner does', () => {
+        const masterPrompt = `${MASTER_PROMPT}\n- Selected skills: github, jira`;
+        const withSkills = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, masterPrompt },
+            {
+                id: SESSION,
+                resume: false,
+            }
+        );
+        expect(withSkills.spec.template.spec.containers[0].args).toContain(masterPrompt);
+    });
+
     // Parity, decided in docker's favour: the prompt is delivered on EVERY run, resume included.
     // This platform used to suppress it on a resume that was not a follow-up, and docker never
     // did — one of the two had to be wrong, and a restored conversation that receives no prompt
@@ -3137,6 +3152,24 @@ describe('the kubernetes runner', () => {
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path === `${secretsPath}/${secretName(envJob)}`)
         ).toBe(true);
+    });
+
+    // The parity pin for docs/connections.md: the runner pod gets the attempt pair and the board
+    // URL, from which its entrypoint derives JIRA_API — and never a Jira credential, whatever the
+    // claim carried.
+    it('never puts a Jira credential in the per-attempt Secret or the pod env', async () => {
+        const { request, calls } = fakeRequest();
+        const withJira: BoardJob = {
+            ...job,
+            env: { ATLASSIAN_API_TOKEN: 'atlassian-secret', ATLASSIAN_EMAIL: 'agent@example.com' },
+        };
+        await runner(request).run(withJira, { id: SESSION, resume: false });
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
+        expect(Object.keys(stringData).filter((key) => key.startsWith('ATLASSIAN'))).toEqual([]);
+        expect(JSON.stringify(calls.map((call) => call.body))).not.toContain('atlassian-secret');
+        expect(stringData).toMatchObject({ RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken });
     });
 
     it('creates the per-attempt Secret for every runner — the pair rides it even with no claim env', async () => {

@@ -18,7 +18,7 @@ import { PROBE_HELPER_ID } from './workflow-blocks/merge-conflict-autofix.js';
 import { nodeOf, type WorkflowDefinition } from './workflow-schema.js';
 
 /** Versioned so tests and later migrations can name the exact behavior they expect. */
-export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v3';
+export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v4';
 
 /**
  * The character cap on each rendered text, the master prompt and the turn context alike. Generous
@@ -73,10 +73,17 @@ export interface MasterPromptClaimInput {
     snapshot: WorkflowDefinition | null;
     /** This claim's own declared pre/post block-helper steps, exactly as resolved onto it. */
     helperPlans: ClaimHelperPlan[] | undefined;
+    /**
+     * The thread root's selected skill names (issue #545): catalog names, validated at task
+     * creation, so they are safe to render. Thread-invariant — it is the root's, never a row's.
+     * Absent is none.
+     */
+    skills?: readonly string[];
 }
 
 interface RenderContext {
     mode: JobMode;
+    skills: readonly string[];
     workflowName: string | null;
     workflowNode: string | null;
     capabilities: readonly CapabilityLabel[];
@@ -92,6 +99,12 @@ function renderContextBlock(ctx: RenderContext): string {
     // "Current task", not "current node prompt": an objective claim has no node at all, and the
     // wording must read true in both modes.
     lines.push('- Your boundary: complete only the current task and return control.');
+    if (ctx.skills.length > 0) {
+        lines.push(
+            `- Selected skills: ${ctx.skills.join(', ')}`,
+            '- Load each selected skill with your skill tool before you start and follow its instructions; a skill grants no access beyond what this task already has.'
+        );
+    }
     return lines.join('\n');
 }
 
@@ -170,6 +183,7 @@ function renderContext(input: MasterPromptClaimInput): RenderContext | null {
     const node = workflowNode !== null && snapshot !== null ? nodeOf(snapshot, workflowNode) : undefined;
     return {
         mode,
+        skills: input.skills ?? [],
         workflowName,
         workflowNode,
         capabilities: claimCapabilities(input, node),

@@ -80,25 +80,14 @@ CLAUDE_JSON="$CLAUDE_CONFIG_DIR/.claude.json" node -e "
     fs.writeFileSync(f, JSON.stringify(c, null, 2));
 " "$WORKDIR" "$TRUST_MAIN" || echo "claude-executor: could not record workspace trust in .claude.json" >&2
 
-# Jira (docs/env.md): when the claim env carries all three ATLASSIAN_* names, export JIRA_API —
-# the site's REST base on the api.atlassian.com gateway, the only host a scoped (service-account)
-# token authenticates against; acli only takes unscoped tokens. The cloud id comes from the site's
-# public tenant_info. A failed lookup does not fail the run: most tasks never touch Jira, and the
-# jira skill tells the agent to stop and report when JIRA_API is missing. JIRA_API is derived here,
-# never inherited: a stale one would send the token wherever it points.
+# Jira (docs/connections.md): JIRA_API is the board's connector proxy for THIS attempt, never
+# Atlassian itself — the credential stays on the board, which checks the attempt's lease and the
+# task's selected connection on every call. Derived here, never inherited: a stale value would
+# send the lease pair wherever it points. The jira skill passes the pair as headers and tells the
+# agent to stop and report when the board refuses.
 unset JIRA_API
-if [ -n "${ATLASSIAN_SITE:-}" ] && [ -n "${ATLASSIAN_EMAIL:-}" ] && [ -n "${ATLASSIAN_API_TOKEN:-}" ]; then
-    jira_host=${ATLASSIAN_SITE#*://}
-    jira_host=${jira_host%%/*}
-    jira_cloud_id=$(curl -fsS --proto '=https' -m 10 "https://$jira_host/_edge/tenant_info" 2>/dev/null \
-        | node -e "try { const id = JSON.parse(require('fs').readFileSync(0, 'utf8')).cloudId; if (typeof id === 'string') process.stdout.write(id); } catch {}")
-    if [ -n "$jira_cloud_id" ]; then
-        export JIRA_API="https://api.atlassian.com/ex/jira/$jira_cloud_id/rest/api/3"
-    else
-        echo "claude-executor: could not resolve the Jira cloud id of $jira_host; Jira is unavailable this run" >&2
-    fi
-elif [ -n "${ATLASSIAN_SITE:-}${ATLASSIAN_EMAIL:-}${ATLASSIAN_API_TOKEN:-}" ]; then
-    echo "claude-executor: Jira needs ATLASSIAN_SITE, ATLASSIAN_EMAIL and ATLASSIAN_API_TOKEN; skipped" >&2
+if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUNNER_LEASE_TOKEN:-}" ]; then
+    export JIRA_API="${FACTORY_STATS_URL%/}/api/jobs/$RUNNER_JOB_ID/connectors/jira/rest/api/3"
 fi
 
 # The member's own executor config — model, env vars, permission allowlist — synthesized by the

@@ -62,6 +62,18 @@ const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//];
 const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
 
 /**
+ * The connector proxy (issue #546): a runner's calls through a managed connection. The credential
+ * is the attempt's job id + lease token pair, in EVERY `AUTH_MODE` — a connection's secret is the
+ * thing the proxy protects, so `none` does not open it — and nothing else is accepted: no cookie,
+ * bearer, worker secret or ingest token. The route resolves the pair against the live attempt on
+ * each call; the hook only insists the pair is present and names the job in the URL.
+ */
+const CONNECTOR_ROUTES: readonly RegExp[] = [/^\/api\/jobs\/[^/]+\/connectors\//];
+
+export const JOB_ID_HEADER = 'x-factory-job-id';
+export const LEASE_TOKEN_HEADER = 'x-factory-job-lease-token';
+
+/**
  * What an organization token may reach, and nothing else — an allowlist, because a refusal list
  * would silently admit every route added after it. Each entry names no person: board and repo
  * reads. Everything a route needs a `callerOf` for — queueing a job above all,
@@ -115,12 +127,13 @@ const OPEN_ROUTES: readonly RegExp[] = [
     /^\/api\/github\/webhook$/,
 ];
 
-type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest';
+type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
 export function requirementFor(path: string): Requirement {
     if (!path.startsWith('/api/')) return 'open';
     if (OPEN_ROUTES.some((route) => route.test(path))) return 'open';
+    if (CONNECTOR_ROUTES.some((route) => route.test(path))) return 'connector';
     if (WORKER_ROUTES.some((route) => route.test(path))) return 'worker';
     if (BRANCH_ROUTES.some((route) => route.test(path))) return 'branch';
     if (INGEST_ROUTES.some((route) => route.test(path))) return 'ingest';
@@ -281,8 +294,8 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
     // organization, which is the whole finding. A pair that is PRESENT but does not resolve is a
     // 401 with no fall-through, the same rule a failed bearer gets: a credential that failed must
     // not ride a weaker one behind it.
-    const jobId = request.headers['x-factory-job-id'];
-    const leaseToken = request.headers['x-factory-job-lease-token'];
+    const jobId = request.headers[JOB_ID_HEADER];
+    const leaseToken = request.headers[LEASE_TOKEN_HEADER];
     if (typeof jobId === 'string' && jobId && typeof leaseToken === 'string' && leaseToken) {
         const orgId = await leaseOrgOf(jobId, leaseToken);
         if (!orgId) {
@@ -301,6 +314,17 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
     await reply
         .code(HTTP_UNAUTHORIZED)
         .send({ error: 'Branch ingest needs a credential', code: ERROR_CODES.UNAUTHENTICATED });
+}
+
+async function enforceConnector(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const urlJobId = pathOf(request.url).match(/^\/api\/jobs\/([^/]+)\//)?.[1];
+    const jobId = request.headers[JOB_ID_HEADER];
+    const leaseToken = request.headers[LEASE_TOKEN_HEADER];
+    if (typeof jobId === 'string' && jobId === urlJobId && typeof leaseToken === 'string' && leaseToken) return;
+    await reply.code(HTTP_UNAUTHORIZED).send({
+        error: "Connector calls need the running attempt's job id and lease token",
+        code: ERROR_CODES.UNAUTHENTICATED,
+    });
 }
 
 interface WorkerAuthDeps {
@@ -405,6 +429,7 @@ export async function registerAuth(
         const requirement = requirementFor(pathOf(request.url));
         if (requirement === 'open') return;
         if (requirement === 'ingest') return enforceIngest(auth, request, reply);
+        if (requirement === 'connector') return enforceConnector(request, reply);
         if (requirement === 'branch') return enforceBranch({ auth, store, leaseOrgOf }, request, reply);
         if (requirement === 'worker') return enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply);
         return enforceUser({ auth, store, resolveUser }, request, reply);

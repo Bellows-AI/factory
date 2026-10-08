@@ -4,23 +4,12 @@
  * claim/ack pair. See docs/jobs.md for the lease protocol and docs/workflows.md for the publish flag.
  */
 
-import {
-    CLAUDE_CODE,
-    EXECUTOR_TYPES,
-    executorSuspendedMessage,
-    OBJECTIVE_MODE,
-    USER_SCOPE,
-    type ExecutorScope,
-    type ExecutorType,
-    type JobMode,
-    OPENCODE,
-    RUNNER_MANAGED_KEYS,
-} from '@factory-ai/core';
+import { OBJECTIVE_MODE, type JobMode, skillSelectionProblems } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
+import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
-import { withMintedToken } from './job-store-org-resolvers.js';
 import { stopReviewsOf } from './job-store-reviews.js';
 import { workspacePathFor } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
@@ -37,6 +26,7 @@ import type {
 import { claimCommand } from './follow-up-recap.js';
 import { reviewerPrompts } from './review-prompt.js';
 import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
+import { skillCatalog } from '../skills.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
 import { type WorkflowDefinition, isAgentlessNode, isPublishNode, nodeOf, nodeSkipsGates } from './workflow-schema.js';
 
@@ -60,6 +50,72 @@ export interface ClaimCandidateRow {
     review_of: string | null;
     review_spec: ReviewerSpec | null;
     review_ref: string | null;
+    /** The thread ROOT's selected skills (055), read in the claim's RETURNING. */
+    skills: string[];
+    /** Whether the thread ROOT selected a managed Jira connection (054), read in the same RETURNING. */
+    has_jira_connection: boolean;
+}
+
+/**
+ * Retire what has burned its attempts, before looking for work. Without this a command that kills
+ * its worker is reclaimed every time its lease expires, forever. The dead attempt's segment banks
+ * here: the row ran for real before its worker went quiet, and the retirement must not erase it. A
+ * stamped row never reaches this sweep — the settle in `claimJob` has already landed it `stopped`,
+ * which is the verdict a stop is (issue #152): dead is for attempts that failed on their own.
+ */
+async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql): Promise<void> {
+    const { orgId, wallTick } = ctx;
+    const retired = await tx<{ id: string; root_job_id: string }[]>`
+        update job set status = 'dead', finished_at = now(), lease_token = null,
+                       wall_clock_ms = ${wallTick}
+        where org_id = ${orgId} and status = 'running'
+          and lease_expires_at <= now() and attempts >= max_attempts
+        returning id, root_job_id
+    `;
+    // A retired caller's separate reviews (issue #549) have no one left to read them.
+    await stopReviewsOf(
+        tx,
+        { orgId, wallTick, stoppedBy: null },
+        retired.map((r) => r.id)
+    );
+    // A merge-marked thread whose last moving member just retired is closed by it (issue #390) —
+    // the shared conditional settle, distinct roots in deterministic order so two transactions
+    // settling the same roots cannot cycle on the locks.
+    for (const root of [...new Set(retired.map((r) => r.root_job_id))].sort()) {
+        await settleIfMergeClosed(ctx, root, tx);
+    }
+}
+
+/**
+ * The cancellation fence (issue #231): a block-wait continuation the wake sweep just made
+ * claimable, whose wait was cancelled (PR close, task stop/remove) after the wake committed but
+ * before this claim reached it, is settled here rather than handed out — PR-close/thread-stop
+ * cancellation must win the race against a wake. Every other candidate (a workflow-less job, a
+ * plain agent node, a still-open continuation) pays one indexed lookup keyed off nothing but this
+ * row's own id. True when the row was settled and the claim must move to the next candidate.
+ */
+async function settleCancelledContinuation(
+    ctx: JobStoreContext,
+    tx: TransactionSql,
+    row: { id: string; workflow_node: string | null },
+    rootJobId: string
+): Promise<boolean> {
+    const { orgId } = ctx;
+    if (row.workflow_node === null || !(await isCancelledContinuation(tx, orgId, row.id))) return false;
+    await tx`
+        update job set status = 'stopped', finished_at = now(),
+                       lease_token = null, lease_expires_at = now(),
+                       -- The claim update above already burned an attempt and banked a
+                       -- segment for a run that never actually launched — handed back,
+                       -- the same "a settle here is not a failed try" rule stop/suspend
+                       -- already follow for a park.
+                       attempts = greatest(attempts - 1, 0)
+        where org_id = ${orgId} and id = ${row.id}
+    `;
+    // The settled continuation may have been a merge-closed thread's last moving member (issue
+    // #390) — the shared conditional settle, on the already-held lock.
+    await settleIfMergeClosed(ctx, rootJobId, tx);
+    return true;
 }
 
 /**
@@ -72,34 +128,9 @@ async function claimNextCandidate(
     worker: string,
     leaseSeconds: number
 ): ReturnType<JobStore['claim']> {
-    const { sql, orgId, env, githubToken, gatesReader, executorConfig, hasWorkspaces, prs } = ctx;
+    const { sql, orgId } = ctx;
     return sql.begin(async (tx) => {
-        // Retire what has burned its attempts, before looking for work. Without this a
-        // command that kills its worker is reclaimed every time its lease expires, forever.
-        // The dead attempt's segment banks here: the row ran for real before its worker
-        // went quiet, and the retirement must not erase it. A stamped row never reaches
-        // this sweep — the settle above has already landed it `stopped`, which is the
-        // verdict a stop is (issue #152): dead is for attempts that failed on their own.
-        await tx`
-            update job set status = 'dead', finished_at = now(), lease_token = null,
-                           wall_clock_ms = ${ctx.wallTick}
-            where org_id = ${orgId} and status = 'running'
-              and lease_expires_at <= now() and attempts >= max_attempts
-            returning id, root_job_id
-        `.then(async (retired) => {
-            // A retired caller's separate reviews (issue #549) have no one left to read them.
-            await stopReviewsOf(
-                tx,
-                { orgId, wallTick: ctx.wallTick, stoppedBy: null },
-                retired.map((r) => r.id)
-            );
-            // A merge-marked thread whose last moving member just retired is closed by it
-            // (issue #390) — the shared conditional settle, distinct roots in deterministic
-            // order so two transactions settling the same roots cannot cycle on the locks.
-            for (const root of [...new Set(retired.map((r) => r.root_job_id))].sort()) {
-                await settleIfMergeClosed(ctx, root, tx);
-            }
-        });
+        await retireExhaustedAttempts(ctx, tx);
 
         /*
          * The thread-exclusion, rendered once and used twice below. `id` and `root` are the
@@ -177,6 +208,8 @@ async function claimNextCandidate(
                     review_of: string | null;
                     review_spec: ReviewerSpec | null;
                     review_ref: string | null;
+                    skills: string[];
+                    has_jira_connection: boolean;
                 }[]
             >`
                 update job set
@@ -231,7 +264,11 @@ async function claimNextCandidate(
                           review_of, review_spec, review_ref,
                           (parent_job_id is not null and command_delivered_at is null) as follow_up,
                           (select r.command from job r
-                           where r.org_id = job.org_id and r.id = job.root_job_id) as root_command
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
+                          (select r.skills from job r
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as skills,
+                          (select r.jira_connection_id is not null from job r
+                           where r.org_id = job.org_id and r.id = job.root_job_id) as has_jira_connection
             `;
 
             const row = rows[0];
@@ -239,55 +276,57 @@ async function claimNextCandidate(
             // holder claimed this thread first. Fall through to the next candidate.
             if (!row) continue;
 
-            // The cancellation fence (issue #231): a block-wait continuation the wake sweep just
-            // made claimable, whose wait was cancelled (PR close, task stop/remove) after the wake
-            // committed but before this claim reached it, is settled here rather than handed out —
-            // PR-close/thread-stop cancellation must win the race against a wake. Every other
-            // candidate (a workflow-less job, a plain agent node, a still-open continuation) pays
-            // one indexed lookup keyed off nothing but this row's own id.
-            if (row.workflow_node !== null && (await isCancelledContinuation(tx, orgId, row.id))) {
-                await tx`
-                    update job set status = 'stopped', finished_at = now(),
-                                   lease_token = null, lease_expires_at = now(),
-                                   -- The claim update above already burned an attempt and banked a
-                                   -- segment for a run that never actually launched — handed back,
-                                   -- the same "a settle here is not a failed try" rule stop/suspend
-                                   -- already follow for a park.
-                                   attempts = greatest(attempts - 1, 0)
-                    where org_id = ${orgId} and id = ${row.id}
-                `;
-                // The settled continuation may have been a merge-closed thread's last moving
-                // member (issue #390) — the shared conditional settle, on the already-held lock.
-                await settleIfMergeClosed(ctx, rootJobId, tx);
-                continue;
-            }
+            if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) continue;
 
-            // Resolved here rather than in the route, because the org is bound here and
-            // the author and repo label are in hand — and ON THE TRANSACTION, so a claim
-            // holds one connection. A resolver failure propagates: the claim route's
-            // guard answers 503, the driver retries the claim, and a job is never handed
-            // out with half an environment. The minted installation token goes under it
-            // as the base layer, and its failure rolls back exactly the same way. A Remote
-            // Control claim never sees claimEnv at all (driver/src/claim.ts) — like every
-            // other claim env value, a claude-code row's config does not reach a Remote
-            // Control runner, which gets only the baked settings.json and the mounted auth
-            // volume.
-            // A named-profile review (issue #549) is claimed on its own, narrower terms: the
-            // profile's env grant, no minted token, no gates, no publish — see `claimReview`.
-            const reviewRow = reviewRowOf(row);
-            if (reviewRow) return claimReview(tx, { env, executorConfig, orgId, hasWorkspaces, rootJobId }, reviewRow);
-            const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
-            const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
-            const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
-            const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
-            const command = await claimCommand(tx, orgId, rootJobId, row);
-            return buildClaimResult({ ...row, command }, rootJobId, {
-                ...executor,
-                ...gates,
-                ...workflow,
-                ...evidence,
-            });
+            return assembleClaim(ctx, tx, row, rootJobId);
         }
+    });
+}
+
+/**
+ * Resolves what the claimed row carries and builds the claim. Resolved here rather than in the
+ * route, because the org is bound here and the author and repo label are in hand — and ON THE
+ * TRANSACTION, so a claim holds one connection. A resolver failure propagates: the claim route's
+ * guard answers 503, the driver retries the claim, and a job is never handed out with half an
+ * environment. The minted installation token goes under it as the base layer, and its failure
+ * rolls back exactly the same way. A Remote Control claim never sees claimEnv at all
+ * (driver/src/claim.ts) — like every other claim env value, a claude-code row's config does not
+ * reach a Remote Control runner, which gets only the baked settings.json and the mounted auth volume.
+ *
+ * A named-profile review (issue #549) is claimed on its own, narrower terms: the profile's env
+ * grant, no minted token, no gates, no publish — see `claimReview`.
+ */
+async function assembleClaim(
+    ctx: JobStoreContext,
+    tx: TransactionSql,
+    row: Parameters<typeof reviewRowOf>[0] & {
+        created_by: string | null;
+        repo: string | null;
+        executor: string | null;
+        executor_scope: string | null;
+        workflow_node: string | null;
+        workflow_name: string | null;
+        mode: JobMode;
+    },
+    rootJobId: string
+): Promise<Claim> {
+    const { orgId, env, githubToken, gatesReader, executorConfig, hasWorkspaces, prs } = ctx;
+    const reviewRow = reviewRowOf(row);
+    if (reviewRow) return claimReview(tx, { env, executorConfig, orgId, hasWorkspaces, rootJobId }, reviewRow);
+    const executor = await resolveClaimExecutor(tx, { env, githubToken, executorConfig }, row);
+    const gates = await resolveClaimGates(gatesReader, { orgId, hasWorkspaces, rootJobId }, row);
+    const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
+    const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
+    const command = await claimCommand(tx, orgId, rootJobId, row);
+    // The thread root's selection checked against what this claim's env authorizes: names
+    // only, so selecting a skill never adds to the env and the sentence never carries a value.
+    const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, row.has_jira_connection ? ['jira'] : []);
+    return buildClaimResult({ ...row, command }, rootJobId, {
+        ...executor,
+        ...gates,
+        ...workflow,
+        ...evidence,
+        skillRefusal,
     });
 }
 
@@ -370,111 +409,19 @@ export async function claimJob(
     return claimNextCandidate(ctx, worker, leaseSeconds);
 }
 
-export interface ResolvedClaimExecutor {
-    claimEnv: Record<string, string> | undefined;
-    executorType: ExecutorType | null;
-    executorRefusal: string | null;
-}
-
 /**
- * claim()'s env + executor resolution, unchanged: the stacked env, the minted installation token
- * under it as the base layer, and the author's executor row merged over the runner's config env
- * name. Resolved ON THE TRANSACTION, so a claim holds one connection rather than two, and a
- * resolver or mint failure rolls the whole claim back (docs/env.md).
+ * The sentence that stops a claim whose selected skills cannot run, or null (issue #545): a
+ * selection the catalog lacks, a skill whose connection has no env names in the claim's resolved
+ * env, or a managed connection the task never selected (`managed`; whether it is still authorized
+ * is the proxy's per-call check, docs/connections.md). Config-kind and recoverable — the member fixes the settings and retries.
  */
-/**
- * The pasted executor config rides the claim env under the name that CLI's entrypoint merges
- * over the baked configuration, applied LAST so the synthesized value wins a collision with a
- * member env var — both names are reserved at PUT besides.
- */
-export function mergeExecutorConfigEnv(
-    claimEnv: Record<string, string> | undefined,
-    configured: { type: string; config: Record<string, unknown> } | null
-): Record<string, string> | undefined {
-    const member = configured?.config;
-    if (member === null || member === undefined || typeof member !== 'object' || Array.isArray(member)) {
-        return claimEnv;
-    }
-    // RUNNER_MANAGED_KEYS is the runner's fence per type, stripped before the config travels.
-    // opencode's `permission` is baked into the image and patched by its entrypoint — a pasted
-    // `external_directory: allow` would open every member's tree to this run. claude-code's `hooks`,
-    // `enabledPlugins` and `extraKnownMarketplaces` are the git guard hook and the baked
-    // context-mode plugin install: a pasted `hooks` would silently drop the guard; a pasted
-    // plugin/marketplace pair would run code the image never installed. Everything else — model,
-    // env, permissions.allow, provider — travels verbatim.
-    const envName =
-        configured?.type === OPENCODE
-            ? 'OPENCODE_CONFIG_CONTENT'
-            : configured?.type === CLAUDE_CODE
-              ? 'CLAUDE_CODE_CONFIG_CONTENT'
-              : null;
-    if (envName === null) return claimEnv;
-    const fenced = new Set(RUNNER_MANAGED_KEYS[configured!.type as ExecutorType]);
-    const rest = Object.fromEntries(Object.entries(member).filter(([key]) => !fenced.has(key)));
-    return { ...(claimEnv ?? {}), [envName]: JSON.stringify(rest) };
-}
-
-/** The entries of `env` named in `grant`, nothing else: a reviewer profile's `connections`. */
-function grantedEnv(
-    env: Record<string, string> | undefined,
-    grant: readonly string[]
-): Record<string, string> | undefined {
-    if (env === undefined) return undefined;
-    return Object.fromEntries(Object.entries(env).filter(([name]) => grant.includes(name)));
-}
-
-export async function resolveClaimExecutor(
-    tx: TransactionSql,
-    deps: {
-        env: CreateJobStoreDeps['env'];
-        githubToken: CreateJobStoreDeps['githubToken'];
-        executorConfig: CreateJobStoreDeps['executorConfig'];
-        /**
-         * Set for a reviewer's claim (issue #549): ONLY these member env names reach it, and no
-         * installation token is minted for it. The executor config (the agent's own runtime
-         * settings) still travels — a reviewer needs to run — but nothing of the caller's access does.
-         */
-        grant?: readonly string[];
-    },
-    row: { created_by: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
-): Promise<ResolvedClaimExecutor> {
-    const { env, githubToken, executorConfig, grant } = deps;
-    const resolvedEnv = env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined;
-    // The mint fills only the gap: when the stacked env already carries a GITHUB_TOKEN, the mint
-    // would be discarded — so it is not made at all, rather than spend a GitHub call and leave a
-    // live token nothing holds. A granted claim mints nothing: a token is access the profile never named.
-    let claimEnv =
-        grant !== undefined
-            ? grantedEnv(resolvedEnv, grant)
-            : githubToken && resolvedEnv?.GITHUB_TOKEN === undefined
-              ? withMintedToken(await githubToken.fresh(row.repo), resolvedEnv)
-              : resolvedEnv;
-    // The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
-    // 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
-    // meaning — and the organization's when it is 'org', which is how a team-shared profile
-    // resolves for any author. Its TYPE is the execution input: it tells the driver which
-    // CLI/image family to run. A label matching nothing IN THAT SCOPE remains null on the claim
-    // and is failed explicitly by the driver; there is no global CLI fallback, and no cross-scope
-    // one either — a selection names its scope, and the other scope's same-named row is simply not
-    // this selection's answer.
-    let executorType: ExecutorType | null = null;
-    let executorRefusal: string | null = null;
-    if (executorConfig && row.executor !== null && row.created_by !== null) {
-        const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
-        const configured = await executorConfig.configFor(row.created_by, row.executor, scope, tx);
-        if (configured?.suspended) {
-            // A suspended profile (issue 440) launches nothing and its config never reaches the
-            // claim: the driver fails the task with this sentence before any runner starts, for a
-            // fresh task, a retry and a follow-up alike — they all claim through here.
-            executorRefusal = executorSuspendedMessage(scope, row.executor);
-        } else {
-            if (configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType)) {
-                executorType = configured.type as ExecutorType;
-            }
-            claimEnv = mergeExecutorConfigEnv(claimEnv, configured);
-        }
-    }
-    return { claimEnv, executorType, executorRefusal };
+export function resolveClaimSkills(
+    skills: readonly string[],
+    claimEnv: Readonly<Record<string, string>> | undefined,
+    managed: readonly string[] = []
+): string | null {
+    const problems = skillSelectionProblems(skillCatalog(), skills, claimEnv ?? {}, managed);
+    return problems.length === 0 ? null : `[skills unavailable] ${problems.join('; ')}. Fix this, then retry the task.`;
 }
 
 export interface ResolvedClaimGates {
@@ -600,6 +547,8 @@ async function claimReview(
         helperPlans: undefined,
         masterPrompt: reviewerPrompts(spec, '').masterPrompt,
         turnContext: null,
+        // A reviewer selects no skills and no managed connection: nothing to refuse.
+        skillRefusal: null,
     });
     return { ...claim, reviewRun: { profile: spec.name, ref: row.review_ref, timeoutMinutes: spec.timeoutMinutes } };
 }
@@ -706,7 +655,7 @@ export async function resolveClaimHelperPlans(
 async function resolveClaimWorkflow(
     tx: TransactionSql,
     ctx: { orgId: string; rootJobId: string; prs: JobStorePrs | undefined },
-    row: { workflow_node: string | null; workflow_name: string | null; mode: JobMode },
+    row: { workflow_node: string | null; workflow_name: string | null; mode: JobMode; skills: string[] },
     gates: ClaimGatesRead
 ): Promise<
     ResolvedClaimPublish & {
@@ -732,6 +681,7 @@ async function resolveClaimWorkflow(
         workflowName: row.workflow_name,
         snapshot,
         helperPlans,
+        skills: row.skills,
     };
     return {
         ...published,
@@ -752,12 +702,14 @@ export function buildClaimResult(
             helperPlans: ClaimHelperPlan[] | undefined;
             masterPrompt: string | null;
             turnContext: string | null;
+            skillRefusal: string | null;
         }
 ): Claim {
     const {
         claimEnv,
         executorType,
         executorRefusal,
+        skillRefusal,
         claimPath,
         claimGates,
         gateError,
@@ -778,6 +730,7 @@ export function buildClaimResult(
         leaseExpiresAt: row.lease_expires_at.toISOString(),
         executorType,
         executorRefusal,
+        skillRefusal,
         userId: row.created_by,
         masterPrompt,
         turnContext,

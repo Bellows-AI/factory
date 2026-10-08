@@ -228,6 +228,20 @@ describe('the claimed job', () => {
         expect((await missingBoard.claim('driver-1'))?.executorRefusal).toBeNull();
     });
 
+    it('carries the board’s skill refusal, and null when it sends none (issue 545)', async () => {
+        const { fetch } = recorder(() =>
+            claimed({ skillRefusal: '[skills unavailable] skill "jira" needs a connection' })
+        );
+        const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });
+        expect((await board.claim('driver-1'))?.skillRefusal).toBe(
+            '[skills unavailable] skill "jira" needs a connection'
+        );
+
+        const { fetch: missing } = recorder(() => claimed());
+        const missingBoard = createBoard({ url: 'http://board', leaseSeconds: 300, fetch: missing });
+        expect((await missingBoard.claim('driver-1'))?.skillRefusal).toBeNull();
+    });
+
     it('carries the account that queued it', async () => {
         const { fetch } = recorder(() => claimed({ userId: 'user-7' }));
         const board = createBoard({ url: 'http://board', leaseSeconds: 300, fetch });

@@ -63,6 +63,8 @@ interface StoreStub extends JobStore {
         executor: string | null;
         executorScope: string | null;
     }[];
+    /** The skills each create was handed (issue #545), parallel to `created`. */
+    skillSelections: (readonly string[] | undefined)[];
     /** The workflow triple the create was handed, when one resolved — empty in objective mode. */
     workflowTargets: {
         id: string;
@@ -112,7 +114,7 @@ interface StoreStub extends JobStore {
     asked: { id: string; questionId: string; questions: AskedQuestion[] }[];
     expired: { id: string; questionId: string }[];
     answered: { id: string; questionId: string; answers: Record<string, string>; answeredBy: string | null }[];
-    /** The named-reviewer requests and reads the routes handed the store (054, issue #549). */
+    /** The named-reviewer requests and reads the routes handed the store (056, issue #549). */
     reviewRequests: { id: string; request: ReviewRequest }[];
     reviewReads: { id: string; key: string }[];
 }
@@ -198,6 +200,7 @@ function stubStore(
     };
     const stub: StoreStub = {
         created: [],
+        skillSelections: [],
         workflowTargets: [],
         listed: [],
         commands: [],
@@ -243,6 +246,7 @@ function stubStore(
                 executor: target?.executor ?? null,
                 executorScope: target?.executorScope ?? null,
             });
+            stub.skillSelections.push(target?.skills);
             if (target?.workflow) stub.workflowTargets.push(target.workflow);
             stub.commands.push(command);
             return options.create ?? { id: ID };
@@ -754,6 +758,58 @@ describe('POST /api/jobs workflow resolution', () => {
         expect(response.statusCode).toBe(201);
         expect(jobs.workflowTargets).toEqual([]);
         expect(jobs.commands).toEqual(['echo hi']);
+    });
+});
+
+describe('POST /api/jobs skill selection', () => {
+    it('forwards the selected skills to the store', async () => {
+        const jobs = stubStore();
+        const instance = await harnessWith(jobs, stubWorkflows());
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', skills: ['github', 'jira'] });
+
+        expect(response.statusCode).toBe(201);
+        expect(jobs.skillSelections).toEqual([['github', 'jira']]);
+    });
+
+    it('forwards no skills when the body names none', async () => {
+        const jobs = stubStore();
+        const instance = await harnessWith(jobs, stubWorkflows());
+
+        await post(instance, '/api/jobs', { command: 'echo hi' });
+        await post(instance, '/api/jobs', { command: 'echo hi', skills: null });
+
+        expect(jobs.skillSelections).toEqual([[], []]);
+    });
+
+    it('refuses an unknown skill with a named, actionable error and queues nothing', async () => {
+        const jobs = stubStore();
+        const instance = await harnessWith(jobs, stubWorkflows());
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', skills: ['github', 'ghost'] });
+
+        expect(response.statusCode).toBe(404);
+        expect(response.json().code).toBe('UNKNOWN_SKILL');
+        expect(response.json().error).toContain('"ghost"');
+        expect(response.json().error).toContain('installed: ');
+        expect(jobs.created).toEqual([]);
+    });
+
+    it.each([
+        ['a string', 'github'],
+        ['a non-string entry', ['github', 7]],
+        ['a malformed name', ['Not A Skill']],
+        ['a repeated name', ['github', 'github']],
+        ['too many names', Array.from({ length: 17 }, (_, i) => `skill-${i}`)],
+    ])('refuses %s as BAD_SKILLS and queues nothing', async (_label, skills) => {
+        const jobs = stubStore();
+        const instance = await harnessWith(jobs, stubWorkflows());
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', skills });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_SKILLS');
+        expect(jobs.created).toEqual([]);
     });
 });
 

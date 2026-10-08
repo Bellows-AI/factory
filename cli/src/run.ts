@@ -49,6 +49,7 @@ const MS_PER_SECOND = 1000;
 const SETTLE_EARLY_FRACTION = 0.5;
 
 export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name] [--executor-scope user|org]
+                          [--skill name]...
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
@@ -149,6 +150,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<number> {
                 repo: { type: 'string' },
                 executor: { type: 'string' },
                 'executor-scope': { type: 'string' },
+                skill: { type: 'string', multiple: true },
             },
         })
     );
@@ -162,6 +164,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<number> {
         repo: parsed.values.repo,
         executor: parsed.values.executor,
         executorScope,
+        skills: parsed.values.skill,
     });
     io.stdout(`${renderCreated(created)}\n`);
     return EXIT_OK;

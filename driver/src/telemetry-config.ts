@@ -33,6 +33,20 @@ export function claudeManagedSettings(endpoint: string): string {
             OTEL_LOG_ASSISTANT_RESPONSES: '0',
             OTEL_LOG_TOOL_DETAILS: '0',
         },
+        // The runner's `-p` session runs in auto mode; without these the classifier denies a
+        // task's own dependency change and credential check as if on a developer machine.
+        autoMode: {
+            environment: [
+                '$defaults',
+                '**Host containment**: Factory runner — a single-task, ephemeral container or Kubernetes pod with its own git worktree under /workspaces. The Factory driver owns pushing, pull requests and branch moves (its git guard hook enforces that). This is not a developer machine.',
+                '**Secrets management**: Factory injects the credentials this task needs (for example a Jira or GitHub token) as environment variables, and they are meant to be used against the service they belong to.',
+            ],
+            allow: [
+                '$defaults',
+                "Task Dependency Changes: Adding, upgrading or removing a package with npm, yarn or pnpm in the task worktree, from the project's configured registry, when the task calls for that dependency change — the lockfile update and the package's install scripts included. Registry overrides and packages from git URLs or tarballs are not covered.",
+                "Credential Presence Checks: Listing the NAMES of environment variables with their values removed or masked, and calling a task-provided credential's own service (its whoami, myself or current-user endpoint) to test that it authenticates — as long as the value itself is never printed or written anywhere.",
+            ],
+        },
     };
     return `${JSON.stringify(settings, null, 4)}\n`;
 }

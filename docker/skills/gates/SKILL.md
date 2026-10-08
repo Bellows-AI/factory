@@ -1,6 +1,8 @@
 ---
 name: gates
 description: Run a repository's verification gates (tests, lint, build checks declared in .bellows.yaml) in the shared environment image, and read their output. Use before finishing a task, after changes that could break CI, or whenever asked to "run the gates", "run the checks" or "verify with CI steps". Requires BELLOWS_GATE_URL and BELLOWS_GATE_TOKEN to be set.
+metadata:
+  requires-tools: curl
 ---
 
 # Verification gates

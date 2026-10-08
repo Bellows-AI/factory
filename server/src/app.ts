@@ -6,6 +6,9 @@ import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { OrgRegistry } from './orgs.js';
+import type { ConnectionOfLease } from './db/connection-store.js';
+import { connectionRoutes, type CloudIdLookup } from './routes/connections.js';
+import { connectorJiraRoutes } from './routes/connector-jira.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
 import { orgMemberRoutes } from './routes/org-members.js';
@@ -15,6 +18,7 @@ import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
 import { jobRoutes } from './routes/jobs.js';
 import { repoRoutes } from './routes/repos.js';
+import { skillRoutes } from './routes/skills.js';
 import { statsRoutes } from './routes/stats.js';
 import { taskRoutes } from './routes/tasks.js';
 import { tokenRoutes } from './routes/tokens.js';
@@ -22,6 +26,7 @@ import { versionRoutes } from './routes/version.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
 import type { TelemetryStore } from './telemetry/store.js';
+import { skillCatalog } from './skills.js';
 import { readVersion } from './version.js';
 
 const HTTP_NOT_FOUND = 404;
@@ -61,6 +66,13 @@ export interface AppDeps {
      */
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
+    /**
+     * The connector proxy's per-call check (`createConnectionOfLease`); the proxy route exists
+     * exactly when it does. `fetchFn` and `cloudIdLookup` are the test seams for Atlassian.
+     */
+    connectionOfLease?: ConnectionOfLease | undefined;
+    fetchFn?: typeof fetch | undefined;
+    cloudIdLookup?: CloudIdLookup | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -106,6 +118,9 @@ export async function buildApp({
     orgOfLease,
     orgOfJob,
     orgOfReclaim,
+    connectionOfLease,
+    fetchFn,
+    cloudIdLookup,
     identity,
     appSlug,
     installationListing,
@@ -146,6 +161,7 @@ export async function buildApp({
             await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
         }
     }
+    await app.register(skillRoutes(skillCatalog));
     await app.register(statsRoutes(config, orgs, auth, now));
     await app.register(repoRoutes({ config, orgs }));
     if (store) await app.register(ingestRoutes(store));
@@ -155,6 +171,11 @@ export async function buildApp({
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
+    // Managed connector connections (#546) and the runner-facing proxy that spends them.
+    await app.register(connectionRoutes({ orgs, ...(cloudIdLookup ? { lookupCloudId: cloudIdLookup } : {}) }));
+    if (connectionOfLease) {
+        await app.register(connectorJiraRoutes({ connectionOfLease, ...(fetchFn ? { fetchFn } : {}) }));
+    }
     await app.register(workspaceRoutes({ config, orgs }));
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.

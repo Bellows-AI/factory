@@ -149,7 +149,7 @@ export const jobRoutes =
         app.post('/api/jobs/:id/questions/:questionId/answer', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
             handleAnswer(orgs, request, reply)
         );
-        // A named reviewer's separate run (054, issue #549): the driver's request and its read of
+        // A named reviewer's separate run (056, issue #549): the driver's request and its read of
         // the verdict, both worker routes — the agent reaches them only through the control endpoint.
         app.post('/api/jobs/:id/review', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReviewRequest(orgs, request, reply)

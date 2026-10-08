@@ -220,7 +220,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/question`, 'worker'],
     [`/api/jobs/${JOB_ID}/question-expire`, 'worker'],
     [`/api/jobs/${JOB_ID}/questions/${JOB_ID}/answer`, 'user'],
-    // A named reviewer's separate run (054, issue #549): the driver's request and its read of the
+    // A named reviewer's separate run (056, issue #549): the driver's request and its read of the
     // verdict, both under the caller's lease — worker routes, never a person's or an org token's.
     [`/api/jobs/${JOB_ID}/review`, 'worker'],
     [`/api/jobs/${JOB_ID}/review-read`, 'worker'],
@@ -234,6 +234,12 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/activity`, 'user'],
     [`/api/jobs/${JOB_ID}/log`, 'user'],
     [`/api/jobs/${JOB_ID}/transcript`, 'user'],
+    // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
+    // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
+    [`/api/jobs/${JOB_ID}/connectors/jira/rest/api/3/myself`, 'connector'],
+    // Managing connections is a person's settings act; it falls through to `user`.
+    ['/api/connections', 'user'],
+    [`/api/connections/${JOB_ID}`, 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
     // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
     // repo must never choose the org it lands in, so the credential does. Its own requirement,
@@ -242,6 +248,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // Both fall through to `user` rather than being listed anywhere, which is the point: the
     // default is the safe one, so a new route is walled unless somebody deliberately opens it.
     ['/api/repos', 'user'],
+    ['/api/skills', 'user'],
     ['/api/workspace', 'user'],
     ['/api/workspace/repos', 'user'],
     // Access-token management: a person's settings act, so session cookie or personal bearer —

@@ -128,6 +128,16 @@ describe('factory job create', () => {
         });
     });
 
+    it('sends each repeated --skill as the skills list (issue #545), and no key when none is given', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        expect(await run(['job', 'create', '--skill', 'github', '--skill', 'jira', '--', 'npm test'], io)).toBe(0);
+        expect(await run(['job', 'create', '--', 'npm test'], io)).toBe(0);
+
+        expect(calls[0]!.body).toEqual({ command: 'npm test', skills: ['github', 'jira'] });
+        expect(calls[1]!.body).toEqual({ command: 'npm test' });
+    });
+
     it('sends no scope when the flag is absent — the board defaults to personal', async () => {
         const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
 

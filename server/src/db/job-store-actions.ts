@@ -67,7 +67,8 @@ export async function createJobRow(
         const rows = await tx<{ id: string }[]>`
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
-                workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode
+                workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
+                jira_connection_id, skills
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -75,7 +76,9 @@ export async function createJobRow(
                    ${target.workflow?.node ?? null},
                    ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
                    ${target.workflow ? sql.json(target.workflow.params as never) : null},
-                   ${mode}
+                   ${mode},
+                   ${target.jiraConnectionId ?? null},
+                   ${sql.array([...(target.skills ?? [])])}::text[]
             from (select gen_random_uuid() as x) s
             returning id
         `;
