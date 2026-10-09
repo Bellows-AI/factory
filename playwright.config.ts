@@ -63,7 +63,7 @@ export const E2E_DATABASE_URL = databaseUrl(`${DB_PREFIX}_e2e`);
 export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
-const AUTH_SPECS = /\/(auth|workspace|follow-up-auth|org-executors)\.spec\.ts$/;
+const AUTH_SPECS = /\/(auth|workspace|follow-up-auth|org-executors|jira-connections)\.spec\.ts$/;
 /** The specimen browses its own server, never a board, so no board project may pick it up. */
 const SPECIMEN_SPEC = /\/specimen\.spec\.ts$/;
 
