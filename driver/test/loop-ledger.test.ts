@@ -3,13 +3,13 @@ import type { FailureKind } from '../src/board.js';
 import type { HelperFailureReport } from '../src/helpers.js';
 import {
     agentFaults,
+    draftable,
     gatesEligible,
     kindOf,
     ledgerOf,
     outputOf,
     publishEligible,
     RANK,
-    servicesOnly,
     skipWhyOf,
     statusOf,
     type LedgerParts,
@@ -103,12 +103,22 @@ describe('a dead service note (issue #487)', () => {
     });
 });
 
-describe('a services-only ledger (issue #560)', () => {
+describe('a draftable ledger (issues #560, #573)', () => {
+    const gateFailed = parts({ failure: { name: 't', exitCode: 1, output: '' } });
+
     it('holds only when every fault is a service', () => {
-        expect(servicesOnly(ledgerOf(parts({ deadServices: [dead] })))).toBe(true);
-        expect(servicesOnly(ledgerOf(parts({})))).toBe(false);
+        expect(draftable(ledgerOf(parts({ deadServices: [dead] })), false)).toBe(true);
+        expect(draftable(ledgerOf(parts({})), false)).toBe(false);
         expect(
-            servicesOnly(ledgerOf(parts({ deadServices: [dead], outcome: { ...parts({}).outcome, exitCode: 1 } })))
+            draftable(ledgerOf(parts({ deadServices: [dead], outcome: { ...parts({}).outcome, exitCode: 1 } })), false)
+        ).toBe(false);
+    });
+
+    it('admits a failed gate only when asked, and never over another fault', () => {
+        expect(draftable(ledgerOf(gateFailed), false)).toBe(false);
+        expect(draftable(ledgerOf(gateFailed), true)).toBe(true);
+        expect(
+            draftable(ledgerOf({ ...gateFailed, helperFailure: parts({ helperFailure: helper }).helperFailure }), true)
         ).toBe(false);
     });
 });

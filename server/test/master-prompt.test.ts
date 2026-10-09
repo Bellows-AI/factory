@@ -66,7 +66,7 @@ const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): W
 describe('resolveMasterPrompt: objective', () => {
     it('renders the objective mode with no per-turn values', () => {
         const prompt = resolveMasterPrompt(OBJECTIVE);
-        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v4');
+        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v5');
         expect(prompt).toBe(
             `Factory execution contract (${MASTER_PROMPT_VERSION})
 
@@ -77,12 +77,25 @@ Factory execution context
 Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.
 - Factory decides what happens next from this turn's verdict and final output.
-- Factory runs every capability this turn's Factory turn context lists; do not emulate any of them.
-- Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
-- You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
+- Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
+- You may push the task branch and open or update a pull request. Run the relevant declared gates before you publish and report any failure; a failed, skipped or unavailable gate does not stop you from publishing or continuing. Never say a gate passed that did not.
+- Do not merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
+- You may edit files, run tests and other local verification, and commit, as the current task requires.
 - If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop. Never print that line when you are not blocked.`
         );
+    });
+
+    it('keeps the publication denial on a workflow turn', () => {
+        const prompt = resolveMasterPrompt({
+            workflowNode: 'task',
+            mode: WORKFLOW_MODE,
+            workflowName: 'default',
+            snapshot: defaultSnapshot(),
+            helperPlans: undefined,
+        });
+        expect(prompt).toContain('Do not push, open, update, merge or close a pull request');
+        expect(resolveMasterPrompt(OBJECTIVE)).not.toContain('Do not push, open');
     });
 
     it('never contains a brace — the opencode template-substitution vector', () => {

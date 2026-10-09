@@ -19,11 +19,15 @@ gh pr checks <N>
 gh pr diff <N>
 ```
 
-## Pull requests go through the driver
+## Opening and updating pull requests
 
-Never run `gh pr create` — the guard denies it, and the deny is policy, not an obstacle to route
-around. Publishing is yours to ask for, through the driver, whenever your work is worth showing —
-before the task is done too. Commit on the task branch, then:
+Opening and updating the pull request is yours, whenever your work is worth showing — before the
+task is done too. Run the relevant declared gates first (see the gates skill) and say in the pull
+request which failed or did not run; a failing gate is something to report, not a reason to hold
+back. Commit on the task branch, push it, and open the pull request with `gh pr create`
+(`gh pr edit` updates it). Never state in a title or description that a gate passed unless it did.
+
+Or ask the driver to do the push and the pull request:
 
 ```bash
 curl -sf -X POST "$BELLOWS_CONTROL_URL/publish" \
@@ -32,13 +36,12 @@ curl -sf -X POST "$BELLOWS_CONTROL_URL/publish" \
 
 The driver pushes the branch and opens (or reuses) the pull request — a draft when it opens one —
 with a title and description summarized from the branch's commits, and answers
-`{"published":true,"prUrl":"…","prNumber":N,…}`. Call it again after more commits: the same pull
-request is updated, never duplicated, and a retried or resumed task lands on it too. `published:
-false` means there was nothing new to push. `403` means this task's workflow publishes at its own
-step; `409` means a publish is already running; `502` carries the failure's reason. If
-`BELLOWS_CONTROL_URL` is unset this environment cannot publish for you. A pull request is not a
-finished task: keep running the gates (see the gates skill), and the board publishes again, with
-the same pull request, when the task completes.
+`{"published":true,"prUrl":"…","prNumber":N,…}`. A pull request you opened on the task branch is
+the one the driver reuses: the same pull request is updated, never duplicated, and a retried or
+resumed task lands on it too. `published: false` means there was nothing new to push. `403` means
+this task's workflow publishes at its own step; `409` means a publish is already running, or the
+repository's explicit `policy:` refused it (the body says why); `502` carries the failure's
+reason. If `BELLOWS_CONTROL_URL` is unset this environment cannot publish for you.
 
 A PR that already exists is yours to read — reviews, checks, diffs — and to fix on request.
 Read a PR's diff with `gh pr diff`, never by checking the branch out:

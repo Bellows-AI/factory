@@ -12,12 +12,12 @@ import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure } from './loop-gates.js';
 import {
     deadServiceNote,
+    draftable,
     kindOf,
     ledgerOf,
     type Ledger,
     outputOf,
     publishEligible,
-    servicesOnly,
     statusOf,
 } from './loop-ledger.js';
 import type { LoopRuntime } from './loop-types.js';
@@ -35,12 +35,16 @@ function publishDue(rt: LoopRuntime, job: BoardJob, ledger: Ledger): boolean {
 }
 
 /**
- * What this ledger publishes: the end-of-run publish, a draft of finished work the services alone
- * failed — kept recoverable rather than stranded (issue #560) — or nothing.
+ * What this ledger publishes: the end-of-run publish, a draft of finished work the services or
+ * gates alone failed — kept recoverable rather than stranded (issues #560, #573) — or nothing.
  */
 export function publishModeOf(rt: LoopRuntime, job: BoardJob, ledger: Ledger): 'publish' | 'draft' | null {
     if (publishDue(rt, job, ledger)) return 'publish';
-    return servicesOnly(ledger) && job.publish !== false && rt.runner.publishGit ? 'draft' : null;
+    // An objective claim carries no `publish` key; a workflow node's publish is the graph's to
+    // order, so its failed gate still fires the `gate-failed` edge instead of shipping a draft.
+    return draftable(ledger, job.publish === undefined) && job.publish !== false && rt.runner.publishGit
+        ? 'draft'
+        : null;
 }
 
 /** The push's options for `mode`, bound to `revision` when the policy named one; none for a plain publish. */
