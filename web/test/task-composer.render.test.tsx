@@ -538,7 +538,6 @@ describe('the redesigned composer (#280)', () => {
             'aria-label="Repository: acme/web"',
             'aria-label="Executor: main"',
             'aria-label="Reusable workflow: No workflow"',
-            '>Discard draft<',
             '>Start task<',
         ].map((marker) => html.indexOf(marker));
         expect(order.every((at) => at >= 0)).toBe(true);
@@ -616,11 +615,22 @@ describe('the redesigned composer (#280)', () => {
         });
     });
 
-    it('offers an example only while the request is empty', () => {
-        const empty = renderComposer({});
-        expect(empty).toMatch(/<button type="button" class="composer-example">.*Try an example<\/button>/);
-        const typed = renderComposer({ restored: restoredDraft({ draft: 'fix it' }) });
-        expect(typed).toMatch(/<button type="button" class="composer-example" disabled="">.*Try an example<\/button>/);
+    it('renders neither Try an example nor Discard draft', () => {
+        for (const html of [renderComposer({}), renderComposer({ restored: restoredDraft({ draft: 'fix it' }) })]) {
+            expect(html).not.toContain('Try an example');
+            expect(html).not.toContain('Discard draft');
+        }
+    });
+
+    it('explains the repository and executor beside their chips, keeping the values visible', () => {
+        const html = renderComposer({});
+        for (const [value, help] of [
+            ['aria-label="Repository: acme/web"', 'aria-label="About Repository"'],
+            ['aria-label="Executor: main"', 'aria-label="About Executor"'],
+        ] as const) {
+            expect(html).toContain(value);
+            expect(html.indexOf(help)).toBeGreaterThan(html.indexOf(value));
+        }
     });
 
     it('counts the request against the board limit, and blocks it red past the limit', () => {
@@ -715,11 +725,6 @@ describe('the redesigned composer (#280)', () => {
         expect(html).toContain('>fix-issue</span></button>');
         expect(html).toContain('value="#12"');
         expect(startButton(html)).not.toContain('disabled=""');
-    });
-
-    it('offers Discard draft only once the composer holds something a fresh one would not', () => {
-        expect(renderComposer({})).not.toContain('Discard draft');
-        expect(renderComposer({ restored: restoredDraft({ draft: 'fix it' }) })).toContain('>Discard draft</button>');
     });
 });
 

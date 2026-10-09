@@ -86,25 +86,9 @@
         }
     }
 
-    /* Wraps: on a phone the example drops below the label rather than squeezing it. */
-    .composer-prompt-head {
-        align-items: center;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 12px;
-        justify-content: space-between;
-    }
-
     .composer-prompt-head label {
         font-size: 15px;
         font-weight: 600;
-    }
-
-    .composer-example {
-        align-items: center;
-        display: inline-flex;
-        flex: none;
-        gap: 8px;
     }
 
     /* The request against the board's limit; the stop lamp once it is over. */
@@ -212,9 +196,49 @@
     }
 
     .composer-context-item {
+        align-items: center;
         display: flex;
+        gap: 4px;
         max-width: 100%;
         min-width: 0;
+    }
+
+    /* The `?` beside a chip: a small round trigger that keeps its focus ring, with the 44px touch
+       floor below 901px (the touch-target block at the end). */
+    .composer-help {
+        flex: none;
+    }
+
+    .composer-help-trigger {
+        align-items: center;
+        background: none;
+        border: 1px solid var(--line-strong);
+        border-radius: 50%;
+        color: var(--ink-muted);
+        cursor: pointer;
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 600;
+        height: 22px;
+        justify-content: center;
+        padding: 0;
+        width: 22px;
+    }
+
+    .composer-help-trigger:hover,
+    .composer-help-trigger[data-open] {
+        background: var(--accent-wash);
+        color: inherit;
+    }
+
+    .composer-help-trigger:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+    }
+
+    .composer-help-panel {
+        font-size: 13px;
+        padding: 8px 12px;
     }
 
     .composer-context .select-trigger {
@@ -296,7 +320,7 @@
     @media (max-width: 900px) {
         .composer-start button,
         .composer-param-input,
-        .composer-example,
+        .composer-help-trigger,
         .composer-notices-dismiss {
             align-items: center;
             display: inline-flex;

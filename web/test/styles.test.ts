@@ -194,7 +194,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
     'styles/regions/composer.css': [
         '.composer-start button',
         '.composer-param-input',
-        '.composer-example',
+        '.composer-help-trigger',
         '.composer-notices-dismiss',
     ],
     'styles/regions/task-detail.css': [

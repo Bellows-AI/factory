@@ -1,5 +1,13 @@
 import { type ReactNode, useState } from 'react';
-import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
+import {
+    Listbox,
+    ListboxButton,
+    ListboxOption,
+    ListboxOptions,
+    Popover,
+    PopoverButton,
+    PopoverPanel,
+} from '@headlessui/react';
 import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
@@ -12,7 +20,6 @@ import {
     NoSyncedReposDialog,
     REPOSITORIES_PATH,
 } from '../components/NoSyncedReposDialog.js';
-import { UnsavedChangesDialog } from '../components/UnsavedChangesDialog.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
     COMMAND_LIMIT_TEXT,
@@ -37,13 +44,11 @@ import {
 } from '../workspace/executors.js';
 
 /**
- * The example request — the prompt's placeholder, and what Try an example types in. The issue
- * number travels as string parts because `123` directly behind a hash scans as a hex color
- * literal, and the stylesheet's color gate reads every `.tsx` in the tree — the rendered copy
- * stays exact.
+ * The prompt's placeholder example. The issue number travels as string parts because `123`
+ * directly behind a hash scans as a hex color literal, and the stylesheet's color gate reads
+ * every `.tsx` in the tree — the rendered copy stays exact.
  */
-const EXAMPLE_PROMPT = 'Fix issue #' + '123, update the affected tests, and run the relevant checks.';
-const PROMPT_PLACEHOLDER = `Example: ${EXAMPLE_PROMPT}`;
+const PROMPT_PLACEHOLDER = 'Example: Fix issue #' + '123, update the affected tests, and run the relevant checks.';
 
 /** The ids Start's `aria-describedby` points at: the readiness banner, or the quiet status text. */
 const READINESS_ID = 'composer-readiness';
@@ -53,6 +58,28 @@ const NO_SYNCED_BLOCKER: StartBlocker = 'no-synced-repos';
 const REPO_PLACEHOLDER = 'Select a repository';
 
 type Update = (patch: Partial<ComposerDraftInput>) => void;
+
+const REPO_HELP = 'The codebase the task runs in. The agent works on a copy of this repository.';
+const EXECUTOR_HELP = 'The configured agent environment that runs the task. Its type decides which runner is used.';
+
+/**
+ * The `?` beside a chip (issue 574): a Headless UI popover, so mouse, touch and keyboard all open
+ * it and Escape or an outside press closes it without touching the selection. The trigger's name
+ * says which field it explains; the panel is downward-anchored like the listboxes.
+ */
+function ComposerHelp({ field, children }: { field: string; children: ReactNode }) {
+    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
+    return (
+        <Popover className="composer-help">
+            <PopoverButton ref={setReference} className="composer-help-trigger" aria-label={`About ${field}`}>
+                <span aria-hidden="true">?</span>
+            </PopoverButton>
+            <PopoverPanel ref={setFloating} style={floatingStyles} portal className="popover composer-help-panel">
+                {children}
+            </PopoverPanel>
+        </Popover>
+    );
+}
 
 /** The empty workflow option: objective mode, the prompt runs as written. */
 const NO_WORKFLOW_LABEL = 'No workflow';
@@ -113,6 +140,7 @@ function ComposerContextRow({
                         })}
                     </ListboxOptions>
                 </Listbox>
+                <ComposerHelp field="Repository">{REPO_HELP}</ComposerHelp>
             </div>
             <div className="composer-context-item">
                 <Listbox
@@ -150,6 +178,7 @@ function ComposerContextRow({
                         ))}
                     </ListboxOptions>
                 </Listbox>
+                <ComposerHelp field="Executor">{EXECUTOR_HELP}</ComposerHelp>
             </div>
             <ComposerWorkflowTrigger workflows={workflows} workflow={state.workflow} update={update} />
         </div>
@@ -319,7 +348,7 @@ function ReadinessBanner({
 }
 
 /**
- * The launch actions at the chips' far end: Discard draft, Start and its shortcut, and quiet
+ * The launch actions at the chips' far end: Start and its shortcut, and quiet
  * status text for an empty prompt or a launch in flight. Start's `aria-describedby` names
  * whichever of that text or the readiness banner is saying why it is dark; a ready launch says
  * nothing — the chips already show what will run.
@@ -327,25 +356,16 @@ function ReadinessBanner({
 function ComposerLaunch({
     blocker,
     sending,
-    fresh,
-    onDiscard,
     onStart,
 }: {
     blocker: StartBlocker | null;
     sending: boolean;
-    fresh: boolean;
-    onDiscard: () => void;
     onStart: () => void;
 }) {
     const tone = blockerTone(blocker);
     const describedBy = tone === 'quiet' ? BLOCKER_ID : tone === null ? undefined : READINESS_ID;
     return (
         <div className="composer-start">
-            {fresh ? null : (
-                <button type="button" onClick={onDiscard}>
-                    Discard draft
-                </button>
-            )}
             <kbd>Ctrl/⌘ + Enter</kbd>
             <button
                 type="button"
@@ -497,7 +517,6 @@ export function TaskComposer({
         draftStore,
     });
     const { state, update, declaredParams, paramValues } = composer;
-    const [confirmingDiscard, setConfirmingDiscard] = useState(false);
     const [noSyncedOpen, setNoSyncedOpen] = useState(false);
     // Null while the workspace has not answered: that screen is the loading/error state, never
     // the "no repos synced" verdict.
@@ -534,12 +553,6 @@ export function TaskComposer({
             if (first) document.getElementById(`composer-param-${first.name}`)?.focus();
         }
     };
-    // Discarding typed words asks first, with the settings area's own dialog; a draft that is only
-    // choices goes at once — nothing typed is lost.
-    const requestDiscard = () => {
-        if (state.draft.trim() === '') composer.discard();
-        else setConfirmingDiscard(true);
-    };
 
     if (repos === null) return <WorkspacePending error={workspaceError} onRetry={onRetryWorkspace} />;
 
@@ -561,16 +574,6 @@ export function TaskComposer({
                 <section className="panel composer-prompt">
                     <div className="composer-prompt-head">
                         <label htmlFor={PROMPT_ID}>What should the agent do?</label>
-                        {/* Only on an empty draft, so it never types over the member's words. */}
-                        <button
-                            type="button"
-                            className="composer-example"
-                            disabled={state.draft !== ''}
-                            onClick={() => update({ draft: EXAMPLE_PROMPT })}
-                        >
-                            <Icon name="sparkles" />
-                            Try an example
-                        </button>
                     </div>
                     <p className="composer-helper" id="composer-prompt-helper">
                         Include the outcome, relevant files or issue, and checks to run.
@@ -598,13 +601,7 @@ export function TaskComposer({
                             state={state}
                             update={update}
                         />
-                        <ComposerLaunch
-                            blocker={blocker}
-                            sending={sending}
-                            fresh={composer.fresh}
-                            onDiscard={requestDiscard}
-                            onStart={attemptStart}
-                        />
+                        <ComposerLaunch blocker={blocker} sending={sending} onStart={attemptStart} />
                     </div>
                     {repos.length === 0 ? (
                         <p className="composer-helper">
@@ -620,17 +617,6 @@ export function TaskComposer({
                 bubble to their React parent, and Ctrl/⌘+Enter on "Continue editing" must never
                 launch the draft it is asking about. */}
             {noSyncedOpen ? <NoSyncedReposDialog onClose={() => setNoSyncedOpen(false)} /> : null}
-            {confirmingDiscard ? (
-                <UnsavedChangesDialog
-                    labels={['this task draft']}
-                    onClose={() => setConfirmingDiscard(false)}
-                    onConfirm={() => {
-                        setConfirmingDiscard(false);
-                        composer.discard();
-                        document.getElementById(PROMPT_ID)?.focus();
-                    }}
-                />
-            ) : null}
         </>
     );
 }
