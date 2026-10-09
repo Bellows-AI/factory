@@ -6,6 +6,8 @@ import { OrphanDeleteDialog } from '../components/OrphanDeleteDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
+import { JiraConnectionsSection } from '../panels/JiraConnectionsSection.js';
+import { USER_CONNECTION_SCOPE } from '../api/connections.js';
 import type { UseEnv } from '../api/useEnv.js';
 import type { OrphanedRepo, WorkspacePayload } from '../api/useWorkspace.js';
 import { bytes } from '../format.js';
@@ -63,7 +65,7 @@ function orphanStateLine(orphan: OrphanedRepo): ReactNode {
  * hosting a second selection surface. What stays here is the one scope only this member owns.
  */
 export function SettingsWorkspacePage() {
-    const { workspace, env } = useSettingsPage();
+    const { workspace, env, session } = useSettingsPage();
     const { data, loading, error } = workspace;
     const { purge } = workspace;
 
@@ -189,6 +191,8 @@ export function SettingsWorkspacePage() {
                     onConfirm={() => void confirmPurge()}
                 />
             ) : null}
+
+            <JiraConnectionsSection scope={USER_CONNECTION_SCOPE} session={session} />
 
             <ConfigurationScope scope="workspace" />
 

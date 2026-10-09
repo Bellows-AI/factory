@@ -1,8 +1,10 @@
+import { ORG_CONNECTION_SCOPE } from '../api/connections.js';
 import { roleLabel } from '../api/useSession.js';
 import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
+import { JiraConnectionsSection } from '../panels/JiraConnectionsSection.js';
 import { MembersSection } from '../panels/MembersSection.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -44,6 +46,8 @@ export function SettingsOrganizationPage() {
             {/* The roster and its role writes (issue 410): the section owns its state and CRUD,
                 the way OrgExecutorsSection does — the page composes. */}
             <MembersSection session={session} />
+
+            <JiraConnectionsSection scope={ORG_CONNECTION_SCOPE} session={session} />
 
             <ConfigurationScope scope="organization" />
 
