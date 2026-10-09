@@ -556,6 +556,7 @@
         .task-outcome > summary,
         .run-output > summary,
         .chat-gate-list summary,
+        .run-history > summary,
         .question-option,
         .question button {
             align-items: center;
@@ -572,8 +573,9 @@
             display: list-item;
         }
 
-        /* A gate row stays a full-width flex row. */
-        .chat-gate-list summary {
+        /* A gate row and the run-history heading stay full-width flex rows. */
+        .chat-gate-list summary,
+        .run-history > summary {
             display: flex;
         }
     }
