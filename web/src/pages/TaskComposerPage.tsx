@@ -11,18 +11,18 @@ import { useTasksPage } from './TasksLayout.js';
  * `/tasks/new`: the big guided composer, open by default, where a task is written and started.
  *
  * The page header names the page ("New task", under the Tasks eyebrow); the composer below is the
- * page's one control surface — request, execution context, workflow details, readiness and the
- * Start action, in the order a member decides (issue 176) — and no action lives outside it. The
- * task list it belongs to is in the sidenav (fed by the shell's poll), and the board answering
- * `201 { id }` is what makes navigation one line: on success the page goes straight to the new
- * task's detail view; a refusal is an alert above the draft, which stays intact.
+ * page's one control surface — the prompt, its context chips and the Start action beside them
+ * (issue 571) — and no action lives outside it. The task list it belongs to is in the sidenav
+ * (fed by the shell's poll), and the board answering `201 { id }` is what makes navigation one
+ * line: on success the page goes straight to the new task's detail view; a refusal is an alert
+ * above the draft, which stays intact.
  *
  * The draft outlives the page (F1): the shell holds it, so a trip to Settings to add an executor
  * comes back to the words, choices and workflow details the member left. It belongs to a session,
  * so the composer waits for the session check before it restores anything.
  *
  * Workflows are dormant: the page reads no workflow list and hands the composer null, which
- * hides the selector and the workflow details — every task runs in objective mode.
+ * hides the workflow chip and its parameters — every task runs in objective mode.
  */
 export function TaskComposerPage() {
     const { tasks, workspace, sessionLoading } = useTasksPage();
@@ -49,11 +49,7 @@ export function TaskComposerPage() {
 
     return (
         <>
-            <PageHeader
-                eyebrow="Tasks"
-                title="New task"
-                description="Describe what you want done, choose where it runs, and check readiness before starting."
-            />
+            <PageHeader eyebrow="Tasks" title="New task" />
             {tasks.error ? <p className="status">{tasks.error}</p> : null}
             {sessionLoading ? (
                 <TaskComposerSkeleton />

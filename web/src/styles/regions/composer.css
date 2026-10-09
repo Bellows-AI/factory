@@ -22,7 +22,7 @@
         margin-top: 8px;
     }
 
-    /* A field's visible label — with its glyph in the execution context. */
+    /* A field's visible label, with an optional glyph. */
     .composer-label {
         align-items: center;
         color: var(--ink-muted);
@@ -49,8 +49,9 @@
         margin-left: auto;
     }
 
-    /* The new-task page (issue 280): four numbered panels, stacked. `.composer` above is the detail
-       view's chat footer; the page variant drops its rule and spacing. */
+    /* The new-task page (issue 571): one prompt panel, with any restored-draft notice above it.
+       `.composer` above is the detail view's chat footer; the page variant drops its rule and
+       spacing. */
     .composer.task-compose {
         border-top: none;
         display: flex;
@@ -60,50 +61,43 @@
         padding-top: 0;
     }
 
-    /* On the composer page the request IS the pane — a big input, open by default — so it gets
-       the room and the reading size a chat footer's one-liner does not need. */
+    /* The prompt surface: the request, then the chip-and-launch bar, then whatever blocks Start. */
+    .composer-prompt {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    /* On the composer page the request IS the pane, so it gets the reading size a chat footer's
+       one-liner does not need. It opens compact and grows with the request where the engine sizes
+       a field to its content; past half the viewport it scrolls inside itself. */
     .task-compose .composer-input {
+        field-sizing: content;
         font-size: 15px;
         line-height: 22px;
-        min-height: 160px;
+        max-height: 50vh;
+        min-height: 88px;
     }
 
-    /* Wraps: on a phone the head's action drops below the title rather than squeezing it. */
-    .composer-section-head {
-        align-items: flex-start;
+    /* An engine that cannot grow the field to its content gets room up front instead. */
+    @supports not (field-sizing: content) {
+        .task-compose .composer-input {
+            min-height: 160px;
+        }
+    }
+
+    /* Wraps: on a phone the example drops below the label rather than squeezing it. */
+    .composer-prompt-head {
+        align-items: center;
         display: flex;
         flex-wrap: wrap;
-        gap: 12px;
-        margin-bottom: 16px;
+        gap: 8px 12px;
+        justify-content: space-between;
     }
 
-    .composer-section-title {
-        display: flex;
-        flex: 1 1 200px;
-        flex-direction: column;
-        gap: 4px;
-        min-width: 0;
-    }
-
-    .composer-section-title h2 {
+    .composer-prompt-head label {
         font-size: 15px;
-        line-height: 28px;
-        margin: 0;
-    }
-
-    /* The step disc: decoration beside the heading that carries the words. */
-    .composer-step {
-        align-items: center;
-        background: var(--accent);
-        border-radius: 50%;
-        color: var(--ink-inverse);
-        display: inline-flex;
-        flex: none;
-        font-size: 13px;
         font-weight: 600;
-        height: 28px;
-        justify-content: center;
-        width: 28px;
     }
 
     .composer-example {
@@ -181,8 +175,8 @@
     }
 
     /* The guided composer (issue 176, compacted by 228): label-above-control fields, the
-       plain-language helper and error lines, the preflight sentence, and the Format details that
-       hold a parameter's raw rule. */
+       plain-language helper and error lines, and the Format details that hold a parameter's raw
+       rule. */
     .composer-field {
         display: flex;
         flex-direction: column;
@@ -196,30 +190,45 @@
         gap: 12px;
     }
 
-    /* Section 2: Repository, Executor and Workflow — three columns on a wide screen, stacked
-       below it. Each column is a label over a full-width, framed selector. */
-    .composer-context {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: minmax(0, 1fr);
+    /* Under the prompt: the context chips at the start, the launch actions at the far end. On a
+       narrow screen the actions wrap below the chips. */
+    .composer-bar {
+        align-items: flex-start;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        justify-content: space-between;
     }
 
-    @media (min-width: 1024px) {
-        .composer-context {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
+    /* Repository, Executor and Workflow as compact framed chips that wrap rather than overflow,
+       centred on Start's line even when the quiet status text makes the launch block taller. */
+    .composer-context {
+        align-items: center;
+        display: flex;
+        min-height: 40px;
+        flex-wrap: wrap;
+        gap: 8px;
+        min-width: 0;
     }
 
     .composer-context-item {
         display: flex;
-        flex-direction: column;
-        gap: 8px;
+        max-width: 100%;
         min-width: 0;
     }
 
     .composer-context .select-trigger {
         border-color: var(--line-strong);
-        width: 100%;
+        font-size: 13px;
+        max-width: min(280px, 100%);
+    }
+
+    /* Chip-sized only on a wide screen: below it the shared 44px touch floor must win. */
+    @media (min-width: 901px) {
+        .composer-context .select-trigger {
+            min-height: 32px;
+            padding: 4px 10px;
+        }
     }
 
     /* No executor, no launch: the trigger wears the stop lamp's edge beside the `banner-bad`. */
@@ -228,8 +237,7 @@
     }
 
     /* Truncates inside the flex trigger, where plain text-overflow does not apply — the full
-       value stays reachable through the trigger's title, the opened listbox, and the preflight
-       sentence. */
+       value stays reachable through the trigger's title and the opened listbox. */
     .composer-context-value {
         display: block;
         flex: 1;
@@ -246,18 +254,13 @@
         margin: 0;
     }
 
-    .composer-preflight {
-        color: var(--ink-muted);
-        margin: 0 0 12px;
-    }
-
     .composer-start {
         align-items: center;
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
         justify-content: flex-end;
-        margin-top: 12px;
+        margin-left: auto;
     }
 
     .composer-blocker {
