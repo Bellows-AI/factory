@@ -16,11 +16,11 @@ stop to ask; unanswered questions go in the final report (§5).
   `fix/<issue-number>` when the task names an issue, otherwise `task/<short-slug>`.
 - Commit as you go. One logical change per commit, messages in the imperative mood, the issue
   reference (e.g. `(#12)`) in the commit that closes the task.
-- Run the declared gates (below) before you finish, and never leave the tree failing.
-- Finish means: the work committed on the task branch, the tree clean, the gates green. After
-  your run the board deterministically runs the declared gates again, pushes the branch, and
-  opens or reuses the pull request — do not push or open PRs yourself, and do not ask about it.
-  Publishing is not optional and needs no confirmation.
+- Run the relevant declared gates (below) before you publish and report any that fail — guidance,
+  not a permission check: a failing or unavailable gate does not stop you from publishing.
+- Finish means: the work committed on the task branch and the tree clean. You may push the branch
+  and open or update the pull request yourself (`gh pr create`); the board's own end-of-run
+  publish reuses that same pull request. Never say a gate passed that did not.
 
 ## 1. Think before coding
 
@@ -126,4 +126,4 @@ console.log(j.output)})'
 `exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
 Only gates `.bellows.yaml` declares can run — the request carries a gate NAME, never a command.
 If `BELLOWS_GATE_URL` is unset there are no gates here: verify with your own commands instead. Do
-not finish a task while a declared gate is failing.
+not claim a gate passed when it did not.

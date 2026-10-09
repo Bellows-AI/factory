@@ -4889,6 +4889,35 @@ describe('publishing the produced work', () => {
         expect(shapesOf(again.calls)).toEqual(['probe', 'push', 'pr-view']);
     });
 
+    // Issue #573: the agent opened the PR itself with `gh pr create` and pushed everything, so the
+    // checkout is clean — the publish still names that PR, so the board records the one link.
+    it('reconciles a pull request the agent opened itself on a clean, pushed task branch', async () => {
+        const reconciled = publishRunner(
+            { ...DIRTY_ON_MAIN, branch: 'fix/10', hasIdentity: true, dirty: false, unpushed: 0 },
+            { prExists: true }
+        );
+        expect(await reconciled.runner.publishGit(ISSUE_JOB)).toEqual({
+            ok: true,
+            published: true,
+            branch: 'fix/10',
+            prUrl: PR_URL,
+            reason: null,
+            repository: 'Bellows-AI/factory',
+            baseBranch: 'main',
+            prNumber: 42,
+        });
+        expect(shapesOf(reconciled.calls)).toEqual(['probe', 'pr-view']);
+
+        const none = publishRunner({
+            ...DIRTY_ON_MAIN,
+            branch: 'fix/10',
+            hasIdentity: true,
+            dirty: false,
+            unpushed: 0,
+        });
+        expect(await none.runner.publishGit(ISSUE_JOB)).toMatchObject({ ok: true, published: false });
+    });
+
     it('answers the ordinary no-ops without touching the daemon further', async () => {
         const clean = publishRunner({ ...DIRTY_ON_MAIN, dirty: false, unpushed: 0 });
         expect(await clean.runner.publishGit(ISSUE_JOB)).toEqual({

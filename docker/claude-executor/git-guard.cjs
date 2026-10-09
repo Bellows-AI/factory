@@ -2,8 +2,8 @@
 
 /*
  * The git guard: a PreToolUse hook that denies the Bash commands which would move HEAD or
- * rewrite refs in the task worktree, and the gh commands that would open a PR the driver's
- * publish owns or move HEAD onto one (issue #82). The tree standing on `factory/<root>` is the
+ * rewrite refs in the task worktree, and `gh pr checkout`, which would move HEAD onto a PR
+ * (issue #82). Opening and updating a PR is the agent's to do (issue #573). The tree standing on `factory/<root>` is the
  * driver's invariant (docs/jobs.md) — the restore-mode sync refuses a wrong checkout only after
  * the damage, and the damage strands the thread (job 43379d3a, 2026-09-13). This hook exists to
  * keep threads runnable; it is a guardrail, not a security boundary — the agent is root in
@@ -11,8 +11,7 @@
  *
  * Lives in /usr/local/bin, not the config home: the transcript store moves CLAUDE_CONFIG_DIR
  * off the baked home, and the hook command names an absolute path. Read-only git, `git add` and
- * `git commit` stay allowed — a commit endangers no checkout, and publishing is the driver's
- * publish flow.
+ * `git commit` stay allowed — a commit endangers no checkout.
  */
 
 const SHELL_WRAPPERS = new Set(['sh', 'bash', 'dash', 'ash']);
@@ -28,17 +27,12 @@ const denyOf = (what) => ({
         'and publishing are the driver\'s job.',
 });
 
-const denyPrOf = (verb) => ({
+const DENY_PR_CHECKOUT = {
     deny: true,
     reason:
-        verb === 'create'
-            ? "git guard: 'gh pr create' is the driver publish's job — commit your work, then " +
-              'ask the driver to publish a draft (POST $BELLOWS_CONTROL_URL/publish, see the ' +
-              'github skill); it pushes the task branch and opens (or reuses) the pull request ' +
-              'with a summary of the work, and the board publishes again when the task is done.'
-            : "git guard: 'gh pr checkout' would move HEAD off the task branch, and the " +
-              'checkout must stay on it. Read the PR with `gh pr view` / `gh pr diff` instead.',
-});
+        "git guard: 'gh pr checkout' would move HEAD off the task branch, and the " +
+        'checkout must stay on it. Read the PR with `gh pr view` / `gh pr diff` instead.',
+};
 
 // At i: a substitution opening ($( , <( or a backtick). Returns { body, end } — end one past
 // the closing delimiter — or null when this is not a substitution.
@@ -248,9 +242,8 @@ function analyze(segment, depth) {
         }
         break;
     }
-    // gh (issue #82): the publish flow — branch, push, PR — is the driver's, so the agent may
-    // not open a PR (the PR title/description are the driver summarizer's to write) nor check
-    // one out. Global flags taking a value are skipped; the pr subcommand decides.
+    // gh (issues #82, #573): the agent may open and update a PR, but not check one out — that
+    // moves HEAD. Global flags taking a value are skipped; the pr subcommand decides.
     if (tokens[i] === 'gh') {
         let g = i + 1;
         while (g < tokens.length && tokens[g].startsWith('-') && tokens[g] !== '--') {
@@ -260,7 +253,7 @@ function analyze(segment, depth) {
             else g += 1;
         }
         const verb = tokens[g + 1];
-        if (tokens[g] === 'pr' && (verb === 'create' || verb === 'checkout')) return denyPrOf(verb);
+        if (tokens[g] === 'pr' && verb === 'checkout') return DENY_PR_CHECKOUT;
         return ALLOW;
     }
     if (tokens[i] !== 'git') return ALLOW;
@@ -454,17 +447,16 @@ const CASES = [
     ['deny', 'git merge FETCH_HEAD'],
     ['deny', 'git merge origin/main && git checkout main'],
     ['deny', 'git commit -m x && git rebase main'],
-    // gh (issue #82): opening a pull request is the driver publish's, not the agent's — and
-    // `gh pr checkout` would move HEAD off the task branch, the same damage as `git checkout`.
-    ['deny', 'gh pr create --title "x" --body "y"'],
-    ['deny', 'gh pr create --fill'],
-    ['deny', 'gh -R owner/repo pr create'],
-    ['deny', 'gh repo view && gh pr create'],
-    ['deny', "sh -c 'gh pr create --fill'"],
-    ['deny', 'FOO=bar gh pr create'],
-    ['deny', 'gh --jq .x pr create'],
-    ['deny', 'gh --template t pr create'],
+    // gh (issues #82, #573): `gh pr checkout` would move HEAD off the task branch, the same
+    // damage as `git checkout`; opening a pull request is the agent's to do.
     ['deny', 'gh pr checkout 82'],
+    ['deny', 'gh -R owner/repo pr checkout 82'],
+    ['allow', 'gh pr create --title "x" --body "y"'],
+    ['allow', 'gh pr create --fill'],
+    ['allow', 'gh -R owner/repo pr create'],
+    ['allow', "sh -c 'gh pr create --fill'"],
+    ['allow', 'gh pr edit 82 --title x'],
+    ['allow', 'gh pr ready 82'],
     ['allow', 'git status'],
     ['allow', 'git status --short'],
     ['allow', 'git diff'],

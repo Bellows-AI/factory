@@ -923,27 +923,26 @@ describe('the shared executor skills', () => {
 });
 
 /*
- * The PR boundary (issue #82): executors do not open pull requests — that is the driver
- * publish's, with the title/description written by the summarizer script. The enforcement is
- * the two guards above; these pins keep the INSTRUCTIONS from teaching the old behavior, the
- * way the baked github skill once did ("open the PR without waiting to be asked").
+ * The PR boundary (issues #82, #573): an agent may open and update a pull request itself — the
+ * driver's publish reuses it — but never check one out, which moves HEAD. The enforcement is
+ * the two guards above; these pins keep the INSTRUCTIONS from teaching a publication denial or a
+ * green-gate precondition.
  */
 describe('the executor PR boundary', () => {
     const GITHUB_SKILL = 'docker/skills/github/SKILL.md';
 
-    it('no baked skill instructs opening a pull request', () => {
+    it('no baked skill denies the agent a pull request or makes green gates a precondition', () => {
         const skills = [
             GITHUB_SKILL,
+            'docker/skills/gates/SKILL.md',
             'docker/skills/backend-fix/SKILL.md',
             'docker/opencode-executor/opencode-home/AGENTS.md',
         ];
         for (const skill of skills) {
             const text = read(skill);
-            // The deny is policy the skills may NAME ("Never run `gh pr create`"); what must
-            // not survive is the instruction — a runnable command line, or the old call to
-            // action.
-            expect(text).not.toMatch(/^\s*gh pr create\b/m);
-            expect(text).not.toMatch(/open the PR/i);
+            expect(text).not.toMatch(/never run `gh pr create`|do not run `gh pr create`|do not push or open PRs/i);
+            expect(text).not.toMatch(/gates green|do not mark work finished while|never leave the tree failing/i);
+            expect(text).not.toMatch(/only the driver (may|can) (open|publish)/i);
         }
     });
 
@@ -955,20 +954,22 @@ describe('the executor PR boundary', () => {
         expect(text).not.toMatch(/non-negotiable|Hard rules/);
     });
 
-    it('the github skill names the board as the PR author instead', () => {
+    it('the github skill lets the agent open the PR and says the driver reuses it', () => {
         const text = read(GITHUB_SKILL);
-        expect(text).toContain('opens (or reuses) the pull request');
-        expect(text).toContain('Never run');
-        // And the one command it listed that moves HEAD onto a PR is gone with the section —
-        // named only as denied policy, never as a line to run.
+        expect(text).toContain('open the pull request with `gh pr create`');
+        expect(text).toMatch(/is\s+the\s+one\s+the\s+driver\s+reuses/);
+        // The one command that moves HEAD onto a PR stays named only as denied policy.
         expect(text).not.toMatch(/^\s*gh pr checkout\b/m);
     });
 
-    it('the opencode fence denies gh pr create and gh pr checkout', () => {
+    it('the opencode fence denies gh pr checkout and leaves gh pr create to the agent', () => {
         const policy = JSON.parse(read('docker/opencode-executor/opencode-home/opencode.json'));
         const bash: Record<string, string> = policy.permission.bash;
-        for (const rule of ['gh pr create', 'gh pr create *', 'gh pr checkout', 'gh pr checkout *']) {
+        for (const rule of ['gh pr checkout', 'gh pr checkout *']) {
             expect(bash[rule]).toBe('deny');
+        }
+        for (const rule of ['gh pr create', 'gh pr create *']) {
+            expect(bash[rule]).not.toBe('deny');
         }
     });
 });
@@ -1009,8 +1010,6 @@ describe('the opencode-executor git guard policy', () => {
             'git rebase *',
             'git merge',
             'git merge *',
-            'gh pr create',
-            'gh pr create *',
             'gh pr checkout',
             'gh pr checkout *',
             'git worktree list',

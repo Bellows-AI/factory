@@ -5542,6 +5542,20 @@ describe('revision-bound evidence', () => {
         expect(completed?.evidence).toMatchObject({ gates: 'none' });
     });
 
+    it('ships a draft over a failed gate by default, and the failure stays visible (issue #573)', async () => {
+        const { completed, options } = await driveWith(gatedJob(1), { gatesFail: true });
+        expect(options).toEqual([{ draft: true }]);
+        expect(completed).toMatchObject({ status: 'failed', failureKind: 'gate' });
+        expect(completed?.output).toContain('gate "test" failed');
+        expect(completed?.publication?.prNumber).toBe(42);
+    });
+
+    it('leaves a workflow publish node to its graph: a failed gate there publishes nothing', async () => {
+        const { completed, options } = await driveWith({ ...gatedJob(1), publish: true }, { gatesFail: true });
+        expect(options).toEqual([]);
+        expect(completed).toMatchObject({ status: 'failed', failureKind: 'gate' });
+    });
+
     it('never publishes over a failed gate, and the failure stays a gate failure', async () => {
         const { completed, options } = await driveWith(
             { ...gatedJob(1), policy: { gates: true } },

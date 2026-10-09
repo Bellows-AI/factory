@@ -556,6 +556,47 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
 }
 
 /**
+ * The branch's open PR, whoever opened it — the agent with `gh pr create` or an earlier publish.
+ * A `pr view` that fails is the ordinary "no PR yet", not a step failure.
+ */
+async function existingPrUrl(runStep: RunPublishStep, branch: string): Promise<string | null> {
+    const existing = await runStep({
+        label: 'gh pr view',
+        entrypoint: 'gh',
+        args: ['pr', 'view', branch, '--json', 'url', '-q', '.url'],
+        env: true,
+        inRepo: true,
+    }).catch(() => null);
+    return existing ? (existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null) : null;
+}
+
+/**
+ * A clean, fully-pushed checkout on its task branch may still carry a PR the agent opened itself
+ * (issue #573): the publication record names it, so the board links the one PR and a retry or a
+ * resume reuses it instead of opening a second.
+ */
+async function reconcileAgentPr(
+    runStep: RunPublishStep,
+    job: BoardJob,
+    state: GitState
+): Promise<PublishResult | null> {
+    const { branch } = state;
+    if (!branch || branch === state.defaultBranch || !isBranchName(branch)) return null;
+    const prUrl = await existingPrUrl(runStep, branch);
+    if (!prUrl) return null;
+    return {
+        ok: true,
+        published: true,
+        branch,
+        prUrl,
+        reason: null,
+        repository: job.repo ?? null,
+        baseBranch: state.defaultBranch ?? null,
+        prNumber: prNumberFromUrl(prUrl),
+    };
+}
+
+/**
  * Reuses the branch's PR when one exists — a task that already shipped its PR gets idempotent
  * publishes, not duplicates — or opens one summarized from the branch's own commits and diff.
  */
@@ -565,16 +606,7 @@ async function resolveOrCreatePr(
     context: { branch: string; plan: PublishPlan; state: GitState; draft: boolean }
 ): Promise<string | null> {
     const { branch, plan, state, draft } = context;
-    // A `pr view` that fails is the ordinary "no PR yet", not a step failure: the next call
-    // creates one.
-    const existing = await runStep({
-        label: 'gh pr view',
-        entrypoint: 'gh',
-        args: ['pr', 'view', branch, '--json', 'url', '-q', '.url'],
-        env: true,
-        inRepo: true,
-    }).catch(() => null);
-    const reused = existing ? (existing.stdout.trim().split('\n').filter(Boolean).pop() ?? null) : null;
+    const reused = await existingPrUrl(runStep, branch);
     if (reused) return reused;
 
     // The PR speaks for the work, not for the command that started it (issue #82): a
@@ -661,7 +693,10 @@ export async function publishCheckout(
             return { ...publishFailed(STALE_REVISION_REASON), stale: true };
         }
         if (!state.dirty && state.unpushed === 0) {
-            return publishNothing('no uncommitted changes and nothing unpushed');
+            return (
+                (await reconcileAgentPr(runStep, job, state)) ??
+                publishNothing('no uncommitted changes and nothing unpushed')
+            );
         }
 
         const branch = await ensureTaskBranch(runStep, step, state, plan);
