@@ -17,7 +17,7 @@ import {
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { UUID } from '../config.js';
-import type { ArtifactKind } from '../db/job-store-types.js';
+import type { ArtifactKind, SettleOutcome } from '../db/job-store-types.js';
 import {
     HTTP_ACCEPTED,
     HTTP_CONFLICT,
@@ -376,11 +376,13 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
     // The settle long-poll (issue #323): `?waitFor=terminal&timeout=<s>` holds the request —
     // store-side, one indexed re-read every 250ms — until the thread's chain head reaches a
     // terminal status or an open PR wait stands on it, or the (capped) timeout elapses, then
-    // answers the usual job shape either way; the client re-issues on a timeout. An unknown id
-    // is a 404 without any hold.
+    // answers `{ result, rootJobId, headJobId, headStatus, waitReason, job }` — the explicit wait
+    // result (`terminal` | `parked` | `timeout`), so the client never infers it from timing. A
+    // timeout is re-issued by the client. An unknown id is a 404 without any hold.
     const wait = validateWaitQuery(request.query as { waitFor?: unknown; timeout?: unknown });
     if (!wait.ok) return bad(reply, wait.code, wait.message);
     const timeoutMs = wait.value?.timeoutMs;
+    let outcome: SettleOutcome | null = null;
     if (timeoutMs !== undefined) {
         const settled = await guard(
             reply,
@@ -389,6 +391,7 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
         );
         if (!settled.ok) return reply;
         if (settled.value === null) return notFoundJob(reply);
+        outcome = settled.value;
     }
 
     const job = await guard(
@@ -398,7 +401,7 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
     );
     if (!job.ok) return reply;
     if (job.value === null) return notFoundJob(reply);
-    return reply.code(HTTP_OK).send(job.value);
+    return reply.code(HTTP_OK).send(outcome ? { ...outcome, job: job.value } : job.value);
 }
 
 // The run-activity read (issue #339): the run's own progress-over-time chart, bucketed from the

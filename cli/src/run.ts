@@ -1,7 +1,9 @@
 import { parseArgs } from 'node:util';
-import { BoardError, createBoardClient, isTerminal } from './board.js';
-import type { BoardClient, BoardJobRecord } from './board.js';
+import { BoardError, createBoardClient, HTTP_OK, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS } from './board.js';
+import type { BoardClient, JobWait } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
+import { envelopeOf, OUTCOME } from './outcome.js';
+import type { CommandResult, ErrorDetail } from './outcome.js';
 import {
     renderCreated,
     renderDone,
@@ -16,20 +18,13 @@ import {
  * The command surface: parse, load config, call the board, print, return an exit code. Every
  * effect is injected — config from `io.env`, HTTP from `io.fetch`, output through `io.stdout` /
  * `io.stderr` — so tests run the whole CLI in-process against a recorded fetch and string
- * arrays, and `index.ts` stays a three-line shim.
+ * arrays, and `index.ts` stays a small shim.
+ *
+ * A command never prints: it returns a `CommandResult`, and `run` alone decides how that is shown.
+ * That is what keeps `--json` clean — one envelope on stdout, nothing on stderr, for success,
+ * refusal, network failure, interruption and a command line that never parsed alike. The outcome
+ * and exit-code vocabulary lives in `outcome.ts`.
  */
-
-const EXIT_OK = 0;
-/** The board refused, or could not be reached. */
-const EXIT_FAILURE = 1;
-/** Bad usage or configuration — nothing was sent to the board. */
-const EXIT_USAGE = 2;
-/**
- * A wait that ended with no terminal row — its budget ran out, or the thread settled early on
- * something a wait cannot outlast. Its own code, because "still running" is not a failure: a
- * script that cannot tell it from a board refusal ends up reporting healthy tasks as broken.
- */
-const EXIT_UNSETTLED = 3;
 
 /** The list limit bounds the board itself enforces, mirrored so an obvious typo never round-trips. */
 const LIST_LIMIT_MIN = 1;
@@ -39,32 +34,33 @@ const LIST_LIMIT_MAX = 200;
 const WAIT_TOTAL_DEFAULT_S = 300;
 const WAIT_POLL_MAX_S = 60;
 const MS_PER_SECOND = 1000;
-/**
- * How much of its hold a poll must have spent to count as a board timeout rather than an early
- * settle. A fraction, not a fixed slack: a slack would be dead at the one-second hold the last
- * moments of a budget ask for, which is exactly where a storm would still be free. The board
- * returns at its deadline, so the real gap is scheduling and network; an early settle answers
- * within one 250ms store poll, nowhere near half.
- */
-const SETTLE_EARLY_FRACTION = 0.5;
+
+const JSON_FLAG = '--json';
+const END_OF_OPTIONS = '--';
+const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 
 export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]...
+                          [--skill name]... [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
-       factory job follow-up <id> <command...>
-       factory job stop <id>
-       factory job done <id>
-       factory job remove <id> --yes
+       factory job follow-up <id> <command...> [--json]
+       factory job stop <id> [--json]
+       factory job done <id> [--json]
+       factory job remove <id> --yes [--json]
 
 config:
   FACTORY_URL    the board's base URL (required)
   FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;
                  omit it against an open (AUTH_MODE=none) board
 
-exit codes: 0 ok, 1 the board refused or was unreachable, 2 usage,
-            3 a wait ended with no terminal row (still running, or parked)
+exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or configuration,
+            3 a wait ran out of budget, 4 the run failed or died, 5 the run was stopped on the
+            board, 6 the thread is parked on a workflow wait, 7 the board was unreachable,
+            130 interrupted locally
+
+--json prints one envelope on stdout and nothing on stderr, whatever the outcome:
+  { ok, command, outcome, exitCode, data, error }
 
 '--' ends option parsing, so a create command that takes flags of its own can follow it:
   factory job create --repo owner/name -- npm test --watch`;
@@ -80,8 +76,10 @@ class UsageError extends Error {
 export interface RunIo {
     env: NodeJS.ProcessEnv;
     fetch?: typeof globalThis.fetch | undefined;
-    /** The clock the wait's deadline is measured on — injected so tests spend no real time. */
+    /** The clock the wait's budget is measured on — injected so tests spend no real time. */
     now?: (() => number) | undefined;
+    /** Aborted on a local interrupt: the command ends `interrupted`, the task is left alone. */
+    signal?: AbortSignal | undefined;
     stdout(text: string): void;
     stderr(text: string): void;
 }
@@ -116,16 +114,18 @@ function parseWaitTimeout(raw: string | undefined): number {
 /** Config and client in one step: every command needs both, and neither takes an argument. */
 function boardFor(io: RunIo): BoardClient {
     const config = loadCliConfig(io.env);
-    return createBoardClient({ url: config.url, token: config.token, fetch: io.fetch });
+    return createBoardClient({ url: config.url, token: config.token, fetch: io.fetch, signal: io.signal });
 }
 
 /** The one positional every action command takes, and nothing else. */
 function onlyId(args: readonly string[], verb: string, options: Record<string, { type: 'boolean' }> = {}) {
-    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options }));
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...options } })
+    );
     if (parsed.positionals.length !== 1) {
         throw new UsageError(`${verb} needs exactly one job id\n\n${USAGE}`);
     }
-    return { id: parsed.positionals[0]!, values: parsed.values };
+    return { id: parsed.positionals[0]!, values: parsed.values as { json?: boolean; yes?: boolean } };
 }
 
 /**
@@ -141,12 +141,18 @@ function parseExecutorScope(raw: string | undefined): 'user' | 'org' | undefined
     return raw;
 }
 
-async function runCreate(args: readonly string[], io: RunIo): Promise<number> {
+/** A command that did what it was asked: the board's payload, and its one-line rendering. */
+function ok(data: unknown, text: string): CommandResult {
+    return { outcome: OUTCOME.ok, data, stdout: `${text}\n` };
+}
+
+async function runCreate(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const parsed = parseOrUsage(() =>
         parseArgs({
             args: [...args],
             allowPositionals: true,
             options: {
+                ...JSON_OPTION,
                 repo: { type: 'string' },
                 executor: { type: 'string' },
                 'executor-scope': { type: 'string' },
@@ -166,19 +172,18 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<number> {
         executorScope,
         skills: parsed.values.skill,
     });
-    io.stdout(`${renderCreated(created)}\n`);
-    return EXIT_OK;
+    return ok(created, renderCreated(created));
 }
 
-async function runList(args: readonly string[], io: RunIo): Promise<number> {
+async function runList(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const parsed = parseOrUsage(() =>
         parseArgs({
             args: [...args],
             options: {
+                ...JSON_OPTION,
                 status: { type: 'string' },
                 limit: { type: 'string' },
                 repo: { type: 'string' },
-                json: { type: 'boolean', default: false },
             },
         })
     );
@@ -188,54 +193,63 @@ async function runList(args: readonly string[], io: RunIo): Promise<number> {
         limit,
         repo: parsed.values.repo,
     });
-    if (parsed.values.json) {
-        io.stdout(`${JSON.stringify(jobs, null, 2)}\n`);
-        return EXIT_OK;
-    }
-    for (const job of jobs) io.stdout(`${renderJobLine(job)}\n`);
-    return EXIT_OK;
+    return { outcome: OUTCOME.ok, data: { jobs }, stdout: jobs.map((job) => `${renderJobLine(job)}\n`).join('') };
 }
 
-async function runInvestigate(args: readonly string[], io: RunIo): Promise<number> {
-    const parsed = parseOrUsage(() =>
-        parseArgs({
-            args: [...args],
-            allowPositionals: true,
-            options: { json: { type: 'boolean', default: false } },
-        })
-    );
-    if (parsed.positionals.length !== 1) {
-        throw new UsageError('investigate needs exactly one job id\n\n' + USAGE);
-    }
+async function runInvestigate(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const { id } = onlyId(args, 'investigate');
     const client = boardFor(io);
-    const job = await client.getJob(parsed.positionals[0]!);
-    const thread = await client.thread(parsed.positionals[0]!);
-    if (parsed.values.json) {
-        io.stdout(`${JSON.stringify({ job, thread }, null, 2)}\n`);
-        return EXIT_OK;
+    const job = await client.getJob(id);
+    const thread = await client.thread(id);
+    return ok({ job, thread }, `${renderJobDetail(job)}\n\n${renderThread(thread)}`);
+}
+
+/** What a wait's `data` says: the result, and the task / requested run / head run identities. */
+function waitData(id: string, wait: JobWait, budgetSeconds: number) {
+    return {
+        result: wait.result,
+        taskId: wait.rootJobId,
+        runId: id,
+        headRunId: wait.headJobId,
+        headStatus: wait.headStatus,
+        waitReason: wait.waitReason,
+        budgetSeconds,
+        job: wait.job,
+    };
+}
+
+/** How a terminal head's verdict ends the command — the run's own verdict, nothing downstream of it. */
+function terminalOutcome(wait: JobWait): CommandResult['outcome'] {
+    switch (wait.headStatus) {
+        case 'succeeded':
+            return OUTCOME.succeeded;
+        case 'failed':
+        case 'dead':
+            return OUTCOME.failed;
+        case 'stopped':
+            return OUTCOME.cancelled;
+        default:
+            throw new BoardError(
+                `the board settled a wait on a head in status "${wait.headStatus}"`,
+                HTTP_OK,
+                MALFORMED_RESPONSE_CODE
+            );
     }
-    io.stdout(`${renderJobDetail(job)}\n\n${renderThread(thread)}\n`);
-    return EXIT_OK;
 }
 
 /**
- * The wait. Each poll is a settle long-poll the BOARD holds — a timeout comes back as the
- * ordinary row with nothing to mark it, so the status field is the loop condition and the
- * re-issue is the only thing this loop does. No sleep anywhere: the holding happens server-side,
- * and the last poll asks only for what is left of the deadline rather than the full cap.
- *
- * The board's settle is NOT "the row is terminal": it also settles on an open workflow wait, and
- * answers that one at once with a `queued`/`running` row. Re-issuing on a non-terminal row alone
- * would then spin as fast as the network allows for the whole budget, so a poll that came back
- * well before its hold elapsed ends the wait instead — the thread is parked, and nothing this
- * loop does will move it.
+ * The wait. Each poll is a settle long-poll the BOARD holds, and the board says why it returned:
+ * `terminal` (the head's verdict is in), `parked` (an open workflow wait nothing here can move)
+ * or `timeout` (the hold elapsed, thread still moving). Only a `timeout` is re-issued; nothing is
+ * inferred from how long a poll took. No sleep anywhere — the holding happens server-side, and
+ * the last poll asks only for what is left of the budget rather than the full cap.
  */
-async function runWait(args: readonly string[], io: RunIo): Promise<number> {
+async function runWait(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const parsed = parseOrUsage(() =>
         parseArgs({
             args: [...args],
             allowPositionals: true,
-            options: { timeout: { type: 'string' }, json: { type: 'boolean', default: false } },
+            options: { ...JSON_OPTION, timeout: { type: 'string' } },
         })
     );
     if (parsed.positionals.length !== 1) {
@@ -247,33 +261,40 @@ async function runWait(args: readonly string[], io: RunIo): Promise<number> {
     const now = io.now ?? Date.now;
 
     const deadline = now() + total * MS_PER_SECOND;
-    let last: BoardJobRecord | null = null;
+    let last: JobWait | null = null;
     for (;;) {
-        const startedAt = now();
-        const remainingMs = deadline - startedAt;
+        const remainingMs = deadline - now();
         if (remainingMs <= 0) break;
         const hold = Math.min(WAIT_POLL_MAX_S, Math.ceil(remainingMs / MS_PER_SECOND));
         last = await client.waitForJob(id, hold);
-        if (isTerminal(last.status)) {
-            io.stdout(parsed.values.json ? `${JSON.stringify(last, null, 2)}\n` : `${renderJobLine(last)}\n`);
-            return EXIT_OK;
+        if (last.result === 'terminal') {
+            return {
+                outcome: terminalOutcome(last),
+                data: waitData(id, last, total),
+                stdout: `${renderJobLine(last.job)}\n`,
+            };
         }
-        // A hold that ended early on a row that is not terminal is the board saying the thread
-        // settled on something this wait cannot outlast — usually an open PR or review wait.
-        if (now() - startedAt < hold * MS_PER_SECOND * SETTLE_EARLY_FRACTION) {
-            io.stderr(
-                `${last.status}, settled early with no terminal row: ${id}\n` +
-                    'the thread is parked on a workflow wait, or this id is not its chain head\n'
-            );
-            return EXIT_UNSETTLED;
+        if (last.result === 'parked') {
+            return {
+                outcome: OUTCOME.needsAttention,
+                data: waitData(id, last, total),
+                stderr:
+                    `${last.headStatus}, parked on a workflow wait (${last.waitReason ?? 'unnamed'}): ${id}\n` +
+                    `the task's head run is ${last.headJobId}; nothing a wait does moves a parked thread\n`,
+            };
         }
     }
-    io.stderr(`still ${last?.status ?? 'unsettled'} after ${total}s: ${id}\n`);
-    return EXIT_UNSETTLED;
+    return {
+        outcome: OUTCOME.timeout,
+        data: last
+            ? waitData(id, last, total)
+            : { result: 'timeout', runId: id, budgetSeconds: total, taskId: null, headRunId: null },
+        stderr: `still ${last?.headStatus ?? 'unsettled'} after ${total}s: ${id}\n`,
+    };
 }
 
-async function runFollowUp(args: readonly string[], io: RunIo): Promise<number> {
-    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true }));
+async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options: JSON_OPTION }));
     const [id, ...rest] = parsed.positionals;
     const command = rest.join(' ').trim();
     if (!id || !command) {
@@ -281,82 +302,108 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<number> 
     }
     // Only the command travels: the repo, the executor and the session come from the parent.
     const created = await boardFor(io).followUp(id, command);
-    io.stdout(`${renderCreated(created)}\n`);
-    return EXIT_OK;
+    return ok(created, renderCreated(created));
 }
 
-async function runStop(args: readonly string[], io: RunIo): Promise<number> {
+async function runStop(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const { id } = onlyId(args, 'stop');
-    io.stdout(`${renderStopped(await boardFor(io).stopJob(id))}\n`);
-    return EXIT_OK;
+    const stopped = await boardFor(io).stopJob(id);
+    return ok(stopped, renderStopped(stopped));
 }
 
-async function runDone(args: readonly string[], io: RunIo): Promise<number> {
+async function runDone(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const { id } = onlyId(args, 'done');
-    io.stdout(`${renderDone(await boardFor(io).markDone(id))}\n`);
-    return EXIT_OK;
+    const done = await boardFor(io).markDone(id);
+    return ok(done, renderDone(done));
 }
 
-async function runRemove(args: readonly string[], io: RunIo): Promise<number> {
+async function runRemove(args: readonly string[], io: RunIo): Promise<CommandResult> {
     // A remove deletes the whole thread and cannot be undone, and this CLI has no prompt to ask
     // through — so the command line is where the intent has to be said out loud.
     const { id, values } = onlyId(args, 'remove', { yes: { type: 'boolean' } });
     if (!values.yes) {
         throw new UsageError('remove deletes the whole task thread and cannot be undone — pass --yes to confirm');
     }
-    io.stdout(`${renderRemoved(await boardFor(io).removeJob(id))}\n`);
-    return EXIT_OK;
+    const removed = await boardFor(io).removeJob(id);
+    return ok(removed, renderRemoved(removed));
 }
 
-function report(error: unknown, io: RunIo): number {
+const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<CommandResult>> = {
+    create: runCreate,
+    list: runList,
+    investigate: runInvestigate,
+    wait: runWait,
+    'follow-up': runFollowUp,
+    stop: runStop,
+    done: runDone,
+    remove: runRemove,
+};
+
+const INTERRUPTED_MESSAGE = 'interrupted — this process stopped; the task on the board was not touched';
+
+/** A failure as a result: which outcome it is, what to tell a person, and what to tell a script. */
+function failureOf(error: unknown, io: RunIo): CommandResult {
+    // A local interrupt aborts the fetch, which looks like a network failure — the signal is the
+    // only thing that tells the two apart, so it is asked first.
+    if (io.signal?.aborted) {
+        const detail: ErrorDetail = { message: INTERRUPTED_MESSAGE, code: null, status: null };
+        return { outcome: OUTCOME.interrupted, error: detail, stderr: `${INTERRUPTED_MESSAGE}\n` };
+    }
     if (error instanceof CliConfigError || error instanceof UsageError) {
-        io.stderr(`${error.message}\n`);
-        return EXIT_USAGE;
+        return {
+            outcome: OUTCOME.usage,
+            error: { message: error.message, code: null, status: null },
+            stderr: `${error.message}\n`,
+        };
     }
     if (error instanceof BoardError) {
-        // The board's message is the useful one; the code rides beside it for scripting, and a
-        // network failure arrives as a BoardError with status 0 and the "cannot reach" message.
+        // The board's message is the useful one; the code rides beside it for scripting.
         const code = error.code ? ` [${error.code}]` : '';
-        io.stderr(`error: ${error.message}${code}\n`);
-        return EXIT_FAILURE;
+        return {
+            outcome: error.status === NO_RESPONSE_STATUS ? OUTCOME.unreachable : OUTCOME.refused,
+            error: { message: error.message, code: error.code, status: error.status },
+            stderr: `error: ${error.message}${code}\n`,
+        };
     }
     const message = error instanceof Error ? error.message : String(error);
-    io.stderr(`error: ${message}\n`);
-    return EXIT_FAILURE;
+    return {
+        outcome: OUTCOME.refused,
+        error: { message, code: null, status: null },
+        stderr: `error: ${message}\n`,
+    };
+}
+
+/** Whether `--json` was asked for, read before any parsing so a parse failure can still honor it. */
+function wantsJson(args: readonly string[]): boolean {
+    const end = args.indexOf(END_OF_OPTIONS);
+    return (end === -1 ? args : args.slice(0, end)).includes(JSON_FLAG);
+}
+
+async function dispatch(
+    argv: readonly string[],
+    io: RunIo
+): Promise<{ command: string | null; result: CommandResult }> {
+    const [topic, command] = argv;
+    const handler = topic === 'job' && command !== undefined ? COMMANDS[command] : undefined;
+    // A line that names no command reports none, so a parse failure never invents one.
+    const name = handler ? `${topic} ${command}` : null;
+    try {
+        if (!handler) throw new UsageError(USAGE);
+        return { command: name, result: await handler(argv.slice(2), io) };
+    } catch (error) {
+        return { command: name, result: failureOf(error, io) };
+    }
 }
 
 /** Runs one command line to completion. Returns the process exit code; never throws. */
 export async function run(argv: readonly string[], io: RunIo): Promise<number> {
-    const [topic, command] = argv;
-    const rest = argv.slice(2);
-    try {
-        if (topic !== 'job') return usage(io);
-        switch (command) {
-            case 'create':
-                return await runCreate(rest, io);
-            case 'list':
-                return await runList(rest, io);
-            case 'investigate':
-                return await runInvestigate(rest, io);
-            case 'wait':
-                return await runWait(rest, io);
-            case 'follow-up':
-                return await runFollowUp(rest, io);
-            case 'stop':
-                return await runStop(rest, io);
-            case 'done':
-                return await runDone(rest, io);
-            case 'remove':
-                return await runRemove(rest, io);
-            default:
-                return usage(io);
-        }
-    } catch (error) {
-        return report(error, io);
+    const { command, result } = await dispatch(argv, io);
+    const envelope = envelopeOf(command, result);
+    if (wantsJson(argv)) {
+        io.stdout(`${JSON.stringify(envelope, null, 2)}\n`);
+    } else {
+        if (result.stdout) io.stdout(result.stdout);
+        if (result.stderr) io.stderr(result.stderr);
     }
-}
-
-function usage(io: RunIo): number {
-    io.stderr(`${USAGE}\n`);
-    return EXIT_USAGE;
+    return envelope.exitCode;
 }

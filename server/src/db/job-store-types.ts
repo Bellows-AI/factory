@@ -14,6 +14,23 @@ import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
+/**
+ * Why a settle long-poll returned: the thread's chain head is `terminal`, an open workflow wait
+ * has it `parked` (nothing the poller does moves it), or the hold's deadline passed with the
+ * thread still moving (`timeout`). The wire value, copied by `cli/src/board.ts`.
+ */
+export type SettleResult = 'terminal' | 'parked' | 'timeout';
+
+/** The settle long-poll's answer: the result, and the thread identity it was judged on. */
+export interface SettleOutcome {
+    result: SettleResult;
+    rootJobId: string;
+    headJobId: string;
+    headStatus: JobStatus;
+    /** The open wait's reason when `parked`, else null. */
+    waitReason: string | null;
+}
+
 /** What a worker may report. 'dead' is the board's verdict, never a worker's. */
 export type JobOutcome = 'succeeded' | 'failed';
 
@@ -1183,10 +1200,11 @@ export interface JobStore {
      * head (the newest member, created then id, the sidenav's rule) reaches a terminal status, or
      * an open PR wait (036) stands on the thread — the same predicate `listTasksOf` buckets by,
      * so a waiting client and the sidenav can never disagree about "still moving". Answers
-     * `{ settled: true }` the moment a read says settled, `{ settled: false }` once `timeoutMs`
-     * has elapsed, and null — without holding — when the org holds no such job.
+     * `terminal` or `parked` the moment a read says so, `timeout` once `timeoutMs` has elapsed,
+     * each with the thread's root and head identity, and null — without holding — when the org
+     * holds no such job.
      */
-    waitForSettle(id: string, timeoutMs: number): Promise<{ settled: boolean } | null>;
+    waitForSettle(id: string, timeoutMs: number): Promise<SettleOutcome | null>;
     /**
      * Newest first. `output` is not selected — it is unbounded and no list view shows it — and
      * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose

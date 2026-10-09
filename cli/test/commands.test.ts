@@ -87,6 +87,21 @@ function clockOf(...stamps: readonly number[]): () => number {
 const json = (payload: unknown, status = 200) =>
     new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
 
+/** The board's answer to a settle long-poll: the explicit result, the thread identity, the run row. */
+const waitBody = (
+    result: 'terminal' | 'parked' | 'timeout',
+    jobOverrides: Record<string, unknown> = {},
+    overrides: Record<string, unknown> = {}
+) => ({
+    result,
+    rootJobId: 'job-1',
+    headJobId: 'job-1',
+    headStatus: result === 'terminal' ? 'succeeded' : 'running',
+    waitReason: null,
+    job: job({ status: result === 'terminal' ? 'succeeded' : 'running', ...jobOverrides }),
+    ...overrides,
+});
+
 const ENV = { FACTORY_URL: 'http://board', FACTORY_TOKEN: 'fat_abc' };
 
 describe('factory job create', () => {
@@ -177,14 +192,22 @@ describe('factory job list', () => {
         expect(printed).toContain('job-2');
     });
 
-    it('prints the raw jobs array with --json', async () => {
+    it('prints the envelope around the jobs with --json', async () => {
         const jobs = [job()];
-        const { out, io } = harness(ENV, () => json({ jobs }));
+        const { out, err, io } = harness(ENV, () => json({ jobs }));
 
         const code = await run(['job', 'list', '--json'], io);
 
         expect(code).toBe(0);
-        expect(JSON.parse(out.join(''))).toEqual(jobs);
+        expect(err).toEqual([]);
+        expect(JSON.parse(out.join(''))).toEqual({
+            ok: true,
+            command: 'job list',
+            outcome: 'ok',
+            exitCode: 0,
+            data: { jobs },
+            error: null,
+        });
     });
 
     it('refuses a non-numeric --limit before any request', async () => {
@@ -250,19 +273,18 @@ describe('factory job investigate', () => {
         const code = await run(['job', 'investigate', 'job-1', '--json'], io);
 
         expect(code).toBe(0);
-        expect(JSON.parse(out.join(''))).toEqual({ job: detail, thread: threadJobs });
+        expect(JSON.parse(out.join('')).data).toEqual({ job: detail, thread: threadJobs });
     });
 });
 
 describe('factory job wait', () => {
-    it('re-issues the settle long-poll until the row is terminal, then prints it and exits 0', async () => {
-        // The board answers a timeout with the current row and no marker, so the status field is
-        // the loop condition. Re-issuing is the wait; there is no sleep between the polls.
+    it("re-issues on the board's timeout result until a terminal one, then prints the row and exits 0", async () => {
+        // Only the board's `timeout` result is re-issued; there is no sleep between the polls.
         const { out, calls, io } = harness(
             ENV,
-            (index) => json(index === 0 ? job({ status: 'running' }) : job({ status: 'succeeded' })),
-            // Each poll comes back at its full 60s hold — a board timeout, so the wait re-issues.
-            clockOf(0, 0, 60_000, 60_000)
+            (index) => json(index === 0 ? waitBody('timeout') : waitBody('terminal')),
+            // The deadline, then one read per loop turn.
+            clockOf(0, 0, 60_000)
         );
 
         const code = await run(['job', 'wait', 'job-1', '--timeout', '120'], io);
@@ -274,14 +296,10 @@ describe('factory job wait', () => {
         expect(calls[1]!.url).toBe('http://board/api/jobs/job-1?waitFor=terminal&timeout=60');
     });
 
-    it('holds only for what is left of the deadline, then exits 3 naming the last status', async () => {
-        // 70s gone of a 120s wait leaves 50, so the poll asks for 50 rather than the cap, and
-        // comes back at that full hold — a timeout — with the deadline then spent.
-        const { err, calls, io } = harness(
-            ENV,
-            () => json(job({ status: 'running' })),
-            clockOf(0, 70_000, 120_000, 120_000)
-        );
+    it('holds only for what is left of the budget, then exits 3 naming the last status', async () => {
+        // 70s gone of a 120s wait leaves 50, so the poll asks for 50 rather than the cap; the
+        // board answers a timeout and the budget is then spent.
+        const { err, calls, io } = harness(ENV, () => json(waitBody('timeout')), clockOf(0, 70_000, 120_000));
 
         const code = await run(['job', 'wait', 'job-1', '--timeout', '120'], io);
 
@@ -291,45 +309,134 @@ describe('factory job wait', () => {
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1?waitFor=terminal&timeout=50');
     });
 
-    it('stops re-issuing when the board settles early on a non-terminal row', async () => {
-        // The board's settle is terminal OR an open workflow wait, and the second answers at
-        // once with a queued/running row. Re-issuing on that would be a request storm for the
-        // whole budget, so a hold that ended far short of its 60s ends the wait instead.
+    it("ends on the board's parked result however fast it came back, naming the wait", async () => {
+        // No clock reads past the poll's own: the result says parked, so nothing about timing is
+        // consulted — a parked thread ends the wait at once and exits 6.
         const { err, calls, io } = harness(
             ENV,
-            () => json(job({ status: 'queued', waitReason: 'pr_review' })),
-            clockOf(0, 0, 300)
+            () => json(waitBody('parked', {}, { headStatus: 'queued', waitReason: 'pr_review' })),
+            clockOf(0, 0)
         );
 
         const code = await run(['job', 'wait', 'job-1', '--timeout', '120'], io);
 
-        expect(code).toBe(3);
-        expect(err.join('')).toContain('workflow wait');
+        expect(code).toBe(6);
+        expect(err.join('')).toContain('pr_review');
         expect(calls).toHaveLength(1);
     });
 
-    it('still catches the early settle on the one-second hold a spent budget asks for', async () => {
-        // The early-settle rule is a fraction of the hold, not a fixed slack: a slack wide enough
-        // for a 60s hold is dead at 1s, which is exactly where the last of a budget gets spent.
-        const { err, calls, io } = harness(ENV, () => json(job({ status: 'running' })), clockOf(0, 0, 100));
+    it('does not treat a quick timeout result as parked', async () => {
+        // The old rule read a hold that ended early as parked. The board's result is the only
+        // signal now: a `timeout` that came back instantly is simply re-issued.
+        const { calls, io } = harness(
+            ENV,
+            (index) => json(index === 0 ? waitBody('timeout') : waitBody('terminal')),
+            clockOf(0, 0, 1)
+        );
 
-        const code = await run(['job', 'wait', 'job-1', '--timeout', '1'], io);
+        const code = await run(['job', 'wait', 'job-1', '--timeout', '120'], io);
 
-        expect(code).toBe(3);
-        expect(err.join('')).toContain('settled early');
-        expect(calls).toHaveLength(1);
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1?waitFor=terminal&timeout=1');
+        expect(code).toBe(0);
+        expect(calls).toHaveLength(2);
     });
 
-    it('prints the settled row as JSON with --json', async () => {
+    it('prints the wait envelope with the task, run and head identities with --json', async () => {
         const settled = job({ status: 'failed' });
-        // Two reads: the deadline, then the one poll's start. It settles, so nothing reads again.
-        const { out, io } = harness(ENV, () => json(settled), clockOf(0, 0));
+        const { out, err, io } = harness(
+            ENV,
+            () => json(waitBody('terminal', { status: 'failed' }, { headStatus: 'failed', headJobId: 'job-9' })),
+            clockOf(0, 0)
+        );
 
         const code = await run(['job', 'wait', 'job-1', '--json'], io);
 
-        expect(code).toBe(0);
-        expect(JSON.parse(out.join(''))).toEqual(settled);
+        expect(code).toBe(4);
+        expect(err).toEqual([]);
+        expect(JSON.parse(out.join(''))).toEqual({
+            ok: false,
+            command: 'job wait',
+            outcome: 'failed',
+            exitCode: 4,
+            data: {
+                result: 'terminal',
+                taskId: 'job-1',
+                runId: 'job-1',
+                headRunId: 'job-9',
+                headStatus: 'failed',
+                waitReason: null,
+                budgetSeconds: 300,
+                job: settled,
+            },
+            error: null,
+        });
+    });
+
+    // Every way a wait can end, against the one exit code and outcome each owns.
+    it.each([
+        { label: 'succeeded', body: waitBody('terminal'), exitCode: 0, outcome: 'succeeded', stream: 'stdout' },
+        {
+            label: 'failed',
+            body: waitBody('terminal', {}, { headStatus: 'failed' }),
+            exitCode: 4,
+            outcome: 'failed',
+            stream: 'stdout',
+        },
+        {
+            label: 'dead',
+            body: waitBody('terminal', {}, { headStatus: 'dead' }),
+            exitCode: 4,
+            outcome: 'failed',
+            stream: 'stdout',
+        },
+        {
+            label: 'stopped',
+            body: waitBody('terminal', {}, { headStatus: 'stopped' }),
+            exitCode: 5,
+            outcome: 'cancelled',
+            stream: 'stdout',
+        },
+        {
+            label: 'parked',
+            body: waitBody('parked', {}, { waitReason: 'pr_review' }),
+            exitCode: 6,
+            outcome: 'needs_attention',
+            stream: 'stderr',
+        },
+        {
+            label: 'a non-head run on a failed head',
+            body: waitBody('terminal', {}, { headStatus: 'failed', headJobId: 'job-9' }),
+            exitCode: 4,
+            outcome: 'failed',
+            stream: 'stdout',
+        },
+    ])('ends $label with exit $exitCode and outcome $outcome', async ({ body, exitCode, outcome, stream }) => {
+        const human = harness(ENV, () => json(body), clockOf(0, 0));
+        expect(await run(['job', 'wait', 'job-1'], human.io)).toBe(exitCode);
+        expect((stream === 'stdout' ? human.out : human.err).join('')).not.toBe('');
+
+        const machine = harness(ENV, () => json(body), clockOf(0, 0));
+        expect(await run(['job', 'wait', 'job-1', '--json'], machine.io)).toBe(exitCode);
+        expect(JSON.parse(machine.out.join('')).outcome).toBe(outcome);
+        expect(machine.err).toEqual([]);
+    });
+
+    it('ends exit 3 with outcome timeout when the budget is spent', async () => {
+        const { out, io } = harness(ENV, () => json(waitBody('timeout')), clockOf(0, 0, 1_000));
+
+        const code = await run(['job', 'wait', 'job-1', '--timeout', '1', '--json'], io);
+
+        expect(code).toBe(3);
+        expect(JSON.parse(out.join('')).outcome).toBe('timeout');
+    });
+
+    it('refuses an answer with no wait result as a malformed response, not a guess', async () => {
+        // A board that answers the bare row (the old shape) is refused, never inferred from.
+        const { err, io } = harness(ENV, () => json(job({ status: 'succeeded' })), clockOf(0, 0));
+
+        const code = await run(['job', 'wait', 'job-1'], io);
+
+        expect(code).toBe(1);
+        expect(err.join('')).toContain('MALFORMED_RESPONSE');
     });
 
     it('refuses a --timeout that is not a positive integer before any request', async () => {
@@ -480,7 +587,7 @@ describe('command failures', () => {
 
         const code = await run(['job', 'list'], io);
 
-        expect(code).toBe(1);
+        expect(code).toBe(7);
         expect(err.join('')).toContain('cannot reach http://board');
     });
 
@@ -502,5 +609,158 @@ describe('command failures', () => {
         expect(code).toBe(2);
         expect(err.join('')).toContain('usage:');
         expect(calls).toHaveLength(0);
+    });
+});
+
+describe('--json on every outcome', () => {
+    const refusal = () => json({ error: 'No such job', code: 'NOT_FOUND' }, 404);
+    const unreachable = () => {
+        throw new Error('fetch failed');
+    };
+
+    // Each row: a command line, what the board does, then the one outcome and exit code it must
+    // end in. The same line runs with --json and must leave stderr empty and stdout one document.
+    const nonJson = () => new Response('<html>', { status: 200 });
+    const FAILURES = [
+        {
+            label: 'a board refusal on a read',
+            argv: ['job', 'investigate', 'nope'],
+            respond: refusal,
+            outcome: 'refused',
+            exitCode: 1,
+        },
+        {
+            label: 'a board refusal on an action',
+            argv: ['job', 'stop', 'nope'],
+            respond: refusal,
+            outcome: 'refused',
+            exitCode: 1,
+        },
+        {
+            label: 'a board refusal on a wait',
+            argv: ['job', 'wait', 'nope'],
+            respond: refusal,
+            outcome: 'refused',
+            exitCode: 1,
+        },
+        {
+            label: 'a network failure',
+            argv: ['job', 'list'],
+            respond: unreachable,
+            outcome: 'unreachable',
+            exitCode: 7,
+        },
+        { label: 'a non-JSON 2xx body', argv: ['job', 'list'], respond: nonJson, outcome: 'refused', exitCode: 1 },
+        { label: 'a missing config', argv: ['job', 'list'], respond: refusal, outcome: 'usage', exitCode: 2, env: {} },
+        {
+            label: 'a bad flag value',
+            argv: ['job', 'list', '--limit', 'many'],
+            respond: refusal,
+            outcome: 'usage',
+            exitCode: 2,
+        },
+        { label: 'an unknown flag', argv: ['job', 'list', '--frob'], respond: refusal, outcome: 'usage', exitCode: 2 },
+        { label: 'a create with no command', argv: ['job', 'create'], respond: refusal, outcome: 'usage', exitCode: 2 },
+        {
+            label: 'a remove without --yes',
+            argv: ['job', 'remove', 'job-1'],
+            respond: refusal,
+            outcome: 'usage',
+            exitCode: 2,
+        },
+        {
+            label: 'a bad wait timeout',
+            argv: ['job', 'wait', 'job-1', '--timeout', 'soon'],
+            respond: refusal,
+            outcome: 'usage',
+            exitCode: 2,
+        },
+        {
+            label: 'an unknown subcommand',
+            argv: ['job', 'frobnicate'],
+            respond: refusal,
+            outcome: 'usage',
+            exitCode: 2,
+        },
+        { label: 'an unknown topic', argv: ['nope'], respond: refusal, outcome: 'usage', exitCode: 2 },
+        { label: 'no arguments at all', argv: [], respond: refusal, outcome: 'usage', exitCode: 2 },
+    ];
+
+    it.each(FAILURES)('$label ends as one parseable document', async ({ argv, respond, outcome, exitCode, env }) => {
+        const { out, err, calls, io } = harness(env ?? ENV, respond);
+
+        const code = await run([...argv, '--json'], io);
+
+        expect(code).toBe(exitCode);
+        expect(err).toEqual([]);
+        expect(out).toHaveLength(1);
+        const envelope = JSON.parse(out[0]!);
+        expect(envelope).toMatchObject({ ok: false, outcome, exitCode });
+        expect(envelope.error.message).not.toBe('');
+        if (outcome === 'usage') expect(calls).toHaveLength(0);
+    });
+
+    it("carries the board's code and status on a refusal", async () => {
+        const { out, io } = harness(ENV, refusal);
+
+        await run(['job', 'investigate', 'nope', '--json'], io);
+
+        expect(JSON.parse(out.join('')).error).toEqual({ message: 'No such job', code: 'NOT_FOUND', status: 404 });
+    });
+
+    it("honors --json even when it comes before the id and after a create command's `--`", async () => {
+        const { out, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        // After `--` the flag belongs to the task's own command, not to the CLI.
+        const code = await run(['job', 'create', '--', 'npm', 'test', '--json'], io);
+
+        expect(code).toBe(0);
+        expect(out.join('')).toBe('queued job-1\n');
+    });
+
+    it.each([
+        ['create', ['job', 'create', '--json', '--', 'npm test'], { id: 'job-1', status: 'queued' }],
+        ['follow-up', ['job', 'follow-up', 'job-1', 'again', '--json'], { id: 'job-2', status: 'queued' }],
+        ['stop', ['job', 'stop', 'job-1', '--json'], { id: 'job-1', status: 'stopped' }],
+        ['done', ['job', 'done', 'job-1', '--json'], { id: 'job-1', status: 'succeeded', doneAt: null }],
+        ['remove', ['job', 'remove', 'job-1', '--yes', '--json'], { id: 'job-1', removed: true }],
+    ])('prints the %s payload inside the envelope', async (name, argv, payload) => {
+        const { out, err, io } = harness(ENV, () => json(payload));
+
+        const code = await run(argv, io);
+
+        expect(code).toBe(0);
+        expect(err).toEqual([]);
+        expect(JSON.parse(out.join(''))).toEqual({
+            ok: true,
+            command: `job ${name}`,
+            outcome: 'ok',
+            exitCode: 0,
+            data: payload,
+            error: null,
+        });
+    });
+
+    it('ends interrupted, not unreachable or cancelled, when the local signal aborts the request', async () => {
+        const controller = new AbortController();
+        const fetch = (async () => {
+            controller.abort();
+            throw new DOMException('This operation was aborted', 'AbortError');
+        }) as unknown as typeof globalThis.fetch;
+        const out: string[] = [];
+        const err: string[] = [];
+        const io = {
+            env: ENV,
+            fetch,
+            signal: controller.signal,
+            stdout: (text: string) => out.push(text),
+            stderr: (text: string) => err.push(text),
+        };
+
+        const code = await run(['job', 'wait', 'job-1', '--json'], io);
+
+        expect(code).toBe(130);
+        expect(err).toEqual([]);
+        expect(JSON.parse(out.join(''))).toMatchObject({ ok: false, outcome: 'interrupted', exitCode: 130 });
     });
 });

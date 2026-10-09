@@ -8,7 +8,15 @@ import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
 import { validateWaitQuery } from '../src/routes/job-field-validation.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
-import type { Claim, GateReport, Job, JobStatus, RuntimeVitals } from '../src/db/job-store-types.js';
+import type {
+    Claim,
+    GateReport,
+    Job,
+    JobStatus,
+    RuntimeVitals,
+    SettleOutcome,
+    SettleResult,
+} from '../src/db/job-store-types.js';
 import type {
     AnswerQuestionResult,
     ArtifactKind,
@@ -51,6 +59,16 @@ afterEach(async () => {
 });
 
 const ID = '11111111-1111-4111-8111-111111111111';
+
+/** The settle answer for the thread rooted at `ID`, headed by `ID` unless told otherwise. */
+const outcomeOf = (result: SettleResult, overrides: Partial<SettleOutcome> = {}): SettleOutcome => ({
+    result,
+    rootJobId: ID,
+    headJobId: ID,
+    headStatus: result === 'terminal' ? 'succeeded' : 'running',
+    waitReason: null,
+    ...overrides,
+});
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 const RETRY_ID = '66666666-6666-4666-8666-666666666666';
@@ -193,7 +211,7 @@ function stubStore(
          * What `waitForSettle` answers (issue #323); null → 404. A function may delay to model
          * the store's hold — the route must await it, never answer first.
          */
-        waitFor?: (id: string, timeoutMs: number) => Promise<{ settled: boolean } | null>;
+        waitFor?: (id: string, timeoutMs: number) => Promise<SettleOutcome | null>;
     } = {}
 ): StoreStub {
     const boom = () => {
@@ -422,7 +440,7 @@ function stubStore(
         async waitForSettle(id, timeoutMs) {
             boom();
             stub.waits.push({ id, timeoutMs });
-            const answer = options.waitFor ?? (async () => ({ settled: true }) as const);
+            const answer = options.waitFor ?? (async () => outcomeOf('terminal'));
             return answer(id, timeoutMs);
         },
         async thread() {
@@ -3224,8 +3242,34 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         const instance = await harnessWith(store);
         const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal` });
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual(job);
+        expect(response.json()).toEqual({ ...outcomeOf('terminal'), job });
         expect(store.waits).toEqual([{ id: ID, timeoutMs: 30_000 }]);
+    });
+
+    // The explicit wait result: every way a hold ends names itself, with the thread identity it
+    // was judged on — including a requested id that is not the chain head.
+    it.each<[string, SettleOutcome]>([
+        ['terminal', outcomeOf('terminal')],
+        ['timeout', outcomeOf('timeout')],
+        ['parked on a workflow wait', outcomeOf('parked', { waitReason: 'pr_review' })],
+        [
+            'a non-head id whose head is terminal',
+            outcomeOf('terminal', { headJobId: '22222222-2222-4222-8222-222222222222', headStatus: 'failed' }),
+        ],
+    ])('answers the %s result beside the job', async (_label, outcome) => {
+        const store = stubStore({ job, waitFor: async () => outcome });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=5` });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ ...outcome, job });
+    });
+
+    it('answers the plain job shape, with no wait result, when no wait was asked for', async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}` });
+        expect(response.json()).toEqual(job);
+        expect(store.waits).toEqual([]);
     });
 
     it('holds until the store settles', async () => {
@@ -3235,7 +3279,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
             job,
             waitFor: () =>
                 new Promise((resolve) => {
-                    settle = () => resolve({ settled: true });
+                    settle = () => resolve(outcomeOf('terminal'));
                 }),
         });
         const instance = await harnessWith(store);
@@ -3251,22 +3295,22 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         settle();
         const response = await pending;
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual(job);
+        expect(response.json()).toEqual({ ...outcomeOf('terminal'), job });
     });
 
-    it('answers the current job when the timeout elapses unsettled', async () => {
+    it('answers a timeout result with the current job when the hold elapses unsettled', async () => {
         const store = stubStore({
             job,
             waitFor: async (_id, timeoutMs) => {
                 await sleep(timeoutMs);
-                return { settled: false };
+                return outcomeOf('timeout');
             },
         });
         const instance = await harnessWith(store);
         const started = Date.now();
         const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}?waitFor=terminal&timeout=1` });
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual(job);
+        expect(response.json()).toEqual({ ...outcomeOf('timeout'), job });
         expect(Date.now() - started).toBeGreaterThanOrEqual(950);
         expect(store.waits).toEqual([{ id: ID, timeoutMs: 1_000 }]);
     });
