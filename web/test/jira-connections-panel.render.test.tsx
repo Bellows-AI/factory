@@ -1,12 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ORG_CONNECTION_SCOPE, USER_CONNECTION_SCOPE, type ConnectionView } from '../src/api/connections.js';
+import { JiraConnectionDialog, SCOPED_TOKEN_HINT } from '../src/components/JiraConnectionDialog.js';
 import {
     ADD_CONNECTION_LABEL,
     DEFAULT_CONNECTION_CAPTION,
     JiraConnectionsPanel,
     NO_CONNECTIONS_NOTE,
-    SCOPED_TOKEN_HINT,
 } from '../src/panels/JiraConnectionsPanel.js';
 
 const connection = (site: string, overrides: Partial<ConnectionView> = {}): ConnectionView => ({
@@ -27,7 +27,7 @@ const render = (props: Partial<Parameters<typeof JiraConnectionsPanel>[0]> = {})
             connections={[connection('new.atlassian.net'), connection('older-site.atlassian.net')]}
             canManage
             saving={false}
-            onCreate={async () => true}
+            onCreate={async () => null}
             onDelete={() => {}}
             {...props}
         />
@@ -44,12 +44,11 @@ describe('the Jira connections panel', () => {
         expect(html.indexOf(DEFAULT_CONNECTION_CAPTION)).toBeLessThan(html.indexOf('older-site'));
     });
 
-    it('gives an admin the add controls, the scoped-token hint, and a delete per row', () => {
+    it('gives an admin the add button in the panel head and a delete per row, with the form kept in the dialog', () => {
         const html = render();
-        expect(html).toContain(ADD_CONNECTION_LABEL);
-        expect(html).toContain('aria-label="Jira API token"');
-        expect(html).toContain('type="password"');
-        expect(html).toContain(SCOPED_TOKEN_HINT);
+        expect(html).toMatch(new RegExp(`class="panel-head">.*${ADD_CONNECTION_LABEL}</button>`));
+        // The fields live in the closed dialog, never inline in the panel.
+        expect(html).not.toContain('<input');
         expect(html.match(/>Delete<\/button>/g)).toHaveLength(2);
     });
 
@@ -61,16 +60,36 @@ describe('the Jira connections panel', () => {
         expect(html).not.toContain('Delete');
     });
 
-    it('never renders a token, and says so when the list is empty', () => {
+    it('says so when the list is empty, and never renders a token', () => {
         const html = render({ connections: [], scope: USER_CONNECTION_SCOPE });
         expect(html).toContain(NO_CONNECTIONS_NOTE);
         expect(html).not.toMatch(/apiToken|api_token/);
-        // The only token surface is the write-only password input, with no value attribute.
-        expect(html.match(/<input[^>]*type="password"[^>]*>/)?.[0]).not.toContain('value="s');
     });
 
-    it('disables the controls while a write is in flight', () => {
+    it('disables the add button and every delete while a write is in flight', () => {
         const html = render({ saving: true });
-        expect(html.match(/disabled/g)!.length).toBeGreaterThanOrEqual(5);
+        expect(html.match(/<button[^>]*disabled/g)).toHaveLength(3);
+    });
+});
+
+/**
+ * The add dialog is a Headless UI Dialog and portals, which `renderToStaticMarkup` does not
+ * render: its fields, the scoped-token help and the in-dialog refusal are e2e/jira-connections.spec.ts's.
+ */
+describe('the Jira connection dialog', () => {
+    it('server-renders a placeholder, open or closed', () => {
+        for (const open of [false, true]) {
+            const html = renderToStaticMarkup(
+                <JiraConnectionDialog
+                    open={open}
+                    scope={ORG_CONNECTION_SCOPE}
+                    saving={false}
+                    onClose={() => {}}
+                    onCreate={async () => null}
+                />
+            );
+            expect(html).toContain('<span hidden');
+        }
+        expect(SCOPED_TOKEN_HINT).toMatch(/scoped \(service-account\) token/);
     });
 });

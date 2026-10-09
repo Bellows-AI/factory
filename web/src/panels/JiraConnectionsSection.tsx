@@ -18,8 +18,9 @@ const PERSONAL_HINT = 'Your own connections. A personal connection overrides the
 
 /**
  * One scope of Jira connections bound to its data (`MembersSection`'s shape): the section owns the
- * list and the writes, the panel the markup. The route's refusals — `BAD_CONNECTION`, the 502 for
- * an unresolvable cloud id, `FORBIDDEN` — land on this section's own error line as sent.
+ * list and the writes, the panel the markup. A create's refusals — `BAD_CONNECTION`, the 502 for
+ * an unresolvable cloud id, `FORBIDDEN` — land in the add dialog as sent; a list or delete failure
+ * on this section's own error line.
  *
  * A member sees the org list read-only; the personal scope is always the member's to manage. The
  * server is the gate either way (a forced org create answers 403).
@@ -42,14 +43,14 @@ export function JiraConnectionsSection({ scope, session }: { scope: ConnectionSc
         void refresh();
     }, [refresh]);
 
-    const create = async (input: NewConnectionInput): Promise<boolean> => {
+    // A refusal is the dialog's to show beside its fields, not this section's error line.
+    const create = async (input: NewConnectionInput): Promise<string | null> => {
         setError(null);
         setSaving(true);
         const message = await createConnection(input);
-        if (message) setError(message);
-        else await refresh();
+        if (!message) await refresh();
         setSaving(false);
-        return message === null;
+        return message;
     };
 
     const remove = async (connection: ConnectionView) => {
