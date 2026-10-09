@@ -29,9 +29,11 @@ from the tree, and a gate that cannot reach the service (`ENOTFOUND`, connection
 do not work around it by installing the service yourself; end with `FACTORY_BLOCKED:` and the note.
 
 Run, read, fix, run again as often as the work needs: every answer is the gate's own result on the
-tree as it is now, and you can ship a draft pull request at any point (the github skill) without
-waiting for green. The declared gates also run when you finish, and a failing one fails the task —
-what you ran here is a check for you, never the verdict.
+tree as it is now. Run the relevant gates before you publish a pull request and report any that
+fail; that is guidance, not a permission check — you can open or update a pull request (the github
+skill) whatever a gate says. The declared gates also run when you finish and a failing one fails
+the task, but the work still ships as a draft; only a repository that sets `policy: gates:
+required` in `.bellows.yaml` holds the publish back until they pass.
 
 If `BELLOWS_GATE_URL` is unset, this environment has no gates configured: say so and verify with
 your own commands instead. Do not guess the URL.
@@ -42,4 +44,4 @@ your own commands instead. Do not guess the URL.
   send an arbitrary command. Read `.bellows.yaml` to see what is declared.
 - Gates can write generated files to the shared workspace. The environment container stays warm —
   run one at any point to check partial progress.
-- Do not mark work finished while a declared gate is failing.
+- If a declared gate is still failing when you finish, say so plainly; never claim it passed.

@@ -150,9 +150,14 @@ export function deadServiceNote(dead: DeadService, gatesSkipped: boolean, restar
     return `service "${dead.name}" (${dead.image}) ${dead.state} — ${how}${restart}${skipped}${tail}${hint ? `\nhint: ${hint}` : ''}`;
 }
 
-/** Whether only the services failed finished work, which then publishes as a draft (issue #560). */
-export const servicesOnly = (ledger: Ledger): boolean =>
-    ledger.length > 0 && ledger.every((fault) => fault.kind === 'services');
+/**
+ * Whether only the declared services failed finished work — or, with `gatesToo`, the declared
+ * gates — which then publishes as a draft (issues #560, #573): a failed gate is a finding to
+ * report, not a publication refusal. A repository's explicit `policy: gates: required` still
+ * refuses it (`evidenceDecision`).
+ */
+export const draftable = (ledger: Ledger, gatesToo: boolean): boolean =>
+    ledger.length > 0 && ledger.every((fault) => fault.kind === 'services' || (gatesToo && fault.kind === 'gate'));
 
 /** Everything the phases after the agent found, beside its own outcome. */
 export interface LedgerParts {

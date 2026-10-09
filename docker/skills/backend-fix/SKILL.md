@@ -219,14 +219,13 @@ Run the [Local review gate](#local-review-gate) on the diff about to be pushed. 
 actionable, re-review until clean, then push. Gate fixes go in a new commit
 (`<KEY> [fix] address local review: <summary>`) — never amend a commit already on the remote.
 
-### 5.13 Publish through the driver
+### 5.13 Publish the pull request
 
-Do not run `gh pr create` — it is denied to you, and the deny is policy, not an obstacle. Ask the
-driver to publish instead (`POST $BELLOWS_CONTROL_URL/publish`, see the github skill): it pushes
-the task branch and opens (or reuses) the pull request, writing the title and description from the
-branch's commits, and a second call updates the same pull request. Finish with the work committed
-on the task branch and lint and tests green; the board publishes once more when the task
-completes.
+Push the task branch and open (or update) the pull request yourself with `git push` and `gh pr
+create`, or ask the driver to do it (`POST $BELLOWS_CONTROL_URL/publish`, see the github skill) —
+either lands on the same pull request. Run the relevant declared gates first and report any that
+fail; a failing gate does not stop you from publishing. Finish with the work committed on the task
+branch.
 
 ---
 

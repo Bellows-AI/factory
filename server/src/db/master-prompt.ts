@@ -11,14 +11,14 @@
  * node's own prompt text, prior output, env values, or credentials — the whole point is that a
  * workflow or task author cannot supply, append, or interpolate a single byte of this text.
  */
-import { WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
+import { OBJECTIVE_MODE, WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
 import type { ClaimHelperPlan } from './job-store-types.js';
 import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from './workflow-blocks/github-review-reconcile.js';
 import { PROBE_HELPER_ID } from './workflow-blocks/merge-conflict-autofix.js';
 import { nodeOf, type WorkflowDefinition } from './workflow-schema.js';
 
 /** Versioned so tests and later migrations can name the exact behavior they expect. */
-export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v4';
+export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v5';
 
 /**
  * The character cap on each rendered text, the master prompt and the turn context alike. Generous
@@ -52,14 +52,30 @@ type CapabilityLabel = (typeof CAPABILITY_LABELS)[number];
 const GATES_RULE =
     '- The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.';
 
-const RULES = `Rules for this turn
+const RULES_HEAD = `Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.
-- Factory decides what happens next from this turn's verdict and final output.
+- Factory decides what happens next from this turn's verdict and final output.`;
+
+const RULES_TAIL = `- If the current task defines an exact output line or marker, end with exactly that line, then stop.
+- If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop. Never print that line when you are not blocked.`;
+
+/** A workflow turn: Factory owns publication and the declared gates around it. */
+const WORKFLOW_RULES = `${RULES_HEAD}
 - Factory runs every capability this turn's Factory turn context lists; do not emulate any of them.
 - Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
 - You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
-- If the current task defines an exact output line or marker, end with exactly that line, then stop.
-- If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop. Never print that line when you are not blocked.`;
+${RULES_TAIL}`;
+
+/**
+ * An objective turn (issue #573): the agent directs publication. Gates are guidance, never a
+ * permission check; the board's own end-of-run publish reuses the agent's pull request.
+ */
+const OBJECTIVE_RULES = `${RULES_HEAD}
+- Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
+- You may push the task branch and open or update a pull request. Run the relevant declared gates before you publish and report any failure; a failed, skipped or unavailable gate does not stop you from publishing or continuing. Never say a gate passed that did not.
+- Do not merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
+- You may edit files, run tests and other local verification, and commit, as the current task requires.
+${RULES_TAIL}`;
 
 /** What one claim resolves the prompt from — trusted, already-validated board metadata only. */
 export interface MasterPromptClaimInput {
@@ -194,7 +210,9 @@ function renderContext(input: MasterPromptClaimInput): RenderContext | null {
 export function resolveMasterPrompt(input: MasterPromptClaimInput): string | null {
     const ctx = renderContext(input);
     if (ctx === null) return null;
-    return bounded(`Factory execution contract (${MASTER_PROMPT_VERSION})\n\n${renderContextBlock(ctx)}\n\n${RULES}`);
+    return bounded(
+        `Factory execution contract (${MASTER_PROMPT_VERSION})\n\n${renderContextBlock(ctx)}\n\n${ctx.mode === OBJECTIVE_MODE ? OBJECTIVE_RULES : WORKFLOW_RULES}`
+    );
 }
 
 /** claim()'s per-turn context — this claim's node and capabilities — or null (see `renderContext`). */
