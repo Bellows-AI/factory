@@ -6,10 +6,12 @@ import { AUTH_DATABASE_URL, E2E_LOGIN } from '../playwright.config.js';
 import { throughSignIn } from './signin.js';
 import { ORG_CONNECTION_SCOPE } from '../web/src/api/connections.js';
 import {
-    ADD_CONNECTION_LABEL,
-    DEFAULT_CONNECTION_CAPTION,
+    CONNECTION_DIALOG_TITLE,
+    SAVE_CONNECTION_LABEL,
     SCOPED_TOKEN_HINT,
-} from '../web/src/panels/JiraConnectionsPanel.js';
+} from '../web/src/components/JiraConnectionDialog.js';
+import { unsavedDialogTitle } from '../web/src/components/UnsavedChangesDialog.js';
+import { ADD_CONNECTION_LABEL, DEFAULT_CONNECTION_CAPTION } from '../web/src/panels/JiraConnectionsPanel.js';
 
 /**
  * The Jira connection panels on the Organization and Workspace settings pages (#567).
@@ -51,13 +53,14 @@ const seedOrgConnection = () =>
 const clearConnections = () => withSql((sql) => sql`delete from connector_connection where site = ${SITE}`);
 
 const panel = (page: Page) => page.getByRole('region', { name: 'Organization Jira connections' });
+const dialog = (page: Page) => page.getByRole('dialog', { name: CONNECTION_DIALOG_TITLE });
 
 test.afterEach(async () => {
     await clearConnections();
     await setRole(ADMIN_ROLE);
 });
 
-test('an admin sees the default marker and the scoped-token hint, meets the route refusal, and deletes', async ({
+test('an admin sees the default marker, adds through the dialog to the route refusal, and deletes', async ({
     page,
 }) => {
     await seedOrgConnection();
@@ -68,16 +71,43 @@ test('an admin sees the default marker and the scoped-token hint, meets the rout
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
     await expect(row).toContainText(DEFAULT_CONNECTION_CAPTION);
     await expect(row).toContainText('bot@example.com');
-    await expect(panel(page)).toContainText(SCOPED_TOKEN_HINT);
     await expect(page.locator('body')).not.toContainText(SECRET);
+    await expect(panel(page).getByRole('textbox')).toHaveCount(0);
 
-    // The offline board cannot resolve a cloud id: the 502 message lands as the route sent it.
-    await panel(page).getByLabel('Jira site').fill(UNRESOLVABLE_SITE);
-    await panel(page).getByLabel('Jira email').fill('bot@example.com');
-    await panel(page).getByLabel('Jira API token').fill('typed-token-never-echoed');
     await panel(page).getByRole('button', { name: ADD_CONNECTION_LABEL }).click();
-    await expect(page.locator('.status')).toContainText(`Could not resolve the Jira cloud id of ${UNRESOLVABLE_SITE}`);
+    await expect(dialog(page)).toContainText(SCOPED_TOKEN_HINT);
+    await expect(dialog(page).getByLabel('Jira site')).toBeFocused();
+    await expect(dialog(page).getByRole('button', { name: SAVE_CONNECTION_LABEL })).toBeDisabled();
+
+    // The offline board cannot resolve a cloud id: the 502 message lands in the dialog as the route
+    // sent it, and the dialog keeps every field.
+    await dialog(page).getByLabel('Jira site').fill(UNRESOLVABLE_SITE);
+    await dialog(page).getByLabel('Jira email').fill('bot@example.com');
+    await dialog(page).getByLabel('Jira API token').fill('typed-token-never-echoed');
+    await dialog(page).getByRole('button', { name: SAVE_CONNECTION_LABEL }).click();
+    await expect(dialog(page).getByRole('alert')).toContainText(
+        `Could not resolve the Jira cloud id of ${UNRESOLVABLE_SITE}`
+    );
+    await expect(dialog(page).getByLabel('Jira site')).toHaveValue(UNRESOLVABLE_SITE);
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-admin.png`, fullPage: true });
+
+    // Dismissing with typed fields asks first; the safe answer keeps them, Discard closes and hands
+    // focus back to the trigger.
+    const confirm = page.getByRole('dialog', { name: unsavedDialogTitle() });
+    await page.keyboard.press('Escape');
+    await confirm.getByRole('button', { name: 'Continue editing' }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect(dialog(page).getByLabel('Jira email')).toHaveValue('bot@example.com');
+    await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+    await confirm.getByRole('button', { name: 'Discard changes' }).click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(panel(page).getByRole('button', { name: ADD_CONNECTION_LABEL })).toBeFocused();
+
+    // A blank dialog closes without asking.
+    await panel(page).getByRole('button', { name: ADD_CONNECTION_LABEL }).click();
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(confirm).toHaveCount(0);
 
     await row.getByRole('button', { name: /^Delete/ }).click();
     await expect(row).toHaveCount(0);
