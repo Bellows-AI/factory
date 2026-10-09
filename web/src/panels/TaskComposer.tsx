@@ -24,7 +24,6 @@ import {
     effectiveWorkflows,
     markTouched,
     paramValueMatches,
-    preflightSentence,
     repoReadiness,
     startBlocker,
     touchAll,
@@ -55,96 +54,14 @@ const REPO_PLACEHOLDER = 'Select a repository';
 
 type Update = (patch: Partial<ComposerDraftInput>) => void;
 
-/** The workflow details' step number; readiness takes it over while workflows are hidden. */
-const WORKFLOW_DETAILS_STEP = 3;
-
 /** The empty workflow option: objective mode, the prompt runs as written. */
 const NO_WORKFLOW_LABEL = 'No workflow';
 
 /**
- * One numbered section of the composer (plan §2.3): the accent step disc — decoration, hidden
- * from assistive tech, since the heading carries the words — the heading with its helper, an
- * optional action at the head's far end, and the section's own controls below.
- */
-function ComposerSection({
-    step,
-    title,
-    helper,
-    action,
-    children,
-}: {
-    step: number;
-    title: ReactNode;
-    helper?: ReactNode;
-    action?: ReactNode;
-    children: ReactNode;
-}) {
-    return (
-        <section className="panel composer-section">
-            <div className="composer-section-head">
-                <span className="composer-step" aria-hidden="true">
-                    {step}
-                </span>
-                <div className="composer-section-title">
-                    <h2>{title}</h2>
-                    {helper}
-                </div>
-                {action}
-            </div>
-            {children}
-        </section>
-    );
-}
-
-/**
- * Section 1, the request: the dominant textarea, the example offer — only on an empty draft, so
- * it never types over the member's words — and the count against the board's command limit.
- */
-function RequestSection({ draft, update }: { draft: string; update: Update }) {
-    const tooLong = commandTooLong(draft);
-    return (
-        <ComposerSection
-            step={1}
-            title={<label htmlFor={PROMPT_ID}>What should the agent do?</label>}
-            helper={
-                <p className="composer-helper" id="composer-prompt-helper">
-                    Include the outcome, relevant files or issue, and checks to run.
-                </p>
-            }
-            action={
-                <button
-                    type="button"
-                    className="composer-example"
-                    disabled={draft !== ''}
-                    onClick={() => update({ draft: EXAMPLE_PROMPT })}
-                >
-                    <Icon name="sparkles" />
-                    Try an example
-                </button>
-            }
-        >
-            <textarea
-                id={PROMPT_ID}
-                className="field composer-input"
-                aria-describedby="composer-prompt-helper composer-prompt-count"
-                aria-invalid={tooLong || undefined}
-                placeholder={PROMPT_PLACEHOLDER}
-                value={draft}
-                onChange={(e) => update({ draft: e.target.value })}
-            />
-            <p className={tooLong ? 'composer-counter is-over' : 'composer-counter'} id="composer-prompt-count">
-                {commandCount(draft)}
-            </p>
-        </ComposerSection>
-    );
-}
-
-/**
- * Section 2, the execution context: Repository, Executor and Workflow, three columns on a wide
- * screen and stacked below it. Each column is a visible label over its selector, and the
- * repository column carries the one remediation that is a pointer rather than a blocker — an
- * repository must be selected and synced (issue 263). A missing executor is a blocker, said by the readiness
- * banner; its trigger only wears the stop lamp's edge.
+ * The context chips (issue 571): Repository, Executor and Workflow as compact triggers in one
+ * wrapping row under the prompt, each showing its glyph and selected value. The accessible name
+ * is the field and that value (label in name), the full value also its title and its menu. A missing executor is a
+ * blocker, said by the readiness banner; its trigger only wears the stop lamp's edge.
  */
 function ComposerContextRow({
     repos,
@@ -164,22 +81,21 @@ function ComposerContextRow({
     const repoAnchor = useDownwardAnchor('start');
     const executorAnchor = useDownwardAnchor('start');
     const { repo, executor } = state;
+    const repoLabel = repo === '' ? REPO_PLACEHOLDER : repo;
+    const executorLabel = executor === '' ? 'No executor configured' : executor;
     return (
         <div className="composer-context">
             <div className="composer-context-item">
-                <span className="composer-label">
-                    <Icon name="repo" />
-                    Repository
-                </span>
                 {/* Reporting upward is the reporting effect's job — one path. */}
                 <Listbox value={repo} onChange={(next) => update({ repo: next, repoTouched: true })}>
                     <ListboxButton
                         ref={repoAnchor.setReference}
                         className="select-trigger"
-                        aria-label="Repository"
-                        title={repo === '' ? REPO_PLACEHOLDER : repo}
+                        aria-label={`Repository: ${repoLabel}`}
+                        title={repoLabel}
                     >
-                        <span className="composer-context-value">{repo === '' ? REPO_PLACEHOLDER : repo}</span>
+                        <Icon name="repo" />
+                        <span className="composer-context-value">{repoLabel}</span>
                     </ListboxButton>
                     <ListboxOptions
                         ref={repoAnchor.setFloating}
@@ -197,18 +113,8 @@ function ComposerContextRow({
                         })}
                     </ListboxOptions>
                 </Listbox>
-                {repos.length === 0 ? (
-                    <p className="composer-helper">
-                        Select repositories in <Link to={withDraftReturn('/settings/repos')}>Settings</Link> to run
-                        against a codebase
-                    </p>
-                ) : null}
             </div>
             <div className="composer-context-item">
-                <span className="composer-label">
-                    <Icon name="terminal" />
-                    Executor
-                </span>
                 <Listbox
                     value={executorChoiceId({ scope: state.executorScope, name: executor })}
                     disabled={executors.length === 0}
@@ -220,12 +126,11 @@ function ComposerContextRow({
                     <ListboxButton
                         ref={executorAnchor.setReference}
                         className={executor === '' ? 'select-trigger composer-trigger-missing' : 'select-trigger'}
-                        aria-label="Executor"
-                        title={executor === '' ? 'No executor configured' : executor}
+                        aria-label={`Executor: ${executorLabel}`}
+                        title={executorLabel}
                     >
-                        <span className="composer-context-value">
-                            {executor === '' ? 'No executor configured' : executor}
-                        </span>
+                        <Icon name="terminal" />
+                        <span className="composer-context-value">{executorLabel}</span>
                     </ListboxButton>
                     <ListboxOptions
                         ref={executorAnchor.setFloating}
@@ -252,8 +157,8 @@ function ComposerContextRow({
 }
 
 /**
- * The workflow column of the execution context: the Reusable workflow trigger beside Repository
- * and Executor. Split out so its null bail (no workflow list yet) stays after its own hook.
+ * The workflow chip: the Reusable workflow trigger beside Repository and Executor. Split out so
+ * its null bail (no workflow list yet) stays after its own hook.
  */
 function ComposerWorkflowTrigger({
     workflows,
@@ -273,10 +178,6 @@ function ComposerWorkflowTrigger({
     const label = workflow === '' ? NO_WORKFLOW_LABEL : workflow;
     return (
         <div className="composer-context-item">
-            <span className="composer-label">
-                <Icon name="git-branch" />
-                Workflow
-            </span>
             {/* The values reset through the identity-keyed read, and this choice's touched marks
                 reset with it: fields the member never reached in the new process must not arrive
                 pre-failed. A repo switch goes further and resets the whole workflow draft. */}
@@ -284,9 +185,10 @@ function ComposerWorkflowTrigger({
                 <ListboxButton
                     ref={setReference}
                     className="select-trigger"
-                    aria-label="Reusable workflow"
+                    aria-label={`Reusable workflow: ${label}`}
                     title={label}
                 >
+                    <Icon name="git-branch" />
                     <span className="composer-context-value">{label}</span>
                 </ListboxButton>
                 <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
@@ -305,31 +207,26 @@ function ComposerWorkflowTrigger({
 }
 
 /**
- * Section 3, the workflow details: a named workflow's declared launch parameters, or — with no
- * workflow chosen, objective mode — one line saying the prompt runs as written.
+ * A named workflow's declared launch parameters, expanded below the prompt — nothing at all for
+ * a workflow that declares none or for objective mode. A workflow still loading is said by the
+ * readiness banner.
  */
 function ComposerWorkflowDetails({ composer }: { composer: ComposerDraft }) {
     const { state, update, declaredParams, paramValues, chosenWorkflowId } = composer;
-    if (declaredParams.length > 0) {
-        return (
-            <WorkflowParameterFields
-                params={declaredParams}
-                values={paramValues}
-                touched={state.paramTouched}
-                onInput={(name, value) =>
-                    update({
-                        storedParams: { workflowId: chosenWorkflowId, values: { ...paramValues, [name]: value } },
-                    })
-                }
-                onBlur={(name) => update({ paramTouched: markTouched(state.paramTouched, name) })}
-            />
-        );
-    }
-    if (composer.workflowPending) return <p className="composer-helper">Loading the {state.workflow} workflow…</p>;
-    if (state.workflow !== '') {
-        return <p className="composer-helper">The {state.workflow} workflow needs no launch details.</p>;
-    }
-    return <p className="composer-helper">Without a workflow, your prompt runs as written.</p>;
+    if (declaredParams.length === 0) return null;
+    return (
+        <WorkflowParameterFields
+            params={declaredParams}
+            values={paramValues}
+            touched={state.paramTouched}
+            onInput={(name, value) =>
+                update({
+                    storedParams: { workflowId: chosenWorkflowId, values: { ...paramValues, [name]: value } },
+                })
+            }
+            onBlur={(name) => update({ paramTouched: markTouched(state.paramTouched, name) })}
+        />
+    );
 }
 
 /** The quiet status line beside Start — only for the blockers that never raise a banner. */
@@ -422,27 +319,18 @@ function ReadinessBanner({
 }
 
 /**
- * The last section, readiness: what will run, what still blocks it — a banner for what the member must
- * fix, quiet status text for an empty prompt or a launch in flight — and the actions. Start's
- * `aria-describedby` names whichever of the two is saying why it is dark.
+ * The launch actions at the chips' far end: Discard draft, Start and its shortcut, and quiet
+ * status text for an empty prompt or a launch in flight. Start's `aria-describedby` names
+ * whichever of that text or the readiness banner is saying why it is dark; a ready launch says
+ * nothing — the chips already show what will run.
  */
-function ReadinessSection({
-    step,
-    preflight,
-    workflow,
-    repo,
+function ComposerLaunch({
     blocker,
     sending,
     fresh,
     onDiscard,
     onStart,
 }: {
-    /** After the workflow details, or in their place when the selector hides them. */
-    step: number;
-    preflight: string;
-    /** The chosen workflow's name, for the banner that waits on its list. */
-    workflow: string;
-    repo: RepoOption | null;
     blocker: StartBlocker | null;
     sending: boolean;
     fresh: boolean;
@@ -452,37 +340,31 @@ function ReadinessSection({
     const tone = blockerTone(blocker);
     const describedBy = tone === 'quiet' ? BLOCKER_ID : tone === null ? undefined : READINESS_ID;
     return (
-        <ComposerSection step={step} title="Readiness">
-            <p className="composer-preflight" aria-live="polite">
-                {preflight}
-            </p>
-            <ReadinessBanner blocker={blocker} workflow={workflow} repo={repo} />
-            <div className="composer-start">
-                {fresh ? null : (
-                    <button type="button" onClick={onDiscard}>
-                        Discard draft
-                    </button>
-                )}
-                <button
-                    type="button"
-                    className="primary"
-                    // The one blocker that stays clickable: its click opens the dialog (issue 263).
-                    disabled={blocker !== null && blocker !== NO_SYNCED_BLOCKER}
-                    aria-busy={sending || undefined}
-                    aria-describedby={describedBy}
-                    onClick={onStart}
-                >
-                    {sending ? 'Starting…' : 'Start task'}
+        <div className="composer-start">
+            {fresh ? null : (
+                <button type="button" onClick={onDiscard}>
+                    Discard draft
                 </button>
-                <kbd>Ctrl/⌘ + Enter</kbd>
-                {/* Mounted even when silent — a live region can only announce a change it
-                    survives — so the reason Start is dark reaches a screen reader the moment
-                    it appears. */}
-                <span className="composer-blocker" id={BLOCKER_ID} role="status">
-                    {describeQuietBlocker(blocker)}
-                </span>
-            </div>
-        </ComposerSection>
+            )}
+            <kbd>Ctrl/⌘ + Enter</kbd>
+            <button
+                type="button"
+                className="primary"
+                // The one blocker that stays clickable: its click opens the dialog (issue 263).
+                disabled={blocker !== null && blocker !== NO_SYNCED_BLOCKER}
+                aria-busy={sending || undefined}
+                aria-describedby={describedBy}
+                onClick={onStart}
+            >
+                {sending ? 'Starting…' : 'Start task'}
+            </button>
+            {/* Mounted even when silent — a live region can only announce a change it
+                survives — so the reason Start is dark reaches a screen reader the moment
+                it appears. */}
+            <span className="composer-blocker" id={BLOCKER_ID} role="status">
+                {describeQuietBlocker(blocker)}
+            </span>
+        </div>
     );
 }
 
@@ -549,13 +431,13 @@ export function TaskComposerSkeleton() {
  * testable in the offline suite: `renderToStaticMarkup` runs no effects, the page hands it
  * finished props and the suite asserts markup.
  *
- * Four numbered sections, in the order a member decides (plan §2.3): the request, the execution
- * context (repository, executor, workflow), the chosen workflow's details, and readiness — what
- * will run, what still blocks it, and Start. The repository, executor and workflow are task
- * parameters. Repository and workflow may deliberately be absent; executor may not, because its
- * profile type chooses the runner. The draft's state and effects live in `use-composer-draft.ts`;
- * the pure layer beneath — the verdicts, preflight sentence, blocker matrix and draft shapes — in
- * `task-composer.ts`.
+ * One prompt surface (issue 571): the request, then a row of context chips (repository, executor,
+ * workflow) with the launch actions at its far end, then — only when there is something to say —
+ * the chosen workflow's parameters and the banner for what blocks Start. The repository, executor
+ * and workflow are task parameters. Repository and workflow may deliberately be absent; executor
+ * may not, because its profile type chooses the runner. The draft's state and effects live in
+ * `use-composer-draft.ts`; the pure layer beneath — the verdicts, blocker matrix and draft
+ * shapes — in `task-composer.ts`.
  */
 export function TaskComposer({
     repos,
@@ -622,11 +504,12 @@ export function TaskComposer({
     const readiness = repos === null ? undefined : repoReadiness(state.repo, repos);
     const chosenRepo = repos?.find(({ owner, name }) => `${owner}/${name}` === state.repo) ?? null;
 
+    const promptTooLong = commandTooLong(state.draft);
     const blocker = startBlocker({
         sending,
         executorMissing: state.executor === '',
         promptEmpty: state.draft.trim() === '',
-        promptTooLong: commandTooLong(state.draft),
+        promptTooLong,
         ...(readiness !== undefined ? { repoReadiness: readiness } : {}),
         workflowUnresolved: composer.workflowPending,
         paramsInvalid: !composer.paramsReady,
@@ -674,41 +557,64 @@ export function TaskComposer({
                         {actionError}
                     </p>
                 ) : null}
-                <RequestSection draft={state.draft} update={update} />
                 <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />
-                <ComposerSection
-                    step={2}
-                    title="Execution context"
-                    helper={<p className="composer-helper">Choose where the task runs, what runs it, and how.</p>}
-                >
-                    <ComposerContextRow
-                        repos={repos}
-                        executors={executors}
-                        workflows={workflows}
-                        state={state}
-                        update={update}
+                <section className="panel composer-prompt">
+                    <div className="composer-prompt-head">
+                        <label htmlFor={PROMPT_ID}>What should the agent do?</label>
+                        {/* Only on an empty draft, so it never types over the member's words. */}
+                        <button
+                            type="button"
+                            className="composer-example"
+                            disabled={state.draft !== ''}
+                            onClick={() => update({ draft: EXAMPLE_PROMPT })}
+                        >
+                            <Icon name="sparkles" />
+                            Try an example
+                        </button>
+                    </div>
+                    <p className="composer-helper" id="composer-prompt-helper">
+                        Include the outcome, relevant files or issue, and checks to run.
+                    </p>
+                    <textarea
+                        id={PROMPT_ID}
+                        className="field composer-input"
+                        aria-describedby="composer-prompt-helper composer-prompt-count"
+                        aria-invalid={promptTooLong || undefined}
+                        placeholder={PROMPT_PLACEHOLDER}
+                        value={state.draft}
+                        onChange={(e) => update({ draft: e.target.value })}
                     />
-                </ComposerSection>
-                {workflows === null ? null : (
-                    <ComposerSection step={WORKFLOW_DETAILS_STEP} title="Workflow details">
-                        <ComposerWorkflowDetails composer={composer} />
-                    </ComposerSection>
-                )}
-                <ReadinessSection
-                    step={workflows === null ? WORKFLOW_DETAILS_STEP : WORKFLOW_DETAILS_STEP + 1}
-                    preflight={preflightSentence({
-                        repo: state.repo === '' ? null : state.repo,
-                        executor: state.executor === '' ? null : state.executor,
-                        workflow: state.workflow === '' ? null : state.workflow,
-                    })}
-                    workflow={state.workflow}
-                    repo={chosenRepo}
-                    blocker={blocker}
-                    sending={sending}
-                    fresh={composer.fresh}
-                    onDiscard={requestDiscard}
-                    onStart={attemptStart}
-                />
+                    <p
+                        className={promptTooLong ? 'composer-counter is-over' : 'composer-counter'}
+                        id="composer-prompt-count"
+                    >
+                        {commandCount(state.draft)}
+                    </p>
+                    <div className="composer-bar">
+                        <ComposerContextRow
+                            repos={repos}
+                            executors={executors}
+                            workflows={workflows}
+                            state={state}
+                            update={update}
+                        />
+                        <ComposerLaunch
+                            blocker={blocker}
+                            sending={sending}
+                            fresh={composer.fresh}
+                            onDiscard={requestDiscard}
+                            onStart={attemptStart}
+                        />
+                    </div>
+                    {repos.length === 0 ? (
+                        <p className="composer-helper">
+                            Select repositories in <Link to={withDraftReturn('/settings/repos')}>Settings</Link> to run
+                            against a codebase
+                        </p>
+                    ) : null}
+                    {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
+                    <ReadinessBanner blocker={blocker} workflow={state.workflow} repo={chosenRepo} />
+                </section>
             </div>
             {/* Outside the shortcut's surface on purpose: the dialog portals, but React events still
                 bubble to their React parent, and Ctrl/⌘+Enter on "Continue editing" must never

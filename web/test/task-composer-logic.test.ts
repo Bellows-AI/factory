@@ -15,7 +15,6 @@ import {
     markTouched,
     paramFieldVerdict,
     paramsComplete,
-    preflightSentence,
     repoReadiness,
     startBlocker,
     touchAll,
@@ -198,35 +197,6 @@ describe('paramFieldVerdict — the per-field plain-language state', () => {
                 expect(verdict.kind === 'ok' || verdict.kind === 'untouched').toBe(paramsComplete(params, broken));
             }
         }
-    });
-});
-
-describe('preflightSentence — what will actually run, before it runs', () => {
-    it('says the repository, the executor and the workflow by their actual names', () => {
-        expect(preflightSentence({ repo: 'acme/web', executor: 'main', workflow: 'fix-issue' })).toBe(
-            'Will run in acme/web using main executor, with the fix-issue workflow.'
-        );
-    });
-
-    it('says the prompt runs as written when no workflow is chosen', () => {
-        expect(preflightSentence({ repo: 'acme/web', executor: 'main', workflow: null })).toBe(
-            'Will run in acme/web using main executor. Your prompt will run as written.'
-        );
-    });
-
-    it('states when execution is blocked on configuring an executor', () => {
-        expect(preflightSentence({ repo: null, executor: null, workflow: null })).toBe(
-            'Will run without a repository after you configure an executor. Your prompt will run as written.'
-        );
-        expect(preflightSentence({ repo: null, executor: 'heavy', workflow: 'triage' })).toBe(
-            'Will run without a repository using heavy executor, with the triage workflow.'
-        );
-    });
-
-    it('says the prompt runs as written when no workflow is chosen (objective mode)', () => {
-        expect(preflightSentence({ repo: 'acme/web', executor: 'main', workflow: null })).toBe(
-            'Will run in acme/web using main executor. Your prompt will run as written.'
-        );
     });
 });
 

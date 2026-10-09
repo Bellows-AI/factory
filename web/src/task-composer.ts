@@ -1,7 +1,7 @@
 /**
  * The task composer's pure layer: the draft-state shapes, the client mirror of the board's
  * parameter check, and the plain-language derivations the guided composer renders — per-field
- * verdicts, the preflight sentence, the start-blocker matrix. No React and no fetching: every
+ * verdicts, the start-blocker matrix. No React and no fetching: every
  * function here is testable without a DOM, which is what lets the offline suite pin the launch
  * contract the board enforces.
  */
@@ -171,26 +171,6 @@ export function paramFieldVerdict(
         }
     }
     return { kind: 'ok', message: null };
-}
-
-/**
- * The one sentence before Start: what will run, where, guided by what — from the ACTUAL choices,
- * never claiming the workflow's interpolation has already happened. A named workflow is its own
- * clause; no workflow is objective mode, where the prompt runs as written.
- */
-export function preflightSentence(input: {
-    /** `owner/name` of the chosen repository, or null for none. */
-    repo: string | null;
-    /** The chosen executor's name, or null while no configured executor can be selected. */
-    executor: string | null;
-    /** The chosen workflow's name, or null for no workflow. */
-    workflow: string | null;
-}): string {
-    const where = input.repo === null ? 'Will run without a repository' : `Will run in ${input.repo}`;
-    const who = input.executor === null ? 'after you configure an executor' : `using ${input.executor} executor`;
-    const what =
-        input.workflow !== null ? `, with the ${input.workflow} workflow.` : '. Your prompt will run as written.';
-    return `${where} ${who}${what}`;
 }
 
 /** A repository option as the composer judges it: its name and its clone status (issue 263). */

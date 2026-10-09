@@ -72,6 +72,9 @@ describe('the tasks pages', () => {
         expect(html).toContain('<h1>New task</h1>');
         expect(html).toContain('page-header-eyebrow');
         expect(html).not.toContain('<h2>Tasks</h2>');
+        // No routine description repeating what the composer itself shows (#571).
+        expect(html).not.toContain('check readiness');
+        expect(html).not.toContain('page-header-description');
     });
 
     it('the detail page keeps the plain Tasks heading until the thread lands', () => {
@@ -170,13 +173,16 @@ describe('TaskComposer', () => {
         // aria-label, not aria-labelledby: the ListboxButton's label context overrides a
         // labelledby that points outside it, so each select carries its name directly (issue 190).
         // The workflow select renders only once a workflows list exists, so this render carries one.
+        // The chip shows only its value, so the name carries the field AND the visible value
+        // (label in name, #571): a speech-input member can say what they see.
         const withWorkflows = renderComposer({
             repos: [],
+            executors: [{ name: 'main', type: 'claude' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
-        expect(withWorkflows).toContain('aria-label="Repository"');
-        expect(withWorkflows).toContain('aria-label="Executor"');
-        expect(withWorkflows).toContain('aria-label="Reusable workflow"');
+        expect(withWorkflows).toContain('aria-label="Repository: Select a repository"');
+        expect(withWorkflows).toContain('aria-label="Executor: main"');
+        expect(withWorkflows).toContain('aria-label="Reusable workflow: No workflow"');
     });
 });
 
@@ -192,19 +198,15 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).not.toContain('>Example: Fix issue #123');
     });
 
-    it('says what will run before anything runs', () => {
-        // The preflight sentence, from the ACTUAL choices — this render knows no repository, one
-        // executor, no workflow, and it says exactly that much and no more (a launch needs a
-        // repository, but the sentence only reports the choice).
-        const html = renderComposer({ repos: [], executors: [{ name: 'main', type: 'claude' }] });
-        expect(html).toContain('Will run without a repository using main executor. Your prompt will run as written.');
-
-        const chosen = renderComposer({
-            repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
-            executors: [{ name: 'main', type: 'claude' }],
-            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
-        });
-        expect(chosen).toContain('Will run in acme/web using main executor');
+    it('says nothing routine when the task is ready: the chips already show what will run (#571)', () => {
+        const html = renderComposer({ restored: restoredDraft({ draft: 'fix it' }) });
+        expect(html).not.toContain('Will run');
+        expect(html).not.toContain('as written');
+        expect(html).not.toContain('banner-bad');
+        expect(html).not.toContain('banner-info');
+        const start = html.match(/<button type="button" class="primary"[^>]*>Start task<\/button>/)?.[0] ?? '';
+        expect(start).not.toContain('aria-describedby');
+        expect(start).not.toContain('disabled');
     });
 
     it('disables Start until a command is typed, and says what is missing', () => {
@@ -242,16 +244,13 @@ describe('TaskComposer — the prompt and the launch', () => {
         for (const token of FORBIDDEN) expect(html, token).not.toContain(token);
     });
 
-    it('hides the workflow select and its details step when no workflow list is given', () => {
-        // No list, no process to pick: the selector and the workflow details section are absent,
-        // and readiness takes step 3.
+    it('hides the workflow chip when no workflow list is given', () => {
+        // No list, no process to pick: the selector and anything about workflow details are absent.
         const html = renderComposer({ workflows: null });
         expect(html).not.toContain('Reusable workflow');
         expect(html).not.toContain('composer-steps');
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(2);
         expect(html).not.toContain('Workflow details');
-        expect(html).not.toContain('Without a workflow, your prompt runs as written.');
-        expect(html).toMatch(/3<\/span>[\s\S]*?Readiness/);
     });
 
     it('runs the raw prompt when no workflow is chosen: no params, no gate', () => {
@@ -289,20 +288,21 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).toContain('>No workflow</span></button>');
     });
 
-    it('gathers repository, executor and workflow as the three columns of the execution context', () => {
+    it('gathers repository, executor and workflow as one row of chips, with no section around them', () => {
         const html = renderComposer({
             repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
             executors: [{ name: 'main', type: 'claude' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
-        expect(html).toContain('<h2>Execution context</h2>');
+        expect(html).not.toContain('Execution context');
+        expect(html).not.toContain('Choose where the task runs');
         expect(html).toContain('class="composer-context"');
         expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
         expect(html).not.toContain('composer-grid');
         expect(html).not.toContain('Run without a repository checkout.');
         expect(html).not.toContain('The selected executor type chooses');
         // The full value stays reachable off the truncated trigger through the title attribute,
-        // beside the listbox itself and the preflight sentence.
+        // beside the listbox itself.
         expect(html).toContain('title="acme/web"');
         expect(html).toContain('title="main"');
     });
@@ -313,7 +313,6 @@ describe('TaskComposer — the prompt and the launch', () => {
         expect(html).not.toContain('composer-steps');
         expect(html).not.toContain('Default workflow');
         expect(html).not.toContain('Optional steps');
-        expect(html).toContain('Your prompt will run as written.');
     });
 });
 
@@ -514,15 +513,48 @@ describe('the redesigned composer (#280)', () => {
     const START = /<button type="button" class="primary"[^>]*>Start task<\/button>/;
     const startButton = (html: string) => html.match(START)?.[0] ?? '';
 
-    it('lays the page out as four numbered sections, the step discs hidden from assistive tech', () => {
+    it('makes the prompt the one surface: no numbered steps, no secondary cards (#571)', () => {
         const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
-        const discs = html.match(/<span class="composer-step" aria-hidden="true">\d<\/span>/g) ?? [];
-        expect(discs).toEqual([1, 2, 3, 4].map((n) => `<span class="composer-step" aria-hidden="true">${n}</span>`));
-        for (const title of ['What should the agent do?', 'Execution context', 'Workflow details', 'Readiness']) {
-            expect(html).toContain(title);
+        expect(html).not.toContain('composer-step');
+        expect(html).not.toContain('<h2');
+        for (const title of ['Execution context', 'Workflow details', 'Readiness']) {
+            expect(html).not.toContain(title);
         }
+        expect(html.match(/class="panel /g) ?? []).toHaveLength(1);
+        expect(html).toContain('<label for="composer-prompt">What should the agent do?</label>');
         // No attachment, mention or template affordances — none of them exist behind the UI.
         expect(html).not.toMatch(/attach|mention|template/i);
+    });
+
+    it('puts the context chips and Start inside the prompt panel, after the textarea', () => {
+        const html = renderComposer({
+            restored: restoredDraft({ draft: 'fix it' }),
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
+        });
+        const order = [
+            'class="panel composer-prompt"',
+            '<textarea',
+            'class="composer-bar"',
+            'aria-label="Repository: acme/web"',
+            'aria-label="Executor: main"',
+            'aria-label="Reusable workflow: No workflow"',
+            '>Discard draft<',
+            '>Start task<',
+        ].map((marker) => html.indexOf(marker));
+        expect(order.every((at) => at >= 0)).toBe(true);
+        expect(order).toEqual([...order].sort((a, b) => a - b));
+        // The chips show their value, not a visible field label beside it.
+        expect(html).not.toContain('class="composer-label"');
+    });
+
+    it('expands a chosen workflow’s parameters below the prompt, not in a card of their own', () => {
+        const html = renderComposer({
+            restored: restoredDraft({ draft: 'fix it', workflow: 'fix-issue' }),
+            workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] }],
+        });
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
+        expect(html.indexOf('id="composer-param-issue"')).toBeGreaterThan(html.indexOf('class="composer-bar"'));
+        expect(html.match(/class="panel /g) ?? []).toHaveLength(1);
     });
 
     describe('the repository must be selected and synced (issue 263)', () => {
@@ -632,10 +664,10 @@ describe('the redesigned composer (#280)', () => {
         expect(html).toContain('Complete the required workflow details to continue.');
     });
 
-    it('labels the empty workflow option "No workflow" and explains it in words', () => {
+    it('labels the empty workflow option "No workflow" without a helper sentence restating it', () => {
         const html = renderComposer({ workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }] });
         expect(html).toContain('<span class="composer-context-value">No workflow</span>');
-        expect(html).toContain('Without a workflow, your prompt runs as written.');
+        expect(html).not.toContain('Without a workflow, your prompt runs as written.');
     });
 
     it('holds Start while a restored workflow waits for its list — its parameters are not known yet', () => {
