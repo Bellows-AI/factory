@@ -38,6 +38,8 @@ const workflow = (path: string) => load<Workflow>(path);
 
 const CI = '.github/workflows/ci.yml';
 const RELEASE = '.github/workflows/release-image.yml';
+const UI_RUNNER = '.github/workflows/ui-runner-image.yml';
+const UI_DOCKERFILE = 'docker/ui-runner.Dockerfile';
 
 // yaml parses with the 1.2 core schema, so the `on:` key stays the string 'on' rather than
 // folding to the boolean true the way a 1.1 parser would.
@@ -105,7 +107,7 @@ describe('ci workflows', () => {
     // A failing job reports its step name, so an unnamed step hides the gate that broke; the
     // validation steps carry their command verbatim as the name.
     it('names every step after the command it runs', () => {
-        for (const path of [CI, RELEASE]) {
+        for (const path of [CI, RELEASE, UI_RUNNER]) {
             for (const job of Object.values(workflow(path).jobs)) {
                 for (const step of runSteps(job)) {
                     expect(step.name, `${path}: unnamed step running: ${step.run}`).toBeTruthy();
@@ -280,9 +282,13 @@ describe('ci workflows', () => {
     });
 
     it('never interpolates a ref name into shell text', () => {
-        for (const job of Object.values(workflow(RELEASE).jobs)) {
-            for (const step of runSteps(job)) {
-                expect(step.run, `${step.name} interpolates an expression into its script`).not.toMatch(/\$\{\{/);
+        for (const path of [RELEASE, UI_RUNNER]) {
+            for (const job of Object.values(workflow(path).jobs)) {
+                for (const step of runSteps(job)) {
+                    expect(step.run, `${path}: ${step.name} interpolates an expression into its script`).not.toMatch(
+                        /\$\{\{/
+                    );
+                }
             }
         }
     });
@@ -305,21 +311,24 @@ describe('ci workflows', () => {
     // `github.token` is the installation token the run already carries. Nothing on either path is
     // a credential somebody has to mint, store and rotate.
     it('needs no configured secret on the validation or publish path', () => {
-        for (const path of [CI, RELEASE]) {
+        for (const path of [CI, RELEASE, UI_RUNNER]) {
             expect(read(path), `${path} reads a repository secret`).not.toMatch(/secrets\./);
         }
         expect(read(RELEASE)).toMatch(/\$\{\{ github\.token \}\}/);
+        expect(read(UI_RUNNER)).toMatch(/\$\{\{ github\.token \}\}/);
     });
 
     it('grants each workflow only the access its job needs', () => {
         expect(workflow(CI).permissions, CI).toEqual({ contents: 'read' });
         // Packages for the push, security-events for the scan's SARIF, and no contents: write —
         // so a release can never move a ref.
-        expect(workflow(RELEASE).permissions, RELEASE).toEqual({
-            contents: 'read',
-            packages: 'write',
-            'security-events': 'write',
-        });
+        for (const path of [RELEASE, UI_RUNNER]) {
+            expect(workflow(path).permissions, path).toEqual({
+                contents: 'read',
+                packages: 'write',
+                'security-events': 'write',
+            });
+        }
     });
 
     // The whole point of the gate: an image that fails it must not exist in the registry, so the
@@ -406,13 +415,13 @@ describe('ci workflows', () => {
     // ${{ github.workflow }} would resolve to the same string in both files and the tag run would
     // queue behind itself forever. Neither group may name github.workflow, and the two must differ.
     it('does not make the called workflow wait on its own caller', () => {
-        const groups = [CI, RELEASE].map((path) => workflow(path).concurrency!.group);
+        const groups = [CI, RELEASE, UI_RUNNER].map((path) => workflow(path).concurrency!.group);
         for (const group of groups) expect(group).not.toContain('github.workflow');
         expect(new Set(groups).size).toBe(groups.length);
     });
 
     it('pins every action to a major version', () => {
-        for (const path of [CI, RELEASE]) {
+        for (const path of [CI, RELEASE, UI_RUNNER]) {
             for (const job of Object.values(workflow(path).jobs)) {
                 for (const step of job.steps ?? []) {
                     if (step.uses) expect(step.uses, `${path}: ${step.uses} is not pinned`).toMatch(/@v\d+$/);
@@ -422,12 +431,121 @@ describe('ci workflows', () => {
         // The publish jobs hold `packages: write`, so every action on that path is GitHub-owned —
         // `actions/*` or `github/*`. The registry work and the scan are `run` steps calling a
         // CLI, which is what keeps aquasecurity/trivy-action off a job holding a token.
-        for (const job of Object.values(workflow(RELEASE).jobs)) {
-            for (const step of job.steps ?? []) {
-                if (step.uses) {
-                    expect(step.uses, `${step.uses} runs beside packages: write`).toMatch(/^(actions|github)\//);
+        for (const path of [RELEASE, UI_RUNNER]) {
+            for (const job of Object.values(workflow(path).jobs)) {
+                for (const step of job.steps ?? []) {
+                    if (step.uses) {
+                        expect(step.uses, `${path}: ${step.uses} runs beside packages: write`).toMatch(
+                            /^(actions|github)\//
+                        );
+                    }
                 }
             }
         }
+    });
+});
+
+describe('ui runner image', () => {
+    const dockerfile = () => read(UI_DOCKERFILE);
+    const lockedPlaywright = () =>
+        load<{ packages: Record<string, { version: string }> }>('package-lock.json').packages[
+            'node_modules/playwright'
+        ]!.version;
+
+    it('ships node, the chromium playwright installs, its system deps and a postgres client', () => {
+        const runtimeMajor = /FROM node:(\d+)-alpine AS runtime/.exec(read('docker/Dockerfile'))?.[1];
+        // Debian, not alpine: playwright publishes no musl chromium.
+        expect(dockerfile()).toMatch(new RegExp(`^FROM node:${runtimeMajor}-bookworm-slim$`, 'm'));
+        // git too: matrix.spec.ts and baseline.spec.ts read `git rev-parse HEAD`.
+        expect(dockerfile()).toContain('apt-get install -y --no-install-recommends git postgresql-client');
+        // The gate runs npm, so the base image's bundled copy is replaced rather than deleted; its
+        // vendored tree is what the scan gate would otherwise block on.
+        expect(dockerfile()).toMatch(/npm install -g "npm@\$\{NPM_VERSION\}"/);
+        expect(dockerfile()).toMatch(/npx -y "playwright@\$\{PLAYWRIGHT_VERSION\}" install --with-deps chromium/);
+        // A gate runs as uid 1000 with HOME=/tmp, so the browsers live outside root's home and are
+        // readable by anyone.
+        expect(dockerfile()).toContain('ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright');
+        expect(dockerfile()).toContain('chmod -R a+rX /ms-playwright');
+    });
+
+    // The browser revision belongs to the playwright release, so the image takes the version the
+    // lockfile resolves rather than carrying a second pin that could drift from it.
+    it('takes the playwright version from the lockfile and refuses to build without one', () => {
+        expect(dockerfile()).toMatch(/^ARG PLAYWRIGHT_VERSION$/m);
+        expect(dockerfile()).toContain('test -n "$PLAYWRIGHT_VERSION"');
+        const doc = workflow(UI_RUNNER);
+        const version = Object.values(doc.jobs)
+            .flatMap(runSteps)
+            .find((step) => step.run.includes('package-lock.json'));
+        expect(version, 'the version is not read from the lockfile').toBeTruthy();
+        expect(version!.run).toContain('node_modules/playwright');
+        expect(version!.run).toContain('$GITHUB_OUTPUT');
+        const commands = Object.values(doc.jobs).flatMap(runs).join('\n');
+        expect(commands).toContain('--build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION"');
+        expect(read(UI_RUNNER)).not.toContain(lockedPlaywright());
+    });
+
+    it('rebuilds when the Dockerfile or the lockfile changes on main', () => {
+        const on = triggers(workflow(UI_RUNNER));
+        expect(on.push!.branches).toEqual(['main']);
+        expect(on.push!.paths!.sort()).toEqual(
+            [UI_DOCKERFILE, '.github/workflows/ui-runner-image.yml', 'package-lock.json'].sort()
+        );
+        expect('workflow_dispatch' in on).toBe(true);
+        // A manual run is free to start anywhere; only main may publish the tag gates pull.
+        expect(workflow(UI_RUNNER).jobs.tag!.if).toBe("github.ref == 'refs/heads/main'");
+    });
+
+    it('publishes a tag named for the playwright version under the lowercased owner', () => {
+        const commands = Object.values(workflow(UI_RUNNER).jobs).flatMap(runs).join('\n');
+        expect(commands).toContain('tag=playwright-');
+        expect(commands).toMatch(/tr 'A-Z' 'a-z'/);
+        expect(commands).toContain('$REGISTRY/factory-ui-runner:$IMAGE_TAG');
+        expect(commands).not.toMatch(/-t "ghcr\.io\//);
+    });
+
+    it('builds each architecture natively and merges the pair into one tag', () => {
+        const doc = workflow(UI_RUNNER);
+        const build = doc.jobs.build!;
+        expect(build.strategy!.matrix!.arch).toEqual(['amd64', 'arm64']);
+        const commands = runs(build).join('\n');
+        expect(commands).toContain('docker buildx create');
+        expect(commands).toContain('--platform "linux/$ARCH"');
+        expect(commands).toContain('--provenance=false');
+        expect(commands).toContain(`-f ${UI_DOCKERFILE}`);
+        const merge = runs(doc.jobs.manifest!).join('\n');
+        expect(needs(doc.jobs.manifest!)).toContain('build');
+        expect(merge).toContain('docker buildx imagetools create');
+        expect(merge).toContain('$IMAGE_TAG-amd64');
+        expect(merge).toContain('$IMAGE_TAG-arm64');
+    });
+
+    // The same gate the release images pass: scanned from a tarball before the credential is on
+    // the runner, with the release's flags and no narrowing beyond unfixed findings.
+    it('scans the image before login and push, with the release gate flags', () => {
+        const build = workflow(UI_RUNNER).jobs.build!;
+        const names = (build.steps ?? []).map((step) => step.name ?? step.uses ?? '');
+        const gate = names.findIndex((name) => name.includes('--exit-code 1'));
+        expect(gate, 'nothing in the build job fails on a finding').toBeGreaterThan(-1);
+        expect(gate).toBeLessThan(names.findIndex((name) => name.includes('docker login')));
+        expect(gate).toBeLessThan(names.findIndex((name) => name.includes('--push')));
+        const commands = runs(build).join('\n');
+        expect(commands).toContain('--output type=docker,dest=/tmp/image.tar');
+        const scans = runSteps(build).filter((step) => /trivy/i.test(step.run));
+        expect(scans).toHaveLength(2);
+        for (const step of scans) {
+            expect(step.run).toContain('--input /tmp/image.tar');
+            // The workspace is mounted as the scanner's cwd so `.trivyignore` applies; the npm the
+            // gate needs carries findings only that file triages.
+            expect(step.run).toContain('-v "$PWD:/work" -w /work');
+            expect(step.run).toContain('--scanners vuln,secret');
+            expect(step.run).toContain('--severity CRITICAL,HIGH');
+            expect(step.run).toContain('--ignore-unfixed');
+            expect(step.run).not.toMatch(/--skip-files|--skip-dirs|--vuln-type/);
+        }
+        expect(build.env!.TRIVY_IMAGE).toBe(workflow(RELEASE).jobs.build!.env!.TRIVY_IMAGE);
+        const upload = (build.steps ?? []).find((step) => step.uses?.startsWith('github/codeql-action/upload-sarif'))!;
+        expect(upload.if).toBe('always()');
+        expect(upload.with!.category).toContain('matrix.arch');
     });
 });

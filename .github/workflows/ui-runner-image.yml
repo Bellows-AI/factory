@@ -1,0 +1,122 @@
+name: UI runner image
+
+# The image `.bellows.yaml`'s UI gate pulls. Rebuilt whenever the Dockerfile or the lockfile moves,
+# so a playwright bump publishes the matching browser before anything names its tag.
+on:
+    push:
+        branches: [main]
+        paths:
+            - docker/ui-runner.Dockerfile
+            - .github/workflows/ui-runner-image.yml
+            - package-lock.json
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    packages: write
+    security-events: write
+
+concurrency:
+    group: ui-runner-image-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    tag:
+        # A manual run from a branch would push over the tag main publishes; every job needs this one.
+        if: github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        outputs:
+            image-tag: ${{ steps.version.outputs.image-tag }}
+            playwright: ${{ steps.version.outputs.playwright }}
+            registry: ${{ steps.version.outputs.registry }}
+        steps:
+            - uses: actions/checkout@v4
+            # The package that owns the browser revisions, as the lockfile resolves it — never a
+            # second pin here that could drift from it.
+            - name: read the locked playwright version from package-lock.json
+              id: version
+              env:
+                  OWNER: ${{ github.repository_owner }}
+              run: |
+                  PLAYWRIGHT=$(jq -r '.packages["node_modules/playwright"].version // empty' package-lock.json)
+                  test -n "$PLAYWRIGHT" || { echo 'package-lock.json resolves no playwright'; exit 1; }
+                  printf 'playwright=%s\n' "$PLAYWRIGHT" >>"$GITHUB_OUTPUT"
+                  printf 'image-tag=playwright-%s\n' "$PLAYWRIGHT" >>"$GITHUB_OUTPUT"
+                  printf 'registry=ghcr.io/%s\n' "$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')" >>"$GITHUB_OUTPUT"
+
+    # Same shape as release-image.yml's build: native per-arch, tarball, scan, then login and push.
+    build:
+        needs: tag
+        strategy:
+            fail-fast: false
+            matrix:
+                arch: [amd64, arm64]
+                include:
+                    - arch: amd64
+                      runner: ubuntu-latest
+                    - arch: arm64
+                      runner: ubuntu-24.04-arm
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 30
+        env:
+            TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0
+            REGISTRY: ${{ needs.tag.outputs.registry }}
+            IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
+            PLAYWRIGHT_VERSION: ${{ needs.tag.outputs.playwright }}
+            ARCH: ${{ matrix.arch }}
+        steps:
+            - uses: actions/checkout@v4
+            - name: docker buildx create
+              run: docker buildx create --use --driver docker-container
+            - name: docker buildx build --output type=docker
+              run: |
+                  docker buildx build --platform "linux/$ARCH" --provenance=false \
+                      -f docker/ui-runner.Dockerfile --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
+                      -t "$REGISTRY/factory-ui-runner:$IMAGE_TAG-$ARCH" \
+                      --output type=docker,dest=/tmp/image.tar docker
+            - name: trivy image --format sarif
+              run: |
+                  docker run --rm -v /tmp:/tmp -v "$PWD:/work" -w /work "$TRIVY_IMAGE" \
+                      image --input /tmp/image.tar --scanners vuln,secret \
+                      --severity CRITICAL,HIGH --ignore-unfixed \
+                      --format sarif --output /tmp/trivy.sarif --exit-code 0
+            - if: always()
+              uses: github/codeql-action/upload-sarif@v3
+              with:
+                  sarif_file: /tmp/trivy.sarif
+                  category: image-factory-ui-runner-${{ matrix.arch }}
+            - name: trivy image --exit-code 1
+              run: |
+                  docker run --rm -v /tmp:/tmp -v "$PWD:/work" -w /work "$TRIVY_IMAGE" \
+                      image --input /tmp/image.tar --scanners vuln,secret \
+                      --severity CRITICAL,HIGH --ignore-unfixed \
+                      --format table --exit-code 1
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx build --push
+              run: |
+                  docker buildx build --platform "linux/$ARCH" --provenance=false \
+                      -f docker/ui-runner.Dockerfile --build-arg PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" \
+                      -t "$REGISTRY/factory-ui-runner:$IMAGE_TAG-$ARCH" --push docker
+
+    manifest:
+        needs: [tag, build]
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx imagetools create
+              env:
+                  REGISTRY: ${{ needs.tag.outputs.registry }}
+                  IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
+              run: |
+                  docker buildx imagetools create -t "$REGISTRY/factory-ui-runner:$IMAGE_TAG" \
+                      "$REGISTRY/factory-ui-runner:$IMAGE_TAG-amd64" "$REGISTRY/factory-ui-runner:$IMAGE_TAG-arm64"
