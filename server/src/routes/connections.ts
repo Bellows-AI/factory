@@ -90,8 +90,9 @@ const signInRequired = (reply: FastifyReply) =>
 
 /**
  * The task-create check (issue #546): the connection a task selects must be one its author may
- * use now — org-owned in this org, or the author's own. Selection is this field and nothing else;
- * a skill never names a connection. `handled` means a refusal already landed on `reply`.
+ * use now — org-owned in this org, or the author's own. A task that names none gets the author's
+ * default injected (`defaultFor`); a skill never names a connection. `handled` means a refusal
+ * already landed on `reply`.
  */
 export async function resolveJiraConnection(
     orgs: OrgRegistry,
@@ -99,12 +100,15 @@ export async function resolveJiraConnection(
     raw: unknown
 ): Promise<{ handled: true } | { handled: false; id: string | null }> {
     const { request, reply, createdBy } = ctx;
-    if (raw === undefined || raw === null) return { handled: false, id: null };
+    const store = (await orgs.for(orgOf(request)))?.connections;
+    if (raw === undefined || raw === null) {
+        if (!store || createdBy === null) return { handled: false, id: null };
+        return { handled: false, id: await store.defaultFor(createdBy) };
+    }
     if (typeof raw !== 'string' || !UUID.test(raw)) {
         bad(reply, ERROR_CODES.BAD_CONNECTION, 'jiraConnection must be a connection id');
         return { handled: true };
     }
-    const store = (await orgs.for(orgOf(request)))?.connections;
     if (!store || createdBy === null || !(await store.authorizedFor(createdBy, raw))) {
         bad(
             reply,

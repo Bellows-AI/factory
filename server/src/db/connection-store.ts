@@ -29,6 +29,8 @@ export interface ConnectionStore {
     create(input: NewConnection): Promise<ConnectionView>;
     /** True when `userId` may select the connection for a task: org-owned in this org, or their own. */
     authorizedFor(userId: string, connectionId: string): Promise<boolean>;
+    /** The connection a task injects when it names none: the user's newest own, else the org's newest. */
+    defaultFor(userId: string): Promise<string | null>;
     /** Deletes an org-owned connection (`admin`) or the caller's own; false when neither matches. */
     remove(connectionId: string, actor: { userId: string; admin: boolean }): Promise<boolean>;
 }
@@ -92,6 +94,16 @@ export function createConnectionStore({
                   and (owner_user_id is null or owner_user_id = ${userId})
             `;
             return rows.length > 0;
+        },
+        async defaultFor(userId) {
+            await gate();
+            const rows = await sql<{ id: string }[]>`
+                select id from connector_connection
+                where org_id = ${orgId} and (owner_user_id is null or owner_user_id = ${userId})
+                order by owner_user_id is null, created_at desc, id
+                limit 1
+            `;
+            return rows[0]?.id ?? null;
         },
         async remove(connectionId, { userId, admin }) {
             await gate();
