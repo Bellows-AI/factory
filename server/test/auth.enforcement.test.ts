@@ -76,6 +76,9 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
         async suspend() {
             return { result: 'ok', status: 'stopped' };
         },
+        async requeue() {
+            return { result: 'ok', status: 'queued' };
+        },
         async complete() {
             return 'ok';
         },
@@ -195,6 +198,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
     [`/api/jobs/${JOB_ID}/session`, 'worker'],
     [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
+    [`/api/jobs/${JOB_ID}/requeue`, 'worker'],
     [`/api/jobs/${JOB_ID}/complete`, 'worker'],
     [`/api/jobs/${JOB_ID}/output`, 'worker'],
     // Both are the driver's gate machinery — the state reports after each gate runs and the

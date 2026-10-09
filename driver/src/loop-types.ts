@@ -3,6 +3,7 @@ import type { DriverConfig } from './config.js';
 import type { Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { JobState } from './loop-attempt.js';
+import type { SyncQueue } from './sync-queue.js';
 
 /**
  * The gate machinery, wired once at startup and handed to the loop only when it exists — an
@@ -20,7 +21,7 @@ export interface GateStack {
 /**
  * Everything a running attempt needs from the loop that spawned it: the board and runner it talks
  * to, the driver's own config and (optional) gate machinery, its logger and sleeper, the reclaim
- * barrier every attempt's startup sync waits on, and the verdict-reporting entry point whose
+ * barrier and the per-clone queue every attempt's startup sync waits on, and the verdict-reporting entry point whose
  * worktree-reclaim side effect lives with the loop's other long-lived state.
  */
 export interface LoopRuntime {
@@ -35,6 +36,10 @@ export interface LoopRuntime {
     log: (message: string) => void;
     sleep: (ms: number) => Promise<void>;
     reclaims: Map<string, Promise<void>>;
+    /** Orders startup syncs of one base clone (`sync-queue.ts`, issue #559). */
+    syncs: SyncQueue;
+    /** Overrides `SYNC_QUEUE_WAIT_MS` — a test seam, never set in production. */
+    syncWaitMs?: number;
     report: (job: BoardJob, result: Parameters<Board['complete']>[1]) => Promise<LeaseState>;
 }
 
@@ -69,14 +74,18 @@ export type VerdictBody = Parameters<Board['complete']>[1];
  * step 3 of #433).
  *
  * - `fault` — a named failure, reported `failed`. The agent never runs.
- * - `leave` — infrastructure, not a verdict: the claim goes back to the board and the lease
- *   decides (issue #307's lock contention, a sync that threw).
+ * - `leave` — infrastructure, not a verdict: the claim stays with its lease and the lease decides
+ *   (a sync that threw).
+ * - `requeue` — checkout contention another driver or a concurrent git caused (issue #559): the
+ *   pre-run claim goes back to the board at once, its attempt refunded and its next claim
+ *   deferred. No verdict — no agent ran.
  * - `concluded` — the job really is done (a pre-run helper's `control: 'conclude'`, issue #230),
  *   reported `succeeded` with no agent, no gates, no post-helper and no publish.
  */
 export type SetupHalt =
     | { halt: 'fault'; log: string; verdict: VerdictBody }
     | { halt: 'leave'; log: string }
+    | { halt: 'requeue'; log: string }
     | { halt: 'concluded'; log: string; verdict: VerdictBody };
 
 /**

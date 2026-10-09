@@ -56,6 +56,7 @@ import {
     parsePrSummary,
     publishPlan,
     repoPath,
+    SYNC_DEADLINE_MS,
     TRANSIENT_SYNC_REASON,
     worktreeBranch,
     worktreeDir,
@@ -73,6 +74,7 @@ const job: BoardJob = {
     id: '11111111-1111-4111-8111-111111111111',
     command: 'fix the failing build',
     attempts: 1,
+    claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
     executorType: 'claude-code',
@@ -4121,6 +4123,171 @@ describe('publishing the produced work', () => {
             ok: false,
             reason: 'the worktree sync answered nothing readable: exit 0, last log line "fatal: could not read from remote repository"',
         });
+    });
+
+    /*
+     * Issue #559: a sync that never lands (a fetch stalled on the network) would hold its clone's
+     * queue, and every sibling behind it, forever. The container is bounded like the kubernetes
+     * sync Job's deadline: past it the client is killed AND the container removed by name — `--rm`
+     * alone fires only when the daemon sees the container exit — and the run fails like a sync Job
+     * the kubelet ended. A stand-down is not a timeout: an abandoned sync still finishes its writes.
+     */
+    type ExecOptions = { timeout?: number; signal?: AbortSignal };
+    const runSyncWith = async (
+        fail: (options: ExecOptions | undefined) => never,
+        wait: () => Promise<{ stdout: string }> = async () => ({ stdout: '0\n' })
+    ) => {
+        const calls: { args: string[]; options?: ExecOptions }[] = [];
+        const exec = vitest.fn(async (args: string[], options?: ExecOptions) => {
+            calls.push({ args, ...(options ? { options } : {}) });
+            if (args[0] === 'run' && args.includes('--entrypoint')) fail(options);
+            if (args[0] === 'wait') return wait();
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+        return { calls, runner };
+    };
+    const killed = () => Object.assign(new Error('Command failed: docker run'), { killed: true, signal: 'SIGTERM' });
+
+    it('bounds the sync container by the sync deadline, and removes it by name when it outlives it', async () => {
+        const { calls, runner } = await runSyncWith(() => {
+            throw killed();
+        });
+
+        const result = await runner.syncCheckout(repoJob);
+
+        const run = calls.find((call) => call.args[0] === 'run' && call.args.includes('--entrypoint'))!;
+        expect(run.options?.timeout).toBe(SYNC_DEADLINE_MS);
+        const name = run.args[run.args.indexOf('--name') + 1];
+        expect(name).toBe(`factory-sync-${repoJob.id}-${repoJob.leaseToken}`);
+        expect(result).toMatchObject({
+            ok: false,
+            reason: `the worktree sync container failed: it exceeded its ${SYNC_DEADLINE_MS}ms deadline`,
+        });
+        expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(false);
+        // The verdict answers at once; the writes are over only once the daemon proves it gone.
+        await result.settled;
+        const remove = calls.find((call) => call.args.join(' ') === `rm -f ${name}`);
+        // Bounded too: a daemon that hangs on the removal must not wedge the proof loop.
+        expect(remove?.options?.timeout).toBeGreaterThan(0);
+        expect(calls.some((call) => call.args[0] === 'ps' && call.args.join(' ').includes(name))).toBe(true);
+    });
+
+    it('settles a timed-out sync only once a listing proves its container gone, however the removal answered', async () => {
+        const name = `factory-sync-${repoJob.id}-${repoJob.leaseToken}`;
+        const listings = [`${name}\n`, ''];
+        const calls: string[] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) throw killed();
+            // Only the calls about the sync container — the re-claim fence lists by label.
+            if (!args.some((arg) => arg.includes(name))) return { stdout: '' };
+            calls.push(args[0]!);
+            // The daemon refuses the first removal; only a listing that no longer shows it counts.
+            if (args[0] === 'rm' && calls.filter((c) => c === 'rm').length === 1) throw new Error('daemon busy');
+            if (args[0] === 'ps') return { stdout: listings.shift() ?? '' };
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+
+        const result = await runner.syncCheckout(repoJob);
+        let settled = false;
+        void result.settled?.then(() => (settled = true));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(settled).toBe(false);
+        await result.settled;
+
+        expect(calls.filter((c) => c === 'ps')).toHaveLength(2);
+        expect(calls.filter((c) => c === 'rm')).toHaveLength(2);
+    });
+
+    it('lets an abandoned sync container finish its writes, and answers only once it has exited', async () => {
+        const stop = new AbortController();
+        let exited: (out: { stdout: string }) => void = () => {};
+        const { calls, runner } = await runSyncWith(
+            () => {
+                stop.abort();
+                throw killed();
+            },
+            () => new Promise((resolve) => (exited = resolve))
+        );
+
+        let answered = false;
+        const syncing = runner.syncCheckout(repoJob, stop.signal).then(() => (answered = true));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        // Still holding: the queue keeps this sync's place until the container is gone.
+        expect(answered).toBe(false);
+        const wait = calls.find((call) => call.args[0] === 'wait');
+        expect(wait?.args).toEqual(['wait', `factory-sync-${repoJob.id}-${repoJob.leaseToken}`]);
+        expect(wait?.options?.timeout).toBeGreaterThan(0);
+        expect(wait?.options?.timeout).toBeLessThanOrEqual(SYNC_DEADLINE_MS);
+        exited({ stdout: '0\n' });
+        await syncing;
+
+        expect(calls.some((call) => call.args[0] === 'rm')).toBe(false);
+    });
+
+    it('removes an abandoned sync container that is still running at the deadline', async () => {
+        const stop = new AbortController();
+        const { calls, runner } = await runSyncWith(
+            () => {
+                stop.abort();
+                throw killed();
+            },
+            async () => {
+                throw killed();
+            }
+        );
+
+        await runner.syncCheckout(repoJob, stop.signal);
+
+        expect(
+            calls.some((call) => call.args.join(' ') === `rm -f factory-sync-${repoJob.id}-${repoJob.leaseToken}`)
+        ).toBe(true);
+    });
+
+    it('does not read an output overflow as the deadline', async () => {
+        const { calls, runner } = await runSyncWith(() => {
+            throw Object.assign(killed(), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' });
+        });
+
+        const result = await runner.syncCheckout(repoJob);
+
+        expect(result.reason).not.toContain('deadline');
+        expect(calls.some((call) => call.args[0] === 'rm')).toBe(false);
+    });
+
+    // Issue #559: the contention verdict reaches the loop unchanged — the anchored marker is what
+    // hands the claim back to the board — and the sync never shortens the script's lock wait.
+    it('passes checkout contention through as the transient reason, with the shipped lock wait', async () => {
+        const reason =
+            'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';
+        const runs: string[][] = [];
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'run' && args.includes('--entrypoint')) {
+                runs.push(args);
+                return { stdout: `${JSON.stringify({ ok: false, reason })}\n` };
+            }
+            return { stdout: '' };
+        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+        const runner = createDockerRunner(
+            loadDriverConfig({}),
+            (() => fakeChild('', '', 0)) as unknown as typeof spawn,
+            exec
+        );
+
+        const result = await runner.syncCheckout(repoJob);
+
+        expect(result).toMatchObject({ ok: false, reason });
+        expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(true);
+        expect(runs.flat().some((arg) => arg.startsWith('SYNC_LOCK_WAIT_MS'))).toBe(false);
     });
 
     it('says the sync container printed nothing when its stdout is empty', async () => {

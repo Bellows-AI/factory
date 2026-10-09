@@ -28,6 +28,7 @@ function reclaimJob(reclaim: Reclaim): BoardJob {
         id: reclaim.rootJobId,
         command: '',
         attempts: 1,
+        claimSeq: 1,
         leaseToken: reclaim.id,
         leaseExpiresAt: reclaim.leaseExpiresAt,
         resumeSessionId: null,
@@ -96,8 +97,8 @@ async function clearOrphanedClaim(
             ? 'age unknown'
             : `held for ${Math.max(1, Math.round((Date.now() - heldClaim.createdMs) / MS_PER_MINUTE))}m`;
     ctx.log(
-        `reclaim ${reclaim.id}: orphaned checkout claim ${heldClaim.name} — attempt ` +
-            `${heldClaim.attempt ?? 'unknown'}, ${age}, ${holder}. The claim was reaped; retrying the removal once.`
+        `reclaim ${reclaim.id}: orphaned checkout claim ${heldClaim.name} — claim ` +
+            `${heldClaim.claimSeq ?? 'unknown'}, ${age}, ${holder}. The claim was reaped; retrying the removal once.`
     );
     return true;
 }

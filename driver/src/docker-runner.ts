@@ -19,6 +19,7 @@ import {
     worktreeDir,
     type PublishStep,
     type ReclaimResult,
+    SYNC_DEADLINE_MS,
     type SyncResult,
 } from './publish.js';
 import { forgetDeclaredServices, missingDeclaredServices, networkName, serviceContainerName } from './services.js';
@@ -63,6 +64,9 @@ import {
     startJobServices,
     syncCheckoutArgs,
     unreadableDockerDetail,
+    awaitAbandonedSync,
+    killedByTimeout,
+    syncPastDeadline,
     type RunnerFiles,
     type Spawn,
     type ExecDocker,
@@ -272,6 +276,7 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob, signal?: Abor
      * teardown half runs twice.
      */
     await dockerReclaimFence(deps, job);
+    const deadline = Date.now() + SYNC_DEADLINE_MS;
     const restore = claimRestoresTree(job);
     let file: string | null = null;
     if (!restore) {
@@ -287,15 +292,26 @@ async function dockerSyncCheckout(deps: RunnerDeps, job: BoardJob, signal?: Abor
         // this exact call once shipped as `docker -v ... -w ...`, which is not a command
         // docker knows, and the sync failed on every job while the compile and the flow
         // tests (which match argv by shape, not by head) stayed green.
+        // Bounded like the kubernetes sync Job (issue #559): a sync that never lands would hold its
+        // clone's queue forever.
         const out = await execDocker(
             syncCheckoutArgs(config, job, { clone, worktree, restore, envFile: file }),
-            signal ? { signal } : undefined
+            signal ? { timeout: SYNC_DEADLINE_MS, signal } : { timeout: SYNC_DEADLINE_MS }
         );
         return parseLastJsonLine<SyncResult>(out.stdout, () => ({
             ok: false,
             reason: `${syncUnreadable.reason}: ${unreadableDockerDetail(out.stdout)}`,
         }));
     } catch (e) {
+        if (signal?.aborted) {
+            // A stand-down detaches the client only: the sync keeps writing, and this answer — the
+            // clone's queue place — is held until the container exits, within the same deadline.
+            await awaitAbandonedSync(execDocker, job, deadline);
+        } else if (killedByTimeout(e)) {
+            // The timeout killed the client, not the container: `--rm` waits for the daemon to see
+            // it exit, so it goes by name — the kubelet's deadline kill, on docker.
+            return syncPastDeadline(execDocker, job);
+        }
         const detail = dockerErrorDetail(e);
         return {
             ok: false,

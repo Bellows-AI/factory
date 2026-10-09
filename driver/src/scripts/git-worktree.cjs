@@ -94,14 +94,15 @@ const sleep = (ms) => {
 // expected Y`. The file lives in the clone's git dir — on the shared workspaces volume, so the
 // sync containers (docker) and sync Jobs (kubernetes) of one checkout contend on ONE file.
 const SYNC_LOCK_NAME = 'factory-sync.lock';
-// The defaults for the two bounds above: 120s is inside the kubernetes sync Job's 600s deadline
-// and covered by the still-beating setup heartbeat; 600s IS that deadline — a lock older than it
-// can have no living holder.
-const DEFAULT_SYNC_LOCK_WAIT_MS = 120000;
+// The defaults for the two bounds above: 20s, because one driver queues its own syncs of a clone
+// (driver/src/sync-queue.ts) and a lock met here is another driver's — whose contender hands its
+// claim back to the board rather than wait (issue #559); 600s IS the kubernetes sync Job's
+// deadline — a lock older than it can have no living holder.
+const DEFAULT_SYNC_LOCK_WAIT_MS = 20000;
 const DEFAULT_SYNC_LOCK_STALE_MS = 600000;
 // How long a second sync waits for the holder before giving up with a transient verdict: well
 // inside the kubernetes sync Job's 600s deadline, and covered by the still-beating setup
-// heartbeat. Test seam only — the driver never sets it, and the name is reserved from member
+// heartbeat; the transient verdict sends the claim back to the board. Test seam only — the driver never sets it, and the name is reserved from member
 // configuration on both the board and the driver.
 const SYNC_LOCK_WAIT_MS = positiveIntEnv('SYNC_LOCK_WAIT_MS', DEFAULT_SYNC_LOCK_WAIT_MS);
 // A lock older than this is an orphan: on kubernetes the sync Job's own deadline is exactly

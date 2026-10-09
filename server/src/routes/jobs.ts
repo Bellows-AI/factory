@@ -12,6 +12,7 @@ import {
     handlePublishToken,
     handleSession,
     handleSuspend,
+    handleRequeue,
 } from './job-handlers-worker.js';
 import {
     handleArtifactRead,
@@ -87,6 +88,9 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/suspend', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleSuspend(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/requeue', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleRequeue(orgs, request, reply)
         );
         app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleFollowUp(orgs, request, reply)

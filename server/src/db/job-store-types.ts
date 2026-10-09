@@ -410,6 +410,8 @@ export interface Claim {
     id: string;
     command: string;
     attempts: number;
+    /** The row's claim sequence (057): bumped by every claim, never refunded like `attempts`. */
+    claimSeq: number;
     leaseToken: string;
     leaseExpiresAt: string;
     /**
@@ -1085,6 +1087,13 @@ export interface JobStore {
      * that continues the conversation).
      */
     suspend(id: string, leaseToken: string): Promise<SuspendResult>;
+    /**
+     * Hands a pre-run claim back after checkout contention (issue #559). Lease-guarded: the row
+     * goes back to `queued` with the claim's attempt refunded and its next claim deferred by
+     * `REQUEUE_DELAY_SECONDS`, so contention never exhausts `max_attempts` and never spins. A Stop
+     * already stamped on the row wins: it settles `stopped` instead. `lost` for a stale token.
+     */
+    requeue(id: string, leaseToken: string): Promise<SuspendResult>;
     /**
      * Records the verdict and answers it with whether the thread is DONE — computed in the same
      * transaction: `threadDone` is true only when every job of the thread — the root and every

@@ -8,6 +8,7 @@ import { runJob } from './loop-run.js';
 import { processReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
 import { withBoardRetry } from './board-retry.js';
+import { type SyncQueue, syncQueue } from './sync-queue.js';
 
 export interface Loop {
     /** Resolves once `stop()` has been called and every in-flight job has finished. */
@@ -26,6 +27,10 @@ export interface LoopDeps {
     stopGraceMs?: number;
     /** Test seam for a question's expiry timer (`QUESTION_TIMEOUT_MS`); production never sets it. */
     questionTimeoutMs?: number;
+    /** Orders startup syncs of one clone; the in-process `syncQueue()` when absent (issue #559). */
+    syncs?: SyncQueue;
+    /** Test seam for the sync-queue wait (`SYNC_QUEUE_WAIT_MS`); production never sets it. */
+    syncWaitMs?: number;
 }
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -78,6 +83,8 @@ export function createLoop({
     sleep = wait,
     stopGraceMs,
     questionTimeoutMs,
+    syncs = syncQueue(),
+    syncWaitMs,
 }: LoopDeps): Loop {
     let running = true;
     const active = new Set<Promise<void>>();
@@ -123,10 +130,12 @@ export function createLoop({
         log,
         sleep,
         reclaims,
+        syncs,
         report,
         ...(gates ? { gates } : {}),
         ...(stopGraceMs === undefined ? {} : { stopGraceMs }),
         ...(questionTimeoutMs === undefined ? {} : { questionTimeoutMs }),
+        ...(syncWaitMs === undefined ? {} : { syncWaitMs }),
     };
 
     /**

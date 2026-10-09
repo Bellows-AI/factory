@@ -152,6 +152,13 @@ export interface SyncResult {
      * post-gate probe's to tell a round that changed nothing. Absent or null is unknown.
      */
     fingerprint?: string | null;
+    /**
+     * Settles once nothing of this sync can still write the checkout, when that is later than the
+     * answer: a docker sync killed at its deadline answers at once, while its container is proven
+     * gone only after (issue #559). The clone's sync queue holds the turn until then. Absent: the
+     * answer itself is that proof.
+     */
+    settled?: Promise<void>;
 }
 
 /**
@@ -159,14 +166,21 @@ export interface SyncResult {
  * contention on the shared checkout (issue #307): a wait-out on the checkout's `factory-sync.lock`
  * until its wait bound, or a fetch that kept losing the refs' locks to a concurrent git past its
  * retries. Both are transient by nature — a re-claim starts the same sync over, usually against
- * refs that are current by then — so the loop reads this as infrastructure and leaves the job to
- * its lease, spending an attempt at the next claim, never as a verdict on the command. Anchored
+ * refs that are current by then — so the loop reads this as infrastructure and hands the claim
+ * back to the board, its attempt refunded (issue #559), never as a verdict on the command. Anchored
  * at the head ON PURPOSE: ordinary refusal reasons splice raw git stderr, whose conflicting file
  * paths are member-controlled content, and an unanchored match would misroute a terminal
  * conflict into the retry path. The literal lives in the script too (a .cjs cannot import it),
  * which is why docker.test.ts pins the marker's presence in the shipped bytes.
  */
 export const TRANSIENT_SYNC_REASON = /^transient worktree sync:/;
+
+/**
+ * The startup sync's own bound, on both executors: the kubernetes sync Job's
+ * `activeDeadlineSeconds` and the docker sync container's timeout. The script's stale-lock bound
+ * (scripts/git-worktree.cjs, `DEFAULT_SYNC_LOCK_STALE_MS`) is this same 600s.
+ */
+export const SYNC_DEADLINE_MS = 600_000;
 
 /** What the terminal reclaim answers: ok, whether anything was removed, or the reason it did not. */
 export interface ReclaimResult {
@@ -186,7 +200,7 @@ export interface ReclaimResult {
      * the board proves the holder job gone or terminal, to have the runner reap it instead of
      * retrying the same refusal forever.
      */
-    heldClaim?: { name: string; attempt: string | null; createdMs: number | null };
+    heldClaim?: { name: string; claimSeq: string | null; createdMs: number | null };
 }
 
 /**

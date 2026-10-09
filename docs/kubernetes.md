@@ -46,8 +46,10 @@ started — sync, gates, services, publish, helpers, reclaim — is one contract
   `factory-{job,sync,publish,helper,gate}-…-env` naming, and every workspaces mount uses `workspaceMount()`'s
   `<org>/<user id>` subPath — or admission refuses it. `driver/test/k8s-admission.test.ts` pins each `*SecretName`
   builder and the subPath pattern against the template itself.
-- **The fence orders contenders by the board's attempt counter, never by a clock.** Creating the
-  `factory-job-<id>-claim` ConfigMap is the mutex; a loser stands down and burns an attempt.
+- **The fence orders contenders by the board's claim sequence (`claim_seq`), never by a clock or the
+  refundable attempt counter.** Creating the `factory-job-<id>-claim` ConfigMap is the mutex; a loser
+  stands down and burns an attempt; a claim with no sequence is taken over only when the board's lease lookup proves
+  this attempt holds the live lease. `driver/test/k8s.test.ts` (`after its attempt was refunded`, `no claim sequence`).
 - **The driver never reads a Secret back** — the Role grants `create`/`delete` and no `get`/`list`, so attempt Secrets
   are reaped by derived name rather than enumerated.
 - **`make start` refuses a state claim initialised without `PGDATA`**, and refuses to upgrade a state release still

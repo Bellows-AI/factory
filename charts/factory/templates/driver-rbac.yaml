@@ -16,7 +16,7 @@ own per-attempt Secrets, and deletes only of objects it labelled `factory.job`.
 `configmaps` is the checkout claim that makes the re-claim fence atomic (issue #32): one ConfigMap
 per job id, POSTed to take the checkout (409 means another attempt holds it), read to order the
 contenders, deleted to release or take over. `get` is safe HERE and only here — the claim carries
-a holder token and an attempt number, both already known to the driver, and never secret material,
+a holder token and a claim sequence, both already known to the driver, and never secret material,
 which is exactly why the claim is not a Secret. The grant is namespace-wide on ConfigMaps — RBAC
 cannot scope it to `factory-job-*-claim` names — so a compromised driver can read the namespace's
 configuration, not its credentials: the line this Role has always drawn.

@@ -32,6 +32,7 @@ import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { uploadRunArtifacts } from './artifacts.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
+import { awaitSyncTurn } from './sync-queue.js';
 
 function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
     // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
@@ -99,7 +100,11 @@ async function waitReclaimBarrier(ctx: AttemptCtx): Promise<SetupConclusion | nu
 async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     const { runner } = rt;
+    const turn = await awaitSyncTurn(ctx);
+    if (turn === STOOD_DOWN || 'halt' in turn) return turn;
     const syncing = runner.syncCheckout(job, state.signal);
+    // The turn is held until the sync's writes are over (`settled`), however the sync answered.
+    turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
     let syncedOut: { value: SyncResult } | null;
     try {
         syncedOut = await raceStep(state.signal, syncing);
@@ -124,15 +129,15 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     }
     if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
         /*
-         * Lock contention on the shared checkout (issue #307) is infrastructure, not a
-         * verdict: the script already waited out the checkout's sync lock and retried the
-         * fetch, so reporting `failed` here would spend the RUN on what a re-claim spends
-         * an attempt on. The claim goes back to the board — the lease expires and the job
-         * is offered again, exactly like a sync that threw — and maxAttempts governs. The
-         * kubernetes checkout claim was already released inside `syncCheckout` before it
-         * answered, the same discipline the ordinary sync-failure refusal below relies on.
+         * Lock contention on the shared checkout (issues #307, #559) is infrastructure, not a
+         * verdict: this driver's own syncs of the clone are queued above, so the lock the
+         * script waited out is another driver's (or, on docker, a stood-down sibling's sync
+         * container still finishing), or the fetch kept losing ref locks to a concurrent git. The claim goes straight back to the board, which refunds the
+         * attempt and defers the next claim. The kubernetes checkout claim was already
+         * released inside `syncCheckout` before it answered, the same discipline the
+         * ordinary sync-failure refusal below relies on.
          */
-        return { halt: 'leave', log: `checkout sync was lock-blocked, leaving it to the lease: ${synced.reason}` };
+        return { halt: 'requeue', log: `checkout sync was lock-blocked, requeueing: ${synced.reason}` };
     }
     return {
         halt: 'fault',

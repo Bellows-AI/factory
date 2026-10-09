@@ -277,8 +277,8 @@ export interface Runner {
      * starts from the code it is meant to continue. Answers { ok: false, reason } rather than
      * throwing; the loop turns that into the verdict — except a reason carrying the script's
      * transient marker (TRANSIENT_SYNC_REASON, issue #307: lock contention on the shared
-     * checkout), which is infrastructure: the loop leaves the job to its lease and no verdict
-     * lands. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a sync
+     * checkout), which is infrastructure: the loop hands the claim back to the board (issue #559)
+     * and no verdict lands. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a sync
      * writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
      * at all — the abandoned sync finishes and `releaseAbandonedSync` hands its claim back.
      */

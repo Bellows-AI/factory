@@ -15,6 +15,7 @@ const FAULT: SetupHalt = {
     verdict: { status: 'failed', exitCode: null, output: 'nope', failureKind: 'runner_error' },
 };
 const LEAVE: SetupHalt = { halt: 'leave', log: 'checkout sync threw, leaving it to the lease' };
+const REQUEUE: SetupHalt = { halt: 'requeue', log: 'checkout sync was lock-blocked, requeueing' };
 const CONCLUDED: SetupHalt = {
     halt: 'concluded',
     log: 'pre-run helper "lint" concluded the job without launching the agent',
@@ -42,6 +43,10 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
                 suspend: async () => {
                     calls.push('suspend');
                     return 'ok' as LeaseState;
+                },
+                requeue: async (requeued: BoardJob) => {
+                    calls.push(`requeue:${requeued.id}`);
+                    return 'held' as LeaseState;
                 },
             },
             report: async (reported: BoardJob) => {
@@ -153,6 +158,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
     it.each([
         ['a fault', FAULT, 'complete:job-1'],
         ['a leave', LEAVE, null],
+        ['a requeue', REQUEUE, 'requeue:job-1'],
         ['a conclusion', CONCLUDED, 'complete:job-1'],
     ] satisfies readonly (readonly [string, SetupHalt, string | null])[])(
         'concludes %s only after the claim is back',
@@ -162,7 +168,8 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
             await concludeSetup(ctx, halt);
 
             // Issue #469: a replacement claimant starts the moment the job is completed, so the
-            // release can never land after the report. A `leave` reports nothing at all.
+            // release can never land after the report. A `leave` reports nothing at all; a
+            // `requeue` hands the claim back instead of reporting (issue #559).
             expect(calls).toEqual([...CLAIM_BACK, 'log', ...(reported === null ? [] : [reported])]);
             expect(lines.join('\n')).toContain(halt.log);
         }

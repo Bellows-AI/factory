@@ -7,6 +7,7 @@ import type { ServiceStatus } from './board.js';
 import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from './http.js';
+import type { BoardLease } from './board.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -150,7 +151,7 @@ export const TIMEOUT_EXIT_CODE = 124;
 
 export interface K8sClaim {
     metadata?: { uid?: string; creationTimestamp?: string };
-    data?: { holder?: string; attempt?: string };
+    data?: { holder?: string; claimSeq?: string };
 }
 
 /**
@@ -222,6 +223,11 @@ export interface K8sDeps {
     request: K8sRequest;
     sleep: (ms: number) => Promise<void>;
     config: DriverConfig;
+    /**
+     * The board's lease lookup (`Board.leases`): what lets the fence take over a checkout claim
+     * that carries no claim sequence (`takeOverStaleClaim`). Absent, such a claim is stood down on.
+     */
+    leases?: (ids: readonly string[]) => Promise<BoardLease[] | null>;
 }
 
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */

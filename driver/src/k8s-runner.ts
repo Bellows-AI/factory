@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { Board, BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { envFileBody } from './claim.js';
 import { composeRuntimeSample } from './runner.js';
@@ -501,7 +501,7 @@ async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['h
     const created = claim.metadata?.creationTimestamp ? Date.parse(claim.metadata.creationTimestamp) : NaN;
     return {
         name: claimName(job),
-        attempt: claim.data?.attempt ?? null,
+        claimSeq: claim.data?.claimSeq ?? null,
         createdMs: Number.isFinite(created) ? created : null,
     };
 }
@@ -584,14 +584,16 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
 
 /**
  * The kubernetes Runner. `request` is injected — the `createBoard(computeFetch)` pattern — and so
- * is `sleep`, which is what lets the poll loop be tested without two seconds per poll.
+ * is `sleep`, which is what lets the poll loop be tested without two seconds per poll. `leases` is
+ * the board's lease lookup the checkout-claim fence asks about a claim it cannot order.
  */
 export function createKubernetesRunner(
     config: DriverConfig,
     request: K8sRequest,
-    sleep: (ms: number) => Promise<void> = wait
+    sleep: (ms: number) => Promise<void> = wait,
+    leases?: Board['leases']
 ): Runner {
-    const deps: K8sDeps = { config, request, sleep };
+    const deps: K8sDeps = { config, request, sleep, ...(leases ? { leases } : {}) };
     return {
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
