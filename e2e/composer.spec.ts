@@ -294,12 +294,20 @@ test.describe('the guided task composer', () => {
         await expect(composer.locator('.banner-bad')).toHaveCount(0);
         await expect(start).toHaveAttribute('aria-describedby', 'composer-blocker');
 
-        // The example is offered only while there is nothing to type over.
-        const example = composer.getByRole('button', { name: 'Try an example' });
-        await example.click();
-        await expect(page.getByLabel('What should the agent do?')).toHaveValue(/^Fix issue #123/);
-        await expect(example).toBeDisabled();
-        await expect(start).toBeEnabled();
+        // The removed example and discard buttons stay gone; the chips explain themselves instead.
+        await expect(composer.getByRole('button', { name: 'Try an example' })).toHaveCount(0);
+        await expect(composer.getByRole('button', { name: 'Discard draft' })).toHaveCount(0);
+        const repoHelp = composer.getByRole('button', { name: 'About Repository' });
+        await repoHelp.focus();
+        await page.keyboard.press('Enter');
+        await expect(page.getByText('The codebase the task runs in.')).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/composer-help.png`, fullPage: true });
+        await page.keyboard.press('Escape');
+        await expect(page.getByText('The codebase the task runs in.')).toHaveCount(0);
+        await composer.getByRole('button', { name: 'About Executor' }).click();
+        await expect(page.getByText('The configured agent environment')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(start).toBeDisabled();
 
         await page.getByLabel('What should the agent do?').fill('x'.repeat(16_385));
         await expect(composer.locator('.composer-counter.is-over')).toHaveText('16,385 / 16,384');
@@ -310,7 +318,7 @@ test.describe('the guided task composer', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test("the board's refusal keeps the draft, and Discard empties it only after asking", async ({ page }) => {
+    test("the board's refusal keeps the draft", async ({ page }) => {
         await page.route('**/api/jobs', (route) =>
             route.request().method() === 'POST'
                 ? route.fulfill({ status: 503, json: { error: 'The board is unavailable' } })
@@ -325,24 +333,6 @@ test.describe('the guided task composer', () => {
         await expect(composer.getByRole('alert')).toBeVisible();
         await expect(prompt).toHaveValue('fix the login crash');
         expect(page.url()).toContain('/tasks/new');
-
-        // Typed words are not thrown away on one click: the settings area's dialog asks first.
-        await composer.getByRole('button', { name: 'Discard draft' }).click();
-        const dialog = page.getByRole('dialog');
-        await expect(dialog.getByText('Discard unsaved changes?')).toBeVisible();
-        // The launch shortcut belongs to the form, not to a question about throwing it away: the
-        // dialog renders in a portal, but React events still bubble to the composer beneath.
-        const launches = countLaunches(page);
-        await page.keyboard.press('ControlOrMeta+Enter');
-        await expect(dialog.getByText('Discard unsaved changes?')).toBeVisible();
-        expect(launches.bodies).toHaveLength(0);
-        await dialog.getByRole('button', { name: 'Continue editing' }).click();
-        await expect(prompt).toHaveValue('fix the login crash');
-
-        await composer.getByRole('button', { name: 'Discard draft' }).click();
-        await page.getByRole('dialog').getByRole('button', { name: 'Discard changes' }).click();
-        await expect(prompt).toHaveValue('');
-        await expect(composer.getByRole('button', { name: 'Discard draft' })).toHaveCount(0);
     });
 });
 
