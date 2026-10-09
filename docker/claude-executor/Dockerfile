@@ -19,7 +19,7 @@
 # behind a TLS-intercepting proxy. That reason did not survive contact: the two layers below
 # already curl binaries from acli.atlassian.com and github.com over TLS, so the build has required
 # working egress and a trusted chain all along. apt adds one more host, not a new class of failure.
-FROM node:24-bookworm-slim
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim
 
 # What -slim drops and the rest of this file needs: git (Claude Code shells out to it for status,
 # diffs and blame), curl (the two downloads below) and the CA bundle both verify against.

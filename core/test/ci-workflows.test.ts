@@ -121,7 +121,9 @@ describe('ci workflows', () => {
     });
 
     it('runs on the node major the runtime image ships', () => {
-        const imageMajor = /FROM node:(\d+)-alpine AS runtime/.exec(read('docker/Dockerfile'))?.[1];
+        const imageMajor = /FROM public\.ecr\.aws\/docker\/library\/node:(\d+)-alpine AS runtime/.exec(
+            read('docker/Dockerfile')
+        )?.[1];
         expect(imageMajor).toBeTruthy();
         const setups = Object.values(workflow(CI).jobs).flatMap((job) =>
             (job.steps ?? []).filter((step) => step.uses?.startsWith('actions/setup-node@'))
@@ -130,6 +132,29 @@ describe('ci workflows', () => {
         for (const step of setups) {
             expect(String(step.with!['node-version']).split('.')[0]).toBe(imageMajor);
         }
+    });
+
+    // GitHub-hosted runners share egress IPs, and Docker Hub rate-limits anonymous pulls per IP:
+    // a release whose every build answers 429 cannot be cut. ECR Public mirrors the same official
+    // images with no such limit and no credential.
+    it('pulls every base image and the CI postgres from the ECR Public mirror, never Docker Hub', () => {
+        const dockerfiles = [
+            'docker/Dockerfile',
+            'docker/driver.Dockerfile',
+            UI_DOCKERFILE,
+            'docker/claude-executor/Dockerfile',
+            'docker/opencode-executor/Dockerfile',
+        ];
+        for (const path of dockerfiles) {
+            // A stage or a named build context (`--from=skills`) is a bare word; an image carries a
+            // tag or a path.
+            const refs = [...read(path).matchAll(/^FROM (\S+)|--from=(\S+)/gm)]
+                .map((match) => match[1] ?? match[2]!)
+                .filter((ref) => /[:/]/.test(ref));
+            expect(refs.length, path).toBeGreaterThan(0);
+            for (const ref of refs) expect(ref, path).toMatch(/^public\.ecr\.aws\/docker\/library\//);
+        }
+        expect(workflow(CI).jobs.e2e!.services!.postgres!.image).toMatch(/^public\.ecr\.aws\/docker\/library\//);
     });
 
     it('runs the browser suite only on merges to main', () => {
@@ -475,9 +500,13 @@ describe('ui runner image', () => {
         ]!.version;
 
     it('ships node, the chromium playwright installs, its system deps and a postgres client', () => {
-        const runtimeMajor = /FROM node:(\d+)-alpine AS runtime/.exec(read('docker/Dockerfile'))?.[1];
+        const runtimeMajor = /FROM public\.ecr\.aws\/docker\/library\/node:(\d+)-alpine AS runtime/.exec(
+            read('docker/Dockerfile')
+        )?.[1];
         // Debian, not alpine: playwright publishes no musl chromium.
-        expect(dockerfile()).toMatch(new RegExp(`^FROM node:${runtimeMajor}-bookworm-slim$`, 'm'));
+        expect(dockerfile()).toMatch(
+            new RegExp(`^FROM public\\.ecr\\.aws/docker/library/node:${runtimeMajor}-bookworm-slim$`, 'm')
+        );
         // git too: matrix.spec.ts and baseline.spec.ts read `git rev-parse HEAD`.
         expect(dockerfile()).toContain('apt-get install -y --no-install-recommends git postgresql-client');
         // The gate runs npm, so the base image's bundled copy is replaced rather than deleted; its

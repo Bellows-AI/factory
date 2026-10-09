@@ -257,7 +257,7 @@ services:
     # Aurora or anything else speaking PG17. The service name is load-bearing in test-jobs.sh,
     # test-k8s.sh, the Makefile and playwright.config.ts — rename it in all four or in none.
     postgres:
-        image: postgres:17
+        image: public.ecr.aws/docker/library/postgres:17
         environment:
             POSTGRES_USER: factory
             POSTGRES_PASSWORD: factory

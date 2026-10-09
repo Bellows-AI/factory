@@ -13,7 +13,7 @@
 # -slim rather than the full image, for the reason docker/claude-executor/Dockerfile spells out:
 # the full tag's unused toolchain and media stack carried ~497 unfixed `linux-libc-dev` findings,
 # and the release scan gates on CRITICAL+HIGH.
-FROM node:24-bookworm-slim
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim
 
 # What -slim drops and the rest of this file needs: git (the agent shells out to it), curl (the
 # two downloads below) and the CA bundle both verify against. Deliberately NO compiler: a

@@ -1,4 +1,4 @@
-FROM node:24-alpine AS deps
+FROM public.ecr.aws/docker/library/node:24-alpine AS deps
 WORKDIR /app
 # node-owned, because this stage installs as `node` (see USER below): the volume compose mounts over
 # /app/node_modules seeds from whatever the image has here, ownership included, and a root-owned
@@ -54,7 +54,7 @@ COPY web web
 # sources are deliberately not copied here. Running it would fail on --workspace=driver.
 RUN npm run build -w core && npm run build -w server && npm run build -w web
 
-FROM node:24-alpine AS runtime
+FROM public.ecr.aws/docker/library/node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./

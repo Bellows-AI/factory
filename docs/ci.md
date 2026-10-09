@@ -26,6 +26,8 @@ Three workflows and no configured secret — the only credential any uses is `gi
   commit carries `[skip ci]`, which would skip the tag's workflow too.
 - **Node is `24`, matching `docker/Dockerfile`'s runtime base** — `engines` says `>=22` and there
   is no `.nvmrc`, so the test comparing the two is the only pin.
+- **Every base image and the e2e `postgres` service pull from `public.ecr.aws/docker/library/`** —
+  Docker Hub answers anonymous pulls from shared runner IPs with `429`, failing every build at once.
 - **Every `uses:` on a job holding `packages: write` is GitHub-owned** — which is why Trivy runs as
   a pinned container and helm comes from a checksum-verified tarball. All are pinned by major tag.
 - **Each build job builds to a tarball in `/tmp`, scans it, and only then runs `docker login`** —

@@ -3,7 +3,7 @@
 # databases. No application code — the gate mounts the worktree.
 #
 # Debian rather than alpine: playwright publishes no musl chromium.
-FROM node:24-bookworm-slim
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim
 
 # No default. .github/workflows/ui-runner-image.yml reads it out of package-lock.json, so the
 # browser revision always belongs to the playwright the suite resolves.

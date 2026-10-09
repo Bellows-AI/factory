@@ -11,7 +11,7 @@
 # `npm run dev -w driver` as the host, so a restart can never serve a publisher older than the
 # checkout (issue #174).
 
-FROM node:24-alpine AS deps
+FROM public.ecr.aws/docker/library/node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Every workspace's manifest, or `npm ci` refuses the lockfile — even though only driver/ is built.
@@ -36,13 +36,13 @@ RUN npm run build -w driver
 # driver's one runtime tool: it talks to the host daemon through the socket compose mounts, spawning
 # sibling runner containers. Not the last stage — `runtime` below stays what deploys.
 FROM deps AS dev
-COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=public.ecr.aws/docker/library/docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 
-FROM node:24-alpine AS runtime
+FROM public.ecr.aws/docker/library/node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # The client only. The daemon is the host's, reached through the socket mounted at run time.
-COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=public.ecr.aws/docker/library/docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 # No `npm ci` here: the driver has no runtime dependencies at all. package.json is still needed —
 # it is what makes node read dist/*.js as ESM.
 COPY driver/package.json driver/package.json
