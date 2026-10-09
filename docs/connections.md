@@ -6,7 +6,7 @@ Which external services a task may use and as whom: an authorized connection the
 | --- | --- | --- |
 | The table, the proxy's per-call SQL check, `job.jira_connection_id` | `server/migrations/054_connections.sql`, `server/src/db/connection-store.ts` | `server/test-db/connection-store.test.ts` |
 | Create, list, delete; who may own an org-wide one; site and credential shape | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
-| Task selection: `jiraConnection` on `POST /api/jobs`, checked against its author | `server/src/routes/connections.ts` (`resolveJiraConnection`), `server/src/db/job-store-actions.ts` | `server/test/routes.connections.test.ts` |
+| Task selection: `jiraConnection` on `POST /api/jobs`, checked against its author; unnamed injects the author's newest own, else the org's newest | `server/src/routes/connections.ts` (`resolveJiraConnection`), `server/src/db/connection-store.ts` (`defaultFor`), `server/src/db/job-store-actions.ts` | `server/test/routes.connections.test.ts`, `server/test-db/connection-store.test.ts` |
 | The Jira proxy: lease pair → live connection → Atlassian with Basic auth added | `server/src/routes/connector-jira.ts` | `server/test/routes.connector-jira.test.ts` |
 | The credential class: the attempt pair in every `AUTH_MODE`, nothing else | `server/src/auth/plugin.ts` (`CONNECTOR_ROUTES`) | `server/test/auth.enforcement.test.ts` |
 | Runner side: `JIRA_API` derived from the board URL and the attempt's own job id | `docker/claude-executor/entrypoint.sh`, `docker/opencode-executor/entrypoint.sh` | `driver/test/executor-images.test.ts` |
@@ -22,8 +22,9 @@ Which external services a task may use and as whom: an authorized connection the
 - **Every call re-checks the live attempt**, with no tail grace (unlike `createOrgOfLease`): the job is
   unfinished, its lease unexpired and no stop requested. A reclaim or retry rotates the lease token, so
   a superseded attempt's pair resolves nothing. `server/test-db/connection-store.test.ts`.
-- **Selection is the task's, and only the root's.** A follow-up, retry or workflow node reads its
-  root's `jira_connection_id`; loading a skill adds nothing. A personal connection also needs its owner
+- **Selection is the task's, and only the root's, stamped at create.** A follow-up, retry or workflow
+  node reads its root's `jira_connection_id`; loading a skill adds nothing, and a connection added
+  later never reaches a task already created. A personal connection also needs its owner
   to be the root's author and still a member. `server/src/db/connection-store.ts`.
 - **Org-wide connections are admin-created; personal ones are the owner's.** `read` forwards GET and
   HEAD only. `server/src/routes/connections.ts`, `server/test/routes.connections.test.ts`.

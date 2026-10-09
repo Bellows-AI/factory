@@ -54,6 +54,10 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
         async authorizedFor(userId, id) {
             return rows.some((r) => r.id === id && (r.ownerUserId === null || r.ownerUserId === userId));
         },
+        async defaultFor(userId) {
+            const newest = (owner: string | null) => rows.findLast((r) => r.ownerUserId === owner)?.id;
+            return newest(userId) ?? newest(null) ?? null;
+        },
         async remove(id, { userId, admin }) {
             const at = rows.findIndex(
                 (r) => r.id === id && (r.ownerUserId === userId || (r.ownerUserId === null && admin))
@@ -264,9 +268,46 @@ describe('selecting a connection for a task', () => {
         expect(bad.json()).toMatchObject({ code: 'BAD_CONNECTION' });
     });
 
-    it('creates a task with no connection when none is named', async () => {
+    it('creates a task with no connection when none is named and none exists', async () => {
         const { instance, cookie, created } = await boot();
         expect((await create(instance, cookie.member)).statusCode).toBe(HTTP_CREATED);
         expect(created).toEqual([{ connection: null }]);
+    });
+
+    it("injects the author's own connection, else the org-wide one, when none is named", async () => {
+        const { instance, cookie, created } = await boot();
+        const add = async (who: 'admin' | 'member', scope: 'org' | 'user') =>
+            (
+                await instance.inject({
+                    method: 'POST',
+                    url: '/api/connections',
+                    headers: { cookie: cookie[who] },
+                    payload: { ...SITE, scope },
+                })
+            ).json().id as string;
+        const org = await add('admin', 'org');
+        const own = await add('member', 'user');
+        await create(instance, cookie.member);
+        await create(instance, cookie.other);
+        await create(instance, cookie.other, null);
+        expect(created).toEqual([{ connection: own }, { connection: org }, { connection: org }]);
+    });
+
+    it('keeps a named connection over the injected default', async () => {
+        const { instance, cookie, created } = await boot();
+        const org = await instance.inject({
+            method: 'POST',
+            url: '/api/connections',
+            headers: { cookie: cookie.admin },
+            payload: { ...SITE, scope: 'org' },
+        });
+        await instance.inject({
+            method: 'POST',
+            url: '/api/connections',
+            headers: { cookie: cookie.member },
+            payload: SITE,
+        });
+        await create(instance, cookie.member, org.json().id);
+        expect(created).toEqual([{ connection: org.json().id }]);
     });
 });

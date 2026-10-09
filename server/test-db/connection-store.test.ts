@@ -94,6 +94,38 @@ describe.skipIf(!enabled)('connection store — scoping', () => {
         expect(await otherOrgStore.authorizedFor(OWNER.id, orgOwned.id)).toBe(false);
     });
 
+    it("defaults to the user's newest own connection, else the org's newest, never another member's or org's", async () => {
+        const [row] = await sql<{ id: string }[]>`
+            insert into app_user (github_user_id, github_login)
+            values (${Math.floor(Math.random() * 1e9) + 1e6}, ${`conn-newcomer-${crypto.randomUUID()}`})
+            returning id
+        `;
+        const newcomer = row!.id;
+        await otherOrgStore.create({
+            ownerUserId: newcomer,
+            site: 'other.atlassian.net',
+            cloudId: 'cloud-2',
+            email: 'x@example.com',
+            apiToken: API_TOKEN,
+            access: 'read',
+        });
+        await newConnection(STRANGER.id);
+        const olderOrg = await newConnection(null);
+        const newerOrg = await newConnection(null);
+        expect(await store.defaultFor(newcomer)).toBe(newerOrg.id);
+        expect(olderOrg.id).not.toBe(newerOrg.id);
+        const own = await store.create({
+            ownerUserId: newcomer,
+            site: 'example.atlassian.net',
+            cloudId: 'cloud-1',
+            email: 'agent@example.com',
+            apiToken: API_TOKEN,
+            access: 'read',
+        });
+        await newConnection(null);
+        expect(await store.defaultFor(newcomer)).toBe(own.id);
+    });
+
     it('deletes personal for its owner and org-owned only for an admin', async () => {
         const orgOwned = await newConnection(null);
         const mine = await newConnection(OWNER.id);
