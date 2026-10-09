@@ -18,6 +18,7 @@ interface Job {
     // A single dependency is written as a scalar, several as a sequence.
     needs?: string | string[];
     if?: string;
+    permissions?: unknown;
     steps?: Step[];
     env?: Record<string, string>;
     services?: Record<string, { image: string }>;
@@ -322,12 +323,33 @@ describe('ci workflows', () => {
         expect(workflow(CI).permissions, CI).toEqual({ contents: 'read' });
         // Packages for the push, security-events for the scan's SARIF, and no contents: write —
         // so a release can never move a ref.
-        for (const path of [RELEASE, UI_RUNNER]) {
-            expect(workflow(path).permissions, path).toEqual({
-                contents: 'read',
-                packages: 'write',
-                'security-events': 'write',
-            });
+        expect(workflow(RELEASE).permissions, RELEASE).toEqual({
+            contents: 'read',
+            packages: 'write',
+            'security-events': 'write',
+        });
+        // The ui runner's tag job only reads the lockfile, so the write scopes sit on the jobs that
+        // publish; a job-level block replaces the workflow default, hence build's own contents: read.
+        const ui = workflow(UI_RUNNER);
+        expect(ui.permissions, UI_RUNNER).toEqual({ contents: 'read' });
+        expect(ui.jobs.tag!.permissions, `${UI_RUNNER}: tag`).toBeUndefined();
+        expect(ui.jobs.build!.permissions, `${UI_RUNNER}: build`).toEqual({
+            contents: 'read',
+            packages: 'write',
+            'security-events': 'write',
+        });
+        expect(ui.jobs.manifest!.permissions, `${UI_RUNNER}: manifest`).toEqual({ packages: 'write' });
+    });
+
+    // Nothing pushes with the checkout credential, and the build job mounts the workspace into the
+    // scanner container, so the token must not be left in `.git/config`.
+    it('does not persist the checkout credential in the ui runner workflow', () => {
+        const checkouts = Object.values(workflow(UI_RUNNER).jobs)
+            .flatMap((job) => job.steps ?? [])
+            .filter((step) => step.uses?.startsWith('actions/checkout@'));
+        expect(checkouts).toHaveLength(2);
+        for (const step of checkouts) {
+            expect(step.with?.['persist-credentials']).toBe(false);
         }
     });
 

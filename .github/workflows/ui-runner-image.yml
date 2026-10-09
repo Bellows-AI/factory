@@ -13,8 +13,6 @@ on:
 
 permissions:
     contents: read
-    packages: write
-    security-events: write
 
 concurrency:
     group: ui-runner-image-${{ github.ref }}
@@ -32,6 +30,8 @@ jobs:
             registry: ${{ steps.version.outputs.registry }}
         steps:
             - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
             # The package that owns the browser revisions, as the lockfile resolves it — never a
             # second pin here that could drift from it.
             - name: read the locked playwright version from package-lock.json
@@ -48,6 +48,10 @@ jobs:
     # Same shape as release-image.yml's build: native per-arch, tarball, scan, then login and push.
     build:
         needs: tag
+        permissions:
+            contents: read
+            packages: write
+            security-events: write
         strategy:
             fail-fast: false
             matrix:
@@ -67,6 +71,8 @@ jobs:
             ARCH: ${{ matrix.arch }}
         steps:
             - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
             - name: docker buildx create
               run: docker buildx create --use --driver docker-container
             - name: docker buildx build --output type=docker
@@ -105,6 +111,8 @@ jobs:
 
     manifest:
         needs: [tag, build]
+        permissions:
+            packages: write
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:
