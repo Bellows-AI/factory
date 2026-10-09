@@ -1,6 +1,6 @@
 # CI
 
-Two workflows and no configured secret — the only credential either uses is `github.token`, and
+Three workflows and no configured secret — the only credential any uses is `github.token`, and
 `core/test/ci-workflows.test.ts` pins every claim below.
 
 | Concern | Code | Test |
@@ -9,6 +9,7 @@ Two workflows and no configured secret — the only credential either uses is `g
 | Tag fold, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
 | Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | The images a release builds | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts` |
+| UI gate runner image: lockfile-read playwright tag, scan gate, manifest | `docker/ui-runner.Dockerfile`, `.github/workflows/ui-runner-image.yml` | `core/test/ci-workflows.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
 
 ## Invariants
@@ -44,6 +45,8 @@ Two workflows and no configured secret — the only credential either uses is `g
   `factory.image` resolve an empty `tag` to `.Chart.AppVersion`. Nothing rewrites values at package
   time; the registry is the only channel (no `docker save`, no `upload-artifact`), and the first
   push creates each package private — see [eks-runbook.md](eks-runbook.md), step 3.
+- **`factory-ui-runner` is made public after its first push** — a gate pulls with no credential
+  unless `RUNNER_IMAGE_PULL_SECRETS` names one (`pullSecretsField`, `driver/src/k8s-podspec.ts`).
 
 ## Stated limits
 
