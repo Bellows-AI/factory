@@ -43,7 +43,7 @@ const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] =
         },
         async waitForSettle(id: string, timeoutMs: number) {
             waits.push({ id, timeoutMs });
-            return { settled: true } as Awaited<ReturnType<JobStore['waitForSettle']>>;
+            return { result: 'terminal' } as Awaited<ReturnType<JobStore['waitForSettle']>>;
         },
         async thread() {
             return [] as Awaited<ReturnType<JobStore['thread']>>;

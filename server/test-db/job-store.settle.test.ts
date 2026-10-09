@@ -8,8 +8,8 @@ import { useTestDb } from './harness.js';
 /**
  * The long-poll settle read (issue #323): `waitForSettle` holds until the named job's THREAD
  * settles — the chain head (newest member) reaches a terminal status, or an open PR wait
- * (036) stands on the thread — answering `{ settled }` at the deadline, or null for an id
- * the org does not know. The predicate is deliberately the same one `listTasksOf` buckets
+ * (036) stands on the thread (`terminal` / `parked`) — answering `timeout` at the deadline,
+ * each with the thread's root and head identity, or null for an id the org does not know. The predicate is deliberately the same one `listTasksOf` buckets
  * by, so a long-poll client and the sidenav can never disagree about "still moving".
  */
 
@@ -64,12 +64,24 @@ const finishWithSession = async (command: string): Promise<string> => {
 describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #323)', () => {
     it('a moving thread does not settle; the verdict settles it', async () => {
         const { id } = await queue('work');
-        expect(await store.waitForSettle(id, 50)).toEqual({ settled: false });
+        expect(await store.waitForSettle(id, 50)).toEqual({
+            result: 'timeout',
+            rootJobId: id,
+            headJobId: id,
+            headStatus: 'queued',
+            waitReason: null,
+        });
 
         const claim = await store.claim(WORKER, LEASE_SECONDS);
         await store.session(id, claim!.leaseToken, SESSION);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        expect(await store.waitForSettle(id, 5_000)).toEqual({ settled: true });
+        expect(await store.waitForSettle(id, 5_000)).toEqual({
+            result: 'terminal',
+            rootJobId: id,
+            headJobId: id,
+            headStatus: 'succeeded',
+            waitReason: null,
+        });
     });
 
     it('waiting on the root settles when the chain head settles', async () => {
@@ -77,21 +89,31 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
         const followUp = await mustFollowUp(root, 'again');
         // The head is the queued follow-up: the thread is not settled, the root's own verdict
         // notwithstanding — a settled member does not settle the conversation after it.
-        expect(await store.waitForSettle(root, 50)).toEqual({ settled: false });
+        expect(await store.waitForSettle(root, 50)).toMatchObject({ result: 'timeout', headJobId: followUp.id });
 
         const claim = await store.claim(WORKER, LEASE_SECONDS);
         expect(claim!.id).toBe(followUp.id);
         await store.complete(followUp.id, claim!.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
-        expect(await store.waitForSettle(root, 5_000)).toEqual({ settled: true });
+        expect(await store.waitForSettle(root, 5_000)).toMatchObject({
+            result: 'terminal',
+            rootJobId: root,
+            headJobId: followUp.id,
+            headStatus: 'failed',
+        });
     });
 
-    it('an open PR wait settles a thread whose head is still moving', async () => {
+    it('an open PR wait parks a thread whose head is still moving, and names the wait', async () => {
         const root = await finishWithSession('drive me');
-        await mustFollowUp(root, 'again');
-        expect(await store.waitForSettle(root, 50)).toEqual({ settled: false });
+        const followUp = await mustFollowUp(root, 'again');
+        expect(await store.waitForSettle(root, 50)).toMatchObject({ result: 'timeout' });
 
         await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: 1 });
-        expect(await store.waitForSettle(root, 5_000)).toEqual({ settled: true });
+        expect(await store.waitForSettle(root, 5_000)).toMatchObject({
+            result: 'parked',
+            rootJobId: root,
+            headJobId: followUp.id,
+            waitReason: 'review',
+        });
     });
 
     it('a closed PR wait leaves the moving thread unsettled', async () => {
@@ -102,7 +124,7 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
         // ('pr closed', 'task stopped'); a stamped completion without one is the ambiguous
         // state no production path writes.
         await prs.finishWait(root, 'review', 'pr closed');
-        expect(await store.waitForSettle(root, 50)).toEqual({ settled: false });
+        expect(await store.waitForSettle(root, 50)).toMatchObject({ result: 'timeout', waitReason: null });
     });
 
     it('an unknown id answers null without waiting', async () => {
@@ -120,7 +142,7 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
     it('times out unsettled, having held for the whole timeout', async () => {
         const { id } = await queue('work');
         const started = Date.now();
-        expect(await store.waitForSettle(id, 250)).toEqual({ settled: false });
+        expect(await store.waitForSettle(id, 250)).toMatchObject({ result: 'timeout' });
         expect(Date.now() - started).toBeGreaterThanOrEqual(250);
     });
 
@@ -131,7 +153,7 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
         const claim = await store.claim(WORKER, LEASE_SECONDS);
         await store.session(id, claim!.leaseToken, SESSION);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        expect(await pending).toEqual({ settled: true });
+        expect(await pending).toMatchObject({ result: 'terminal' });
     });
 
     it('never re-answers an id that vanishes mid-wait as settled', async () => {

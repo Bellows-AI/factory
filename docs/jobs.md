@@ -56,6 +56,8 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
 | Orphan reaper | `driver/src/reaper.ts`, `docker-reaper.ts`, `k8s-reaper.ts` | `driver/test/reaper.test.ts`, `docker-reaper.test.ts`, `k8s-reaper.test.ts` |
 | Failure kind, timeout note, branch attribution | `driver/src/loop-ledger.ts`, `loop-verdict.ts`, `exec-codes.ts`, `timeout-note.ts`, `server/migrations/044_job_failure_kind.sql` | `driver/test/loop-ledger.test.ts`, `loop.test.ts`, `timeout-note.test.ts`, `branch-reporter.test.ts` |
 | CLI (`factory job …`) | `cli/src/index.ts`, `run.ts`, `board.ts`, `config.ts`, `render.ts` | `cli/test/commands.test.ts`, `board-client.test.ts`, `config.test.ts` |
+| CLI outcomes: one outcome and exit code per command ending, the `--json` envelope, local interrupt vs remote cancel | `cli/src/outcome.ts`, `run.ts` | `cli/test/commands.test.ts` (`--json on every outcome`) |
+| Settle long-poll answers `{ result: terminal\|parked\|timeout, rootJobId, headJobId, headStatus, waitReason, job }` — never inferred from timing | `server/src/db/job-store-reads.ts`, `job-store-types.ts`, `server/src/routes/job-handlers-actions.ts`, `cli/src/board.ts` | `server/test/routes.jobs.test.ts`, `server/test-db/job-store.settle.test.ts`, `cli/test/board-client.test.ts` |
 | The runner end of questions: the bridge answers `AskUserQuestion` through the control endpoint inside the same Claude run | `docker/claude-executor/claude-bridge.cjs` | `driver/test/claude-bridge.test.ts`, `scripts/test-jobs.sh` (`ask_lane`) |
 | A prose question ending a turn becomes an `AskUserQuestion`: the baked `Stop` prompt hook, its model resolved at start; a run still ending on `?` gets the task page's notice (`endedOnQuestion`) | `docker/claude-executor/claude-home/settings.json`, `docker/claude-executor/entrypoint.sh`, `web/src/task-outcome.ts` | `driver/test/run-control.test.ts`, `driver/test/executor-images.test.ts`, `web/test/task-derivations.test.ts`, `scripts/test-jobs.sh` (`ask_lane prose`) |
 | Board + driver end to end | `scripts/test-jobs.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/compose.test.ts` |
@@ -142,9 +144,13 @@ Graph-walking tasks are [docs/workflows.md](workflows.md); the kubernetes execut
   whichever one answers) and optionally `FACTORY_TOKEN`; the `Authorization` header is omitted, not
   sent empty, when unset. Run it through ONE npm layer — `npm run dev -w cli -- job list` — or the
   inner npm eats `--json`/`--timeout`/`--yes` as its own configuration.
-- CLI exit codes: `0` ok, `1` board or network failure, `2` usage or configuration, `3` a `wait`
-  that ended with no terminal row (`cli/test/commands.test.ts`). `remove` requires `--yes`; `stop`
-  answering `202` means the stop was only stamped, and the worker settles it on its next beat.
+- CLI exit codes (`cli/src/outcome.ts`, pinned by `cli/test/commands.test.ts`): `0` ok or a run
+  that `succeeded`, `1` the board refused, `2` usage or configuration, `3` a `wait` out of budget,
+  `4` run `failed`/`dead`, `5` run `stopped` on the board, `6` thread parked on a workflow wait,
+  `7` board unreachable, `130` interrupted locally. Exit `0` says the run's verdict was `succeeded`,
+  never that a PR or stage is ready. `--json` prints one envelope on stdout and nothing on stderr,
+  parse and config failures included. `remove` requires `--yes`; `stop` answering `202` means the
+  stop was only stamped, and the worker settles it on its next beat.
 
 ## Deliberately absent
 

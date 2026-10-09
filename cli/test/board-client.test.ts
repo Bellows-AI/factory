@@ -26,6 +26,15 @@ function recorder(respond: (index: number) => Response) {
 const json = (payload: unknown, status = 200) =>
     new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
 
+const waitBody = {
+    result: 'terminal',
+    rootJobId: 'job-1',
+    headJobId: 'job-1',
+    headStatus: 'succeeded',
+    waitReason: null,
+    job: { id: 'job-1', status: 'succeeded' },
+};
+
 const client = (fetch: typeof globalThis.fetch, token = 'fat_abc') =>
     createBoardClient({ url: 'http://board', token, fetch });
 
@@ -89,13 +98,54 @@ describe('the board client', () => {
     it('asks the settle long-poll for the seconds it was given, on the job read itself', async () => {
         // `waitFor=terminal` is a parameter of GET /api/jobs/:id — there is no separate wait
         // route, and the thread read takes no wait parameters at all.
-        const { calls, fetch } = recorder(() => json({ id: 'job-1', status: 'succeeded' }));
+        const { calls, fetch } = recorder(() => json(waitBody));
 
-        await client(fetch).waitForJob('job-1', 45);
+        const wait = await client(fetch).waitForJob('job-1', 45);
 
+        expect(wait).toEqual(waitBody);
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1?waitFor=terminal&timeout=45');
         expect(calls[0]!.method).toBe('GET');
         expect(calls[0]!.headers.authorization).toBe('Bearer fat_abc');
+    });
+
+    it.each([
+        ['the bare job row of the old shape', { id: 'job-1', status: 'succeeded' }],
+        ['an unknown result', { ...waitBody, result: 'finished' }],
+        ['a missing head identity', { ...waitBody, headJobId: undefined }],
+        ['a missing job row', { ...waitBody, job: undefined }],
+    ])('refuses a wait answer with %s rather than guessing from it', async (_label, payload) => {
+        const { fetch } = recorder(() => json(payload));
+
+        const error = await client(fetch)
+            .waitForJob('job-1', 5)
+            .catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(BoardError);
+        expect((error as BoardError).code).toBe('MALFORMED_RESPONSE');
+    });
+
+    it('turns a 2xx body that is not JSON into a malformed-response BoardError', async () => {
+        const { fetch } = recorder(() => new Response('<html>', { status: 200 }));
+
+        const error = await client(fetch)
+            .listJobs({})
+            .catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(BoardError);
+        expect((error as BoardError).code).toBe('MALFORMED_RESPONSE');
+    });
+
+    it('hands the abort signal to every request', async () => {
+        const seen: (AbortSignal | null | undefined)[] = [];
+        const fetch = (async (_url: unknown, init?: RequestInit) => {
+            seen.push(init?.signal);
+            return json({ jobs: [] });
+        }) as unknown as typeof globalThis.fetch;
+        const controller = new AbortController();
+
+        await createBoardClient({ url: 'http://board', fetch, signal: controller.signal }).listJobs({});
+
+        expect(seen).toEqual([controller.signal]);
     });
 
     it('posts a follow-up with the command alone — repo, executor and session are inherited', async () => {
@@ -144,7 +194,7 @@ describe('the board client', () => {
         // The board validates ids as uuids, but that happens after routing: `a/../b` normalizes
         // to another job's route and `a?x` starts a query string. Encoding keeps a mistyped id a
         // 404 about the id typed, rather than an action against whatever it normalized to.
-        const { calls, fetch } = recorder(() => json({ id: 'job-1' }));
+        const { calls, fetch } = recorder((index) => json(index === 1 ? waitBody : { id: 'job-1' }));
         const board = client(fetch);
         const id = 'a/../b?x';
 

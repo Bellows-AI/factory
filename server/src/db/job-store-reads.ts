@@ -15,6 +15,7 @@ import type {
     TaskSummary,
     ArtifactKind,
     StoredArtifact,
+    SettleOutcome,
 } from './job-store-types.js';
 import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from './task-summary.js';
@@ -111,22 +112,31 @@ export async function readArtifactOf(
 }
 
 /**
- * The settle long-poll's one check (issue #323): is the named job's thread settled? The predicate
- * is `listTasksOf`'s terminal rule verbatim — the chain head (newest member, created then id) in
- * `succeeded|failed|dead|stopped`, OR an open `workflow_wait` (036) on the thread: a wait row with
- * no terminal reason yet, the open one preferred exactly as the task read prefers it. One indexed
- * read; no row when the org holds no such job.
+ * The settle long-poll's one check (issue #323): where does the named job's thread stand? The
+ * predicate is `listTasksOf`'s terminal rule verbatim — the chain head (newest member, created
+ * then id) in `succeeded|failed|dead|stopped` is `terminal`, OR an open `workflow_wait` (036) on
+ * the thread — a wait row with no terminal reason yet, the open one preferred exactly as the task
+ * read prefers it — is `parked`. One indexed read; no row when the org holds no such job.
  */
-export async function settleStateOf(ctx: JobStoreContext, id: string): Promise<{ settled: boolean } | null> {
+export async function settleStateOf(ctx: JobStoreContext, id: string): Promise<SettleOutcome | null> {
     const { sql, orgId } = ctx;
-    const rows = await sql<{ settled: boolean }[]>`
-        select (
-            head.status in ('succeeded', 'failed', 'dead', 'stopped')
-            or (wl.wait_reason is not null and wl.wait_terminal_reason is null)
-        ) as settled
+    const rows = await sql<
+        {
+            root_job_id: string;
+            head_id: string;
+            head_status: JobStatus;
+            terminal: boolean;
+            wait_reason: string | null;
+            parked: boolean;
+        }[]
+    >`
+        select r.root_job_id, head.id as head_id, head.status as head_status,
+               head.status in ('succeeded', 'failed', 'dead', 'stopped') as terminal,
+               wl.wait_reason,
+               (wl.wait_reason is not null and wl.wait_terminal_reason is null) as parked
         from (select root_job_id from job where org_id = ${orgId} and id = ${id}) r
         join lateral (
-            select h.status
+            select h.id, h.status
             from job h
             where h.org_id = ${orgId} and h.root_job_id = r.root_job_id
             order by h.created_at desc, h.id desc
@@ -141,7 +151,15 @@ export async function settleStateOf(ctx: JobStoreContext, id: string): Promise<{
         ) wl on true
     `;
     const row = rows[0];
-    return row ? { settled: row.settled } : null;
+    if (!row) return null;
+    return {
+        // `timeout` here means "still moving": only the hold's deadline turns it into an answer.
+        result: row.terminal ? 'terminal' : row.parked ? 'parked' : 'timeout',
+        rootJobId: row.root_job_id,
+        headJobId: row.head_id,
+        headStatus: row.head_status,
+        waitReason: row.parked ? row.wait_reason : null,
+    };
 }
 
 /** How often the settle long-poll re-reads the thread while it holds — cheap by design. */
@@ -152,21 +170,23 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 /**
  * The hold itself: check first (an already-settled thread answers without sleeping), then re-read
  * every `SETTLE_POLL_MS` until the deadline. No connection is held between polls — one query per
- * round, bounded by the timeout the route already capped. A job that vanishes mid-hold (a
- * `removeThread` winning the race) answers null, never a stale settled.
+ * round, bounded by the timeout the route already capped. The answer carries its own `result`
+ * (`terminal`, `parked` or `timeout`), so no caller infers why the hold ended from how long it
+ * lasted. A job that vanishes mid-hold (a `removeThread` winning the race) answers null, never a
+ * stale result.
  */
 export async function waitForSettleOf(
     ctx: JobStoreContext,
     id: string,
     timeoutMs: number
-): Promise<{ settled: boolean } | null> {
+): Promise<SettleOutcome | null> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
         const state = await settleStateOf(ctx, id);
         if (state === null) return null;
-        if (state.settled) return { settled: true };
+        if (state.result !== 'timeout') return state;
         const remaining = deadline - Date.now();
-        if (remaining <= 0) return { settled: false };
+        if (remaining <= 0) return state;
         await sleep(Math.min(SETTLE_POLL_MS, remaining));
     }
 }

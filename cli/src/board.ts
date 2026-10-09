@@ -15,6 +15,11 @@ import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
  * the two reads: a write answers 403 with the board's own message, which is surfaced as-is.
  */
 
+/** The status a `BoardError` carries when no answer ever arrived — the board was unreachable. */
+export const NO_RESPONSE_STATUS = 0;
+/** The code of a 2xx answer this client could not read as the shape the route promises. */
+export const MALFORMED_RESPONSE_CODE = 'MALFORMED_RESPONSE';
+
 /** Everything the board refused with: the status, the error code when the body named one. */
 export class BoardError extends Error {
     readonly status: number;
@@ -41,8 +46,12 @@ export interface JobCreated {
  */
 export interface BoardJobRecord {
     id: string;
+    /** The task's root run — every member of a follow-up chain carries the same one. */
+    rootJobId: string;
     command: string;
     status: string;
+    /** The open workflow wait's reason on a parked thread, else null. */
+    waitReason: string | null;
     author: { login: string } | null;
     repo: string | null;
     executor: string | null;
@@ -96,6 +105,28 @@ export function isTerminal(status: string): boolean {
     return TERMINAL_STATUSES.includes(status);
 }
 
+/**
+ * Why a settle long-poll returned — the board's own answer, copied from the server's
+ * `SettleResult`: the chain head is terminal, an open workflow wait has the thread parked, or the
+ * hold elapsed with the thread still moving. Nothing here is inferred from how long a poll took.
+ */
+export const WAIT_RESULTS = ['terminal', 'parked', 'timeout'] as const;
+export type WaitResult = (typeof WAIT_RESULTS)[number];
+
+/**
+ * The body of a settle long-poll: the result, the thread's identity (`rootJobId` the task,
+ * `headJobId` its newest run — the one whose verdict `headStatus` is), and the requested run's
+ * own row. The requested id need not be the head.
+ */
+export interface JobWait {
+    result: WaitResult;
+    rootJobId: string;
+    headJobId: string;
+    headStatus: string;
+    waitReason: string | null;
+    job: BoardJobRecord;
+}
+
 export interface BoardClient {
     createJob(input: {
         command: string;
@@ -113,11 +144,11 @@ export interface BoardClient {
     }): Promise<BoardJobRecord[]>;
     getJob(id: string): Promise<BoardJobRecord>;
     /**
-     * One settle long-poll: the board holds the read until the thread's chain head is terminal or
-     * `timeoutSeconds` elapses, then answers the usual row either way. A timeout is an ordinary
-     * 200 with no marker of its own, so the caller decides from the row whether to re-issue.
+     * One settle long-poll: the board holds the read until the thread's chain head is terminal, an
+     * open workflow wait parks it, or `timeoutSeconds` elapses, and says which in `result`. Only a
+     * `timeout` is worth re-issuing.
      */
-    waitForJob(id: string, timeoutSeconds: number): Promise<BoardJobRecord>;
+    waitForJob(id: string, timeoutSeconds: number): Promise<JobWait>;
     thread(id: string): Promise<BoardJobRecord[]>;
     followUp(id: string, command: string): Promise<JobCreated>;
     stopJob(id: string): Promise<JobStopped>;
@@ -126,6 +157,8 @@ export interface BoardClient {
 }
 
 type Fetch = typeof globalThis.fetch;
+
+export const HTTP_OK = 200;
 
 /** How much of a non-JSON error body is quoted before the message is cut off. */
 const ERROR_BODY_PREVIEW_LENGTH = 200;
@@ -142,7 +175,20 @@ const jobPath = (id: string): string => `/api/jobs/${encodeURIComponent(id)}`;
 /** A fetch that never got an answer — the board could not be reached at all. */
 function unreachable(url: string, error: unknown): BoardError {
     const reason = error instanceof Error ? error.message : String(error);
-    return new BoardError(`cannot reach ${url}: ${reason}`, 0, null);
+    return new BoardError(`cannot reach ${url}: ${reason}`, NO_RESPONSE_STATUS, null);
+}
+
+function isWait(value: unknown): value is JobWait {
+    if (typeof value !== 'object' || value === null) return false;
+    const wait = value as Partial<Record<keyof JobWait, unknown>>;
+    return (
+        WAIT_RESULTS.some((result) => result === wait.result) &&
+        typeof wait.rootJobId === 'string' &&
+        typeof wait.headJobId === 'string' &&
+        typeof wait.headStatus === 'string' &&
+        typeof wait.job === 'object' &&
+        wait.job !== null
+    );
 }
 
 /**
@@ -168,11 +214,14 @@ export function createBoardClient({
     url,
     token,
     fetch = globalThis.fetch,
+    signal,
 }: {
     url: string;
     /** The personal access token, when the board requires one. Empty against AUTH_MODE=none. */
     token?: string | undefined;
     fetch?: Fetch | undefined;
+    /** Aborts every in-flight request — a local interrupt, which never touches the task. */
+    signal?: AbortSignal | undefined;
 }): BoardClient {
     const authHeaders = (): Record<string, string> =>
         // Omitted rather than sent empty: a board with no auth would otherwise see a Bearer
@@ -183,7 +232,7 @@ export function createBoardClient({
     const request = async (path: string, init: RequestInit): Promise<unknown> => {
         let response: Response;
         try {
-            response = await fetch(`${url}${path}`, init);
+            response = await fetch(`${url}${path}`, signal ? { ...init, signal } : init);
         } catch (error) {
             throw unreachable(url, error);
         }
@@ -191,7 +240,15 @@ export function createBoardClient({
             const refusal = refusalFrom(path, response.status, await response.text());
             throw new BoardError(refusal.message, response.status, refusal.code);
         }
-        return response.json();
+        try {
+            return await response.json();
+        } catch {
+            throw new BoardError(
+                `${path} answered ${response.status} with a body that is not JSON`,
+                response.status,
+                MALFORMED_RESPONSE_CODE
+            );
+        }
     };
 
     return {
@@ -233,7 +290,11 @@ export function createBoardClient({
             // The wait is a parameter of the job read, not a route of its own — and only of the
             // job read: the thread read takes no wait parameters at all.
             const query = new URLSearchParams({ waitFor: 'terminal', timeout: String(timeoutSeconds) });
-            return (await request(`${jobPath(id)}?${query}`, { headers: authHeaders() })) as BoardJobRecord;
+            const payload = await request(`${jobPath(id)}?${query}`, { headers: authHeaders() });
+            if (!isWait(payload)) {
+                throw new BoardError(`${jobPath(id)} answered a wait with no result`, HTTP_OK, MALFORMED_RESPONSE_CODE);
+            }
+            return payload;
         },
 
         async thread(id) {
