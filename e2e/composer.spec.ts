@@ -201,7 +201,8 @@ test.describe('the guided task composer', () => {
         await expect(prompt).toHaveValue('fix the login crash');
 
         await prompt.press('ControlOrMeta+Enter');
-        await expect(dialog).toBeVisible();
+        // The panel, not the container: `.dialog-layer` is a zero-height shell with no box to measure.
+        await expect(dialog.locator('.dialog')).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(dialog).toHaveCount(0);
         await expect(prompt).toBeFocused();

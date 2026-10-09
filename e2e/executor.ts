@@ -1,6 +1,7 @@
 import { CLAUDE_CODE } from '@factory-ai/core';
 import { expect, type Page } from '@playwright/test';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
+import { queuedThread } from './fixtures/threads.js';
 
 /** The one executor the composer specs start tasks with. No driver runs here, so nothing resolves it. */
 export const E2E_EXECUTOR = {
@@ -26,7 +27,8 @@ const E2E_LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
 /**
  * Answers `POST /api/jobs` with the board's 201. The real board revalidates the repository against
  * the member's stored selection, and this open board has none to hold, so a launch the spec means
- * to succeed is acknowledged here instead of reaching it.
+ * to succeed is acknowledged here instead of reaching it. The detail page the launch lands on reads
+ * that id's thread, which the board never stored: it is answered as a queued thread, not a 404.
  */
 export async function stubLaunch(page: Page): Promise<void> {
     await page.route('**/api/jobs', (route) =>
@@ -34,6 +36,8 @@ export async function stubLaunch(page: Page): Promise<void> {
             ? route.fulfill({ status: 201, json: { id: E2E_LAUNCHED_ID, status: 'queued' } })
             : route.fallback()
     );
+    const launched = queuedThread.map((job) => ({ ...job, id: E2E_LAUNCHED_ID, rootJobId: E2E_LAUNCHED_ID }));
+    await page.route(`**/api/jobs/${E2E_LAUNCHED_ID}/thread*`, (route) => route.fulfill({ json: { jobs: launched } }));
 }
 
 /** A selected repository as the poll carries it, ready unless the spec says otherwise. */

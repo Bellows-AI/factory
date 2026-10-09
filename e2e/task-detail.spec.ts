@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import postgres from 'postgres';
 import { E2E_DATABASE_URL } from '../playwright.config.js';
-import { withExecutor } from './executor.js';
+import { E2E_REPO, withExecutor } from './executor.js';
 import {
     authoredBy,
     doneThread,
@@ -337,6 +337,16 @@ test.beforeAll(async () => {
         select org_id as "orgId" from job limit 1
     `;
     orgId = row!.orgId;
+    // A launch needs the author's repository selected and synced (issue 263). The open board's
+    // stand-in account has none, so the repository the mocked workspace offers is marked ready
+    // for it here — `queueTask` drives the real create route.
+    await sql`
+        insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)
+        select m.org_id, u.id, ${E2E_REPO.owner}, ${E2E_REPO.name}, 'ready', now()
+        from app_user u join org_membership m on m.user_id = u.id
+        where u.github_login = '__local__'
+        on conflict (org_id, user_id, repo_owner, repo_name) do update set status = 'ready'
+    `;
 });
 
 test.afterAll(async () => {
