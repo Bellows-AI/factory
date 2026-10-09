@@ -74,7 +74,7 @@ jobs:
               with:
                   persist-credentials: false
             - name: docker buildx create
-              run: docker buildx create --use --driver docker-container
+              run: docker buildx create --use --driver docker-container --driver-opt image=public.ecr.aws/vend/moby/buildkit:buildx-stable-1
             - name: docker buildx build --output type=docker
               run: |
                   docker buildx build --platform "linux/$ARCH" --provenance=false \

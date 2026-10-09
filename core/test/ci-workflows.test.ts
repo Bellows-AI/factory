@@ -155,6 +155,11 @@ describe('ci workflows', () => {
             for (const ref of refs) expect(ref, path).toMatch(/^public\.ecr\.aws\/docker\/library\//);
         }
         expect(workflow(CI).jobs.e2e!.services!.postgres!.image).toMatch(/^public\.ecr\.aws\/docker\/library\//);
+        // The docker-container builder runs buildkit as an image of its own, Docker Hub's by default.
+        for (const path of [RELEASE, UI_RUNNER]) {
+            const create = runs(workflow(path).jobs.build!).find((run) => run.startsWith('docker buildx create'));
+            expect(create, path).toContain('--driver-opt image=public.ecr.aws/vend/moby/buildkit:');
+        }
     });
 
     it('runs the browser suite only on merges to main', () => {
