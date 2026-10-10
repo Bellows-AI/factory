@@ -2,6 +2,8 @@ import { parseArgs } from 'node:util';
 import { BoardError, createBoardClient, HTTP_OK, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS } from './board.js';
 import type { BoardClient, JobWait } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
+import { INPUT_OPTIONS, InputError, resolveInput } from './input.js';
+import type { InputIo } from './input.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
 import {
@@ -39,12 +41,12 @@ const JSON_FLAG = '--json';
 const END_OF_OPTIONS = '--';
 const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 
-export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name] [--executor-scope user|org]
+export const USAGE = `usage: factory job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
                           [--skill name]... [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
-       factory job follow-up <id> <command...> [--json]
+       factory job follow-up <id> (<command...> | --file <path> | --stdin) [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
        factory job remove <id> --yes [--json]
@@ -63,7 +65,11 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
   { ok, command, outcome, exitCode, data, error }
 
 '--' ends option parsing, so a create command that takes flags of its own can follow it:
-  factory job create --repo owner/name -- npm test --watch`;
+  factory job create --repo owner/name -- npm test --watch
+
+--file and --stdin read the command from a file or standard input, newlines kept as written;
+exactly one of positional words, --file and --stdin may be given, and the text is at most
+16384 characters.`;
 
 /** An argument problem: the command line, not the board, is what refused. */
 class UsageError extends Error {
@@ -73,7 +79,7 @@ class UsageError extends Error {
     }
 }
 
-export interface RunIo {
+export interface RunIo extends InputIo {
     env: NodeJS.ProcessEnv;
     fetch?: typeof globalThis.fetch | undefined;
     /** The clock the wait's budget is measured on — injected so tests spend no real time. */
@@ -109,6 +115,20 @@ function parseWaitTimeout(raw: string | undefined): number {
         throw new UsageError(`--timeout must be a positive integer number of seconds, got "${raw}"`);
     }
     return value;
+}
+
+/** The command text of a create or follow-up; a bad source is a usage error, before any request. */
+async function commandFrom(
+    values: { file?: string | undefined; stdin?: boolean | undefined },
+    positionals: readonly string[],
+    io: RunIo
+): Promise<string> {
+    try {
+        return await resolveInput({ positionals, file: values.file, stdin: values.stdin }, io);
+    } catch (error) {
+        if (error instanceof InputError) throw new UsageError(`${error.message}\n\n${USAGE}`);
+        throw error;
+    }
 }
 
 /** Config and client in one step: every command needs both, and neither takes an argument. */
@@ -153,6 +173,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
             allowPositionals: true,
             options: {
                 ...JSON_OPTION,
+                ...INPUT_OPTIONS,
                 repo: { type: 'string' },
                 executor: { type: 'string' },
                 'executor-scope': { type: 'string' },
@@ -160,10 +181,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
             },
         })
     );
-    const command = parsed.positionals.join(' ').trim();
-    if (!command) {
-        throw new UsageError('a create needs a command\n\n' + USAGE);
-    }
+    const command = await commandFrom(parsed.values, parsed.positionals, io);
     const executorScope = parseExecutorScope(parsed.values['executor-scope']);
     const created = await boardFor(io).createJob({
         command,
@@ -294,12 +312,14 @@ async function runWait(args: readonly string[], io: RunIo): Promise<CommandResul
 }
 
 async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options: JSON_OPTION }));
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...INPUT_OPTIONS } })
+    );
     const [id, ...rest] = parsed.positionals;
-    const command = rest.join(' ').trim();
-    if (!id || !command) {
+    if (!id) {
         throw new UsageError('a follow-up needs a job id and a command\n\n' + USAGE);
     }
+    const command = await commandFrom(parsed.values, rest, io);
     // Only the command travels: the repo, the executor and the session come from the parent.
     const created = await boardFor(io).followUp(id, command);
     return ok(created, renderCreated(created));
