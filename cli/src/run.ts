@@ -1,9 +1,11 @@
 import { parseArgs } from 'node:util';
-import { BoardError, createBoardClient, HTTP_OK, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS } from './board.js';
+import { createBoardClient, HTTP_OK } from './board.js';
 import type { BoardClient, JobWait } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
+import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
+import type { BoardClock } from './transport.js';
 import {
     renderCreated,
     renderDone,
@@ -53,6 +55,8 @@ config:
   FACTORY_URL    the board's base URL (required)
   FACTORY_TOKEN  a personal access token (fat_...) minted from the settings page;
                  omit it against an open (AUTH_MODE=none) board
+  FACTORY_REQUEST_TIMEOUT_S  one request's deadline, headers and body included (default 30)
+  FACTORY_READ_RETRIES       re-issues of a failed read, never of a write (default 3; 0 = off)
 
 exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or configuration,
             3 a wait ran out of budget, 4 the run failed or died, 5 the run was stopped on the
@@ -78,6 +82,8 @@ export interface RunIo {
     fetch?: typeof globalThis.fetch | undefined;
     /** The clock the wait's budget is measured on — injected so tests spend no real time. */
     now?: (() => number) | undefined;
+    /** The pause between read retries — injected with `now` so tests spend no real time backing off. */
+    sleep?: BoardClock['sleep'] | undefined;
     /** Aborted on a local interrupt: the command ends `interrupted`, the task is left alone. */
     signal?: AbortSignal | undefined;
     stdout(text: string): void;
@@ -112,9 +118,18 @@ function parseWaitTimeout(raw: string | undefined): number {
 }
 
 /** Config and client in one step: every command needs both, and neither takes an argument. */
-function boardFor(io: RunIo): BoardClient {
+function boardFor(io: RunIo, deadlineAt?: number): BoardClient {
     const config = loadCliConfig(io.env);
-    return createBoardClient({ url: config.url, token: config.token, fetch: io.fetch, signal: io.signal });
+    return createBoardClient({
+        url: config.url,
+        token: config.token,
+        fetch: io.fetch,
+        signal: io.signal,
+        requestTimeoutMs: config.requestTimeoutMs,
+        readRetries: config.readRetries,
+        deadlineAt,
+        clock: { now: io.now ?? realClock.now, sleep: io.sleep ?? realClock.sleep },
+    });
 }
 
 /** The one positional every action command takes, and nothing else. */
@@ -257,10 +272,10 @@ async function runWait(args: readonly string[], io: RunIo): Promise<CommandResul
     }
     const id = parsed.positionals[0]!;
     const total = parseWaitTimeout(parsed.values.timeout);
-    const client = boardFor(io);
     const now = io.now ?? Date.now;
-
+    // The client shares the wait's deadline, so its attempts and backoff cannot outlive the budget.
     const deadline = now() + total * MS_PER_SECOND;
+    const client = boardFor(io, deadline);
     let last: JobWait | null = null;
     for (;;) {
         const remainingMs = deadline - now();
