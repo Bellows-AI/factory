@@ -62,6 +62,8 @@ function harness(env: NodeJS.ProcessEnv, respond: (index: number) => Response, n
     const io = {
         env,
         fetch,
+        // Read retries back off without spending real time.
+        sleep: async () => {},
         ...(now ? { now } : {}),
         stdout: (text: string) => out.push(text),
         stderr: (text: string) => err.push(text),
@@ -739,6 +741,30 @@ describe('--json on every outcome', () => {
             data: payload,
             error: null,
         });
+    });
+
+    it('ends a wait interrupted during backoff without ever calling stop', async () => {
+        const controller = new AbortController();
+        const { out, calls, io } = harness(ENV, () => new Response('down', { status: 503 }));
+
+        const code = await run(['job', 'wait', 'job-1', '--json'], {
+            ...io,
+            signal: controller.signal,
+            sleep: async () => controller.abort(),
+        });
+
+        expect(code).toBe(130);
+        expect(JSON.parse(out.join(''))).toMatchObject({ outcome: 'interrupted' });
+        expect(calls.map((call) => call.method)).toEqual(['GET']);
+    });
+
+    it('ends a wait refused, not timed out, when a poll fails and FACTORY_READ_RETRIES is 0', async () => {
+        const { out, io } = harness({ ...ENV, FACTORY_READ_RETRIES: '0' }, () => new Response('down', { status: 503 }));
+
+        const code = await run(['job', 'wait', 'job-1', '--json'], io);
+
+        expect(code).toBe(1);
+        expect(JSON.parse(out.join(''))).toMatchObject({ outcome: 'refused', error: { status: 503 } });
     });
 
     it('ends interrupted, not unreachable or cancelled, when the local signal aborts the request', async () => {

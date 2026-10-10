@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { BoardError, createBoardClient } from '../src/board.js';
+import { createBoardClient } from '../src/board.js';
+import { BoardError, NO_RESPONSE_STATUS, REQUEST_TIMEOUT_CODE } from '../src/transport.js';
 
 interface Call {
     url: string;
@@ -145,7 +146,10 @@ describe('the board client', () => {
 
         await createBoardClient({ url: 'http://board', fetch, signal: controller.signal }).listJobs({});
 
-        expect(seen).toEqual([controller.signal]);
+        // The request's own signal follows the caller's: aborting one aborts the other.
+        expect(seen[0]!.aborted).toBe(false);
+        controller.abort();
+        expect(seen[0]!.aborted).toBe(true);
     });
 
     it('posts a follow-up with the command alone — repo, executor and session are inherited', async () => {
@@ -249,12 +253,192 @@ describe('the board client', () => {
             throw new Error('fetch failed');
         }) as unknown as typeof globalThis.fetch;
 
-        const error = await client(fetch)
+        const error = await createBoardClient({ url: 'http://board', fetch, readRetries: 0 })
             .listJobs({})
             .catch((caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(BoardError);
         expect((error as BoardError).status).toBe(0);
         expect((error as BoardError).message).toBe('cannot reach http://board: fetch failed');
+    });
+});
+
+/** A fake clock: time moves only when something sleeps, by exactly the slept amount. */
+function fakeClock() {
+    let now = 0;
+    const sleeps: number[] = [];
+    return {
+        sleeps,
+        clock: {
+            now: () => now,
+            sleep: async (ms: number) => {
+                sleeps.push(ms);
+                now += ms;
+            },
+        },
+    };
+}
+
+/** A fetch that never answers until its signal aborts, then fails the way a real one does. */
+const stalled = ((_url: unknown, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    })) as unknown as typeof globalThis.fetch;
+
+const TEST_TIMEOUT_MS = 15;
+
+describe('deadlines, retries and interruption', () => {
+    const resilient = (fetch: typeof globalThis.fetch, extra: Partial<Parameters<typeof createBoardClient>[0]> = {}) =>
+        createBoardClient({ url: 'http://board', fetch, requestTimeoutMs: TEST_TIMEOUT_MS, ...extra });
+    const outcome = (promise: Promise<unknown>) => promise.catch((caught: unknown) => caught as BoardError);
+
+    it('aborts a request whose headers never arrive and reports an uncertain timeout', async () => {
+        const { clock } = fakeClock();
+
+        const error = await outcome(resilient(stalled, { readRetries: 0, clock }).listJobs({}));
+
+        expect(error).toMatchObject({ status: NO_RESPONSE_STATUS, code: REQUEST_TIMEOUT_CODE });
+    });
+
+    it('aborts a response whose body stalls after the headers', async () => {
+        const { clock } = fakeClock();
+        const fetch = (async (_url: unknown, init?: RequestInit) => {
+            const body = new ReadableStream({
+                start(controller) {
+                    init?.signal?.addEventListener('abort', () => controller.error(new Error('body aborted')));
+                },
+            });
+            return new Response(body, { status: 200 });
+        }) as unknown as typeof globalThis.fetch;
+
+        const error = await outcome(resilient(fetch, { readRetries: 0, clock }).listJobs({}));
+
+        expect(error).toMatchObject({ status: NO_RESPONSE_STATUS, code: REQUEST_TIMEOUT_CODE });
+    });
+
+    it('retries a transient read failure with doubling backoff, then succeeds', async () => {
+        const { sleeps, clock } = fakeClock();
+        const { calls, fetch } = recorder((index) =>
+            index < 2 ? new Response('down', { status: 503 }) : json({ jobs: [] })
+        );
+
+        await expect(resilient(fetch, { clock }).listJobs({})).resolves.toEqual([]);
+
+        expect(calls).toHaveLength(3);
+        expect(sleeps).toEqual([250, 500]);
+    });
+
+    it('stops after the configured number of retries and surfaces the last failure', async () => {
+        const { clock } = fakeClock();
+        const { calls, fetch } = recorder(() => new Response('down', { status: 502 }));
+
+        const error = await outcome(resilient(fetch, { clock, readRetries: 2 }).getJob('job-1'));
+
+        expect(calls).toHaveLength(3);
+        expect(error).toMatchObject({ status: 502 });
+    });
+
+    it.each([400, 401, 403, 404, 409, 422, 500])('does not retry an authoritative %s refusal', async (status) => {
+        const { clock } = fakeClock();
+        const { calls, fetch } = recorder(() => json({ error: 'no', code: 'NOPE' }, status));
+
+        const error = await outcome(resilient(fetch, { clock }).getJob('job-1'));
+
+        expect(calls).toHaveLength(1);
+        expect(error).toMatchObject({ status, code: 'NOPE' });
+    });
+
+    it('never replays a write, and says an unanswered one may have been applied', async () => {
+        const { clock } = fakeClock();
+        let sent = 0;
+        const fetch = (async (_url: unknown, init?: RequestInit) => {
+            sent++;
+            return stalled('', init);
+        }) as unknown as typeof globalThis.fetch;
+
+        const error = await outcome(resilient(fetch, { clock }).createJob({ command: 'echo hi' }));
+
+        expect(sent).toBe(1);
+        expect(error).toMatchObject({ status: NO_RESPONSE_STATUS, code: REQUEST_TIMEOUT_CODE });
+        expect((error as BoardError).message).toContain('may have been applied');
+    });
+
+    it('honors Retry-After in seconds on a 429, and as an HTTP date on a 503', async () => {
+        const { sleeps, clock } = fakeClock();
+        const { fetch } = recorder((index) =>
+            index === 0
+                ? new Response('slow down', { status: 429, headers: { 'retry-after': '2' } })
+                : index === 1
+                  ? new Response('busy', { status: 503, headers: { 'retry-after': new Date(3_000).toUTCString() } })
+                  : json({ jobs: [] })
+        );
+
+        await resilient(fetch, { clock }).listJobs({});
+
+        // The date hint is read against the injected clock, which has slept 2000ms by then.
+        expect(sleeps).toEqual([2_000, 1_000]);
+    });
+
+    it('does not sleep past the total budget: a hint that cannot fit ends the retries', async () => {
+        const { sleeps, clock } = fakeClock();
+        const { calls, fetch } = recorder(
+            () => new Response('slow down', { status: 429, headers: { 'retry-after': '60' } })
+        );
+
+        const error = await outcome(resilient(fetch, { clock, deadlineAt: 10_000 }).listJobs({}));
+
+        expect(sleeps).toEqual([]);
+        expect(calls).toHaveLength(1);
+        expect(error).toMatchObject({ status: 429 });
+    });
+
+    it('stops backing off once the budget is spent, however many retries remain', async () => {
+        const { sleeps, clock } = fakeClock();
+        const { calls, fetch } = recorder(() => new Response('down', { status: 503 }));
+
+        await outcome(resilient(fetch, { clock, readRetries: 10, deadlineAt: 1_000 }).listJobs({}));
+
+        // 250 + 500 fit in 1000ms; the next 1000ms pause would reach the deadline.
+        expect(sleeps).toEqual([250, 500]);
+        expect(calls).toHaveLength(3);
+    });
+
+    it('re-asks a wait retry for only what is left of the budget', async () => {
+        const { clock } = fakeClock();
+        const { calls, fetch } = recorder((index) =>
+            index === 0 ? new Response('down', { status: 503 }) : json(waitBody)
+        );
+
+        await resilient(fetch, { clock, deadlineAt: 10_000 }).waitForJob('job-1', 60);
+
+        expect(calls[0]!.url).toContain('timeout=60');
+        expect(calls[1]!.url).toContain('timeout=10');
+    });
+
+    it('ends an interrupted backoff at once and never touches the task', async () => {
+        const controller = new AbortController();
+        const { calls, fetch } = recorder(() => new Response('down', { status: 503 }));
+        const clock = {
+            now: () => 0,
+            sleep: async () => controller.abort(),
+        };
+
+        const error = await outcome(resilient(fetch, { clock, signal: controller.signal }).listJobs({}));
+
+        expect(calls).toHaveLength(1);
+        expect(calls.every((call) => call.method === 'GET' && !call.url.endsWith('/stop'))).toBe(true);
+        expect(error).toBeInstanceOf(BoardError);
+    });
+
+    it('does not retry, or report a timeout, when the caller aborts mid-request', async () => {
+        const controller = new AbortController();
+        const { clock } = fakeClock();
+        const pending = resilient(stalled, { clock, signal: controller.signal }).listJobs({});
+        controller.abort();
+
+        const error = await outcome(pending);
+
+        expect(error).toBeInstanceOf(BoardError);
+        expect((error as BoardError).code).not.toBe(REQUEST_TIMEOUT_CODE);
     });
 });
