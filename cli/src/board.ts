@@ -1,4 +1,4 @@
-import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
 /**
  * The board client for the person routes the CLI speaks to: the two reads
@@ -33,10 +33,15 @@ export class BoardError extends Error {
     }
 }
 
-/** The 201 body of a create: two fields, the new id and its initial status. */
+/**
+ * The 201 body of a create: the new id and its initial status. `replayed` is not in the body — it
+ * is read off the board's `Idempotency-Replayed` header, and true only when the board recognized
+ * the write's key and answered the task an earlier attempt already made.
+ */
 export interface JobCreated {
     id: string;
     status: string;
+    replayed?: boolean;
 }
 
 /**
@@ -136,6 +141,8 @@ export interface BoardClient {
         executorScope?: 'user' | 'org' | undefined;
         /** The skills the task selects (issue #545); absent selects none. */
         skills?: string[] | undefined;
+        /** Names this logical attempt; a repeat under the same key never makes a second task. */
+        idempotencyKey?: string | undefined;
     }): Promise<JobCreated>;
     listJobs(filters: {
         status?: string | undefined;
@@ -150,7 +157,7 @@ export interface BoardClient {
      */
     waitForJob(id: string, timeoutSeconds: number): Promise<JobWait>;
     thread(id: string): Promise<BoardJobRecord[]>;
-    followUp(id: string, command: string): Promise<JobCreated>;
+    followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
     stopJob(id: string): Promise<JobStopped>;
     markDone(id: string): Promise<JobDone>;
     removeJob(id: string): Promise<JobRemoved>;
@@ -229,7 +236,24 @@ export function createBoardClient({
         // never offered.
         token ? { authorization: `Bearer ${token}` } : {};
 
-    const request = async (path: string, init: RequestInit): Promise<unknown> => {
+    /** The headers of a write that may carry a key: the key, when one was named. */
+    const keyHeader = (key: string | undefined): Record<string, string> =>
+        key === undefined ? {} : { [IDEMPOTENCY_KEY_HEADER]: key };
+
+    /** A create-shaped write's answer: the body, marked when the board says it was a replay. */
+    const created = async (path: string, init: RequestInit): Promise<JobCreated> => {
+        let replayed = false;
+        const payload = (await request(path, init, (response) => {
+            replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER) === 'true';
+        })) as JobCreated;
+        return replayed ? { ...payload, replayed } : payload;
+    };
+
+    const request = async (
+        path: string,
+        init: RequestInit,
+        onResponse?: (response: Response) => void
+    ): Promise<unknown> => {
         let response: Response;
         try {
             response = await fetch(`${url}${path}`, signal ? { ...init, signal } : init);
@@ -240,6 +264,7 @@ export function createBoardClient({
             const refusal = refusalFrom(path, response.status, await response.text());
             throw new BoardError(refusal.message, response.status, refusal.code);
         }
+        onResponse?.(response);
         try {
             return await response.json();
         } catch {
@@ -262,12 +287,15 @@ export function createBoardClient({
                 ...(input.executorScope !== undefined ? { executorScope: input.executorScope } : {}),
                 ...(input.skills !== undefined ? { skills: input.skills } : {}),
             };
-            const payload = (await request('/api/jobs', {
+            return created('/api/jobs', {
                 method: 'POST',
-                headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                headers: {
+                    ...authHeaders(),
+                    ...keyHeader(input.idempotencyKey),
+                    [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
+                },
                 body: JSON.stringify(body),
-            })) as JobCreated;
-            return payload;
+            });
         },
 
         async listJobs(filters) {
@@ -304,15 +332,15 @@ export function createBoardClient({
             return payload.jobs;
         },
 
-        async followUp(id, command) {
+        async followUp(id, command, idempotencyKey) {
             // The command is the whole body: the repo, the executor and the session are copied
             // from the parent at insert, and sending them here would be a second opinion the
             // board does not ask for.
-            return (await request(`${jobPath(id)}/follow-up`, {
+            return created(`${jobPath(id)}/follow-up`, {
                 method: 'POST',
-                headers: { ...authHeaders(), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                headers: { ...authHeaders(), ...keyHeader(idempotencyKey), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
                 body: JSON.stringify({ command }),
-            })) as JobCreated;
+            });
         },
 
         // The three actions take no body, so they send no content-type either.

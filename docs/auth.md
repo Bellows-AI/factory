@@ -42,6 +42,10 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   always populated. It refuses a non-loopback `HOST` unless `AUTH_ALLOW_PUBLIC_BIND=1`;
   `docker-compose.yml` pins `AUTH_MODE: github` as a literal `.env` cannot win, and
   `charts/factory/` has no open mode. `server/src/config.ts`, `server/src/db/migrate.ts` (`LOCAL_LOGIN`).
+- **An idempotency key is scoped to org, caller and operation, and a replay re-passes the route's
+  credential and the follow-up/retry author check** — a stored result never answers another
+  caller, another org, or a parent that changed hands. `server/src/db/job-store-idempotency.ts`,
+  `server/src/db/job-store-actions.ts`, `server/test-db/job-store.idempotency.test.ts`.
 - **The worker credential is one deployment-wide shared secret**, `JOB_BOARD_TOKEN`: constant-time
   compare, no row, no mint route, fatal at boot in github mode when missing or under 32 characters
   — so a claim names no org and is offered every org's queue. `server/src/config.ts`.

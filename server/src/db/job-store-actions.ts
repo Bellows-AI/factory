@@ -8,10 +8,14 @@ import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { exists, queueReclaimIfThreadDone, stopRows, workspacePathFor, hasRunningMember } from './job-store-rows.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import { stopReviewsOf } from './job-store-reviews.js';
+import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
 import type { EditCommandResult, JobStore, JobStoreContext, JobStatus } from './job-store-types.js';
 import { wakeOneRound } from './workflow-blocks/runtime.js';
 
 export type CreateTarget = Parameters<JobStore['create']>[2];
+
+/** A created row's id; `replayed` when a repeated idempotent request found it already made. */
+export type CreatedRef = { id: string; replayed?: boolean };
 
 /**
  * The author's checkout row, locked and checked, INSIDE the job-insert transaction (issue #92).
@@ -44,16 +48,23 @@ async function refuseIfCheckoutPurging(
     return rows[0]?.status === 'purging';
 }
 
+/** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
+const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
+
 export async function createJobRow(
     ctx: JobStoreContext,
     command: string,
     createdBy: string | null,
     target: CreateTarget
-): Promise<{ id: string } | 'purging'> {
+): Promise<CreatedRef | 'purging'> {
     const { sql, orgId } = ctx;
+    const idem = target.idempotency;
     // One transaction: the checkout-row lock/check and the insert are decided together, which is
     // the whole point — see refuseIfCheckoutPurging.
     return sql.begin(async (tx) => {
+        // A repeat of a recorded request answers the row it made, before anything else is decided.
+        const replayed = await replayOf(tx, orgId, createdBy, idem);
+        if (replayed) return { id: replayed, replayed: true };
         if (await refuseIfCheckoutPurging(tx, orgId, createdBy, target.repo)) return 'purging';
         // id and root_job_id are the SAME uuid, computed once in the select so the column can
         // be not null from insert — the root's root is itself (022). The workflow triple rides
@@ -74,14 +85,15 @@ export async function createJobRow(
                    ${target.workflow?.id ?? null},
                    ${target.workflow?.name ?? null},
                    ${target.workflow?.node ?? null},
-                   ${target.workflow ? sql.json(target.workflow.snapshot as never) : null},
-                   ${target.workflow ? sql.json(target.workflow.params as never) : null},
+                   ${jsonOrNull(sql, target.workflow?.snapshot)},
+                   ${jsonOrNull(sql, target.workflow?.params)},
                    ${mode},
                    ${target.jiraConnectionId ?? null},
                    ${sql.array([...(target.skills ?? [])])}::text[]
             from (select gen_random_uuid() as x) s
             returning id
         `;
+        await stampKey(tx, orgId, rows[0]!.id, idem);
         return { id: rows[0]!.id };
     });
 }
@@ -115,13 +127,14 @@ export interface FollowUpRowInput {
     parentId: string;
     command: string;
     createdBy: string | null;
+    idempotency?: IdempotencyInput | undefined;
 }
 
 export async function createFollowUpRow(
     sql: Sql,
     input: FollowUpRowInput
-): Promise<{ id: string } | 'missing' | 'task_done' | 'not_finished' | 'forbidden' | 'purging'> {
-    const { orgId, parentId, command, createdBy } = input;
+): Promise<CreatedRef | 'missing' | 'task_done' | 'not_finished' | 'forbidden' | 'purging'> {
+    const { orgId, parentId, command, createdBy, idempotency: idem } = input;
     // One transaction for the checkout-row guard and the conditional insert, so a purge that
     // commits between them cannot slip a follow-up into a checkout that is being deleted — the
     // same lock both job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
@@ -133,6 +146,8 @@ export async function createFollowUpRow(
             select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
         `;
         if (!label) return 'missing';
+        const replayed = await replayOf(tx, orgId, createdBy, idem);
+        if (replayed) return replayedFor(tx, { orgId, parentId, createdBy }, replayed);
         if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
         // The same per-thread advisory lock the claim, remove, reopen and done take: the
         // eligibility check and the insert must be atomic with a racing done on ANY member —
@@ -183,12 +198,33 @@ export async function createFollowUpRow(
             from parent, root, primary_session
             returning id
         `;
-        if (rows[0]) return { id: rows[0]!.id };
+        if (rows[0]) {
+            await stampKey(tx, orgId, rows[0].id, idem);
+            return { id: rows[0].id };
+        }
         // Nothing inserted — one of the four preconditions failed, and which one decides the answer
         // the route turns into a status code. Forbidden is last. The parent cannot have moved to deleted since the pre-read above —
         // remove deletes under this same advisory lock — so missing was decided before the lock.
         return followUpRefusalOf(tx, orgId, parentId);
     });
+}
+
+/**
+ * The answer to a replayed follow-up or retry: the recorded row, but only while the parent it was
+ * made from is still the caller's own — a stored result never outlives the author check the
+ * original insert passed, so a parent that changed hands answers `forbidden` instead.
+ */
+async function replayedFor(
+    tx: TransactionSql,
+    source: { orgId: string; parentId: string; createdBy: string | null },
+    id: string
+): Promise<CreatedRef | 'forbidden'> {
+    const { orgId, parentId, createdBy } = source;
+    const [parent] = await tx<{ id: string }[]>`
+        select id from job
+        where org_id = ${orgId} and id = ${parentId} and created_by is not distinct from ${createdBy}
+    `;
+    return parent ? { id, replayed: true } : 'forbidden';
 }
 
 /**
@@ -238,9 +274,9 @@ async function followUpRefusalOf(
  */
 export async function createRetryRow(
     sql: Sql,
-    input: { orgId: string; id: string; createdBy: string | null }
-): Promise<{ id: string } | 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging'> {
-    const { orgId, id, createdBy } = input;
+    input: { orgId: string; id: string; createdBy: string | null; idempotency?: IdempotencyInput | undefined }
+): Promise<CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging'> {
+    const { orgId, id, createdBy, idempotency: idem } = input;
     // One transaction for the checkout-row guard and the conditional insert, the same lock both
     // job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
     return sql.begin(async (tx) => {
@@ -251,6 +287,8 @@ export async function createRetryRow(
             select repo, root_job_id from job where org_id = ${orgId} and id = ${id}
         `;
         if (!label) return 'missing';
+        const replayed = await replayOf(tx, orgId, createdBy, idem);
+        if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy }, replayed);
         if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
         // The same per-thread advisory lock the claim, remove, reopen and done take: the
         // eligibility check and the insert must be atomic with a racing done on ANY member and
@@ -289,7 +327,10 @@ export async function createRetryRow(
               )
             returning id
         `;
-        if (rows[0]) return { id: rows[0]!.id };
+        if (rows[0]) {
+            await stampKey(tx, orgId, rows[0].id, idem);
+            return { id: rows[0].id };
+        }
         // Nothing inserted — one of the preconditions failed, and which one decides the answer
         // the route turns into a status code.
         return retryRefusalOf(tx, orgId, id, createdBy);

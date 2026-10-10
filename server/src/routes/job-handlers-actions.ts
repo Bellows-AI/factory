@@ -5,6 +5,7 @@ import type { OrgRegistry } from '../orgs.js';
 import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
 import { pickBucketMs } from '../telemetry/run-activity.js';
 import { followUpRefusal, retryRefusal, waitControlRefusal } from './job-refusals.js';
+import { guardKeyed, idempotencyOf, sendQueued } from './job-idempotency.js';
 import { validateArtifactReadQuery } from './job-field-validation-artifacts.js';
 import {
     validateCommandField,
@@ -21,7 +22,6 @@ import type { ArtifactKind, SettleOutcome } from '../db/job-store-types.js';
 import {
     HTTP_ACCEPTED,
     HTTP_CONFLICT,
-    HTTP_CREATED,
     HTTP_FORBIDDEN,
     HTTP_NOT_FOUND,
     HTTP_NO_CONTENT,
@@ -50,14 +50,17 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     // impersonation applies word for word here.
     const createdBy = callerOf(request)?.user.id ?? null;
 
-    const created = await guard(
+    const idempotency = idempotencyOf(request, reply, 'follow-up', { id, command: commandResult.value });
+    if (!idempotency.ok) return reply;
+
+    const created = await guardKeyed(
         reply,
         (e) => request.log.error({ err: e }, 'job follow-up failed'),
-        () => store.createFollowUp(id, commandResult.value, createdBy)
+        () => store.createFollowUp(id, commandResult.value, createdBy, idempotency.value)
     );
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return followUpRefusal(reply, created.value);
-    return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
+    return sendQueued(reply, created.value);
 }
 
 // Retry (issue #326): re-run the thread head's command as a FRESH attempt in the same thread — no
@@ -74,14 +77,17 @@ export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, re
     // impersonation applies word for word here.
     const createdBy = callerOf(request)?.user.id ?? null;
 
-    const created = await guard(
+    const idempotency = idempotencyOf(request, reply, 'retry', { id });
+    if (!idempotency.ok) return reply;
+
+    const created = await guardKeyed(
         reply,
         (e) => request.log.error({ err: e }, 'job retry failed'),
-        () => store.createRetry(id, createdBy)
+        () => store.createRetry(id, createdBy, idempotency.value)
     );
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return retryRefusal(reply, created.value);
-    return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
+    return sendQueued(reply, created.value);
 }
 
 // The edit of a queued task's command (issue #329): same id, same thread, where a stop plus a

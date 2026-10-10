@@ -6,3 +6,9 @@
 export const JSON_CONTENT_TYPE = 'application/json';
 
 export const CONTENT_TYPE_HEADER = 'content-type';
+
+/** The header that names one logical write, so a repeat of it is recognized (docs/api.md). */
+export const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
+
+/** Set by the board on the answer to a repeated write: nothing new was made. */
+export const IDEMPOTENCY_REPLAYED_HEADER = 'idempotency-replayed';

@@ -11,6 +11,7 @@ import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { EvidencePolicy, RecordedEvidence, ReviewEvidence } from './evidence-policy.js';
 import type { WorkflowDefinition, ParamValues } from './workflow-schema.js';
+import type { IdempotencyInput } from './job-store-idempotency.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
@@ -811,8 +812,14 @@ export interface JobStore {
                 snapshot: WorkflowDefinition;
                 params: ParamValues;
             } | null;
+            /**
+             * The request's `Idempotency-Key` (issue #589): a repeat of a recorded request answers
+             * the row it made (`replayed`), a key reused for a different request throws
+             * `IdempotencyKeyReusedError`. The same holds for `createFollowUp` and `createRetry`.
+             */
+            idempotency?: IdempotencyInput | undefined;
         }
-    ): Promise<{ id: string } | 'purging'>;
+    ): Promise<{ id: string; replayed?: boolean } | 'purging'>;
     /**
      * Queues a follow-up on a finished task: a new job that inherits the parent's repo, executor
      * and — the thread's PRIMARY — session ids, linked through `followUpTo`. Atomic and
@@ -831,8 +838,9 @@ export interface JobStore {
     createFollowUp(
         parentId: string,
         command: string,
-        createdBy: string | null
-    ): Promise<{ id: string } | FollowUpRefusal>;
+        createdBy: string | null,
+        idempotency?: IdempotencyInput
+    ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal>;
     /**
      * Queues a fresh attempt of the thread head's command (issue #326): a new job in the SAME
      * thread — the thread's `root_job_id`, with the head's command, repo, executor and workflow
@@ -846,7 +854,11 @@ export interface JobStore {
      * refusals are decided in the same statement that would have created the row. The checkout
      * purge guard (`refuseIfCheckoutPurging`) runs first, on the named row's repo label.
      */
-    createRetry(id: string, createdBy: string | null): Promise<{ id: string } | RetryRefusal>;
+    createRetry(
+        id: string,
+        createdBy: string | null,
+        idempotency?: IdempotencyInput
+    ): Promise<{ id: string; replayed?: boolean } | RetryRefusal>;
     /**
      * Edits a queued task's command in place (issue #329): same id, same thread, where a stop
      * plus a re-create would have burned both. Queued rows only — the `job` row is an audit

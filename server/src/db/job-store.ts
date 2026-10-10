@@ -223,14 +223,14 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return createJobRow(ctx, command, createdBy, target);
         },
 
-        async createFollowUp(parentId, command, createdBy) {
+        async createFollowUp(parentId, command, createdBy, idempotency) {
             await gate();
-            return createFollowUpRow(ctx.sql, { orgId: ctx.orgId, parentId, command, createdBy });
+            return createFollowUpRow(ctx.sql, { orgId: ctx.orgId, parentId, command, createdBy, idempotency });
         },
 
-        async createRetry(id, createdBy) {
+        async createRetry(id, createdBy, idempotency) {
             await gate();
-            return createRetryRow(ctx.sql, { orgId: ctx.orgId, id, createdBy });
+            return createRetryRow(ctx.sql, { orgId: ctx.orgId, id, createdBy, idempotency });
         },
 
         async editCommand(id, command, caller) {

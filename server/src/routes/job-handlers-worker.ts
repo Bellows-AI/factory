@@ -5,6 +5,7 @@ import type { OrgRegistry } from '../orgs.js';
 import { type BoardScanner, boardsFor, executorsFor, storeFor, userReposFor, workflowsFor } from './job-context.js';
 import { resolveJiraConnection } from './connections.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
+import { createIdempotencyOf, guardKeyed, sendQueued } from './job-idempotency.js';
 import { validateArtifactBody } from './job-field-validation-artifacts.js';
 import {
     type ResolvedWorkflow,
@@ -22,7 +23,6 @@ import { fullName, UUID } from '../config.js';
 import {
     ARTIFACT_LIMIT,
     HTTP_CONFLICT,
-    HTTP_CREATED,
     HTTP_NO_CONTENT,
     HTTP_NOT_FOUND,
     HTTP_OK,
@@ -153,6 +153,10 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const selectedSkills = selectedSkillsOf(reply, fields.skills);
     if (selectedSkills === null) return reply;
     const skills = selectedSkills;
+    // What the create asks for, as the client spelled it: the key's fingerprint, so the same key
+    // with a changed body is refused rather than replayed (issue #589).
+    const idempotency = createIdempotencyOf(request, reply, fields);
+    if (!idempotency.ok) return reply;
 
     // Read off the authenticated request, never off the body: a client-supplied author is
     // impersonation. Null only when the app was built with no auth store at all, which is the
@@ -191,7 +195,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     const jira = await resolveJiraConnection(orgs, { request, reply, createdBy }, fields.jiraConnection);
     if (jira.handled) return reply;
 
-    const created = await guard(
+    const created = await guardKeyed(
         reply,
         (e) => request.log.error({ err: e }, 'job create failed'),
         () =>
@@ -202,18 +206,25 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 skills,
                 jiraConnectionId: jira.id,
                 ...(workflow ? { workflow } : {}),
+                idempotency: idempotency.value,
             })
     );
     if (!created.ok) return reply;
-    // The author's checkout row was `purging` when the insert transaction took its lock (issue
-    // #92): a task cannot be queued into a checkout that is being deleted.
-    if (created.value === 'purging') {
+    return sendCreated(reply, created.value);
+}
+
+/**
+ * The answer to a create. The author's checkout row was `purging` when the insert transaction took
+ * its lock (issue #92): a task cannot be queued into a checkout that is being deleted.
+ */
+function sendCreated(reply: FastifyReply, created: { id: string; replayed?: boolean } | 'purging') {
+    if (created === 'purging') {
         return reply.code(HTTP_CONFLICT).send({
             error: 'The checkout for this task is being deleted from disk',
             code: ERROR_CODES.PURGE_IN_PROGRESS,
         });
     }
-    return reply.code(HTTP_CREATED).send({ id: created.value.id, status: 'queued' });
+    return sendQueued(reply, created);
 }
 
 export async function handleClaimJob(

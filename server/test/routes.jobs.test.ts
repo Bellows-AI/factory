@@ -7,6 +7,7 @@ import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
 import { validateWaitQuery } from '../src/routes/job-field-validation.js';
+import { IdempotencyKeyReusedError, type IdempotencyInput } from '../src/db/job-store-idempotency.js';
 import type { BellowsConfig } from '../src/workspace/bellows.js';
 import type {
     Claim,
@@ -113,6 +114,8 @@ interface StoreStub extends JobStore {
     requeued: string[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     retries: { id: string; createdBy: string | null }[];
+    /** The idempotency input each create, follow-up and retry was handed, in call order (#589). */
+    idempotencies: (IdempotencyInput | undefined)[];
     edited: { id: string; command: string; caller: string | null }[];
     markedDone: { id: string; doneBy: string | null }[];
     gatesReported: { id: string; results: GateReport[] }[];
@@ -183,6 +186,10 @@ function stubStore(
         edit?: EditCommandResult;
         /** What the store answers a create with; 'purging' is the manual purge's refusal (#92). */
         create?: 'purging';
+        /** The store recognizes the request's key: it answers the row already made (#589). */
+        replayed?: boolean;
+        /** The store finds the request's key already used for a different request (#589). */
+        keyReused?: boolean;
         done?: { status: JobStatus; doneAt: string } | 'missing' | 'conflict';
         reread?: { result: 'ok'; gates: BellowsConfig | null; gateError: string | null } | 'lost' | 'missing';
         publish?: { result: 'ok'; token: string | null } | 'lost' | 'missing';
@@ -217,6 +224,9 @@ function stubStore(
     const boom = () => {
         if (options.fail) throw new Error('database is down');
     };
+    const reuse = () => {
+        if (options.keyReused) throw new IdempotencyKeyReusedError();
+    };
     const stub: StoreStub = {
         created: [],
         skillSelections: [],
@@ -234,6 +244,7 @@ function stubStore(
         publishTokens: [],
         followUps: [],
         retries: [],
+        idempotencies: [],
         edited: [],
         markedDone: [],
         gatesReported: [],
@@ -275,17 +286,23 @@ function stubStore(
             stub.skillSelections.push(target?.skills);
             if (target?.workflow) stub.workflowTargets.push(target.workflow);
             stub.commands.push(command);
-            return options.create ?? { id: ID };
+            stub.idempotencies.push(target?.idempotency);
+            reuse();
+            return options.create ?? { id: ID, ...(options.replayed ? { replayed: true } : {}) };
         },
-        async createFollowUp(parentId, command, createdBy) {
+        async createFollowUp(parentId, command, createdBy, idempotency) {
             boom();
             stub.followUps.push({ parentId, command, createdBy: createdBy ?? null });
-            return options.followUp ?? { id: FOLLOW_UP_ID };
+            stub.idempotencies.push(idempotency);
+            reuse();
+            return options.followUp ?? { id: FOLLOW_UP_ID, ...(options.replayed ? { replayed: true } : {}) };
         },
-        async createRetry(id, createdBy) {
+        async createRetry(id, createdBy, idempotency) {
             boom();
             stub.retries.push({ id, createdBy: createdBy ?? null });
-            return options.retry ?? { id: RETRY_ID };
+            stub.idempotencies.push(idempotency);
+            reuse();
+            return options.retry ?? { id: RETRY_ID, ...(options.replayed ? { replayed: true } : {}) };
         },
         async editCommand(id, command, caller) {
             boom();
@@ -3869,5 +3886,93 @@ describe('POST /api/jobs/:id/questions/:questionId/answer', () => {
         const instance = await harnessWith(stubStore({ answer: { result: 'unknown' } }));
         expect((await post(instance, ANSWER_URL, { answers })).statusCode).toBe(404);
         expect((await post(instance, `/api/jobs/${ID}/questions/a%20b/answer`, { answers })).statusCode).toBe(404);
+    });
+});
+
+describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
+    const KEY = 'attempt-0001-abcd';
+    const keyed = (instance: FastifyInstance, url: string, payload: unknown, key: string | string[] = KEY) =>
+        instance.inject({ method: 'POST', url, payload: payload as object, headers: { 'idempotency-key': key } });
+
+    const CASES = [
+        ['create', '/api/jobs', { command: 'echo hi' }],
+        ['follow-up', `/api/jobs/${ID}/follow-up`, { command: 'again' }],
+        ['retry', `/api/jobs/${ID}/retry`, {}],
+    ] as const;
+
+    it.each(CASES)('%s hands the store its key and a fingerprint of the request', async (operation, url, payload) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await keyed(instance, url, payload);
+
+        expect(response.statusCode).toBe(201);
+        expect(response.headers['idempotency-replayed']).toBeUndefined();
+        expect(store.idempotencies).toEqual([
+            { operation, key: KEY, fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) },
+        ]);
+    });
+
+    it.each(CASES)('%s without a key is not replayable', async (_operation, url, payload) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        expect((await post(instance, url, payload)).statusCode).toBe(201);
+        expect(store.idempotencies).toEqual([undefined]);
+    });
+
+    it.each(CASES)('%s answers a replay with the same 201 body, marked', async (_operation, url, payload) => {
+        const first = await (await harnessWith(stubStore())).inject({
+            method: 'POST',
+            url,
+            payload: payload as object,
+        });
+        const replay = await keyed(await harnessWith(stubStore({ replayed: true })), url, payload);
+
+        expect(replay.statusCode).toBe(201);
+        expect(replay.json()).toEqual(first.json());
+        expect(replay.headers['idempotency-replayed']).toBe('true');
+    });
+
+    it.each(CASES)('%s refuses a key reused for a different request with 409', async (_operation, url, payload) => {
+        const instance = await harnessWith(stubStore({ keyReused: true }));
+        const response = await keyed(instance, url, payload);
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('IDEMPOTENCY_KEY_REUSED');
+    });
+
+    it.each([
+        ['too short', 'short'],
+        ['too long', 'k'.repeat(129)],
+        ['outside the alphabet', 'has spaces in it'],
+        ['repeated', ['attempt-0001-abcd', 'attempt-0002-abcd']],
+    ])('refuses a key that is %s before touching the store', async (_label, key) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await keyed(instance, '/api/jobs', { command: 'echo hi' }, key);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_IDEMPOTENCY_KEY');
+        expect(store.created).toEqual([]);
+    });
+
+    it('fingerprints the request, not the order its fields were written in', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'owner/name' });
+        await keyed(instance, '/api/jobs', { repo: 'owner/name', command: 'echo hi' });
+        await keyed(instance, '/api/jobs', { command: 'echo bye', repo: 'owner/name' });
+
+        const [a, b, c] = store.idempotencies.map((idem) => idem?.fingerprint);
+        expect(a).toBe(b);
+        expect(a).not.toBe(c);
+    });
+
+    it('fingerprints the target of a follow-up and a retry', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const other = '99999999-9999-4999-8999-999999999999';
+        await keyed(instance, `/api/jobs/${ID}/retry`, {});
+        await keyed(instance, `/api/jobs/${other}/retry`, {});
+        const [a, b] = store.idempotencies.map((idem) => idem?.fingerprint);
+        expect(a).not.toBe(b);
     });
 });

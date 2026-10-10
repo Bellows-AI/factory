@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util';
 import { BoardError, createBoardClient, HTTP_OK, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS } from './board.js';
-import type { BoardClient, JobWait } from './board.js';
+import type { BoardClient, JobCreated, JobWait } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
@@ -40,11 +40,11 @@ const END_OF_OPTIONS = '--';
 const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 
 export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]... [--json]
+                          [--skill name]... [--idempotency-key <key>] [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
-       factory job follow-up <id> <command...> [--json]
+       factory job follow-up <id> <command...> [--idempotency-key <key>] [--json]
        factory job stop <id> [--json]
        factory job done <id> [--json]
        factory job remove <id> --yes [--json]
@@ -63,7 +63,12 @@ exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or co
   { ok, command, outcome, exitCode, data, error }
 
 '--' ends option parsing, so a create command that takes flags of its own can follow it:
-  factory job create --repo owner/name -- npm test --watch`;
+  factory job create --repo owner/name -- npm test --watch
+
+--idempotency-key names one logical write (8-128 of letters, digits . _ : -). Repeat the SAME
+command with the SAME key to recover a write whose answer never arrived: the board returns the
+task the first attempt made instead of a second one, and a different request under the key is
+refused. A genuinely new task takes a new key. A key is remembered for 24 hours.`;
 
 /** An argument problem: the command line, not the board, is what refused. */
 class UsageError extends Error {
@@ -146,6 +151,42 @@ function ok(data: unknown, text: string): CommandResult {
     return { outcome: OUTCOME.ok, data, stdout: `${text}\n` };
 }
 
+const IDEMPOTENCY_KEY_OPTION = { 'idempotency-key': { type: 'string' } } as const;
+
+/** The status from which a board failure says nothing about whether the write was applied. */
+const SERVER_ERROR_STATUS = 500;
+
+/**
+ * A write the board may or may not have applied: no answer arrived, the board failed, or its
+ * answer could not be read. The error says so and names how to recover — repeating the command
+ * under the same key is safe, repeating it with none could queue a second task.
+ */
+async function recoverable(write: () => Promise<JobCreated>, key: string | undefined): Promise<JobCreated> {
+    try {
+        return await write();
+    } catch (error) {
+        const uncertain =
+            error instanceof BoardError &&
+            (error.status === NO_RESPONSE_STATUS ||
+                error.status >= SERVER_ERROR_STATUS ||
+                error.code === MALFORMED_RESPONSE_CODE);
+        if (!uncertain) throw error;
+        const hint =
+            key === undefined
+                ? 'the write may have been applied — check the task list before repeating it; pass --idempotency-key so a repeat cannot queue a second task'
+                : `the write may have been applied — repeat the same command with --idempotency-key ${key} to recover its result`;
+        throw new BoardError(`${error.message} (${hint})`, error.status, error.code);
+    }
+}
+
+/** A create-shaped answer: the usual line, and — on stderr, so stdout stays parseable — a replay's note. */
+function createdResult(created: JobCreated): CommandResult {
+    const result = ok(created, renderCreated(created));
+    return created.replayed
+        ? { ...result, stderr: 'replayed: the board already made this task for this idempotency key\n' }
+        : result;
+}
+
 async function runCreate(args: readonly string[], io: RunIo): Promise<CommandResult> {
     const parsed = parseOrUsage(() =>
         parseArgs({
@@ -157,6 +198,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
                 executor: { type: 'string' },
                 'executor-scope': { type: 'string' },
                 skill: { type: 'string', multiple: true },
+                ...IDEMPOTENCY_KEY_OPTION,
             },
         })
     );
@@ -165,14 +207,20 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
         throw new UsageError('a create needs a command\n\n' + USAGE);
     }
     const executorScope = parseExecutorScope(parsed.values['executor-scope']);
-    const created = await boardFor(io).createJob({
-        command,
-        repo: parsed.values.repo,
-        executor: parsed.values.executor,
-        executorScope,
-        skills: parsed.values.skill,
-    });
-    return ok(created, renderCreated(created));
+    const key = parsed.values['idempotency-key'];
+    const created = await recoverable(
+        () =>
+            boardFor(io).createJob({
+                command,
+                repo: parsed.values.repo,
+                executor: parsed.values.executor,
+                executorScope,
+                skills: parsed.values.skill,
+                idempotencyKey: key,
+            }),
+        key
+    );
+    return createdResult(created);
 }
 
 async function runList(args: readonly string[], io: RunIo): Promise<CommandResult> {
@@ -294,15 +342,18 @@ async function runWait(args: readonly string[], io: RunIo): Promise<CommandResul
 }
 
 async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options: JSON_OPTION }));
+    const parsed = parseOrUsage(() =>
+        parseArgs({ args: [...args], allowPositionals: true, options: { ...JSON_OPTION, ...IDEMPOTENCY_KEY_OPTION } })
+    );
     const [id, ...rest] = parsed.positionals;
     const command = rest.join(' ').trim();
     if (!id || !command) {
         throw new UsageError('a follow-up needs a job id and a command\n\n' + USAGE);
     }
     // Only the command travels: the repo, the executor and the session come from the parent.
-    const created = await boardFor(io).followUp(id, command);
-    return ok(created, renderCreated(created));
+    const key = parsed.values['idempotency-key'];
+    const created = await recoverable(() => boardFor(io).followUp(id, command, key), key);
+    return createdResult(created);
 }
 
 async function runStop(args: readonly string[], io: RunIo): Promise<CommandResult> {
