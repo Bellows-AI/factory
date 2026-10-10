@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readAllStdin } from './input.js';
 import { run } from './run.js';
 
 // A local interrupt aborts the in-flight request; the command then ends `interrupted`, which is
@@ -10,6 +11,7 @@ process.once('SIGTERM', () => interrupt.abort());
 process.exitCode = await run(process.argv.slice(2), {
     env: process.env,
     signal: interrupt.signal,
+    readStdin: () => readAllStdin(),
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
 });
