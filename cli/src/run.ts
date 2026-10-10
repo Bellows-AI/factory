@@ -4,12 +4,17 @@ import type { BoardClient, JobWait } from './board.js';
 import { CliConfigError, loadCliConfig } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
+import { executorDiscovery, repoDiscovery } from './discovery.js';
 import {
+    renderConnections,
     renderCreated,
     renderDone,
+    renderExecutors,
     renderJobDetail,
     renderJobLine,
     renderRemoved,
+    renderRepos,
+    renderSkills,
     renderStopped,
     renderThread,
 } from './render.js';
@@ -40,7 +45,7 @@ const END_OF_OPTIONS = '--';
 const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 
 export const USAGE = `usage: factory job create <command...> [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]... [--json]
+                          [--skill name]... [--jira-connection <id>] [--json]
        factory job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        factory job investigate <id> [--json]
        factory job wait <id> [--timeout <seconds>] [--json]
@@ -48,6 +53,10 @@ export const USAGE = `usage: factory job create <command...> [--repo owner/name]
        factory job stop <id> [--json]
        factory job done <id> [--json]
        factory job remove <id> --yes [--json]
+       factory repo list [--json]          repositories visible to the board, and which are synced
+       factory executor list [--json]      executor profiles by scope (--executor-scope)
+       factory skill list [--json]         skills a task may select (--skill)
+       factory connection list [--json]    managed connections you may select (--jira-connection)
 
 config:
   FACTORY_URL    the board's base URL (required)
@@ -157,6 +166,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
                 executor: { type: 'string' },
                 'executor-scope': { type: 'string' },
                 skill: { type: 'string', multiple: true },
+                'jira-connection': { type: 'string' },
             },
         })
     );
@@ -171,6 +181,8 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
         executor: parsed.values.executor,
         executorScope,
         skills: parsed.values.skill,
+        // The board authorizes it against the author; a connection that is not theirs is its 403.
+        jiraConnection: parsed.values['jira-connection'],
     });
     return ok(created, renderCreated(created));
 }
@@ -328,15 +340,50 @@ async function runRemove(args: readonly string[], io: RunIo): Promise<CommandRes
     return ok(removed, renderRemoved(removed));
 }
 
+/** A discovery command takes no arguments beyond `--json`, and only reads. */
+function noArguments(args: readonly string[], verb: string): void {
+    const parsed = parseOrUsage(() => parseArgs({ args: [...args], allowPositionals: true, options: JSON_OPTION }));
+    if (parsed.positionals.length > 0) throw new UsageError(`${verb} takes no arguments\n\n${USAGE}`);
+}
+
+async function runRepoList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'repo list');
+    const client = boardFor(io);
+    const discovery = repoDiscovery(await client.listRepos(), await client.workspace());
+    return ok(discovery, renderRepos(discovery));
+}
+
+async function runExecutorList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'executor list');
+    const discovery = executorDiscovery(await boardFor(io).workspace());
+    return ok(discovery, renderExecutors(discovery.executors));
+}
+
+async function runSkillList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'skill list');
+    const skills = await boardFor(io).listSkills();
+    return ok({ skills }, renderSkills(skills));
+}
+
+async function runConnectionList(args: readonly string[], io: RunIo): Promise<CommandResult> {
+    noArguments(args, 'connection list');
+    const connections = await boardFor(io).listConnections();
+    return ok({ connections }, renderConnections(connections));
+}
+
 const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<CommandResult>> = {
-    create: runCreate,
-    list: runList,
-    investigate: runInvestigate,
-    wait: runWait,
-    'follow-up': runFollowUp,
-    stop: runStop,
-    done: runDone,
-    remove: runRemove,
+    'job create': runCreate,
+    'job list': runList,
+    'job investigate': runInvestigate,
+    'job wait': runWait,
+    'job follow-up': runFollowUp,
+    'job stop': runStop,
+    'job done': runDone,
+    'job remove': runRemove,
+    'repo list': runRepoList,
+    'executor list': runExecutorList,
+    'skill list': runSkillList,
+    'connection list': runConnectionList,
 };
 
 const INTERRUPTED_MESSAGE = 'interrupted — this process stopped; the task on the board was not touched';
@@ -384,9 +431,10 @@ async function dispatch(
     io: RunIo
 ): Promise<{ command: string | null; result: CommandResult }> {
     const [topic, command] = argv;
-    const handler = topic === 'job' && command !== undefined ? COMMANDS[command] : undefined;
+    const key = `${topic} ${command}`;
+    const handler = Object.hasOwn(COMMANDS, key) ? COMMANDS[key] : undefined;
     // A line that names no command reports none, so a parse failure never invents one.
-    const name = handler ? `${topic} ${command}` : null;
+    const name = handler ? key : null;
     try {
         if (!handler) throw new UsageError(USAGE);
         return { command: name, result: await handler(argv.slice(2), io) };
