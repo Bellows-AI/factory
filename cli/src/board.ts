@@ -127,6 +127,8 @@ export interface BoardClient {
         executorScope?: 'user' | 'org' | undefined;
         /** The skills the task selects (issue #545); absent selects none. */
         skills?: string[] | undefined;
+        /** The managed Jira connection the task selects; the board authorizes it against the author. */
+        jiraConnection?: string | undefined;
     }): Promise<JobCreated>;
     listJobs(filters: {
         status?: string | undefined;
@@ -145,6 +147,48 @@ export interface BoardClient {
     stopJob(id: string): Promise<JobStopped>;
     markDone(id: string): Promise<JobDone>;
     removeJob(id: string): Promise<JobRemoved>;
+    /** What the org's GitHub App installation can see (`GET /api/repos`) — read-only, no sync. */
+    listRepos(): Promise<VisibleRepos>;
+    /** The caller's workspace read (`GET /api/workspace`): synced repos and executor profiles. */
+    workspace(): Promise<WorkspaceView>;
+    listSkills(): Promise<SkillView[]>;
+    /** The connections the caller may select: the org's plus their own. Never a credential. */
+    listConnections(): Promise<ConnectionView[]>;
+}
+
+/** The repository picker's read: what a member could choose to check out. */
+export interface VisibleRepos {
+    repos: { owner: string; name: string; private: boolean; defaultBranch: string | null; pushedAt: string | null }[];
+    installation: unknown;
+    meta: { fetchedAt: string | null; error: string | null };
+}
+
+/** The slice of the workspace read discovery shows: synced checkouts and executor selection metadata. */
+export interface WorkspaceView {
+    root: string | null;
+    repos: { owner: string; name: string; status: string; error: string | null }[];
+    executors: { name: string; type: string; suspended?: boolean }[];
+    orgExecutors: { name: string; type: string; suspended?: boolean }[];
+    defaultExecutor: { scope: string; name: string } | null;
+}
+
+export interface SkillView {
+    name: string;
+    description: string;
+    requires: {
+        tools: string[];
+        connections: { name: string; env: string[]; selectedBy: string | null }[];
+    };
+}
+
+export interface ConnectionView {
+    id: string;
+    kind: string;
+    site: string;
+    email: string;
+    access: string;
+    scope: string;
+    createdAt: string;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -225,6 +269,7 @@ export function createBoardClient({
                 ...(input.executor !== undefined ? { executor: input.executor } : {}),
                 ...(input.executorScope !== undefined ? { executorScope: input.executorScope } : {}),
                 ...(input.skills !== undefined ? { skills: input.skills } : {}),
+                ...(input.jiraConnection !== undefined ? { jiraConnection: input.jiraConnection } : {}),
             };
             const payload = (await request(at('/api/jobs'), {
                 method: 'POST',
@@ -301,6 +346,26 @@ export function createBoardClient({
                 method: 'POST',
                 headers: authHeaders(),
             })) as JobRemoved;
+        },
+
+        async listRepos() {
+            return (await request(at('/api/repos'), { headers: authHeaders() })) as VisibleRepos;
+        },
+
+        async workspace() {
+            return (await request(at('/api/workspace'), { headers: authHeaders() })) as WorkspaceView;
+        },
+
+        async listSkills() {
+            const payload = (await request(at('/api/skills'), { headers: authHeaders() })) as { skills: SkillView[] };
+            return payload.skills;
+        },
+
+        async listConnections() {
+            const payload = (await request(at('/api/connections'), { headers: authHeaders() })) as {
+                connections: ConnectionView[];
+            };
+            return payload.connections;
         },
     };
 }
