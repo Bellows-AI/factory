@@ -84,7 +84,7 @@ describe.skipIf(!enabled)('requeueing a pre-run claim after checkout contention 
         const [row] = await sql<{ status: string; lease_token: string; attempts: number }[]>`
             select status, lease_token, attempts from job where id = ${id}
         `;
-        expect(row).toEqual({ status: 'running', lease_token: replacement.leaseToken, attempts: 2 });
+        expect(row).toEqual({ status: 'running', lease_token: replacement.leaseToken, attempts: 1 });
     });
 
     it('lets a Stop requested before the requeue win: the row settles stopped, never queued', async () => {

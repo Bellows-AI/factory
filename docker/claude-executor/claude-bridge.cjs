@@ -86,6 +86,37 @@ async function decide(request) {
     return ask(request);
 }
 
+/**
+ * A `--resume` of a session that left no transcript (issue #822) becomes `--session-id` under the
+ * same id: a driver lost between reporting the id it minted and the CLI's first write leaves the
+ * board holding a session with nothing behind it, and the CLI refuses to resume that. The lookup
+ * is the turn reader's (driver/src/scripts/claude-turns.cjs); anything that cannot be read for any
+ * other reason than absence (ENOENT) keeps the resume.
+ */
+function startUnwrittenResume(args) {
+    const at = args.indexOf('--resume');
+    if (at === -1 || at + 1 >= args.length) return args;
+    const id = args[at + 1];
+    const projects = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
+    const absent = (file) => {
+        try {
+            fs.statSync(file);
+            return false;
+        } catch (error) {
+            if (error.code === 'ENOENT') return true;
+            throw error;
+        }
+    };
+    try {
+        const projectDirs = absent(projects) ? [] : fs.readdirSync(projects, { withFileTypes: true }).filter((e) => e.isDirectory());
+        if (!projectDirs.every((e) => absent(path.join(projects, e.name, `${id}.jsonl`)))) return args;
+    } catch {
+        return args;
+    }
+    process.stderr.write(`claude-bridge: session ${id} left no transcript; starting it under the same id\n`);
+    return [...args.slice(0, at), '--session-id', id, ...args.slice(at + 2)];
+}
+
 function main() {
     const args = process.argv.slice(2);
     if (args.at(-2) !== '-p') {
@@ -93,7 +124,7 @@ function main() {
         process.exit(EXIT_USAGE);
     }
     const prompt = args.at(-1);
-    const rest = args.slice(0, -2);
+    const rest = startUnwrittenResume(args.slice(0, -2));
 
     // TERM and INT go to the CLI; the bridge leaves only when the CLI has. Installed BEFORE the
     // spawn: the entrypoint forwards a TERM as soon as the CLI is up, and one landing between the

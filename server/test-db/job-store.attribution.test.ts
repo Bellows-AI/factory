@@ -5,7 +5,7 @@ import type { CreateJobStoreDeps, JobStore } from '../src/db/job-store-types.js'
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { account, mustCreate, randomGithubId, testOrg } from './fixtures.js';
+import { account, lapseDeferral, mustCreate, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -125,7 +125,8 @@ describe.runIf(enabled)('attribution', () => {
      * The claim's UPDATE is only safe to keep if every dependency it calls answers: a half-claim —
      * running, with a lease nobody holds and an attempt already burned — would strand the job until
      * the lease expired on every retry, walking it to dead on an infrastructure blip. The env
-     * resolver, the mint (a remote call on the claim path) and the executor reader roll back alike.
+     * resolver and the executor reader roll back alike, and the candidate stays deferred (issue
+     * #822) so the next poll takes other work first.
      */
     it.each<{
         name: string;
@@ -164,13 +165,19 @@ describe.runIf(enabled)('attribution', () => {
         const userId = await account(sql, randomGithubId(), 'flaky-cat');
         let fail = true;
         const flaky = createJobStore({ sql, orgId: ORG, ...failing(() => fail) });
-        await mustCreate(flaky.create('echo hi', userId, { repo: null, executor }));
+        const { id } = await mustCreate(flaky.create('echo hi', userId, { repo: null, executor }));
 
         await expect(flaky.claim('driver-1', LEASE_SECONDS)).rejects.toThrow(error);
+        expect(await flaky.get(id)).toMatchObject({ status: 'queued', attempts: 0 });
+        const [deferral] = await sql<{ deferred: boolean }[]>`
+            select claim_deferred_until > now() as deferred from job where id = ${id}
+        `;
+        expect(deferral?.deferred).toBe(true);
 
-        // The dependency is back: the job is still queued, still attempt 0, and the very next
-        // claim takes it.
+        // The dependency is back and the deferral has lapsed: still attempt 0 until the next claim
+        // takes it.
         fail = false;
+        await lapseDeferral(sql, id);
         const claim = await flaky.claim('driver-2', LEASE_SECONDS);
         expect(claim?.id).toBeTruthy();
         expect(claim?.attempts).toBe(1);

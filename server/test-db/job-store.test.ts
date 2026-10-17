@@ -5,7 +5,7 @@ import { createJobStore } from '../src/db/job-store.js';
 import { createOrgOfLease } from '../src/db/job-store-org-resolvers.js';
 import type { GateReport, JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate, testOrg } from './fixtures.js';
+import { expireLease, mustCreate, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -98,7 +98,9 @@ describe.skipIf(!enabled)('job store', () => {
         expect((await store.claim('w2', LEASE_SECONDS))?.id).toBe(second);
     });
 
-    it('reclaims an expired lease with a fresh token and a bumped attempt', async () => {
+    // An expired lease is the attempt's interruption (issue #822), not a spent try: the claim
+    // sequence is what moves, and the attempt count stays.
+    it('reclaims an expired lease with a fresh token and a bumped claim sequence', async () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         const firstStart = (await row(id))[0]?.started_at as Date;
@@ -106,7 +108,7 @@ describe.skipIf(!enabled)('job store', () => {
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
-        expect(second).toMatchObject({ id, attempts: 2 });
+        expect(second).toMatchObject({ id, attempts: 1, claimSeq: 2 });
         expect(second?.leaseToken).not.toBe(first?.leaseToken);
         // Reset per attempt, not kept from the first: otherwise every duration is measured from
         // the run that died.
@@ -115,11 +117,13 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     // Without this a command that kills its worker is handed out again every time its lease
-    // expires, forever, and one poison job permanently occupies a worker slot.
-    it('gives up on a job that has burned its attempts', async () => {
+    // expires, forever, and one poison job permanently occupies a worker slot. Expiries are
+    // interruptions first, so the bound is the interruption budget and then the attempts.
+    it('gives up on a job whose leases keep expiring once both budgets are burned', async () => {
         const { id } = await queue('kill -9 $$');
         await sql`update job set max_attempts = 1 where id = ${id}`;
         await store.claim('w1', LEASE_SECONDS);
+        await spendInterruptionBudget(sql, id);
         await expireLease(sql, id);
 
         expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
@@ -348,6 +352,7 @@ describe.skipIf(!enabled)('job store', () => {
             const { id } = await queue('kill -9 $$');
             await sql`update job set max_attempts = 1 where id = ${id}`;
             const claim = await store.claim('w1', LEASE_SECONDS);
+            await spendInterruptionBudget(sql, id);
             await expireLease(sql, id);
             await store.claim('w2', LEASE_SECONDS);
             expect((await row(id))[0]?.status).toBe('dead');
@@ -703,17 +708,18 @@ describe.skipIf(!enabled)('job store', () => {
         expect(second).toMatchObject({ id: followUp.id, resumeSessionId: ses, followUp: true });
     });
 
-    // The attempt that died ran a different session, and showing its link next to this attempt's
-    // output would point a reader at work that was thrown away.
-    it('clears the session when the job is claimed again', async () => {
+    // The attempt whose lease expired was lost, not failed (issue #822): its session is the
+    // conversation the takeover continues, on the same row, under the next claim sequence.
+    it('keeps the session of an expired attempt and offers it to resume', async () => {
         const { id } = await queue('echo hi');
         const first = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, first!.leaseToken, SESSION);
         await expireLease(sql, id);
 
-        await store.claim('w2', LEASE_SECONDS);
+        const second = await store.claim('w2', LEASE_SECONDS);
 
-        expect((await store.get(id))?.sessionId).toBeNull();
+        expect(second).toMatchObject({ id, claimSeq: 2, resumeSessionId: SESSION, followUp: false });
+        expect((await store.get(id))?.sessionId).toBe(SESSION);
     });
 
     it('parks a running job as stopped, keeping its session', async () => {
@@ -744,19 +750,6 @@ describe.skipIf(!enabled)('job store', () => {
         await store.suspend(id, claim!.leaseToken);
 
         expect(await store.get(id)).toMatchObject({ status: 'stopped', attempts: 0 });
-    });
-
-    // A lease that expired mid-run is not a park: that attempt's session is not this one, and
-    // resuming it would replay a transcript whose output was thrown away.
-    it('does not offer a session to resume when it is reclaiming a crashed attempt', async () => {
-        const { id } = await queue('echo hi');
-        const first = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, first!.leaseToken, SESSION);
-        await expireLease(sql, id);
-
-        const second = await store.claim('w2', LEASE_SECONDS);
-
-        expect(second?.resumeSessionId).toBeNull();
     });
 
     it('leaves output out of the list projection', async () => {

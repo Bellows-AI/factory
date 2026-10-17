@@ -37,6 +37,7 @@ const SIGTERM_NUMBER = 15;
 const QUESTION = 'Which colour is the SECRETQ?';
 const QUESTIONS = [{ question: QUESTION, options: [{ label: 'Red' }, { label: 'Blue' }] }];
 const TOOL_USE_ID = 'toolu_ask_1';
+const SESSION_ID = '0b6f2f9e-6c1d-4a51-9a07-3d5b7c2e8f41';
 
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -283,6 +284,60 @@ describe('claude-bridge argv', () => {
             '--dangerously-skip-permissions',
         ]);
         expect(result.code).toBe(0);
+    });
+
+    // A driver lost between reporting the session it minted and the CLI's first transcript write
+    // leaves the board an id with nothing behind it (issue #822): the recovery's `--resume` would
+    // be refused, so the bridge starts that same id instead.
+    it('starts a resumed session that left no transcript with --session-id under the same id', async () => {
+        const config = mkdtempSync(join(tmpdir(), 'claude-config-'));
+        dirs.push(config);
+        const result = await run({
+            args: ['--resume', SESSION_ID, '--model', 'm', '-p', 'do the thing'],
+            env: { CLAUDE_CONFIG_DIR: config },
+        });
+
+        expect(result.argv).toContain('--session-id');
+        expect(result.argv).not.toContain('--resume');
+        expect(result.argv[result.argv.indexOf('--session-id') + 1]).toBe(SESSION_ID);
+        expect(result.stderr).toContain(`session ${SESSION_ID} left no transcript`);
+    });
+
+    it('resumes a session whose transcript is on disk', async () => {
+        const config = mkdtempSync(join(tmpdir(), 'claude-config-'));
+        dirs.push(config);
+        mkdirSync(join(config, 'projects', '-work-tree'), { recursive: true });
+        writeFileSync(join(config, 'projects', '-work-tree', `${SESSION_ID}.jsonl`), '{}\n');
+        const result = await run({
+            args: ['--resume', SESSION_ID, '--model', 'm', '-p', 'do the thing'],
+            env: { CLAUDE_CONFIG_DIR: config },
+        });
+
+        expect(result.argv).toContain('--resume');
+        expect(result.argv[result.argv.indexOf('--resume') + 1]).toBe(SESSION_ID);
+        expect(result.argv).not.toContain('--session-id');
+    });
+
+    // A project directory the run cannot enter is not an absent transcript: only ENOENT starts
+    // the id fresh. Root reads through any mode bits, so the case means nothing there.
+    it.skipIf(process.getuid?.() === 0)('resumes when a project directory cannot be entered', async () => {
+        const config = mkdtempSync(join(tmpdir(), 'claude-config-'));
+        dirs.push(config);
+        const project = join(config, 'projects', '-work-tree');
+        mkdirSync(project, { recursive: true });
+        writeFileSync(join(project, `${SESSION_ID}.jsonl`), '{}\n');
+        chmodSync(project, 0o000);
+        try {
+            const result = await run({
+                args: ['--resume', SESSION_ID, '--model', 'm', '-p', 'do the thing'],
+                env: { CLAUDE_CONFIG_DIR: config },
+            });
+
+            expect(result.argv[result.argv.indexOf('--resume') + 1]).toBe(SESSION_ID);
+            expect(result.argv).not.toContain('--session-id');
+        } finally {
+            chmodSync(project, 0o755);
+        }
     });
 });
 

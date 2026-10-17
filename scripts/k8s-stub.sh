@@ -3,6 +3,17 @@
 set -eu
 echo "${CLAUDE_CODE_CONFIG_CONTENT:-none}"
 echo "$@"
+# `factory-stub-mark` (issue #822): the first run marks the worktree's git-ignored .factory/ and goes
+# on; a run that finds the mark — a replacement on the tree a lost runner left — says so and ends.
+case "$*" in
+*factory-stub-mark*)
+    if [ -f "$WORKDIR/.factory/stub-mark" ]; then
+        echo "mark kept from $(cat "$WORKDIR/.factory/stub-mark") head: $(git -C "$WORKDIR" log -1 --format=%s)"
+        exit 0
+    fi
+    mkdir -p "$WORKDIR/.factory" && echo "${HOSTNAME:-stub}" >"$WORKDIR/.factory/stub-mark"
+    ;;
+esac
 for arg in "$@"; do
     case "$arg" in
     *factory-stub-github*)

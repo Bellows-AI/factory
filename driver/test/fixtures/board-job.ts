@@ -7,6 +7,7 @@ export const boardJob = (over: { attempts?: number; claimSeq?: number } = {}): B
     rootCommand: 'echo hi',
     attempts: 1,
     maxAttempts: 3,
+    lastAttempt: false,
     claimSeq: 1,
     leaseToken: 'token-1',
     leaseExpiresAt: '2026-08-21T12:05:00.000Z',

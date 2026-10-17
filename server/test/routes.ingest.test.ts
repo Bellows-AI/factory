@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import type { JobStore } from '../src/db/job-store-types.js';
 import type { MetricRow } from '../src/telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
 import { githubAuth, memoryAuthStore, staticRegistry, testConfig } from './helpers.js';
@@ -46,11 +47,23 @@ function stubStore(options: { fail?: boolean } = {}): StoreStub {
     return stub;
 }
 
-async function harnessWith(store?: StoreStub) {
+async function harnessWith(store?: StoreStub, jobs?: JobStore) {
     const config = testConfig();
-    const instance = await buildApp({ config, orgs: staticRegistry({ config }), store });
+    const instance = await buildApp({ config, orgs: staticRegistry({ config, jobs }), store });
     track(instance);
     return instance;
+}
+
+/** A board whose only working call is the lease-guarded session write, recording each one. */
+function sessionBoard(answer: Awaited<ReturnType<JobStore['session']>> = 'ok') {
+    const calls: [string, string, string | null][] = [];
+    const jobs = {
+        async session(id: string, leaseToken: string, sessionId: string | null) {
+            calls.push([id, leaseToken, sessionId]);
+            return answer;
+        },
+    } as unknown as JobStore;
+    return { jobs, calls };
 }
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -64,12 +77,13 @@ const CREDENTIAL_ORG = 'credential-org';
  */
 async function githubHarnessWith(
     store?: StoreStub,
-    orgOfLease?: (jobId: string, lease: string) => Promise<string | null>
+    orgOfLease?: (jobId: string, lease: string) => Promise<string | null>,
+    jobs?: JobStore
 ) {
     const config = testConfig({ auth: githubAuth() });
     const instance = await buildApp({
         config,
-        orgs: staticRegistry({ config }),
+        orgs: staticRegistry({ config, jobs }),
         store,
         auth: memoryAuthStore(),
         orgOfLease:
@@ -333,6 +347,71 @@ describe('POST /api/sessions/branch', () => {
             payload: withoutAgent,
         });
         expect(store.branches[0]?.report.agent).toBe('claude-code');
+    });
+});
+
+/*
+ * Issue #822: opencode mints its own session id and the driver learns it only at close, so an
+ * attempt lost mid-run would leave its takeover nothing to resume. The runner's branch reporter
+ * already discovers that id live and posts it under the attempt pair; the report also records it
+ * on the attempt, through the same lease-guarded write the driver's session report makes.
+ */
+describe('POST /api/sessions/branch — the live opencode session', () => {
+    const opencode = {
+        agent: 'opencode',
+        sessionId: 'ses_live1',
+        repo: 'acme/app',
+        branch: 'feat/x',
+        headSha: 'abc123',
+        at: '2026-08-21T10:40:00Z',
+    };
+    const pair = { 'x-factory-job-id': JOB_ID, 'x-factory-job-lease-token': LEASE };
+    const post = (instance: Awaited<ReturnType<typeof harnessWith>>, payload: object, headers: object = pair) =>
+        instance.inject({ method: 'POST', url: '/api/sessions/branch', headers: { ...json, ...headers }, payload });
+
+    it('records an opencode report’s session on the attempt the pair names', async () => {
+        const store = stubStore();
+        const board = sessionBoard();
+        const res = await post(await githubHarnessWith(store, undefined, board.jobs), opencode);
+
+        expect(res.statusCode).toBe(HTTP_ACCEPTED);
+        expect(store.branches).toHaveLength(1);
+        expect(board.calls).toEqual([[JOB_ID, LEASE, 'ses_live1']]);
+    });
+
+    it('records it under AUTH_MODE none, where the lease guard alone checks the pair', async () => {
+        const board = sessionBoard();
+        const res = await post(await harnessWith(stubStore(), board.jobs), opencode);
+
+        expect(res.statusCode).toBe(HTTP_ACCEPTED);
+        expect(board.calls).toEqual([[JOB_ID, LEASE, 'ses_live1']]);
+    });
+
+    it('never touches the job for a claude-code report or a report without the pair', async () => {
+        const board = sessionBoard();
+        const instance = await harnessWith(stubStore(), board.jobs);
+
+        expect((await post(instance, { ...opencode, agent: 'claude-code' })).statusCode).toBe(HTTP_ACCEPTED);
+        expect((await post(instance, opencode, {})).statusCode).toBe(HTTP_ACCEPTED);
+        expect(board.calls).toEqual([]);
+    });
+
+    it('never writes a session id the session route would refuse', async () => {
+        const store = stubStore();
+        const board = sessionBoard();
+        const res = await post(await harnessWith(store, board.jobs), { ...opencode, sessionId: 'ses live' });
+
+        expect(res.statusCode).toBe(HTTP_ACCEPTED);
+        expect(store.branches).toHaveLength(1);
+        expect(board.calls).toEqual([]);
+    });
+
+    it('still answers 202 when the attempt is no longer live', async () => {
+        const board = sessionBoard('lost');
+        const res = await post(await harnessWith(stubStore(), board.jobs), opencode);
+
+        expect(res.statusCode).toBe(HTTP_ACCEPTED);
+        expect(board.calls).toHaveLength(1);
     });
 });
 

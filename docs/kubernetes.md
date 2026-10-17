@@ -55,8 +55,8 @@ What a run does — sync, gates, services, publish, helpers, reclaim — is one 
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
   `make reset`. `core/test/makefile.state-preflight.test.ts`.
 - Stated limit: a runner still RUNNING when its driver is lost is swept by the next claim's re-claim fence and
-  the job redone (refunded when the drain handed it over); a finished one is adoptable only until its Job's
-  one-hour `ttlSecondsAfterFinished`. Docker's fence removes a still-running container the same way.
+  the job redone in its session and tree, an interruption inside the budget; a finished one is adoptable until
+  its Job's one-hour `ttlSecondsAfterFinished`. Docker's fence removes a still-running container the same way.
   `driver/src/k8s-adopt.ts`, `driver/src/k8s-fence.ts`, `driver/src/docker-runner.ts`.
 - Stated limit: a thread with no attempt reclaims in a supervisor-only group (one Job, no agent), because nothing
   else holds the task volume; the group's pod requests are held while the gates run. `driver/src/k8s-group.ts`

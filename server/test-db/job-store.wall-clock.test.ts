@@ -3,7 +3,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { craftJob, type CraftShape, expectMinutes, testOrg, testUser } from './fixtures.js';
+import { craftJob, expectMinutes, spendInterruptionBudget, testOrg, testUser, type CraftShape } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -149,8 +149,9 @@ describe.skipIf(!enabled)('the task wall clock', () => {
     it('a row retired dead keeps its last segment', async () => {
         const id = await craft({ status: 'running' });
         await store.claim('w1', LEASE_SECONDS);
-        // Burn the last attempt, expire the lease, backdate the start: the next claim retires the
-        // row dead, and the six minutes it ran first must survive the retirement.
+        // Burn the last attempt and the interruption budget, expire the lease, backdate the start:
+        // the next claim retires the row dead, and the six minutes it ran first must survive it.
+        await spendInterruptionBudget(sql, id);
         await sql`update job set attempts = max_attempts, lease_expires_at = now() - interval '1 second',
                   started_at = now() - interval '6 minutes' where id = ${id}`;
 

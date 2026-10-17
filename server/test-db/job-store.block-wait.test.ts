@@ -531,7 +531,8 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         const reclaimed = (await store.claim('worker-2', 60)) as Claim;
         expect(reclaimed).not.toBeNull();
         expect(reclaimed.id).toBe(claim.id);
-        expect(reclaimed.attempts).toBe(2);
+        // The expiry is the lost attempt's interruption (issue #822): the claim sequence moves.
+        expect(reclaimed).toMatchObject({ attempts: 1, claimSeq: 2 });
 
         const rounds = await roundRows(root);
         expect(rounds).toHaveLength(1);
@@ -637,6 +638,38 @@ describe.skipIf(!enabled)('durable block waits — user control (issue #328)', (
         expect(await store.cancelWait(root, ALICE.id)).toEqual({ result: 'ok' });
 
         expect(await store.claim(WORKER, 60)).toBeNull();
+        const [job] = await sql<{ status: string }[]>`
+            select status from job where org_id = ${ORG} and id = ${round!.job_id}
+        `;
+        expect(job!.status).toBe('stopped');
+    });
+
+    // Issue #822: the plan is read before the claim's locks, but never for a cancelled
+    // continuation — an outage of the plan source must not hold the fence up.
+    it('the fence settles a cancelled continuation even while the plan source is down', async () => {
+        const down = createJobStore({
+            sql,
+            orgId: ORG,
+            prs,
+            plan: {
+                readFor: async () => {
+                    throw new Error('the plan source is down');
+                },
+            },
+        });
+        const root = await publishAndTransition('control-cancel-fence-outage', 28, ALICE.id);
+        await prs.recordDelivery({
+            deliveryId: 'd-cancel-fence-outage',
+            event: 'pull_request_review',
+            action: 'submitted',
+            repo: REPO,
+            prNumber: 28,
+        });
+        await sweepRuntimeWakes({ sql, orgId: ORG, prs });
+        const [round] = await roundRows(root);
+        expect(await store.cancelWait(root, ALICE.id)).toEqual({ result: 'ok' });
+
+        expect(await down.claim(WORKER, 60)).toBeNull();
         const [job] = await sql<{ status: string }[]>`
             select status from job where org_id = ${ORG} and id = ${round!.job_id}
         `;

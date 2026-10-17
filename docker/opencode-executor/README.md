@@ -6,11 +6,11 @@ opencode in a container, headless only, run by the driver when a task's executor
 | Concern | Code | Test |
 | --- | --- | --- |
 | The image — Node 24, `opencode-ai`, `@gcornut/opencode-otel`, `context-mode`, `gh`, `acli` (all pinned) | `Dockerfile` | `test.sh` |
-| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, per-run allows via `OPENCODE_CONFIG_CONTENT` | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| `ENTRYPOINT` (`/usr/local/bin/opencode-executor`): `$WORKDIR`, `XDG_DATA_HOME`, per-run allows via `OPENCODE_CONFIG_CONTENT`, a `--session` the database lacks started anew, the session that predates a fresh run named for the reporter | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Permission policy and plugin references, baked root-owned as the global and the managed (`/etc/opencode`) copy | `opencode-home/opencode.json` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Telemetry plugin config at `OPENCODE_OTEL_CONFIG_PATH`, root-owned; the driver renders its endpoint | `otel.json`, `driver/src/telemetry-config.ts` | `test.sh`, `driver/test/telemetry-shipping.test.ts` |
 | Baked global instructions | `opencode-home/AGENTS.md` | `driver/test/executor-images.test.ts` |
-| Sidecars: branch reporting to `/api/sessions/branch`; killing a run hung after a provider rate limit | `branch-reporter.cjs`, `rate-limit-watch.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
+| Sidecars: branch reporting to `/api/sessions/branch`, which with the attempt pair also records the live session; killing a run hung after a provider rate limit | `branch-reporter.cjs`, `rate-limit-watch.cjs` | `driver/test/executor-images.test.ts`, `driver/test/branch-reporter.test.ts`, `test.sh` |
 | Cooperative Stop: the supervisor-mailbox agent and the step-boundary plugin | `ctl-agent.cjs`, `stop-plugin/index.js` | `driver/test/supervisor.test.ts`, `driver/test/run-control.test.ts` |
 | Skills, shared with claude-executor | `../skills/` | `driver/test/executor-images.test.ts` |
 

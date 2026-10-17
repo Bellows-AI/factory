@@ -204,7 +204,7 @@ export async function buildApp({
     await app.register(skillRoutes(skillCatalog));
     await app.register(statsRoutes(config, orgs, auth, now));
     await app.register(repoRoutes({ config, orgs }));
-    if (store) await app.register(ingestRoutes(store));
+    if (store) await app.register(ingestRoutes(store, orgs));
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(jobRoutes({ orgs }));

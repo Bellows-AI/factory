@@ -5,7 +5,15 @@ import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
-import { expectStillLocked, expireLease, holdLock, mustCreate, randomGithubId, testOrg } from './fixtures.js';
+import {
+    expectStillLocked,
+    expireLease,
+    holdLock,
+    mustCreate,
+    randomGithubId,
+    spendInterruptionBudget,
+    testOrg,
+} from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -327,7 +335,27 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         const second = await store.claim('w2', LEASE_SECONDS);
 
-        expect(second).toMatchObject({ id, attempts: 2, resumeSessionId: SESSION, followUp: true });
+        expect(second).toMatchObject({ id, attempts: 1, claimSeq: 2, resumeSessionId: SESSION, followUp: true });
+    });
+
+    // A root whose lease expired is recovered in its own session (issue #822), and the follow-up
+    // after it continues that same conversation.
+    it('continues the session a recovered root resumed', async () => {
+        const { id } = await mustCreate(store.create('drive me', null, { repo: null, executor: null }));
+        const lost = await store.claim('w1', LEASE_SECONDS);
+        await store.session(id, lost!.leaseToken, SESSION);
+        await expireLease(sql, id);
+        const recovered = await store.claim('w2', LEASE_SECONDS);
+        expect(recovered).toMatchObject({ id, resumeSessionId: SESSION, followUp: false });
+        await store.complete(id, recovered!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+
+        const followUp = await mustFollowUp(id, 'again', null);
+        expect(await store.get(followUp.id)).toMatchObject({ sessionId: SESSION });
+        expect(await store.claim('w1', LEASE_SECONDS)).toMatchObject({
+            id: followUp.id,
+            resumeSessionId: SESSION,
+            followUp: true,
+        });
     });
 
     // The task is done when the user says so — a verdict no run can make and nobody can take back
@@ -667,6 +695,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             const claim = await store.claim('w1', LEASE_SECONDS);
             // Reported before the job dies, or the follow-up would have nothing to continue.
             await store.session(id, claim!.leaseToken, SESSION);
+            await spendInterruptionBudget(sql, id);
             await expireLease(sql, id);
             expect(await store.claim('w2', LEASE_SECONDS)).toBeNull();
             expect((await row(id))[0]?.status).toBe('dead');

@@ -49,8 +49,9 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   missing or under 32 characters), so a claim names no org and is offered every org's queue. `server/src/config.ts`.
 - **`POST /api/sessions/branch` demands an org-bound credential in github mode** — the runner's
   `x-factory-job-id` + `x-factory-job-lease-token` pair, or a `fat_` token; the deployment-wide
-  ingest token does not open it (CWE-862). `server/src/routes/ingest.ts`,
-  `server/test/auth.enforcement.test.ts`.
+  ingest token does not open it (CWE-862); with the pair, an `opencode` report also sets that live attempt's
+  session, through the lease-guarded session write. `server/src/routes/ingest.ts`,
+  `server/test/auth.enforcement.test.ts`, `server/test/routes.ingest.test.ts`.
 
 ## Stated limits
 

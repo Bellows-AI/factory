@@ -447,6 +447,12 @@ export interface Claim {
     command: string;
     attempts: number;
     maxAttempts: number;
+    /**
+     * Whether a loss of this attempt ends the job (issue #822): its attempts and its interruption
+     * budget are both spent, so the board retires it `dead` when this lease expires. Until then a
+     * lost attempt is an interruption, and a driver that cannot run it leaves it to the lease.
+     */
+    lastAttempt: boolean;
     /** The row's claim sequence (057): bumped by every claim, never refunded like `attempts`. */
     claimSeq: number;
     leaseToken: string;

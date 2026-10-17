@@ -153,7 +153,9 @@ describe('the executor isolation record (#382)', () => {
     // case is redone, and the bound on a finished one is the Job's TTL.
     it('states that only a finished runner is adopted, and for how long', () => {
         expect(kubernetesDocs).toContain('Stated limit: a runner still RUNNING when its driver is lost');
-        expect(prose(kubernetesDocs)).toContain('the job redone (refunded when the drain handed it over)');
+        expect(prose(kubernetesDocs)).toContain(
+            'the job redone in its session and tree, an interruption inside the budget'
+        );
         expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
     });
 
@@ -183,5 +185,12 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(testingDocs)).toContain('kills (`kill -9`) and drains (`DRIVER_HANDOVER_MS`) a driver mid-run');
         expect(prose(testingDocs)).toContain('a runner pod deleted mid-run each end succeeded with one attempt');
         expect(prose(testingDocs)).toContain('never reaped unread');
+        // Issue #822: a driver lost together with its runner, and an expiry at the last attempt.
+        expect(prose(testingDocs)).toContain(
+            'a driver lost together with its runner is redone by a replacement runner'
+        );
+        expect(prose(testingDocs)).toContain(
+            'a driver pod and its runner Job deleted together end succeeded in the lost session'
+        );
     });
 });

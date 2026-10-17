@@ -23,6 +23,13 @@
  *                        otherwise discovers the id live from opencode's session database.
  *   WORKDIR              the checkout to sample. Defaults to the current directory.
  *   XDG_DATA_HOME        where opencode keeps its session database (opencode/opencode.db).
+ *   BRANCH_REPORTER_PRIOR_SESSION  the newest root session of this directory BEFORE the run
+ *                        started (`--prior` prints it): a retry runs in its task's directory and
+ *                        database, and discovery answers nothing while that conversation is still
+ *                        the newest, so an earlier attempt's id is never reported as this run's.
+ *   BRANCH_REPORTER_PRIOR_UNKNOWN  set when `--prior` could not read the database: with no
+ *                        baseline nothing is discovered, rather than a session that may predate
+ *                        the run. A handed-in id still reports.
  *   BRANCH_REPORTER_GIT_TIMEOUT_MS  per-`git` call budget, default 1000. Only the tests set it: a
  *                        contended suite runs `git` slower than a live run ever should.
  *   BRANCH_REPORTER_REQUEST_TIMEOUT_MS  per-report budget, default 2000. Only the tests set it:
@@ -31,8 +38,12 @@
  * `--once` takes a single sample and exits; the entrypoint runs it once more after the CLI
  * closes, so a run's last branch state is reported even when the CLI exits the moment the
  * conversation ends.
+ * `--prior` prints the session discovery finds now, sends nothing and exits — the entrypoint's
+ * BRANCH_REPORTER_PRIOR_SESSION, read before the CLI starts. A database that exists but cannot be
+ * read exits 1 instead: an unknown baseline is not an empty one.
  */
 const { execFileSync } = require('node:child_process');
+const { statSync } = require('node:fs');
 const { join } = require('node:path');
 
 // The one line the two copies differ on: the agent the metrics carry, exactly as agentOf()
@@ -92,18 +103,42 @@ function repoSlug() {
 function resolveSessionId() {
     const handed = (process.env.BELLOWS_SESSION_ID ?? '').trim();
     if (handed) return handed;
+    if (process.env.BRANCH_REPORTER_PRIOR_UNKNOWN) return null;
+    const found = discoverSessionId();
+    return found === (process.env.BRANCH_REPORTER_PRIOR_SESSION ?? '').trim() ? null : found;
+}
+
+/**
+ * The newest root session of this directory; null with no database, a throw for one unreadable —
+ * only ENOENT is absence, so a directory the run cannot enter is never mistaken for an empty one.
+ */
+function newestRootSession() {
     const data = process.env.XDG_DATA_HOME;
     if (!data) return null;
+    const file = join(data, 'opencode', 'opencode.db');
     try {
-        const { DatabaseSync } = require('node:sqlite');
-        const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'), { readOnly: true });
+        statSync(file);
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    }
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
         const row = db.prepare(
             'select id from session where parent_id is null and directory = ? order by time_created desc limit 1',
         ).get(CWD);
-        db.close();
         return row?.id ?? null;
+    } finally {
+        db.close();
+    }
+}
+
+function discoverSessionId() {
+    try {
+        return newestRootSession();
     } catch {
-        // No database yet, or no node:sqlite: there is nothing to discover. The loop looks
+        // No session table yet, or no node:sqlite: there is nothing to discover. The loop looks
         // again, and a handed-in id still works.
         return null;
     }
@@ -154,6 +189,15 @@ async function report(sessionId) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
+    if (process.argv.includes('--prior')) {
+        try {
+            process.stdout.write(newestRootSession() ?? '');
+        } catch {
+            // Past the catch-all below, which exits 0: the one answer that is not "never fail".
+            process.exit(1);
+        }
+        return;
+    }
     if (!ENDPOINT) return;
 
     if (process.argv.includes('--once')) {

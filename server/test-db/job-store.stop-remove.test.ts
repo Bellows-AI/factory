@@ -7,12 +7,13 @@ import { useTestDb } from './harness.js';
 import {
     account,
     craftJob,
-    type CraftShape,
     expectMinutes,
     expireLease,
+    lapseDeferral,
     randomGithubId,
     testOrg,
     testUser,
+    type CraftShape,
 } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -469,9 +470,9 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         });
     });
 
-    // The settle is committed on its own, before the claim transaction (review of PR #153): the
-    // transaction also carries the claim's PREPARATION — the env resolution, the token mint —
-    // and a throw there rolls the whole thing back, settlement included. Inside it, a board whose
+    // The settle is committed on its own, before the claim (review of PR #153): the claim's
+    // PREPARATION — the plan read, the env resolution — awaits calls that throw, and a settle
+    // that rode with them would be rolled back with them. Inside it, a board whose
     // preparation keeps failing would keep the stamped zombie `running` forever, and the
     // follow-up the member queued would keep answering not_finished — the exact stuck state this
     // issue exists to end.
@@ -507,8 +508,11 @@ describe.skipIf(!enabled)('stopping a task: zombie recovery', () => {
         if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
 
         // And the failed claim's own candidate is back to queued, attempt unburned — the
-        // rollback still guards exactly the half-claim it always did.
+        // rollback still guards exactly the half-claim it always did — and deferred (issue #822),
+        // so the follow-up queued meanwhile goes first; once the deferral lapses it is claimed.
         expect(await store.get(fresh)).toMatchObject({ status: 'queued', attempts: 0 });
-        expect((await store.claim('w3', LEASE_SECONDS))?.id).toBe(fresh);
+        expect((await store.claim('w3', LEASE_SECONDS))?.id).toBe(followUp.id);
+        await lapseDeferral(sql, fresh);
+        expect((await store.claim('w4', LEASE_SECONDS))?.id).toBe(fresh);
     });
 });

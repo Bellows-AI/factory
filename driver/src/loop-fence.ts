@@ -149,9 +149,9 @@ export async function concludeSetup(ctx: AttemptCtx, halt: SetupHalt): Promise<v
 
 /**
  * Leaves an attempt that ended without a verdict to the lease, saying why in the log. The board
- * retires a job whose attempts ran out with no output at all, so the LAST attempt reports a failed
- * verdict carrying `reason` instead: the reason is what `job investigate`, the web and a batch
- * report show for the dead job.
+ * recovers an expired lease as an interruption while it can, and retires the job `dead` with no
+ * output once it cannot, so that LAST attempt (`lastAttempt` on the claim) reports a failed verdict
+ * carrying `reason` instead: the reason is what `job investigate`, the web and a batch report show.
  */
 export async function leaveToLease(
     ctx: AttemptCtx,
@@ -206,7 +206,7 @@ export async function concludeUnreported(ctx: AttemptCtx, outcome: RunOutcome): 
 
 /** `leaveToLease`'s conclusion, as data: left to the lease, or reported failed on the last attempt. */
 export function leaveConclusion(job: BoardJob, reason: string, leaveLog: string, exitCode: number | null): SetupHalt {
-    if (job.attempts < job.maxAttempts) return { halt: 'leave', log: leaveLog };
+    if (!job.lastAttempt) return { halt: 'leave', log: leaveLog };
     return {
         halt: 'fault',
         log: `${reason}, and no attempts are left: reporting it`,

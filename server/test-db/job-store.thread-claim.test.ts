@@ -67,9 +67,10 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
         const root = await craft({ status: 'running', lease: 'expired' });
         const followUp = await craft({ parent: root });
 
-        // The root's own reclaim is the heartbeat-fenced path and stays — never the follow-up.
+        // The root's own reclaim is the heartbeat-fenced path and stays — never the follow-up. The
+        // expiry is the crafted attempt's interruption, so the claim sequence moves, not attempts.
         const first = await store.claim('w1', LEASE_SECONDS);
-        expect(first).toMatchObject({ id: root, attempts: 1 });
+        expect(first).toMatchObject({ id: root, attempts: 0, claimSeq: 1 });
         expect(first?.rootJobId).toBe(root);
 
         // The root runs on: the follow-up still waits.

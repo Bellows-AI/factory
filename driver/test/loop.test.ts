@@ -50,6 +50,7 @@ const job = (n: number, resumeSessionId: string | null = null): BoardJob => ({
     rootCommand: `job ${n}`,
     attempts: 1,
     maxAttempts: 3,
+    lastAttempt: false,
     claimSeq: 1,
     leaseToken: `0000000${n}-2222-4222-8222-222222222222`,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',
@@ -1998,6 +1999,7 @@ describe('the poll loop', () => {
                 command: '',
                 attempts: 1,
                 maxAttempts: 1,
+                lastAttempt: true,
                 claimSeq: 1,
                 leaseToken: rowId,
                 leaseExpiresAt: '2026-08-21T12:05:00.000Z',
@@ -2465,7 +2467,7 @@ describe('the poll loop', () => {
     // The board retires a job whose attempts ran out with no output, so the attempt that burns the
     // last one reports the daemon's reason as the verdict (issue #664).
     it('reports the reason a runner never started on the last attempt', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3 }]);
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }]);
         const reason =
             'docker: conflicting options: cannot attach both user-defined and non-user-defined network-modes';
         const runner = stubRunner(async () => ok({ exitCode: 125, output: reason, started: false }));
@@ -2478,10 +2480,26 @@ describe('the poll loop', () => {
         expect(logs.some((m) => m.includes(reason))).toBe(true);
     });
 
+    // Issue #822: the board recovers a lost attempt at the last allowed attempt while its
+    // interruption budget lasts, so a driver that cannot run it — its own pod deleted under it,
+    // the apiserver refusing its revoked token — leaves it to the lease rather than failing it.
+    it('leaves a run it could not start to the lease on the last allowed attempt the board still recovers', async () => {
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: false }]);
+        const runner = stubRunner(async () => {
+            throw new Error('reading the runner job answered 401: Unauthorized');
+        });
+        const logs: string[] = [];
+
+        await drive({ ...board, runner, log: (m) => logs.push(m) });
+
+        expect(board.board.completed).toEqual([]);
+        expect(logs.some((m) => m.includes('could not run, leaving it to the lease'))).toBe(true);
+    });
+
     // The kubernetes twin: the runner throws when the apiserver refuses the Job, so the reason
     // rides the rejection instead of the outcome.
     it('reports the reason a run could not start on the last attempt', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3 }]);
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }]);
         const runner = stubRunner(async () => {
             throw new Error('creating the runner job answered 403: pods "x" is forbidden: exceeded quota');
         });
@@ -2673,7 +2691,7 @@ describe('the poll loop', () => {
 
     // A spent interruption budget falls back to the lease, and the last attempt reports the loss.
     it('leaves an infrastructure loss to the lease once the interruption budget is spent', async () => {
-        const board = stubBoard([{ ...job(1), attempts: 3 }], { interruptVerdict: 'exhausted' });
+        const board = stubBoard([{ ...job(1), attempts: 3, lastAttempt: true }], { interruptVerdict: 'exhausted' });
         const runner = stubRunner(async () =>
             ok({ exitCode: null, output: '', infraLoss: 'the runner pod was deleted before it exited (Evicted)' })
         );

@@ -641,6 +641,9 @@ export async function requeueJob(
  */
 export const INTERRUPTION_BUDGET = 5;
 
+/** The interruption the next claim records for an attempt whose lease expired (issue #822). */
+export const LEASE_EXPIRED_REASON = 'the lease expired: its driver went silent';
+
 export async function interruptJob(
     ctx: JobStoreContext,
     id: string,
@@ -652,7 +655,8 @@ export async function interruptJob(
     // wall clock and `started_at` clears, so the next claim banks nothing twice. `release` false is
     // an adoption: an attempt this claim superseded was the one interrupted (`claimSeq` names it),
     // and this one keeps its lease. A Stop already stamped wins over a release, as over the requeue.
-    // An attempt already recorded (handed over, then adopted) is one disruption: refunded once.
+    // An attempt already recorded (handed over, or expired and recorded by the claim that took it
+    // over, then adopted) is one disruption: refunded once.
     const entry = sql.json({ reason, at: new Date().toISOString() });
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))

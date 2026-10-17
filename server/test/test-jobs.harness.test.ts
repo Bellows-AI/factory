@@ -232,6 +232,19 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('attempts 1');
     });
 
+    // Issue #822: an expired lease is the lost attempt's interruption, at max_attempts 1, and a
+    // driver lost together with its runner is redone by a replacement in the lost session.
+    it('the node-disruption phase recovers an expiry at the last attempt, and a runner lost with its driver', () => {
+        const start = SCRIPT.indexOf("echo '# node disruption'");
+        const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
+        expect(phase).toContain("EXPIRED='the lease expired: its driver went silent'");
+        expect(phase).toContain("update job set max_attempts = 1 where id = '$killed'");
+        expect(phase).toContain("update job set max_attempts = 1 where id = '$lost'");
+        expect(phase).toContain('docker ps -aq --filter "label=factory.job=$lost" |');
+        expect(phase).toContain('"job $lost: attempt 1 resuming session $lost_session"');
+        expect(phase).toContain('upstream:0');
+    });
+
     it('the orphan runner is removed one id at a time, not as one newline-joined argument', () => {
         // `docker rm -f "$(docker ps -aq …)"` hands every match to docker as ONE argument: with
         // more than one container left under the job label (the fence's runner plus anything the

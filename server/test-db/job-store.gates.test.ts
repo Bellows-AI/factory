@@ -6,7 +6,7 @@ import type { JobStore } from '../src/db/job-store-types.js';
 import { createWorkflowStore } from '../src/db/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { account, randomGithubId, testOrg } from './fixtures.js';
+import { account, lapseDeferral, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -137,9 +137,16 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
         };
 
         await expect(reader.claim('driver-1', LEASE_SECONDS)).rejects.toThrow('GitHub is unreachable');
-        expect((await reader.get(created.id))?.status).toBe('queued');
+        expect(await reader.get(created.id)).toMatchObject({ status: 'queued', attempts: 0 });
+        const [deferral] = await sql<{ deferred: boolean }[]>`
+            select claim_deferred_until > now() as deferred from job where id = ${created.id}
+        `;
+        expect(deferral?.deferred).toBe(true);
 
+        // Deferred, never failed (issue #822): once the reader is back and the deferral lapsed,
+        // the next claim resolves the plan.
         failing = false;
+        await lapseDeferral(sql, created.id);
         const claim = await reader.claim('driver-1', LEASE_SECONDS);
         expect(claim?.id).toBe(created.id);
         expect(claim?.planRefusal).toBeNull();

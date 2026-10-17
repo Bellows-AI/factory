@@ -41,6 +41,7 @@ const JOB = (lease: string): BoardJob => ({
     rootCommand: 'fix the failing build',
     attempts: 1,
     maxAttempts: 3,
+    lastAttempt: false,
     claimSeq: 1,
     leaseToken: lease,
     leaseExpiresAt: '2026-08-29T12:05:00.000Z',

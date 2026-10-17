@@ -1,8 +1,12 @@
-import type { FastifyPluginAsync } from 'fastify';
-import { orgOf } from '../auth/plugin.js';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import { JOB_ID_HEADER, LEASE_TOKEN_HEADER, orgOf } from '../auth/plugin.js';
+import { UUID } from '../config.js';
+import type { OrgRegistry } from '../orgs.js';
 import { flattenMetrics } from '../telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js';
-import { CLAUDE_CODE, CONTENT_TYPE_HEADER } from '@factory-ai/core';
+import { storeFor } from './job-context.js';
+import { SESSION_ID } from './job-limits.js';
+import { CLAUDE_CODE, CONTENT_TYPE_HEADER, OPENCODE } from '@factory-ai/core';
 
 /**
  * A misconfigured exporter can POST into the same process that serves the SPA, every few
@@ -40,8 +44,24 @@ function branchReport(body: unknown): SessionBranchReport | null {
     };
 }
 
+/**
+ * An opencode report's session, recorded on the attempt its pair names (issue #822): opencode mints
+ * its own id and the driver learns it only at close, so a run lost mid-flight would leave its
+ * takeover nothing to resume. The write is the driver's own lease-guarded session report — the
+ * pair is the credential, and an attempt no longer live changes nothing.
+ */
+async function recordLiveSession(orgs: OrgRegistry, request: FastifyRequest, report: SessionBranchReport) {
+    const jobId = request.headers[JOB_ID_HEADER];
+    const leaseToken = request.headers[LEASE_TOKEN_HEADER];
+    if (report.agent !== OPENCODE || !SESSION_ID.test(report.sessionId)) return;
+    if (typeof jobId !== 'string' || !UUID.test(jobId) || typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+        return;
+    }
+    await (await storeFor(orgs, request))?.session(jobId, leaseToken, report.sessionId);
+}
+
 export const ingestRoutes =
-    (store: TelemetryStore): FastifyPluginAsync =>
+    (store: TelemetryStore, orgs: OrgRegistry): FastifyPluginAsync =>
     async (app) => {
         app.post('/api/otlp/v1/metrics', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             if (!isJson(request.headers[CONTENT_TYPE_HEADER])) {
@@ -87,6 +107,7 @@ export const ingestRoutes =
                 // payload, and the owner match it used to drive would let a report name another
                 // organization's repository and poison its telemetry (CWE-862).
                 await store.recordBranch(report, orgOf(request));
+                await recordLiveSession(orgs, request, report);
             } catch (e) {
                 request.log.error({ err: e }, 'session branch upsert failed');
                 return reply.code(HTTP_UNAVAILABLE).send({ error: (e as Error).message });

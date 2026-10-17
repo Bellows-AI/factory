@@ -9,6 +9,7 @@ import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
+import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf } from './job-store-reviews.js';
@@ -58,11 +59,15 @@ export interface ClaimCandidateRow {
     has_jira_connection: boolean;
     /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */
     base_branch: string | null;
+    /** Whether this attempt's loss retires the job: attempts and interruption budget spent (issue #822). */
+    last_attempt: boolean;
 }
 
 /**
  * Retire what has burned its attempts, before looking for work. Without this a command that kills
- * its worker is reclaimed every time its lease expires, forever. The dead attempt's segment banks
+ * its worker is reclaimed every time its lease expires, forever. An expired lease is first an
+ * interruption the claim records (issue #822), so only a row whose interruption budget is spent
+ * too retires; its session stays, for the follow-up that continues it. The dead attempt's segment banks
  * here: the row ran for real before its worker went quiet, and the retirement must not erase it. A
  * stamped row never reaches this sweep — the settle in `claimJob` has already landed it `stopped`,
  * which is the verdict a stop is (issue #152): dead is for attempts that failed on their own.
@@ -74,6 +79,7 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
                        wall_clock_ms = ${wallTick}
         where org_id = ${orgId} and status = 'running'
           and lease_expires_at <= now() and attempts >= max_attempts
+          and jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}
         returning id, root_job_id
     `;
     // A retired caller's separate reviews (issue #549) have no one left to read them.
@@ -123,34 +129,54 @@ async function settleCancelledContinuation(
 }
 
 /**
- * `claim()`'s select-lock-claim loop, one candidate at a time: pulled out of `claimJob` purely so
- * that function itself stays under the complexity ceiling — no behavior change. Returns the
- * assembled claim, or null when nothing is claimable.
+ * How long a claim reserves its candidate while it prepares it (issue #822): above the plan read's
+ * worst case — two GitHub requests of up to 20 s each, each behind an installation-token mint of up
+ * to 5 s (`server/src/github/app-client.ts`, `app-token.ts`). Only an optimization: the acquisition
+ * re-checks everything, so a preparation that outlives it is dropped, never trusted.
  */
-async function claimNextCandidate(
-    ctx: JobStoreContext,
-    worker: string,
-    leaseSeconds: number
-): ReturnType<JobStore['claim']> {
-    const { sql, orgId } = ctx;
-    return sql.begin(async (tx) => {
-        await retireExhaustedAttempts(ctx, tx);
+export const CLAIM_PREPARE_SECONDS = 60;
 
-        /*
-         * The thread-exclusion, rendered once and used twice below. `id` and `root` are the
-         * candidate row's id and root_job_id: correlated expressions in the select, bound
-         * parameters in the update.
-         *
-         * A row whose thread already has another row running waits. The per-task worktree
-         * (issue #35) is keyed by the thread root, so two claimed rows of one thread would run
-         * two runners and two sync jobs into the same tree. The blocker is status = 'running'
-         * and nothing else: an expired lease is still a run the board believes in until the
-         * claim reclaims it (the same-row reclaim, o.id <> <candidate>, is the heartbeat-409
-         * path and stays). Every member of
-         * the thread carries the same root_job_id (022), so the exclusion is one indexed
-         * lookup, not a walk — and it is symmetric and terminal rows block nothing.
-         */
-        const sameThreadRunning = (id: string | Fragment, root: string | Fragment) => sql`
+/** The candidate a claim reserved, as the preparation outside every lock needs it. */
+interface ReservedCandidate {
+    id: string;
+    root_job_id: string;
+    claim_seq: string;
+    created_by: string | null;
+    repo: string | null;
+    workflow_node: string | null;
+    review: boolean;
+    base_branch: string | null;
+}
+
+/** The answer an acquisition that lost its candidate gives: move to the next one. */
+const NEXT_CANDIDATE = Symbol('next candidate');
+
+/**
+ * The claimability rules, rendered for the reservation and the acquisition alike.
+ *
+ * `sameThreadRunning` is the thread exclusion: `id` and `root` are the candidate row's id and
+ * root_job_id, correlated expressions in the reservation, bound parameters in the acquisition. A row
+ * whose thread already has another row running waits. The per-task worktree (issue #35) is keyed by
+ * the thread root, so two claimed rows of one thread would run two runners and two sync jobs into the
+ * same tree. The blocker is status = 'running' and nothing else: an expired lease is still a run the
+ * board believes in until the claim reclaims it (the same-row reclaim, o.id <> <candidate>, is the
+ * heartbeat-409 path and stays). Every member of the thread carries the same root_job_id (022), so
+ * the exclusion is one indexed lookup, not a walk — and it is symmetric and terminal rows block nothing.
+ *
+ * `recovering` is a `running` row whose lease expired: an attempt the infrastructure lost — its
+ * driver went silent (issue #822). While the interruption budget lasts, the claim that takes it over
+ * records that loss as the superseded attempt's interruption and spends no attempt, so an expiry at
+ * the last allowed attempt stays recoverable. Unqualified on purpose: the reservation's only table
+ * is the candidate, and the acquisition's SET reads the pre-update row.
+ *
+ * `baseBranch` is the frozen target branch of the batch task the thread works, joined through the
+ * root, so every retry, follow-up and repair of a batch task bases on the target's branch with no
+ * column to copy.
+ */
+function claimRules(ctx: JobStoreContext) {
+    const { sql, orgId } = ctx;
+    return {
+        sameThreadRunning: (id: string | Fragment, root: string | Fragment) => sql`
             not exists (
                 select 1 from job o
                 where o.org_id = ${orgId}
@@ -158,144 +184,194 @@ async function claimNextCandidate(
                   and o.id <> ${id}
                   and o.status = 'running'
             )
+        `,
+        recovering: sql`(status = 'running' and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET})`,
+        baseBranch: sql`(select tg.branch from batch_task t
+                         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
+                                             and tg.key = t.target_key
+                         where t.org_id = job.org_id and t.root_job_id = job.root_job_id)`,
+    };
+}
+
+/**
+ * Reserves the next candidate, in one autocommit statement so no lock outlives it: the oldest
+ * claimable row nobody reserved, with a row whose earlier preparation failed or was abandoned —
+ * its `claim_deferred_until` still set — ordered behind every row that never failed, oldest failure
+ * first. That ordering, not only the window, is what lets healthy work past a poison candidate
+ * however long the driver sleeps between polls (`DRIVER_POLL_MS`).
+ */
+async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate | null> {
+    const { sql, orgId } = ctx;
+    const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
+    const [reserved] = await sql<ReservedCandidate[]>`
+        update job set claim_deferred_until = now() + make_interval(secs => ${CLAIM_PREPARE_SECONDS}::int)
+        where org_id = ${orgId} and id = (
+            select j.id from job j
+            where j.org_id = ${orgId}
+              and j.status in ('queued','running')
+              and j.lease_expires_at <= now()
+              and (j.attempts < j.max_attempts or ${recovering})
+              and (j.claim_deferred_until is null or j.claim_deferred_until <= now())
+              and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
+            order by j.claim_deferred_until asc nulls first, j.created_at, j.id
+            limit 1
+            -- Below the limit in the plan, so a row another claimer is reserving is skipped
+            -- rather than counted and then discarded.
+            for update skip locked
+        )
+        returning id, root_job_id, claim_seq, created_by, repo, workflow_node,
+                  (review_spec is not null and review_ref is not null) as review,
+                  ${baseBranch} as base_branch
+    `;
+    return reserved ?? null;
+}
+
+/**
+ * The claim's slow half, outside every transaction: the plan read through the GitHub API. A
+ * named-profile review never reads the plan (`claimReview`), and neither does a cancelled
+ * continuation, which the acquisition settles — so an outage of the plan source never holds up the
+ * cancellation fence. A read that throws propagates, and the reservation stays as the candidate's
+ * backoff.
+ */
+async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidate): Promise<ResolvedClaimGates> {
+    const { sql, orgId, planReader, hasWorkspaces } = ctx;
+    const skip =
+        reserved.review ||
+        (reserved.workflow_node !== null && (await isCancelledContinuation(sql, orgId, reserved.id)));
+    return resolveClaimGates(
+        skip ? undefined : planReader,
+        { orgId, hasWorkspaces, rootJobId: reserved.root_job_id },
+        reserved
+    );
+}
+
+/**
+ * The claim's short half: one transaction that takes the candidate's row lock, then its thread
+ * root's advisory lock — the order a verdict takes them, so the two never deadlock — and claims it
+ * only if nothing moved since the reservation: the whole claimability predicate re-asserted under
+ * the locks, and `claim_seq` unchanged, so a claim that committed while this one prepared (its
+ * reservation lapsed, say) is never overwritten with a stale plan read. The lease starts at this
+ * acquisition (`clock_timestamp()`), after any lock wait, never at a transaction's start.
+ *
+ * The root lock is the serialization point. Deliberately not `for update` on the root ROW: that row
+ * is the one a running thread heartbeats and completes against, and a claim parked on it would stall
+ * those writes for as long as its env resolution takes. An advisory xact lock queues claims against
+ * each other and nothing else, is keyed per root so different threads never block each other, and
+ * claims of one thread therefore fully serialize: the re-check sees every earlier claim committed.
+ *
+ * The rest of the claim — env and executor resolution, the workflow snapshot, the evidence stamp —
+ * resolves on this transaction, so a throw rolls the half-claim back: the row is never `running`
+ * with a lease nobody holds. The reservation outlives the rollback as the candidate's backoff.
+ */
+async function acquireCandidate(
+    ctx: JobStoreContext,
+    lease: { worker: string; leaseSeconds: number },
+    reserved: ReservedCandidate,
+    gates: ResolvedClaimGates
+): Promise<Claim | typeof NEXT_CANDIDATE> {
+    const { sql, orgId } = ctx;
+    const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
+    const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
+    const rootJobId = reserved.root_job_id;
+    return sql.begin(async (tx) => {
+        // Gone (the thread was removed while this claim prepared): nothing to acquire.
+        const [locked] = await tx`select id from job where org_id = ${orgId} and id = ${reserved.id} for update`;
+        if (!locked) return NEXT_CANDIDATE;
+        await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+
+        const rows = await tx<
+            (ClaimCandidateRow & {
+                executor_scope: string | null;
+            })[]
+        >`
+            update job set
+                status           = 'running',
+                claimed_by       = ${lease.worker},
+                lease_token      = gen_random_uuid(),
+                -- A lost attempt is recorded, not spent: the interruption names the claim it
+                -- supersedes, so an adoption of that claim's runner is the same disruption.
+                attempts         = attempts + case when ${recovering} then 0 else 1 end,
+                interruptions    = case when ${recovering}
+                    then interruptions || jsonb_build_array(
+                        ${expiry}::jsonb || jsonb_build_object('claimSeq', claim_seq)
+                    )
+                    else interruptions
+                end,
+                -- Never refunded (057): what orders this claim after every earlier one.
+                claim_seq        = claim_seq + 1,
+                -- Unconditional, not coalesce(started_at, now()): this must describe the
+                -- attempt that is about to run, or every duration is measured from attempt 1.
+                started_at       = now(),
+                -- The attempt this claim supersedes banked its segment in the same
+                -- statement (the SET reads the pre-update row): a run that crashed after
+                -- forty minutes and was retried keeps its forty minutes. A row that never
+                -- started (the first claim of a queued one) banks nothing — its clock
+                -- stays null, because null means "never ran" and zero would claim a
+                -- measurement that was never made.
+                wall_clock_ms    = case when started_at is null then wall_clock_ms else ${ctx.wallTick} end,
+                -- session_id is not written: the session a lost attempt reported is the one
+                -- its takeover resumes (issue #822). A fresh run is a retry — a new row.
+                -- The previous attempt's vitals are not this attempt's, and a new container
+                -- starts unsampled: the started_at reset, one row down.
+                runtime          = null,
+                -- Likewise the gate report: an attempt that never reports gates must not leave
+                -- the previous attempt's red report for the workflow engine to read.
+                gates            = null,
+                claim_deferred_until = null,
+                lease_expires_at = clock_timestamp() + make_interval(secs => ${lease.leaseSeconds}::int)
+            where org_id = ${orgId} and id = ${reserved.id}
+              and claim_seq = ${reserved.claim_seq}
+              and status in ('queued','running')
+              and lease_expires_at <= now()
+              and (attempts < max_attempts or ${recovering})
+              and ${sameThreadRunning(reserved.id, rootJobId)}
+            -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
+            -- their pre-update values: delivered-so-far is exactly "this row was suspended at
+            -- least once with its command in the transcript". A fresh or crashed follow-up has
+            -- never been parked, so its command still has to go out; a suspended one settles
+            -- stopped, and is never claimed again.
+            returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
+                      session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
+                      review_of, review_spec, review_ref,
+                      -- The post-update row: whether this attempt's loss would retire the job.
+                      (attempts >= max_attempts
+                       and jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}) as last_attempt,
+                      (parent_job_id is not null and command_delivered_at is null) as follow_up,
+                      (select r.command from job r
+                       where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
+                      (select r.skills from job r
+                       where r.org_id = job.org_id and r.id = job.root_job_id) as skills,
+                      (select r.jira_connection_id is not null from job r
+                       where r.org_id = job.org_id and r.id = job.root_job_id) as has_jira_connection,
+                      ${baseBranch} as base_branch
         `;
-
-        for (;;) {
-            const [candidate] = await tx<{ id: string; root_job_id: string }[]>`
-                select j.id, j.root_job_id from job j
-                where j.org_id = ${orgId}
-                  and j.status in ('queued','running')
-                  and j.lease_expires_at <= now()
-                  and j.attempts < j.max_attempts
-                  and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
-                order by j.created_at, j.id
-                limit 1
-                -- Below the limit in the plan, so a row another claimer holds is skipped
-                -- rather than counted and then discarded. Holding the candidate's row
-                -- lock from here through the claim update below is what lets that update
-                -- target this id directly.
-                for update skip locked
-            `;
-            if (!candidate) return null;
-
-            // The thread's ROOT id, straight off the candidate's own row (022).
-            // The serialization point: one transaction-scoped advisory lock per claim,
-            // keyed on that root. Deliberately not `for update` on the root ROW:
-            // that row is the one a running thread heartbeats and completes against, and
-            // a claim parked on it would stall those writes for as long as its env
-            // resolution and plan read take. An advisory xact lock queues claims
-            // against each other and nothing else, is keyed per root so different
-            // threads never block each other, and one lock per transaction means no
-            // lock-ordering deadlock. Claims of one thread therefore fully serialize,
-            // and the re-check below sees every earlier claim committed.
-            const rootJobId = candidate.root_job_id;
-            await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
-
-            const rows = await tx<
-                {
-                    id: string;
-                    command: string;
-                    attempts: number;
-                    max_attempts: number;
-                    claim_seq: string;
-                    lease_token: string;
-                    lease_expires_at: Date;
-                    created_by: string | null;
-                    session_id: string | null;
-                    repo: string | null;
-                    parent_job_id: string | null;
-                    executor: string | null;
-                    executor_scope: string | null;
-                    follow_up: boolean;
-                    workflow_node: string | null;
-                    workflow_name: string | null;
-                    mode: JobMode;
-                    root_command: string;
-                    review_of: string | null;
-                    review_spec: ReviewerSpec | null;
-                    review_ref: string | null;
-                    skills: string[];
-                    has_jira_connection: boolean;
-                    base_branch: string | null;
-                }[]
-            >`
-                update job set
-                    status           = 'running',
-                    claimed_by       = ${worker},
-                    lease_token      = gen_random_uuid(),
-                    attempts         = attempts + 1,
-                    -- Never refunded (057): what orders this claim after every earlier one.
-                    claim_seq        = claim_seq + 1,
-                    -- Unconditional, not coalesce(started_at, now()): this must describe the
-                    -- attempt that is about to run, or every duration is measured from attempt 1.
-                    started_at       = now(),
-                    -- The attempt this claim supersedes banked its segment in the same
-                    -- statement (the SET reads the pre-update row): a run that crashed after
-                    -- forty minutes and was retried keeps its forty minutes. A row that never
-                    -- started (the first claim of a queued one) banks nothing — its clock
-                    -- stays null, because null means "never ran" and zero would claim a
-                    -- measurement that was never made.
-                    wall_clock_ms    = case when started_at is null then wall_clock_ms else ${ctx.wallTick} end,
-                    -- Kept on a follow-up only, whose session IS the parent conversation it
-                    -- continues. The status read here is the row's value BEFORE this update, so
-                    -- 'running' means a lease that expired: for an ordinary job that attempt's
-                    -- session is not this one, and leaving it would show a link to a run whose
-                    -- output was thrown away. A follow-up keeps its copied session through a
-                    -- crash, because the session carries the whole conversation, not just the
-                    -- dead attempt's work.
-                    session_id       = case
-                        when parent_job_id is not null then session_id
-                        else null
-                    end,
-                    -- The previous attempt's vitals are not this attempt's, and a new container
-                    -- starts unsampled: the started_at reset, one row down.
-                    runtime          = null,
-                    -- Likewise the gate report: an attempt that never reports gates must not leave
-                    -- the previous attempt's red report for the workflow engine to read.
-                    gates            = null,
-                    lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
-                where org_id = ${orgId} and id = ${candidate.id}
-                  and status in ('queued','running')
-                  and lease_expires_at <= now()
-                  and attempts < max_attempts
-                  -- Re-asserted under the root lock: whatever the select saw, this is the
-                  -- decision the lock serializes. A same-thread claim that committed while
-                  -- this transaction waited is visible here, and the candidate's own row
-                  -- has been locked since the select.
-                   and ${sameThreadRunning(candidate.id, candidate.root_job_id)}
-                -- parent_job_id and command_delivered_at are not written above, so RETURNING reads
-                -- their pre-update values: delivered-so-far is exactly "this row was suspended at
-                -- least once with its command in the transcript". A fresh or crashed follow-up has
-                -- never been parked, so its command still has to go out; a suspended one settles
-                -- stopped, and is never claimed again.
-                returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
-                          session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
-                          review_of, review_spec, review_ref,
-                          (parent_job_id is not null and command_delivered_at is null) as follow_up,
-                          (select r.command from job r
-                           where r.org_id = job.org_id and r.id = job.root_job_id) as root_command,
-                          (select r.skills from job r
-                           where r.org_id = job.org_id and r.id = job.root_job_id) as skills,
-                          (select r.jira_connection_id is not null from job r
-                           where r.org_id = job.org_id and r.id = job.root_job_id) as has_jira_connection,
-                          -- Joined through the root, so every retry, follow-up and repair of a
-                          -- batch task bases on the target's branch with no column to copy.
-                          (select tg.branch from batch_task t
-                           join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
-                                               and tg.key = t.target_key
-                           where t.org_id = job.org_id and t.root_job_id = job.root_job_id) as base_branch
-            `;
-
-            const row = rows[0];
-            // The candidate moved between the select and the lock: the previous lock
-            // holder claimed this thread first. Fall through to the next candidate.
-            if (!row) continue;
-
-            if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) continue;
-
-            return assembleClaim(ctx, tx, row, rootJobId);
-        }
+        const row = rows[0];
+        // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy:
+        // the next candidate, with nothing written here.
+        if (!row) return NEXT_CANDIDATE;
+        if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
+        return assembleClaim(ctx, tx, row, { rootJobId, gates });
     });
+}
+
+/**
+ * `claim()`'s reserve-prepare-acquire loop, one candidate at a time. Returns the assembled claim,
+ * or null when nothing is claimable. A candidate that moved between its reservation and its
+ * acquisition falls through to the next round, exactly as a single statement skipped a row that was
+ * not claimable; a preparation that throws ends the poll with the candidate deferred.
+ */
+async function claimNextCandidate(
+    ctx: JobStoreContext,
+    worker: string,
+    leaseSeconds: number
+): ReturnType<JobStore['claim']> {
+    for (;;) {
+        const reserved = await reserveCandidate(ctx);
+        if (!reserved) return null;
+        const gates = await prepareCandidate(ctx, reserved);
+        const claim = await acquireCandidate(ctx, { worker, leaseSeconds }, reserved, gates);
+        if (claim !== NEXT_CANDIDATE) return claim;
+    }
 }
 
 /**
@@ -306,6 +382,7 @@ async function claimNextCandidate(
  * environment. A Remote Control claim never sees claimEnv at all
  * (driver/src/claim.ts) — like every other claim env value, a claude-code row's config does not
  * reach a Remote Control runner, which gets only the baked settings.json and the mounted auth volume.
+ * The plan was read before the locks (`prepareCandidate`); the workspace path is the acquired row's.
  *
  * A named-profile review (issue #549) is claimed on its own, narrower terms: the profile's env
  * grant, no gates, no publish — see `claimReview`.
@@ -323,13 +400,14 @@ async function assembleClaim(
         workflow_name: string | null;
         mode: JobMode;
     },
-    rootJobId: string
+    prepared: { rootJobId: string; gates: ResolvedClaimGates }
 ): Promise<Claim> {
-    const { orgId, env, githubApp, planReader, executorConfig, hasWorkspaces, prs } = ctx;
+    const { orgId, env, githubApp, executorConfig, hasWorkspaces, prs } = ctx;
+    const { rootJobId } = prepared;
     const reviewRow = reviewRowOf(row);
     if (reviewRow) return claimReview(tx, { env, executorConfig, orgId, hasWorkspaces, rootJobId }, reviewRow);
     const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
-    const gates = await resolveClaimGates(planReader, { orgId, hasWorkspaces, rootJobId }, row);
+    const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
     const command = await claimCommand(tx, orgId, rootJobId, row);
@@ -356,8 +434,8 @@ export async function claimJob(
     // The wake sweep (issue #231), before looking for queued work: a parked block-wait round with
     // folded deliveries becomes exactly one queued continuation here, so claimNextCandidate below
     // can find it like any other row. Each candidate wakes in its own transaction, under that
-    // thread's per-root advisory lock — never inside the claim transaction below, whose failure
-    // must not roll back a wake that already committed for an unrelated thread.
+    // thread's per-root advisory lock — never inside a claim transaction, whose failure must not
+    // roll back a wake that already committed for an unrelated thread.
     await sweepRuntimeWakes({ sql, orgId, prs });
     /*
      * Settle the stops nobody could deliver, before looking for work (issue #152).
@@ -372,15 +450,11 @@ export async function claimJob(
      * try — and the last segment banks with the same overcount the dead retirement
      * accepts, because the board cannot know when the run actually stopped.
      *
-     * Committed as its own statement, deliberately OUTSIDE the claim transaction below
-     * (review of PR #153): that transaction also carries the claim's preparation — the
-     * env resolution and the plan read, awaited calls that throw — and a throw there
-     * rolls the whole transaction back, settlement included. Inside it, a board whose
-     * preparation keeps failing would keep the stamped zombie `running` across every
-     * retried poll, and the follow-up the member queued would keep answering
-     * not_finished — the exact stuck state this settle exists to end. Committed first,
-     * the settle survives every failed preparation; the transaction below still rolls
-     * back exactly the half-claim it always did.
+     * Committed as its own statement, deliberately OUTSIDE the claim (review of PR #153):
+     * the claim's preparation — the plan read, the env resolution — awaits calls that
+     * throw, and a settle that rode with them would be lost to every failed poll: the
+     * stamped zombie would stay `running` and the follow-up the member queued would keep
+     * answering not_finished — the exact stuck state this settle exists to end.
      */
     const stampedStops = await sql<{ root_job_id: string }[]>`
         update job set
@@ -402,25 +476,19 @@ export async function claimJob(
         // statement is autocommit by design (above), so the settle opens its own transaction.
         await settleIfMergeClosed(ctx, root);
     }
+    // The dead retirement commits on its own for the same reason (issue #822): a preparation that
+    // keeps failing must not keep an exhausted row `running` across every poll.
+    await sql.begin((tx) => retireExhaustedAttempts(ctx, tx));
 
     /*
-     * One transaction, not two autocommit statements. The UPDATE makes the job running
-     * with a fresh lease before the env resolver and the plan read answer; if either
-     * then throws, a half-claim must not survive — a row that is `running` with a lease
-     * nobody holds is stranded until that lease expires on every retry, walking the job
-     * to dead on an infrastructure blip. The rollback puts it back: queued, attempt
-     * unburned, claimable by the very next poll. (The resolver reads env_var, not job,
-     * and the plan reader reads GitHub, so neither needs a share of this transaction — only
-     * their failures do.)
-     *
-     * The selection is a select-lock-claim loop, because the exclusion reads OTHER rows
-     * without locking them and so cannot by itself see a same-thread claim that is
-     * still uncommitted: under READ COMMITTED two racing claims could both pass it and
-     * both walk out with rows of one thread. Each round selects one candidate (skip
-     * locked, holding its row), takes the thread ROOT's advisory lock, and only then
-     * claims — the claim update re-asserts the whole claimability predicate where the
-     * lock can vouch for it. A candidate that moved under us falls through to the next
-     * round, exactly as a single statement skipped a row that was not claimable.
+     * Reserve, prepare, acquire (issue #822). The plan read — the claim's one remote call, tens of
+     * seconds at worst — runs between two short steps and holds no lock: a stop, a heartbeat, a
+     * remove or a verdict on the candidate's thread never waits on GitHub. The reservation keeps
+     * other claimers off the candidate meanwhile and, left in place by a failed preparation, is
+     * the candidate's backoff; the acquisition decides under the row and root locks, against the
+     * `claim_seq` the reservation read, so two racing claims of one thread cannot both walk out —
+     * the exclusion reads OTHER rows without locking them, and only the root lock makes it see a
+     * same-thread claim that committed while this one waited.
      */
     return claimNextCandidate(ctx, worker, leaseSeconds);
 }
@@ -748,6 +816,7 @@ export function buildClaimResult(
         command: row.command,
         attempts: row.attempts,
         maxAttempts: row.max_attempts,
+        lastAttempt: row.last_attempt,
         claimSeq: Number(row.claim_seq),
         leaseToken: row.lease_token,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
@@ -764,7 +833,7 @@ export function buildClaimResult(
         workspacePath: claimPath,
         rootJobId,
         rootCommand: row.root_command,
-        // Survived the case above, so this claim is a resume.
+        // A follow-up's copied session, or the one a lost attempt of this row reported: a resume.
         resumeSessionId: row.session_id,
         followUp: row.follow_up,
         ...(claimEnv ? { env: claimEnv } : {}),

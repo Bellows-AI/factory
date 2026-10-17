@@ -113,7 +113,8 @@ Observe: the ALB provisions, `http://` redirects to `https://`, `/api/health` pa
 completes. Then add an executor and queue a task — the runner pod schedules onto the runner node
 group, `kubectl get pod -o yaml` carries no credential values, vitals render, output and status
 arrive, a follow-up resumes the session. Stop one mid-run if you can afford the redo: the lease
-expires, the board re-offers, the replacement fences the checkout, `attempts` is the only trace.
+expires, the board re-offers, the replacement fences the checkout and resumes the session; one
+interruption is the trace.
 An offline deployment's driver 503s with `JOBS_UNAVAILABLE` (no org materialized yet); a 401 there
 would be the credential instead.
 

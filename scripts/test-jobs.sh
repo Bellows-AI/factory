@@ -382,14 +382,20 @@ expect_field 'the result is recorded'   "$done_body" status succeeded
 expect_field 'the exit code is kept'    "$done_body" exitCode 0
 expect_field 'the output is kept'       "$done_body" output hello
 
-# Reclaim, proven by ageing the lease rather than by waiting one out.
+# Reclaim, proven by ageing the lease rather than by waiting one out. The expiry is the lost
+# attempt's interruption: the takeover keeps the attempt count and resumes the lost session.
+RECLAIMED_SESSION='44444444-4444-4444-8444-444444444444'
 reclaim_id="$(create_job 'reclaim me')"
 stale="$(field "$(body "$(api POST /api/jobs/claim '{"worker":"dies","leaseSeconds":300}')")" leaseToken)"
+api POST "/api/jobs/$reclaim_id/session" \
+    "{\"leaseToken\":\"$stale\",\"sessionId\":\"$RECLAIMED_SESSION\"}" >/dev/null
 compose exec -T postgres psql -U factory -d "$DB" \
     -c "update job set lease_expires_at = now() - interval '1 second' where id = '$reclaim_id'" >/dev/null 2>&1
 again="$(body "$(api POST /api/jobs/claim '{"worker":"takes-over","leaseSeconds":300}')")"
-expect_field 'an expired lease is reclaimed' "$again" id "$reclaim_id"
-expect_field 'the attempt count grows'       "$again" attempts 2
+expect_field 'an expired lease is reclaimed'     "$again" id "$reclaim_id"
+expect_field 'the attempt count stays'           "$again" attempts 1
+expect_field 'the claim sequence grows'          "$again" claimSeq 2
+expect_field 'the takeover resumes the session'  "$again" resumeSessionId "$RECLAIMED_SESSION"
 # The fencing token, end to end: the first worker is still alive and still wrong.
 expect_status 'the superseded worker is refused' 409 POST "/api/jobs/$reclaim_id/complete" \
     "{\"leaseToken\":\"$stale\",\"status\":\"succeeded\",\"exitCode\":0,\"output\":\"zombie\"}"
@@ -399,8 +405,7 @@ api POST "/api/jobs/$reclaim_id/complete" \
 PARKED_SESSION='55555555-5555-4555-8555-555555555555'
 
 # Stop, end to end: a running job asked to stop is settled by its worker's park, lands stopped —
-# terminal, the session kept — and continues as a follow-up, the only resumed claim there is
-# (docs/jobs.md).
+# terminal, the session kept — and continues as a follow-up (docs/jobs.md).
 park_id="$(create_job 'park me')"
 park_claim="$(body "$(api POST /api/jobs/claim '{"worker":"parks","leaseSeconds":300}')")"
 park_token="$(field "$park_claim" leaseToken)"
@@ -939,15 +944,20 @@ interruptions_of() { # interruptions_of <job json> -> "<count>|<claimSeq of the 
 
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 DRAINED='the driver was drained'
+# The interruption the next claim records for an attempt whose lease expired (issue #822).
+EXPIRED='the lease expired: its driver went silent'
 # The adopting claim settles only once the lost driver's supervisor exits, and with no driver left to
 # order its `finish` that is SUPERVISOR_ORPHAN_MS (90s, driver/src/scripts/supervisor.cjs) after its
 # last answered call — the documented bound (driver/src/supervisor-contract.ts), plus the claim.
 ADOPT_S=150
 
 # a. The hard kill: no drain, no handover, the lease left to expire. The runner runs to its end
-#    while no driver watches it; the next driver's claim (2) adopts it.
+#    while no driver watches it; the next driver's claim (2) records the expiry as claim 1's
+#    interruption and adopts it — at max_attempts 1, where an expiry used to retire the job dead.
 disruption_driver
 killed="$(create_job 'sleep 8; echo "ran in $HOSTNAME"')"
+compose exec -T postgres psql -U factory -d "$DB" \
+    -c "update job set max_attempts = 1 where id = '$killed'" >/dev/null 2>&1
 killed_runner="$(await_first_runner "$killed" running)"
 [ -n "$killed_runner" ] && ok 'the hard-kill runner is running' ||
     bad 'the hard-kill runner is running' "job: $(body "$(api GET "/api/jobs/$killed")")"
@@ -966,8 +976,8 @@ killed_body="$(body "$(api GET "/api/jobs/$killed")")"
 expect_contains 'the adopted output is the first runner output' "$(field "$killed_body" output)" "ran in $killed_runner"
 expect_field 'the killed attempt is refunded' "$killed_body" attempts 1
 killed_int="$(interruptions_of "$killed_body")"
-[ "$killed_int" = "1|1|$ADOPTED" ] && ok 'one interruption records the adoption of claim 1' ||
-    bad 'one interruption records the adoption of claim 1' "count|claimSeq|reason: $killed_int"
+[ "$killed_int" = "1|1|$EXPIRED" ] && ok 'one interruption records the expiry of claim 1' ||
+    bad 'one interruption records the expiry of claim 1' "count|claimSeq|reason: $killed_int"
 grep -qF "job $killed: $ADOPTED" "$work/driver.log" && ok 'the driver logs the adoption' ||
     bad 'the driver logs the adoption' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
 [ -z "$(first_runner "$killed")" ] && ok 'the adoption removes the adopted runner' ||
@@ -1014,8 +1024,62 @@ grep -qF "job $drained: $ADOPTED" "$work/driver.log" && ok 'the driver logs the 
     bad 'the driver logs the handed-over adoption' "$(grep -F "job $drained:" "$work/driver.log" | tail -5)"
 stop_driver
 
-# Whatever either case left, by label, one id per rm — as the reaper phase does.
-for job in "$killed" "$drained"; do
+# d. The driver and its runner lost together (issue #822): nothing survives to adopt, so the next
+#    claim redoes the attempt in a replacement runner — in the lost attempt's session, on its tree.
+#    The first runner leaves a mark in the worktree's git-ignored .factory/ and blocks; the second
+#    finds it. Restored, not synced: the origin moves while no driver runs, and a sync would have
+#    rebased the tree onto that commit. At max_attempts 1, so an expiry spending an attempt would
+#    retire the job dead instead.
+disruption_driver
+lost="$(create_job 'cd "$WORKDIR" && mkdir -p .factory && if [ -f .factory/lane-lost.mark ]; then echo "resumed $BELLOWS_SESSION_ID from $(cat .factory/lane-lost.mark) upstream:$(grep -c lane-upstream .bellows.yaml)"; else echo "$BELLOWS_SESSION_ID" > .factory/lane-lost.mark; sleep 300; fi')"
+compose exec -T postgres psql -U factory -d "$DB" \
+    -c "update job set max_attempts = 1 where id = '$lost'" >/dev/null 2>&1
+lost_runner="$(await_first_runner "$lost" running)"
+[ -n "$lost_runner" ] && ok 'the lost-together runner is running' ||
+    bad 'the lost-together runner is running' "job: $(body "$(api GET "/api/jobs/$lost")")"
+await_released "$lost_runner" && ok 'the lost-together runner released its agent' ||
+    bad 'the lost-together runner released its agent' 'no /factory/in/go within 60s'
+marked=""
+for _ in $(seq 1 30); do
+    docker exec "$lost_runner" sh -c 'test -f "$WORKDIR/.factory/lane-lost.mark"' >/dev/null 2>&1 && {
+        marked=1
+        break
+    }
+    sleep 1
+done
+[ -n "$marked" ] && ok 'the first runner marked its tree' || bad 'the first runner marked its tree' 'no mark within 30s'
+lost_session="$(field "$(body "$(api GET "/api/jobs/$lost")")" sessionId)"
+kill -9 "$driver_pid" 2>/dev/null
+wait "$driver_pid" 2>/dev/null
+driver_pid=""
+docker ps -aq --filter "label=factory.job=$lost" |
+    while IFS= read -r container_id; do
+        [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
+    done
+write_bellows 'services:
+  - name: stub-svc
+    image: factory-jobs-smoke-svc
+# lane-upstream'
+disruption_driver
+expect_contains 'the replacement runner settles the lost run' "$(await_settled "$lost" 120)" succeeded
+lost_body="$(body "$(api GET "/api/jobs/$lost")")"
+expect_field 'the lost attempt spends no attempt' "$lost_body" attempts 1
+lost_int="$(interruptions_of "$lost_body")"
+[ "$lost_int" = "1|1|$EXPIRED" ] && ok 'one interruption records the expiry of claim 1' ||
+    bad 'one interruption records the expiry of claim 1' "count|claimSeq|reason: $lost_int"
+expect_field 'the row keeps the lost session' "$lost_body" sessionId "$lost_session"
+expect_contains 'the replacement resumes the lost session on the kept tree' "$(field "$lost_body" output)" \
+    "resumed $lost_session from $lost_session"
+expect_contains 'the replacement ran on the restored tree, not a synced one' "$(field "$lost_body" output)" upstream:0
+grep -qF "job $lost: attempt 1 resuming session $lost_session" "$work/driver.log" &&
+    ok 'the driver logs the resumed session' ||
+    bad 'the driver logs the resumed session' "$(grep -F "job $lost:" "$work/driver.log" | tail -5)"
+grep -qF "job $lost: $ADOPTED" "$work/driver.log" && bad 'nothing was adopted' 'the driver logged an adoption' ||
+    ok 'nothing was adopted'
+stop_driver
+
+# Whatever any case left, by label, one id per rm — as the reaper phase does.
+for job in "$killed" "$drained" "$lost"; do
     docker ps -aq --filter "label=factory.job=$job" |
         while IFS= read -r container_id; do
             [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1

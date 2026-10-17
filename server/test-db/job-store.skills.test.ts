@@ -209,7 +209,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
 
         const second = await claim(store);
         expect(second.id).toBe(id);
-        expect(second.attempts).toBe(first.attempts + 1);
+        expect(second.claimSeq).toBe(first.claimSeq + 1);
         expect(second.masterPrompt).toBe(first.masterPrompt);
         expect(second.masterPrompt).toContain('- Selected skills: github');
     });

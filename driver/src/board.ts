@@ -44,8 +44,13 @@ export interface BoardJob {
     id: string;
     command: string;
     attempts: number;
-    /** The attempts the board allows; the attempt that burns the last one reports what ends the job. */
+    /** The attempts the board allows. */
     maxAttempts: number;
+    /**
+     * Whether a loss of this attempt ends the job: its attempts and the board's interruption budget
+     * are both spent (issue #822). Only then does an attempt that cannot run report what ends it.
+     */
+    lastAttempt: boolean;
     /**
      * The board's claim sequence for this row: bumped by every claim and never refunded, unlike
      * `attempts` (issue #559). What the kubernetes checkout claim orders contenders by.

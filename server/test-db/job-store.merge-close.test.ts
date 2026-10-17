@@ -7,7 +7,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { mustCreate, randomGithubId, testOrg } from './fixtures.js';
+import { mustCreate, randomGithubId, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
  * The merged-PR closure against a real database (issue #390): a verified merge delivery closes
@@ -422,7 +422,9 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         await store.closeMergedPr(REPO, PULL, 'guid-dead');
         expect((await reclaimRowsOf(root)).length).toBe(0);
 
-        // Burn the attempt and expire the lease: the claim's dead sweep retires the row.
+        // Burn the attempt and the interruption budget, expire the lease: the claim's dead sweep
+        // retires the row.
+        await spendInterruptionBudget(sql, successorId);
         await sql`update job set attempts = max_attempts, lease_expires_at = now() - interval '1 second'
                   where org_id = ${ORG} and id = ${successorId}`;
         expect(await store.claim('worker-dead', LEASE_SECONDS)).toBeNull();

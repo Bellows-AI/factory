@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { expect } from 'vitest';
+import { INTERRUPTION_BUDGET } from '../src/db/job-store.js';
 import type { TestUser } from './harness.js';
 
 /**
@@ -56,6 +57,20 @@ export const expireLease = (sql: Sql, id: string) =>
     sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;
 
 /**
+ * Fills the job's interruption record to the budget, so its next lease expiry spends an attempt
+ * the way it did before recovery accounting (issue #822). Negative claim sequences never match a
+ * real claim's.
+ */
+export const spendInterruptionBudget = (sql: Sql, id: string) =>
+    sql`
+        update job set interruptions = (
+            select jsonb_agg(jsonb_build_object('reason', 'spent by the fixture', 'at', now(), 'claimSeq', -n))
+            from generate_series(1, ${INTERRUPTION_BUDGET}) as n
+        )
+        where id = ${id}
+    `;
+
+/**
  * Holds a lock on `id` in another transaction until `release()` — the per-thread advisory lock
  * (claim, remove, reopen, done all take it) or the job row's own lock. `beforeCommit` runs inside
  * that transaction after the release, for a racing write that commits with the lock.
@@ -89,6 +104,25 @@ export const holdLock = async (
             await blocker;
         },
     };
+};
+
+/** Lapses the claim reservation a failed or abandoned preparation left (issue #822), as waiting it out would. */
+export const lapseDeferral = (sql: Sql, id: string) =>
+    sql`update job set claim_deferred_until = now() - interval '1 second' where id = ${id}`;
+
+/**
+ * The inverse of `expectStillLocked`: the write must land while another claim is still preparing,
+ * because nothing it waits on is held. Answers what the write answered.
+ */
+export const expectUnblocked = async <T>(pending: Promise<T>): Promise<T> => {
+    const UNBLOCKED_TIMEOUT_MS = 2000;
+    const blocked = Symbol('blocked');
+    const outcome = await Promise.race([
+        pending,
+        new Promise<typeof blocked>((resolve) => setTimeout(() => resolve(blocked), UNBLOCKED_TIMEOUT_MS)),
+    ]);
+    expect(outcome).not.toBe(blocked);
+    return outcome as T;
 };
 
 /**

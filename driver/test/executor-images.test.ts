@@ -301,6 +301,9 @@ SLEEP_PID=$!
 echo "$SLEEP_PID" > "$STUB_DIR/sleep-pid"
 printf '%s' "\${JIRA_API-unset}" > "$STUB_DIR/jira-api"
 printf '%s' "\${OPENCODE_CONFIG_CONTENT-unset}" > "$STUB_DIR/opencode-config-content"
+printf '%s\\n' "$@" > "$STUB_DIR/argv"
+printf '%s' "\${BELLOWS_SESSION_ID-unset}" > "$STUB_DIR/bellows-session-id"
+printf '%s' "\${BRANCH_REPORTER_PRIOR_UNKNOWN-unset}" > "$STUB_DIR/prior-unknown"
 echo started > "$STUB_DIR/started"
 wait "$SLEEP_PID"
 exit "\${STUB_STATUS:-0}"
@@ -704,6 +707,160 @@ describe('the entrypoint git credential', () => {
  * has not been trusted", observed 2026-09-25). No one can accept a dialog in an unattended
  * container, so the entrypoint records the acceptance for both paths before the CLI starts.
  */
+/*
+ * Issue #822: a recovered opencode attempt resumes the session its predecessor reported live
+ * (`run --session <id>`), but a node lost before opencode flushed that session's row leaves a
+ * database without it, and opencode would refuse the run. The entrypoint checks the database the
+ * driver persisted and, only when the session is certainly absent, starts a new one instead —
+ * with BELLOWS_SESSION_ID unset, so the reporter discovers and reports the new id.
+ */
+describe('the opencode entrypoint resumed session', () => {
+    const KNOWN = 'ses_known';
+    const resumeArgv = ['run', '--agent', 'factory', '--session', KNOWN, 'carry on'];
+
+    const runResumed = async (seed: (data: string) => void) => {
+        const sandbox = makeSandbox();
+        const data = mkdtempSync(join(tmpdir(), 'opencode-data-'));
+        try {
+            mkdirSync(join(data, 'opencode'), { recursive: true });
+            seed(join(data, 'opencode', 'opencode.db'));
+            const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), ...resumeArgv], {
+                ...sandbox.env,
+                XDG_DATA_HOME: data,
+                BELLOWS_SESSION_ID: KNOWN,
+            });
+            expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+            return {
+                argv: readFileSync(join(sandbox.bin, 'argv'), 'utf8').trimEnd().split('\n'),
+                session: readFileSync(join(sandbox.bin, 'bellows-session-id'), 'utf8'),
+            };
+        } finally {
+            sandbox.cleanup();
+            rmSync(data, { recursive: true, force: true });
+        }
+    };
+
+    const withSessions =
+        (...ids: string[]) =>
+        (db: string) => {
+            const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+            const handle = new DatabaseSync(db);
+            handle.exec(
+                'create table session (id text primary key, parent_id text, directory text, time_created integer)'
+            );
+            for (const id of ids) handle.prepare('insert into session values (?, null, ?, 1)').run(id, '/work');
+            handle.close();
+        };
+
+    it(
+        'resumes a session the database holds',
+        async () => {
+            const { argv, session } = await runResumed(withSessions(KNOWN));
+            expect(argv).toEqual(resumeArgv);
+            expect(session).toBe(KNOWN);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'starts a new session when the database lacks the resumed one',
+        async () => {
+            const { argv, session } = await runResumed(withSessions('ses_other'));
+            expect(argv).toEqual(['run', '--agent', 'factory', 'carry on']);
+            expect(session).toBe('unset');
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'starts a new session when there is no session database',
+        async () => {
+            const { argv, session } = await runResumed(() => {});
+            expect(argv).toEqual(['run', '--agent', 'factory', 'carry on']);
+            expect(session).toBe('unset');
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'keeps --session when the database cannot be read',
+        async () => {
+            const { argv, session } = await runResumed((db) => writeFileSync(db, 'not a database'));
+            expect(argv).toEqual(resumeArgv);
+            expect(session).toBe(KNOWN);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // A database directory the run cannot enter is not an absent one: only ENOENT drops the
+    // resume. Root reads through any mode bits, so the case means nothing there.
+    it.skipIf(process.getuid?.() === 0)(
+        'keeps --session when the database directory cannot be entered',
+        async () => {
+            const sandbox = makeSandbox();
+            const data = mkdtempSync(join(tmpdir(), 'opencode-data-'));
+            const dir = join(data, 'opencode');
+            try {
+                mkdirSync(dir, { recursive: true });
+                withSessions(KNOWN)(join(dir, 'opencode.db'));
+                chmodSync(dir, 0o000);
+                const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), ...resumeArgv], {
+                    ...sandbox.env,
+                    XDG_DATA_HOME: data,
+                    BELLOWS_SESSION_ID: KNOWN,
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(readFileSync(join(sandbox.bin, 'argv'), 'utf8').trimEnd().split('\n')).toEqual(resumeArgv);
+                expect(readFileSync(join(sandbox.bin, 'bellows-session-id'), 'utf8')).toBe(KNOWN);
+            } finally {
+                chmodSync(dir, 0o755);
+                sandbox.cleanup();
+                rmSync(data, { recursive: true, force: true });
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // A retry is a fresh run in its task's directory and database (issue #822): the newest root
+    // session there is an earlier attempt's until opencode creates this run's, so the entrypoint
+    // names it for the reporter BEFORE the CLI starts — a fresh run only, never a handed id.
+    it('names the session that predates a fresh run before the CLI starts', () => {
+        const entrypoint = read('docker/opencode-executor/entrypoint.sh');
+        const prior = entrypoint.indexOf('if BRANCH_REPORTER_PRIOR_SESSION="$(');
+        expect(prior).toBeGreaterThan(-1);
+        expect(entrypoint.slice(0, prior)).toMatch(/if \[ -z "\$\{BELLOWS_SESSION_ID:-\}" \]; then\s*$/);
+        expect(entrypoint.slice(prior)).toMatch(
+            /^if BRANCH_REPORTER_PRIOR_SESSION="\$\(node [^\n]*branch-reporter\.cjs --prior[^\n]*\)"; then/
+        );
+        expect(prior).toBeLessThan(
+            entrypoint.indexOf(
+                'node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null'
+            )
+        );
+        expect(prior).toBeLessThan(entrypoint.indexOf('exec opencode "$@"'));
+    });
+
+    // The sandbox has no /usr/local/bin/branch-reporter.cjs, so `--prior` fails here exactly as an
+    // unreadable database makes it fail in the image: the baseline is unknown, and the reporter is
+    // told so rather than handed an empty one.
+    it(
+        'tells the reporter the baseline is unknown when --prior fails',
+        async () => {
+            const sandbox = makeSandbox();
+            try {
+                const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run', 'go'], {
+                    ...sandbox.env,
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(readFileSync(join(sandbox.bin, 'prior-unknown'), 'utf8')).toBe('1');
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+});
+
 describe('the claude-executor workspace trust', () => {
     const ENTRYPOINT = 'docker/claude-executor/entrypoint.sh';
     const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' });

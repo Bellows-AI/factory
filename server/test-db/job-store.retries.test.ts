@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { account, mustCreate, randomGithubId, testOrg } from './fixtures.js';
+import { account, expireLease, mustCreate, randomGithubId, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -154,6 +154,23 @@ describe.skipIf(!enabled)('retries', () => {
     // action, whatever the finished run reported. (Follow-up is the resume action.)
     it('retries a finished run that has a session, without resuming it', async () => {
         const id = await finishWithSession('drive me');
+
+        const retry = await mustRetry(id, null);
+        const claim = await store.claim('w1', LEASE_SECONDS);
+
+        expect(claim).toMatchObject({ id: retry.id, resumeSessionId: null, followUp: false });
+    });
+
+    // Recovery keeps the session on the row it recovers (issue #822); the explicit fresh retry is
+    // still a new row with none, however the head's run was recovered on the way.
+    it('starts a retry fresh after a recovered attempt', async () => {
+        const { id } = await mustCreate(store.create('drive me', null, { repo: null, executor: null }));
+        const lost = await store.claim('w1', LEASE_SECONDS);
+        await store.session(id, lost!.leaseToken, SESSION);
+        await expireLease(sql, id);
+        const recovered = await store.claim('w2', LEASE_SECONDS);
+        expect(recovered).toMatchObject({ id, resumeSessionId: SESSION });
+        await store.complete(id, recovered!.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
 
         const retry = await mustRetry(id, null);
         const claim = await store.claim('w1', LEASE_SECONDS);

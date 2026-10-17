@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -105,7 +105,14 @@ const NODE_ARGS = ['--disable-warning=ExperimentalWarning'];
 const GIT_TIMEOUT_MS = '30000';
 const REQUEST_TIMEOUT_MS = '30000';
 const OUTER_ENV: Record<string, string> = (() => {
-    const { BELLOWS_SESSION_ID: _session, RUNNER_JOB_ID: _job, RUNNER_LEASE_TOKEN: _lease, ...rest } = process.env;
+    const {
+        BELLOWS_SESSION_ID: _session,
+        BRANCH_REPORTER_PRIOR_SESSION: _prior,
+        BRANCH_REPORTER_PRIOR_UNKNOWN: _unknown,
+        RUNNER_JOB_ID: _job,
+        RUNNER_LEASE_TOKEN: _lease,
+        ...rest
+    } = process.env;
     return {
         ...rest,
         BRANCH_REPORTER_GIT_TIMEOUT_MS: GIT_TIMEOUT_MS,
@@ -416,6 +423,156 @@ describe('the branch reporter: opencode session discovery', () => {
             rmSync(dir, { recursive: true, force: true });
             rmSync(data, { recursive: true, force: true });
         }
+    });
+
+    // A retry is a fresh run in the SAME task: its directory and session database already hold
+    // the conversation an earlier attempt had (issue #822). Reported live, that id would land on
+    // the retry's row and a recovery would resume it — so the entrypoint names it before opencode
+    // starts, and discovery waits for the run's own.
+    describe('a session that predates the run', () => {
+        const sessionDb = (dir: string, data: string) => {
+            mkdirSync(join(data, 'opencode'), { recursive: true });
+            const db = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
+            db.exec('create table session (id text primary key, parent_id text, time_created text, directory text)');
+            db.prepare('insert into session values (?, ?, ?, ?)').run(
+                'ses_prior',
+                null,
+                '2026-01-01 00:00:00.000',
+                dir
+            );
+            return db;
+        };
+
+        it('is printed by --prior, with nothing sent', async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            const data = tempDir();
+            sessionDb(dir, data).close();
+            try {
+                const { status, stdout } = await run(
+                    OPENCODE_REPORTER,
+                    { FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
+                    ['--prior']
+                );
+                expect(status).toBe(0);
+                expect(stdout).toBe('ses_prior');
+                expect(requests).toHaveLength(0);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+                rmSync(data, { recursive: true, force: true });
+            }
+        });
+
+        it('is never reported, and the run’s own session is once it appears', async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            const data = tempDir();
+            const db = sessionDb(dir, data);
+            const env = {
+                FACTORY_STATS_URL: url,
+                XDG_DATA_HOME: data,
+                WORKDIR: dir,
+                BRANCH_REPORTER_PRIOR_SESSION: 'ses_prior',
+            };
+            try {
+                await run(OPENCODE_REPORTER, env);
+                expect(requests).toHaveLength(0);
+
+                db.prepare('insert into session values (?, ?, ?, ?)').run(
+                    'ses_run',
+                    null,
+                    '2026-01-02 00:00:00.000',
+                    dir
+                );
+                await run(OPENCODE_REPORTER, env);
+                expect(requests.map((r) => r.body?.sessionId)).toEqual(['ses_run']);
+            } finally {
+                db.close();
+                rmSync(dir, { recursive: true, force: true });
+                rmSync(data, { recursive: true, force: true });
+            }
+        });
+
+        // An unknown baseline is not an empty one: a read that failed before the run would let a
+        // later, recovered read report the earlier attempt's session as this run's.
+        it('is unknown, not absent, when the database cannot be read: --prior exits 1', async () => {
+            const dir = gitRepo();
+            const data = tempDir();
+            mkdirSync(join(data, 'opencode'), { recursive: true });
+            writeFileSync(join(data, 'opencode', 'opencode.db'), 'not a database');
+            try {
+                const { status, stdout } = await run(OPENCODE_REPORTER, { XDG_DATA_HOME: data, WORKDIR: dir }, [
+                    '--prior',
+                ]);
+                expect(status).toBe(1);
+                expect(stdout).toBe('');
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+                rmSync(data, { recursive: true, force: true });
+            }
+        });
+
+        it('is absent when there is no database yet: --prior prints nothing and exits 0', async () => {
+            const dir = gitRepo();
+            const data = tempDir();
+            try {
+                const { status, stdout } = await run(OPENCODE_REPORTER, { XDG_DATA_HOME: data, WORKDIR: dir }, [
+                    '--prior',
+                ]);
+                expect(status).toBe(0);
+                expect(stdout).toBe('');
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+                rmSync(data, { recursive: true, force: true });
+            }
+        });
+
+        // Root reads through any mode bits, so the case means nothing there.
+        it.skipIf(process.getuid?.() === 0)(
+            'is unknown, not absent, when the database directory cannot be entered: --prior exits 1',
+            async () => {
+                const dir = gitRepo();
+                const data = tempDir();
+                sessionDb(dir, data).close();
+                chmodSync(join(data, 'opencode'), 0o000);
+                try {
+                    const { status, stdout } = await run(OPENCODE_REPORTER, { XDG_DATA_HOME: data, WORKDIR: dir }, [
+                        '--prior',
+                    ]);
+                    expect(status).toBe(1);
+                    expect(stdout).toBe('');
+                } finally {
+                    chmodSync(join(data, 'opencode'), 0o755);
+                    rmSync(dir, { recursive: true, force: true });
+                    rmSync(data, { recursive: true, force: true });
+                }
+            }
+        );
+
+        it('leaves discovery off while the baseline is unknown, and a handed id still reports', async () => {
+            const { url, requests } = await board();
+            const dir = gitRepo();
+            const data = tempDir();
+            const db = sessionDb(dir, data);
+            db.prepare('insert into session values (?, ?, ?, ?)').run('ses_run', null, '2026-01-02 00:00:00.000', dir);
+            db.close();
+            const env = {
+                FACTORY_STATS_URL: url,
+                XDG_DATA_HOME: data,
+                WORKDIR: dir,
+                BRANCH_REPORTER_PRIOR_UNKNOWN: '1',
+            };
+            try {
+                await run(OPENCODE_REPORTER, env);
+                expect(requests).toHaveLength(0);
+
+                await run(OPENCODE_REPORTER, { ...env, BELLOWS_SESSION_ID: SESSION });
+                expect(requests.map((r) => r.body?.sessionId)).toEqual([SESSION]);
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+                rmSync(data, { recursive: true, force: true });
+            }
+        });
     });
 });
 

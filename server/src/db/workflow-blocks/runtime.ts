@@ -324,7 +324,11 @@ export async function sweepRuntimeWakes(ctx: { sql: Sql; orgId: string; prs: Job
  * claim — a workflow-less job, a plain agent node, a continuation whose wait is still open — pays
  * one indexed lookup keyed off nothing but the just-claimed row id and returns false immediately.
  */
-export async function isCancelledContinuation(tx: TransactionSql, orgId: string, jobId: string): Promise<boolean> {
+export async function isCancelledContinuation(
+    tx: Sql | TransactionSql,
+    orgId: string,
+    jobId: string
+): Promise<boolean> {
     const rows = await tx<{ job_id: string }[]>`
         select r.job_id from workflow_round r
         join workflow_wait w

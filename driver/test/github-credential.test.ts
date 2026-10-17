@@ -291,6 +291,7 @@ describe('the token cache and the runner env, on both executors', () => {
         rootCommand: 'push the fix',
         attempts: 1,
         maxAttempts: 1,
+        lastAttempt: false,
         claimSeq: 1,
         leaseToken: LEASE,
         leaseExpiresAt: '2026-10-16T12:05:00.000Z',

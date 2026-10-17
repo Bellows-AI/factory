@@ -122,9 +122,10 @@ describe.skipIf(!enabled)('objective mode — database', () => {
         const first = await claim();
         await expireLease(sql, first.id);
 
-        // The dead worker's lease is reclaimed in place: same row, fresh token, bumped attempt.
+        // The dead worker's lease is reclaimed in place: same row, fresh token, the expiry its
+        // interruption rather than a spent attempt (issue #822).
         const second = await claim();
-        expect(second).toMatchObject({ id: first.id, attempts: 2 });
+        expect(second).toMatchObject({ id: first.id, attempts: 1, claimSeq: 2 });
         expect(second.leaseToken).not.toBe(first.leaseToken);
 
         // The red gate fails the run; the retry is a new row of the same objective thread.
