@@ -42,17 +42,26 @@ ENV HOST=0.0.0.0
 USER node
 EXPOSE 8080 5173
 
-FROM deps AS build
+FROM deps AS core-build
 # Inherited from deps: build tooling as root, as before deps ran as node.
 USER root
 WORKDIR /app
-COPY tsconfig.base.json tsconfig.json ./
-COPY core core
-COPY server server
-COPY web web
-# Not `npm run build`: that one also builds the driver, which ships as its own image and whose
-# sources are deliberately not copied here. Running it would fail on --workspace=driver.
-RUN npm run build -w core && npm run build -w server && npm run build -w web
+COPY tsconfig.base.json ./
+COPY core/tsconfig.json core/
+COPY core/src core/src
+RUN npm run build -w core
+
+# Independent branches keep a server edit from recompiling the web bundle (and vice versa).
+FROM core-build AS build
+COPY server/tsconfig.json server/
+COPY server/src server/src
+RUN npm run build -w server
+
+FROM core-build AS web-build
+COPY web/tsconfig.json web/vite.config.ts web/index.html web/
+COPY web/src web/src
+COPY web/public web/public
+RUN npm run build -w web
 
 FROM public.ecr.aws/docker/library/node:24-alpine AS runtime
 WORKDIR /app
@@ -75,15 +84,15 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force \
 # facts read of a hostile checkout is killed by process group, and the git it orphans is reaped by
 # PID 1 — which node never does.
 RUN apk add --no-cache git tini
-COPY --from=build /app/core/dist core/dist
+COPY --from=core-build /app/core/dist core/dist
 COPY --from=build /app/server/dist server/dist
-COPY --from=build /app/web/dist web/dist
+COPY --from=web-build /app/web/dist web/dist
 # The telemetry fixture client (opt-in TELEMETRY_SOURCE=fixture) reads this at runtime, by
 # import.meta.url depth from server/dist.
-COPY --from=build /app/core/test/fixtures/telemetry-sessions.json core/test/fixtures/telemetry-sessions.json
+COPY core/test/fixtures/telemetry-sessions.json core/test/fixtures/telemetry-sessions.json
 # tsc compiles neither .sql nor .json, so the migrations have to be copied by hand — they sit
 # outside src/ at a depth that resolves the same from src/ and dist/.
-COPY --from=build /app/server/migrations server/migrations
+COPY server/migrations server/migrations
 # The skills catalog /api/skills serves and the claim checks requirements against, read by
 # import.meta.url depth from server/dist.
 COPY docker/skills docker/skills

@@ -24,7 +24,8 @@ RUN npm ci --ignore-scripts
 FROM deps AS build
 WORKDIR /app
 COPY tsconfig.base.json ./
-COPY driver driver
+COPY driver/tsconfig.json driver/
+COPY driver/src driver/src
 # Only the driver. Its tsconfig has no project references — it shares no code with core, which is
 # what keeps this image free of the server's dependency tree.
 RUN npm run build -w driver

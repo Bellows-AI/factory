@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,6 +51,8 @@ describe('the lane stub executor images', () => {
         expect(script).toContain(STAGE);
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expectMailboxBase(line);
+        expect(script).toContain('cp docker/claude-executor/github-credential.cjs "$work/"');
+        expect(line).toContain('COPY github-credential.cjs /usr/local/bin/\\n');
         expect(line).toContain('ENTRYPOINT ["sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]');
         expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub.Dockerfile"'));
     });
@@ -204,4 +206,71 @@ describe('scripts/stub-agent.sh, run locally under /bin/sh', () => {
         },
         CASE_TIMEOUT_MS
     );
+});
+
+describe('the kind recovery stub barrier', () => {
+    it('blocks until released and lets a replacement observe the same release', async () => {
+        const box = sandbox();
+        const release = join(box.outDir, 'release');
+        const args = ['sh', join(ROOT, 'scripts/k8s-stub.sh'), `prompt factory-stub-wait-${release} handover`];
+        const child = run(box.wrapper, args, { HOSTNAME: 'first', CLAUDE_CODE_CONFIG_CONTENT: 'model-marker' });
+        await whenFileExists(`${release}.ready-first`);
+        expect(child.stdout()).not.toContain('released in');
+        writeFileSync(release, '');
+        expect(await child.exited).toBe(0);
+        expect(child.stdout()).toContain('model-marker');
+        expect(child.stdout()).toContain('released in first');
+        const replacement = run(box.wrapper, args, { HOSTNAME: 'second' });
+        expect(await replacement.exited).toBe(0);
+        expect(replacement.stdout()).toContain('released in second');
+    });
+
+    it('fails instead of reporting success when the harness never releases it', async () => {
+        const box = sandbox();
+        const child = run(
+            box.wrapper,
+            ['sh', join(ROOT, 'scripts/k8s-stub.sh'), `factory-stub-wait-${box.outDir}/absent`],
+            {
+                FACTORY_STUB_TIMEOUT_SECONDS: '1',
+            }
+        );
+        expect(await child.exited).toBe(1);
+        expect(child.stdout()).not.toContain('released in');
+    });
+
+    // Issue #822: a replacement runner on the tree a lost runner left finds that runner's mark and
+    // the tree's head, so the lane can tell a restored tree from a re-synced one.
+    it('marks the tree on a first run and reports the mark and head to a replacement', async () => {
+        const box = sandbox();
+        const tree = join(box.outDir, 'tree');
+        execFileSync('git', ['init', '-q', '-b', 'main', tree]);
+        execFileSync('git', [
+            '-C',
+            tree,
+            '-c',
+            'user.name=t',
+            '-c',
+            'user.email=t@localhost',
+            'commit',
+            '-q',
+            '--allow-empty',
+            '-m',
+            'the task base',
+        ]);
+        const release = join(box.outDir, 'release');
+        const args = ['sh', join(ROOT, 'scripts/k8s-stub.sh'), `factory-stub-mark factory-stub-wait-${release} lost`];
+
+        // The mark is down before the first run blocks: the lane disrupts it at its barrier.
+        const first = run(box.wrapper, args, { HOSTNAME: 'first', WORKDIR: tree });
+        await whenFileExists(`${release}.ready-first`);
+        expect(readFileSync(join(tree, '.factory', 'stub-mark'), 'utf8')).toBe('first\n');
+        writeFileSync(release, '');
+        expect(await first.exited).toBe(0);
+        expect(first.stdout()).toContain('released in first');
+
+        const replacement = run(box.wrapper, args, { HOSTNAME: 'second', WORKDIR: tree });
+        expect(await replacement.exited).toBe(0);
+        expect(replacement.stdout()).toContain('mark kept from first head: the task base');
+        expect(replacement.stdout()).not.toContain('released in');
+    });
 });
